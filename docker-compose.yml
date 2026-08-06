@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../docker/Dockerfile.backend
+    container_name: recruitment_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=postgres
+      - REDIS_HOST=redis
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - recruitment-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../docker/Dockerfile.frontend
+    container_name: recruitment_frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    depends_on:
+      - backend
+    networks:
+      - recruitment-net
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: recruitment_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-ai_recruitment_db}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - recruitment-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: recruitment_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - recruitment-net
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  recruitment-net:
+    driver: bridge
