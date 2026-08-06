@@ -10,13 +10,15 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DB_HOST=postgres
+      - DB_HOST=mssql
       - REDIS_HOST=redis
+      - QDRANT_HOST=qdrant
     env_file:
       - .env
     depends_on:
-      - postgres
+      - mssql
       - redis
+      - qdrant
     networks:
       - recruitment-net
 
@@ -35,18 +37,17 @@ services:
     networks:
       - recruitment-net
 
-  postgres:
-    image: postgres:15-alpine
-    container_name: recruitment_postgres
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: recruitment_mssql
     restart: always
     environment:
-      POSTGRES_DB: ${DB_NAME:-ai_recruitment_db}
-      POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=${DB_PASSWORD:-YourStrongPass123!}
     ports:
-      - "5432:5432"
+      - "1433:1433"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - mssql_data:/var/opt/mssql/data
     networks:
       - recruitment-net
 
@@ -61,9 +62,22 @@ services:
     networks:
       - recruitment-net
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: recruitment_qdrant
+    restart: always
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - recruitment-net
+
 volumes:
-  postgres_data:
+  mssql_data:
   redis_data:
+  qdrant_data:
 
 networks:
   recruitment-net:
