@@ -1,6 +1,8 @@
 from typing import Dict
 from fastapi import APIRouter
 
+from app.core.config import settings
+
 router = APIRouter()
 
 
@@ -12,5 +14,6 @@ async def health_check() -> Dict[str, str]:
     return {
         "status": "healthy",
         "service": "AI Recruitment Platform API",
-        "version": "1.0.0"
+        "version": settings.VERSION,
+        "environment": settings.ENVIRONMENT
     }

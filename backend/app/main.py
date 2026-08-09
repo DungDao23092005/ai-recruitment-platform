@@ -2,8 +2,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.core.middleware import register_middlewares
-from app.core.exception_handlers import register_exception_handlers
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -12,12 +10,6 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
-
-# Register Custom Middlewares (Logging, Timing, Request ID)
-register_middlewares(app)
-
-# Register Global Exception Handlers
-register_exception_handlers(app)
 
 # Set up CORS middleware
 app.add_middleware(
