@@ -1,49 +1,82 @@
-from typing import List, Union
-from pydantic import AnyHttpUrl, validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import json
+from typing import Annotated
+
+from pydantic import ValidationInfo, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+VALID_ENVIRONMENTS = ("development", "staging", "production", "testing")
 
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "AI Recruitment Platform"
     VERSION: str = "1.0.0"
+    ENVIRONMENT: str = "development"
+    LOG_LEVEL: str = "INFO"
     API_V1_STR: str = "/api/v1"
-    
-    # CORS Configuration
-    BACKEND_CORS_ORIGINS: List[Union[str, AnyHttpUrl]] = [
+
+    BACKEND_CORS_ORIGINS: Annotated[list[str], NoDecode] = [
+        "http://localhost:5173",
         "http://localhost:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:8000",
     ]
 
-    # Database Configuration (SQL Server)
-    DB_HOST: str = "localhost"
-    DB_PORT: int = 1433
-    DB_NAME: str = "ai_recruitment_db"
-    DB_USER: str = "sa"
-    DB_PASSWORD: str = "YourStrongPass123!"
-
-    # Redis Configuration
-    REDIS_HOST: str = "localhost"
-    REDIS_PORT: int = 6379
-
-    # Qdrant Vector DB Configuration
-    QDRANT_HOST: str = "localhost"
-    QDRANT_PORT: int = 6333
-
-    # Security
-    SECRET_KEY: str = "super-secret-key-change-in-production-2026"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
-
-    # AI Configuration
-    GEMINI_API_KEY: str = ""
+    SECRET_KEY: str = "change-me-in-development-with-a-random-value"
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
-        extra="ignore"
+        extra="ignore",
     )
+
+    @field_validator("ENVIRONMENT")
+    @classmethod
+    def validate_environment(cls, value: str) -> str:
+        if value not in VALID_ENVIRONMENTS:
+            raise ValueError(
+                f"ENVIRONMENT must be one of {', '.join(VALID_ENVIRONMENTS)}, got: {value!r}"
+            )
+        return value
+
+    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return [str(item) for item in parsed]
+            except json.JSONDecodeError:
+                pass
+            return [
+                origin.strip()
+                for origin in value.split(",")
+                if origin.strip()
+            ]
+        if isinstance(value, list):
+            return value
+        raise ValueError(f"Invalid BACKEND_CORS_ORIGINS value: {value!r}")
+
+    @field_validator("BACKEND_CORS_ORIGINS")
+    @classmethod
+    def validate_cors_origins(cls, value: list[str]) -> list[str]:
+        for origin in value:
+            if not origin.startswith(("http://", "https://")):
+                raise ValueError(f"Invalid CORS origin, must be an HTTP(S) URL: {origin!r}")
+        return value
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def validate_secret_key(cls, value: str, info: ValidationInfo) -> str:
+        env = info.data.get("ENVIRONMENT", "development") if info.data else "development"
+        if env == "production":
+            placeholder = "change-me-in-development-with-a-random-value"
+            if not value or value == placeholder:
+                raise ValueError(
+                    "SECRET_KEY must be a custom non-empty secret in production"
+                )
+        return value
 
 
 settings = Settings()
