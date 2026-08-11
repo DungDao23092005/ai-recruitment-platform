@@ -7,5 +7,9 @@ uvicorn[standard]>=0.30.0
 pydantic-settings>=2.2.0
 python-dotenv>=1.0.0
 
+# Database (Microsoft SQL Server)
+SQLAlchemy>=2.0.30
+aioodbc>=0.6.0
+
 # Testing
 pytest>=8.1.1

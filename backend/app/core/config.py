@@ -1,5 +1,6 @@
 import json
 from typing import Annotated
+from urllib.parse import quote_plus
 
 from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -20,6 +21,13 @@ class Settings(BaseSettings):
     ]
 
     SECRET_KEY: str = "change-me-in-development-with-a-random-value"
+
+    DATABASE_DRIVER: str = "aioodbc"
+    DATABASE_HOST: str = "localhost"
+    DATABASE_PORT: int = 1433
+    DATABASE_NAME: str = "ai_recruitment_platform"
+    DATABASE_USER: str = ""
+    DATABASE_PASSWORD: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -77,6 +85,25 @@ class Settings(BaseSettings):
                     "SECRET_KEY must be a custom non-empty secret in production"
                 )
         return value
+
+    @field_validator("DATABASE_PORT")
+    @classmethod
+    def validate_database_port(cls, value: int) -> int:
+        if not 1 <= value <= 65535:
+            raise ValueError("DATABASE_PORT must be in range 1-65535")
+        return value
+
+    @property
+    def database_uri(self) -> str:
+        credentials = ""
+        if self.DATABASE_USER:
+            credentials = (
+                f"{quote_plus(self.DATABASE_USER)}:{quote_plus(self.DATABASE_PASSWORD)}@"
+            )
+        return (
+            f"mssql+{self.DATABASE_DRIVER}://"
+            f"{credentials}{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
+        )
 
 
 settings = Settings()
