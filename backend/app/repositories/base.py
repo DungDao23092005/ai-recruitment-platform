@@ -29,14 +29,14 @@ class BaseRepository(BaseRepositoryInterface[T], Generic[T]):
     async def get_by_id(self, entity_id: Any) -> T | None:
         stmt = select(self.model).where(self.model.id == entity_id)
         if self._is_soft_deletable(self.model):
-            stmt = stmt.where(self.model.is_deleted.is_(False))
+            stmt = stmt.where(self.model.is_deleted == False)  # noqa: E712
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
     async def list_all(self) -> list[T]:
         stmt = select(self.model)
         if self._is_soft_deletable(self.model):
-            stmt = stmt.where(self.model.is_deleted.is_(False))
+            stmt = stmt.where(self.model.is_deleted == False)  # noqa: E712
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
