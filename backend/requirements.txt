@@ -12,5 +12,10 @@ SQLAlchemy>=2.0.30
 aioodbc>=0.5.0
 alembic>=1.13.0
 
+# Security & authentication
+passlib[bcrypt]>=1.7.4
+bcrypt==4.0.1
+python-jose[cryptography]>=3.3.0
+
 # Testing
 pytest>=8.1.1

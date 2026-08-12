@@ -102,3 +102,26 @@ def test_production_accepts_custom_secret(monkeypatch: pytest.MonkeyPatch):
 
     assert settings.ENVIRONMENT == "production"
     assert settings.SECRET_KEY == "test-production-secret-123"
+
+
+def test_database_uri_uses_aioodbc_scheme():
+    settings = Settings(_env_file=None)
+
+    assert settings.database_uri.startswith("mssql+aioodbc://")
+
+
+def test_database_uri_includes_odbc_driver_params():
+    settings = Settings(_env_file=None)
+
+    assert "driver=ODBC+Driver+18+for+SQL+Server" in settings.database_uri
+    assert "TrustServerCertificate=yes" in settings.database_uri
+
+
+def test_database_uri_urlencodes_credentials():
+    settings = Settings(
+        _env_file=None,
+        DATABASE_USER="sa",
+        DATABASE_PASSWORD="P@ss w0rd!/+",
+    )
+
+    assert "sa:P%40ss+w0rd%21%2F%2B@" in settings.database_uri

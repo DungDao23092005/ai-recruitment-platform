@@ -22,7 +22,9 @@ class Settings(BaseSettings):
 
     SECRET_KEY: str = "change-me-in-development-with-a-random-value"
 
-    DATABASE_DRIVER: str = "aioodbc"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+
+    DATABASE_DRIVER: str = "ODBC Driver 18 for SQL Server"
     DATABASE_HOST: str = "localhost"
     DATABASE_PORT: int = 1433
     DATABASE_NAME: str = "ai_recruitment_platform"
@@ -100,9 +102,11 @@ class Settings(BaseSettings):
             credentials = (
                 f"{quote_plus(self.DATABASE_USER)}:{quote_plus(self.DATABASE_PASSWORD)}@"
             )
+        driver_param = quote_plus(self.DATABASE_DRIVER)
         return (
-            f"mssql+{self.DATABASE_DRIVER}://"
+            f"mssql+aioodbc://"
             f"{credentials}{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
+            f"?driver={driver_param}&TrustServerCertificate=yes"
         )
 
 
