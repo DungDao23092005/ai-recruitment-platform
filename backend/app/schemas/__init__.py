@@ -1,3 +1,8 @@
+from app.schemas.ai_resume import (
+    EducationSchema,
+    ParsedResumeSchema,
+    WorkExperienceSchema,
+)
 from app.schemas.application import (
     ApplicationCreate,
     ApplicationRead,
@@ -32,4 +37,7 @@ __all__ = [
     "ApplicationStatusUpdate",
     "SkillCreate",
     "SkillRead",
+    "ParsedResumeSchema",
+    "WorkExperienceSchema",
+    "EducationSchema",
 ]
