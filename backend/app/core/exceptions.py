@@ -15,3 +15,15 @@ class ConflictException(ServiceException):
 
 class InvalidTransitionException(ServiceException):
     """Raised when a domain state transition is not allowed."""
+
+
+class AIError(Exception):
+    """Base class for all AI module errors."""
+
+
+class EmptyDocumentError(AIError):
+    """Raised when a document contains no extractable text."""
+
+
+class InvalidDocumentError(AIError):
+    """Raised when a document is corrupted, invalid format, or exceeds size limits."""
