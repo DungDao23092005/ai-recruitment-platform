@@ -1,5 +1,9 @@
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
+from app.schemas.ai_matching import (
+    CandidateMatchRecommendation,
+    JobMatchRecommendation,
+)
 from app.schemas.ai_resume import (
     EducationSchema,
     ParsedResumeSchema,
@@ -44,4 +48,6 @@ __all__ = [
     "EducationSchema",
     "ParsedJobSchema",
     "MatchResultSchema",
+    "JobMatchRecommendation",
+    "CandidateMatchRecommendation",
 ]
