@@ -1,3 +1,4 @@
+from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_resume import (
     EducationSchema,
     ParsedResumeSchema,
@@ -40,4 +41,5 @@ __all__ = [
     "ParsedResumeSchema",
     "WorkExperienceSchema",
     "EducationSchema",
+    "ParsedJobSchema",
 ]
