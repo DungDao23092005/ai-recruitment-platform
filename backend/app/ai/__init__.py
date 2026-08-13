@@ -7,6 +7,7 @@ from app.ai.interfaces import (
     BaseLLMProvider,
     BaseVectorRepository,
 )
+from app.ai.vector_db import QdrantVectorRepository
 
 __all__ = [
     "BaseLLMProvider",
@@ -14,4 +15,5 @@ __all__ = [
     "BaseVectorRepository",
     "EmbeddingService",
     "SentenceTransformerEmbeddingProvider",
+    "QdrantVectorRepository",
 ]
