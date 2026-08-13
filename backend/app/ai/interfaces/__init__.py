@@ -1,4 +1,4 @@
-from app.ai.interfaces import (
+from app.ai.interfaces.base_provider import (
     BaseEmbeddingProvider,
     BaseLLMProvider,
     BaseVectorRepository,

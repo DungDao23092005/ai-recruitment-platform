@@ -18,5 +18,11 @@ passlib[bcrypt]>=1.7.4
 bcrypt==4.0.1
 python-jose[cryptography]>=3.3.0
 
+# AI & Vector Search Engine
+google-genai>=0.1.1
+qdrant-client>=1.8.0
+pdfplumber>=0.11.0
+sentence-transformers>=2.6.0
+
 # Testing
 pytest>=8.1.1

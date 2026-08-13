@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     DATABASE_USER: str = ""
     DATABASE_PASSWORD: str = ""
 
+    # AI & Vector Database Configuration
+    GEMINI_API_KEY: str = ""
+    QDRANT_HOST: str = "localhost"
+    QDRANT_PORT: int = 6333
+    EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
+    VECTOR_DIMENSION: int = 384
+
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -88,12 +96,20 @@ class Settings(BaseSettings):
                 )
         return value
 
-    @field_validator("DATABASE_PORT")
+    @field_validator("DATABASE_PORT", "QDRANT_PORT")
     @classmethod
-    def validate_database_port(cls, value: int) -> int:
+    def validate_port_range(cls, value: int, info: ValidationInfo) -> int:
         if not 1 <= value <= 65535:
-            raise ValueError("DATABASE_PORT must be in range 1-65535")
+            raise ValueError(f"{info.field_name} must be in range 1-65535")
         return value
+
+    @field_validator("VECTOR_DIMENSION")
+    @classmethod
+    def validate_vector_dimension(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("VECTOR_DIMENSION must be a positive integer")
+        return value
+
 
     @property
     def database_uri(self) -> str:
