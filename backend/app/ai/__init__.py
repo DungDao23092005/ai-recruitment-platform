@@ -7,6 +7,12 @@ from app.ai.interfaces import (
     BaseLLMProvider,
     BaseVectorRepository,
 )
+from app.ai.matching import (
+    MatchingEngine,
+    RulesEngine,
+    compute_cosine_similarity,
+    rank_matches,
+)
 from app.ai.vector_db import QdrantVectorRepository
 
 __all__ = [
@@ -16,4 +22,8 @@ __all__ = [
     "EmbeddingService",
     "SentenceTransformerEmbeddingProvider",
     "QdrantVectorRepository",
+    "compute_cosine_similarity",
+    "RulesEngine",
+    "MatchingEngine",
+    "rank_matches",
 ]
