@@ -53,6 +53,21 @@ export function Navbar() {
               {link.label}
             </NavLink>
           ))}
+          {isAuthenticated && currentUser?.role === 'candidate' ? (
+            <NavLink
+              to="/candidate/cv-upload"
+              className={({ isActive }) =>
+                cn(
+                  'rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                  isActive
+                    ? 'bg-secondary text-secondary-foreground'
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                )
+              }
+            >
+              Upload CV
+            </NavLink>
+          ) : null}
         </div>
 
         <div className="flex items-center gap-2">

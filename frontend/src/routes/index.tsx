@@ -7,6 +7,10 @@ import { HealthCheckPage } from '@/pages/HealthCheckPage'
 import { LoginPage } from '@/pages/auth/LoginPage'
 import { RegisterPage } from '@/pages/auth/RegisterPage'
 import { ProfilePage } from '@/pages/profile/ProfilePage'
+import { JobsPage } from '@/pages/jobs/JobsPage'
+import { JobDetailPage } from '@/pages/jobs/JobDetailPage'
+import { ResumeUploadPage } from '@/features/candidate/pages/ResumeUploadPage'
+import { CandidatePortalPage } from '@/features/candidate/pages/CandidatePortalPage'
 import { ProtectedRoute } from '@/components/common/ProtectedRoute'
 import { RoleGuard } from '@/components/common/RoleGuard'
 import type { UserRole } from '@/types/auth'
@@ -18,19 +22,18 @@ export interface AppNavLink {
 
 export const NAV_LINKS: AppNavLink[] = [
   { to: '/', label: 'Home' },
+  { to: '/jobs', label: 'Việc làm' },
   { to: '/health', label: 'Health' },
 ]
 
 function ProtectedByRole({
   allowedRoles,
+  children,
 }: {
   allowedRoles: UserRole[]
+  children: React.ReactNode
 }) {
-  return (
-    <RoleGuard allowedRoles={allowedRoles}>
-      <ProfilePage />
-    </RoleGuard>
-  )
+  return <RoleGuard allowedRoles={allowedRoles}>{children}</RoleGuard>
 }
 
 function AdminPlaceholder() {
@@ -52,15 +55,41 @@ export function AppRouter() {
       <Route element={<MainLayout />}>
         <Route path="/" element={<HomePage />} />
         <Route path="/health" element={<HealthCheckPage />} />
+        <Route path="/jobs" element={<JobsPage />} />
+        <Route path="/jobs/:id" element={<JobDetailPage />} />
 
         <Route element={<ProtectedRoute />}>
           <Route
             path="/candidate/profile"
-            element={<ProtectedByRole allowedRoles={['candidate']} />}
+            element={
+              <ProtectedByRole allowedRoles={['candidate']}>
+                <ProfilePage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/candidate/cv-upload"
+            element={
+              <ProtectedByRole allowedRoles={['candidate']}>
+                <ResumeUploadPage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/candidate/portal"
+            element={
+              <ProtectedByRole allowedRoles={['candidate']}>
+                <CandidatePortalPage />
+              </ProtectedByRole>
+            }
           />
           <Route
             path="/recruiter/profile"
-            element={<ProtectedByRole allowedRoles={['recruiter']} />}
+            element={
+              <ProtectedByRole allowedRoles={['recruiter']}>
+                <ProfilePage />
+              </ProtectedByRole>
+            }
           />
           <Route
             path="/admin/overview"

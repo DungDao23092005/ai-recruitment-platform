@@ -1,5 +1,18 @@
 export type { HealthStatus } from '@/api/endpoints'
 export type { UserRole } from '@/types/auth'
+export type {
+  Job,
+  JobListParams,
+  JobStatus,
+  JobType,
+  WorkplaceType,
+} from '@/types/job'
+export type { Application, ApplicationStatus } from '@/types/application'
+export type {
+  Education,
+  ParsedResume,
+  WorkExperience,
+} from '@/types/ai'
 
 export interface NavLink {
   to: string
