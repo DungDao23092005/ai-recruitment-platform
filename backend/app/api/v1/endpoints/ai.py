@@ -17,6 +17,7 @@ from app.api.deps import (
     require_recruiter,
 )
 from app.core.exceptions import (
+    AIError,
     EmptyDocumentError,
     EntityNotFoundException,
     InvalidDocumentError,
@@ -30,8 +31,10 @@ from app.schemas.ai_matching import (
     JobMatchRecommendation,
 )
 from app.schemas.ai_resume import ParsedResumeSchema
+from app.schemas.ai_search import SemanticSearchResult
 from app.services.ai_matching_service import AIMatchingService
 from app.services.explainable_ai_service import ExplainableAIService
+from app.services.semantic_search_service import SemanticSearchService
 
 router = APIRouter()
 
@@ -51,6 +54,10 @@ def _get_ai_service(
 
 def _get_explainable_ai_service() -> ExplainableAIService:
     return ExplainableAIService()
+
+
+def _get_semantic_search_service() -> SemanticSearchService:
+    return SemanticSearchService()
 
 
 @router.post(
@@ -199,6 +206,66 @@ async def recommend_jobs_for_candidate(
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/search/jobs",
+    response_model=list[SemanticSearchResult],
+    status_code=status.HTTP_200_OK,
+)
+async def semantic_search_jobs(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(default=10, ge=1, le=100),
+    score_threshold: float | None = Query(default=None, ge=0.0, le=1.0),
+    current_user: User = Depends(get_current_active_user),
+    service: SemanticSearchService = Depends(_get_semantic_search_service),
+) -> list[SemanticSearchResult]:
+    try:
+        return await service.search_jobs(
+            query=q,
+            limit=limit,
+            score_threshold=score_threshold,
+        )
+    except EmptyDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except (InvalidDocumentError, AIError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/search/candidates",
+    response_model=list[SemanticSearchResult],
+    status_code=status.HTTP_200_OK,
+)
+async def semantic_search_candidates(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(default=10, ge=1, le=100),
+    score_threshold: float | None = Query(default=None, ge=0.0, le=1.0),
+    current_user: User = Depends(require_recruiter),
+    service: SemanticSearchService = Depends(_get_semantic_search_service),
+) -> list[SemanticSearchResult]:
+    try:
+        return await service.search_candidates(
+            query=q,
+            limit=limit,
+            score_threshold=score_threshold,
+        )
+    except EmptyDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except (InvalidDocumentError, AIError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
 

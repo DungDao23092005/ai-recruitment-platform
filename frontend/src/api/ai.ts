@@ -7,6 +7,8 @@ import type {
   MatchRequest,
   MatchResult,
   ParsedResume,
+  SemanticSearchParams,
+  SemanticSearchResult,
 } from '@/types/ai'
 
 export async function parseResume(file: File): Promise<ParsedResume> {
@@ -59,5 +61,35 @@ export async function explainMatch(
   return apiClient.post<ExplainMatchResponse, ExplainMatchResponse>(
     '/ai/explain-match',
     data,
+  )
+}
+
+export async function searchJobs(
+  params: SemanticSearchParams,
+): Promise<SemanticSearchResult[]> {
+  return apiClient.get<SemanticSearchResult[], SemanticSearchResult[]>(
+    '/ai/search/jobs',
+    {
+      params: {
+        q: params.q,
+        limit: params.limit ?? 10,
+        score_threshold: params.score_threshold,
+      },
+    },
+  )
+}
+
+export async function searchCandidates(
+  params: SemanticSearchParams,
+): Promise<SemanticSearchResult[]> {
+  return apiClient.get<SemanticSearchResult[], SemanticSearchResult[]>(
+    '/ai/search/candidates',
+    {
+      params: {
+        q: params.q,
+        limit: params.limit ?? 10,
+        score_threshold: params.score_threshold,
+      },
+    },
   )
 }

@@ -79,3 +79,16 @@ export interface ExplainMatchResponse {
   experience_analysis: string
   recommendation: string
 }
+
+export interface SemanticSearchResult {
+  id: string
+  score: number
+  skills: string[]
+  created_at: string | null
+}
+
+export interface SemanticSearchParams {
+  q: string
+  limit?: number
+  score_threshold?: number
+}

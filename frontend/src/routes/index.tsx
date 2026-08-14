@@ -10,6 +10,7 @@ import { RegisterPage } from '@/pages/auth/RegisterPage'
 import { ProfilePage } from '@/pages/profile/ProfilePage'
 import { JobsPage } from '@/pages/jobs/JobsPage'
 import { JobDetailPage } from '@/pages/jobs/JobDetailPage'
+import { SemanticJobSearchPage } from '@/pages/jobs/SemanticJobSearchPage'
 import { ResumeUploadPage } from '@/features/candidate/pages/ResumeUploadPage'
 import { CandidatePortalPage } from '@/features/candidate/pages/CandidatePortalPage'
 import { CandidateRecommendationsPage } from '@/pages/candidate/CandidateRecommendationsPage'
@@ -20,6 +21,7 @@ import { RecruiterJobsPage } from '@/features/recruiter/pages/RecruiterJobsPage'
 import { JobCreatePage } from '@/features/recruiter/pages/JobCreatePage'
 import { JobApplicantsPage } from '@/features/recruiter/pages/JobApplicantsPage'
 import { JobRecommendationsPage } from '@/features/recruiter/pages/JobRecommendationsPage'
+import { SemanticCandidateSearchPage } from '@/features/recruiter/pages/SemanticCandidateSearchPage'
 import { ProtectedRoute } from '@/components/common/ProtectedRoute'
 import { RoleGuard } from '@/components/common/RoleGuard'
 import type { UserRole } from '@/types/auth'
@@ -68,6 +70,14 @@ export function AppRouter() {
         <Route path="/jobs/:id" element={<JobDetailPage />} />
 
         <Route element={<ProtectedRoute />}>
+          <Route
+            path="/jobs/search"
+            element={
+              <ProtectedByRole allowedRoles={['candidate', 'recruiter', 'admin']}>
+                <SemanticJobSearchPage />
+              </ProtectedByRole>
+            }
+          />
           <Route
             path="/candidate/profile"
             element={
@@ -156,6 +166,16 @@ export function AppRouter() {
               element={
                 <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
                   <JobRecommendationsPage />
+                </ProtectedByRole>
+              }
+            />
+          </Route>
+          <Route element={<DashboardLayout />}>
+            <Route
+              path="/recruiter/search/candidates"
+              element={
+                <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                  <SemanticCandidateSearchPage />
                 </ProtectedByRole>
               }
             />

@@ -56,6 +56,19 @@ export function Navbar() {
           {isAuthenticated && currentUser?.role === 'candidate' ? (
             <>
               <NavLink
+                to="/jobs/search"
+                className={({ isActive }) =>
+                  cn(
+                    'rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                    isActive
+                      ? 'bg-secondary text-secondary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  )
+                }
+              >
+                Tìm việc AI
+              </NavLink>
+              <NavLink
                 to="/candidate/recommendations"
                 className={({ isActive }) =>
                   cn(
@@ -114,6 +127,19 @@ export function Navbar() {
                 }
               >
                 Quản lý tuyển dụng
+              </NavLink>
+              <NavLink
+                to="/recruiter/search/candidates"
+                className={({ isActive }) =>
+                  cn(
+                    'rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                    isActive
+                      ? 'bg-secondary text-secondary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  )
+                }
+              >
+                Tìm ứng viên AI
               </NavLink>
               <NavLink
                 to="/recruiter/jobs/new"

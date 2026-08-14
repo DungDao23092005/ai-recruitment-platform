@@ -9,8 +9,13 @@ from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user
-from app.api.v1.endpoints.ai import _get_ai_service, _get_explainable_ai_service
+from app.api.v1.endpoints.ai import (
+    _get_ai_service,
+    _get_explainable_ai_service,
+    _get_semantic_search_service,
+)
 from app.core.exceptions import (
+    AIError,
     EmptyDocumentError,
     EntityNotFoundException,
     InvalidDocumentError,
@@ -60,10 +65,21 @@ def mock_explain_service():
 
 
 @pytest.fixture
-def client(mock_service, mock_explain_service):
+def mock_search_service():
+    service = MagicMock()
+    service.search_jobs = AsyncMock()
+    service.search_candidates = AsyncMock()
+    return service
+
+
+@pytest.fixture
+def client(mock_service, mock_explain_service, mock_search_service):
     app.dependency_overrides[_get_ai_service] = lambda: mock_service
     app.dependency_overrides[_get_explainable_ai_service] = (
         lambda: mock_explain_service
+    )
+    app.dependency_overrides[_get_semantic_search_service] = (
+        lambda: mock_search_service
     )
     with TestClient(app) as c:
         yield c
@@ -455,3 +471,199 @@ class TestExplainMatch:
         )
 
         assert resp.status_code == 200
+
+
+def _search_result_payload():
+    return [
+        {
+            "id": "1234",
+            "score": 0.87,
+            "skills": ["Python", "FastAPI"],
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+    ]
+
+
+class TestSearchJobs:
+    def test_search_jobs_success(self, active_client, mock_search_service):
+        mock_search_service.search_jobs.return_value = (
+            _search_result_payload()
+        )
+
+        resp = active_client.get(
+            "/api/v1/ai/search/jobs", params={"q": "python backend"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()[0]["id"] == "1234"
+        assert resp.json()[0]["score"] == 0.87
+        mock_search_service.search_jobs.assert_called_once()
+
+    def test_search_jobs_passes_score_threshold(
+        self, active_client, mock_search_service
+    ):
+        mock_search_service.search_jobs.return_value = _search_result_payload()
+
+        resp = active_client.get(
+            "/api/v1/ai/search/jobs",
+            params={"q": "react", "score_threshold": 0.5},
+        )
+
+        assert resp.status_code == 200
+        mock_search_service.search_jobs.assert_called_once()
+        kwargs = mock_search_service.search_jobs.call_args.kwargs
+        assert kwargs["score_threshold"] == 0.5
+
+    def test_search_jobs_empty_query_rejected(
+        self, active_client, mock_search_service
+    ):
+        resp = active_client.get(
+            "/api/v1/ai/search/jobs", params={"q": ""}
+        )
+
+        assert resp.status_code == 422
+        mock_search_service.search_jobs.assert_not_called()
+
+    def test_search_jobs_missing_query_rejected(
+        self, active_client, mock_search_service
+    ):
+        resp = active_client.get("/api/v1/ai/search/jobs")
+
+        assert resp.status_code == 422
+        mock_search_service.search_jobs.assert_not_called()
+
+    def test_search_jobs_invalid_limit(self, active_client, mock_search_service):
+        resp = active_client.get(
+            "/api/v1/ai/search/jobs", params={"q": "react", "limit": 0}
+        )
+
+        assert resp.status_code == 422
+        mock_search_service.search_jobs.assert_not_called()
+
+    def test_search_jobs_invalid_threshold(
+        self, active_client, mock_search_service
+    ):
+        resp = active_client.get(
+            "/api/v1/ai/search/jobs",
+            params={"q": "react", "score_threshold": 1.5},
+        )
+
+        assert resp.status_code == 422
+        mock_search_service.search_jobs.assert_not_called()
+
+    def test_search_jobs_unauthorized(self, unauthorized_client):
+        resp = unauthorized_client.get(
+            "/api/v1/ai/search/jobs", params={"q": "react"}
+        )
+
+        assert resp.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_search_jobs_empty_document_maps_to_400(
+        self, active_client, mock_search_service
+    ):
+        mock_search_service.search_jobs.side_effect = EmptyDocumentError(
+            "Text for embedding generation cannot be empty"
+        )
+
+        resp = active_client.get(
+            "/api/v1/ai/search/jobs", params={"q": "react"}
+        )
+
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_search_jobs_provider_failure_maps_to_502(
+        self, active_client, mock_search_service
+    ):
+        mock_search_service.search_jobs.side_effect = InvalidDocumentError(
+            "Failed to generate embedding vector"
+        )
+
+        resp = active_client.get(
+            "/api/v1/ai/search/jobs", params={"q": "react"}
+        )
+
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+
+    def test_search_jobs_qdrant_failure_maps_to_502(
+        self, active_client, mock_search_service
+    ):
+        mock_search_service.search_jobs.side_effect = AIError(
+            "Failed to search similar vectors in collection 'jobs'"
+        )
+
+        resp = active_client.get(
+            "/api/v1/ai/search/jobs", params={"q": "react"}
+        )
+
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+
+
+class TestSearchCandidates:
+    def test_search_candidates_success(
+        self, recruiter_client, mock_search_service
+    ):
+        mock_search_service.search_candidates.return_value = (
+            _search_result_payload()
+        )
+
+        resp = recruiter_client.get(
+            "/api/v1/ai/search/candidates", params={"q": "react developer"}
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()[0]["id"] == "1234"
+        mock_search_service.search_candidates.assert_called_once()
+
+    def test_search_candidates_unauthorized(self, unauthorized_client):
+        resp = unauthorized_client.get(
+            "/api/v1/ai/search/candidates", params={"q": "react"}
+        )
+
+        assert resp.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_search_candidates_forbidden_for_candidate(
+        self, candidate_client, mock_search_service
+    ):
+        resp = candidate_client.get(
+            "/api/v1/ai/search/candidates", params={"q": "react"}
+        )
+
+        assert resp.status_code == status.HTTP_403_FORBIDDEN
+        mock_search_service.search_candidates.assert_not_called()
+
+    def test_search_candidates_admin_allowed(
+        self, active_client, mock_search_service
+    ):
+        mock_search_service.search_candidates.return_value = (
+            _search_result_payload()
+        )
+
+        resp = active_client.get(
+            "/api/v1/ai/search/candidates", params={"q": "react"}
+        )
+
+        assert resp.status_code == 200
+        mock_search_service.search_candidates.assert_called_once()
+
+    def test_search_candidates_empty_query_rejected(
+        self, recruiter_client, mock_search_service
+    ):
+        resp = recruiter_client.get(
+            "/api/v1/ai/search/candidates", params={"q": ""}
+        )
+
+        assert resp.status_code == 422
+        mock_search_service.search_candidates.assert_not_called()
+
+    def test_search_candidates_provider_failure_maps_to_502(
+        self, recruiter_client, mock_search_service
+    ):
+        mock_search_service.search_candidates.side_effect = (
+            InvalidDocumentError("Failed to generate embedding vector")
+        )
+
+        resp = recruiter_client.get(
+            "/api/v1/ai/search/candidates", params={"q": "react"}
+        )
+
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY
