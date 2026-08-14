@@ -65,3 +65,17 @@ export interface MatchRequest {
   parsed_resume: ParsedResume
   parsed_job: ParsedJob
 }
+
+export interface ExplainMatchRequest {
+  match_result: MatchResult
+  candidate?: ParsedResume | null
+  job?: ParsedJob | null
+}
+
+export interface ExplainMatchResponse {
+  summary: string
+  strengths: string[]
+  skill_gaps: string[]
+  experience_analysis: string
+  recommendation: string
+}

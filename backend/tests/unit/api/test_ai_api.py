@@ -9,8 +9,12 @@ from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user
-from app.api.v1.endpoints.ai import _get_ai_service
-from app.core.exceptions import EntityNotFoundException
+from app.api.v1.endpoints.ai import _get_ai_service, _get_explainable_ai_service
+from app.core.exceptions import (
+    EmptyDocumentError,
+    EntityNotFoundException,
+    InvalidDocumentError,
+)
 from app.domain.enums import UserRole
 from app.main import app
 
@@ -47,9 +51,20 @@ def mock_service():
     service.recommend_candidates_for_job = AsyncMock()
     return service
 
+
 @pytest.fixture
-def client(mock_service):
+def mock_explain_service():
+    service = MagicMock()
+    service.explain_match = AsyncMock()
+    return service
+
+
+@pytest.fixture
+def client(mock_service, mock_explain_service):
     app.dependency_overrides[_get_ai_service] = lambda: mock_service
+    app.dependency_overrides[_get_explainable_ai_service] = (
+        lambda: mock_explain_service
+    )
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -289,3 +304,154 @@ class TestServiceExceptionMapping:
 
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"]
+
+
+def _match_result_payload():
+    return {
+        "overall_score": 82.0,
+        "cosine_similarity": 0.85,
+        "skill_coverage_score": 0.8,
+        "experience_match_score": 0.75,
+        "matching_skills": ["React", "TypeScript"],
+        "skill_gap": ["GraphQL"],
+        "match_reasons": ["Strong skill overlap"],
+    }
+
+
+def _explain_response_payload():
+    return {
+        "summary": "The candidate matches the role well.",
+        "strengths": ["Strong overlap in React and TypeScript"],
+        "skill_gaps": ["GraphQL"],
+        "experience_analysis": "Candidate has 5 years experience vs 4 required.",
+        "recommendation": "Proceed to interview.",
+    }
+
+
+class TestExplainMatch:
+    def test_explain_match_success(self, active_client, mock_explain_service):
+        mock_explain_service.explain_match.return_value = (
+            _explain_response_payload()
+        )
+
+        resp = active_client.post(
+            "/api/v1/ai/explain-match",
+            json={
+                "match_result": _match_result_payload(),
+                "candidate": _parsed_resume(),
+                "job": _parsed_job(),
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["summary"] == "The candidate matches the role well."
+        assert resp.json()["strengths"] == [
+            "Strong overlap in React and TypeScript"
+        ]
+        mock_explain_service.explain_match.assert_called_once()
+
+    def test_explain_match_accepts_candidate_and_job_null(
+        self, active_client, mock_explain_service
+    ):
+        mock_explain_service.explain_match.return_value = (
+            _explain_response_payload()
+        )
+
+        resp = active_client.post(
+            "/api/v1/ai/explain-match",
+            json={"match_result": _match_result_payload()},
+        )
+
+        assert resp.status_code == 200
+        mock_explain_service.explain_match.assert_called_once()
+
+    def test_explain_match_requires_match_result(
+        self, active_client, mock_explain_service
+    ):
+        resp = active_client.post(
+            "/api/v1/ai/explain-match",
+            json={"candidate": _parsed_resume(), "job": _parsed_job()},
+        )
+
+        assert resp.status_code == 422
+        mock_explain_service.explain_match.assert_not_called()
+
+    def test_explain_match_unauthorized(self, unauthorized_client):
+        resp = unauthorized_client.post(
+            "/api/v1/ai/explain-match",
+            json={"match_result": _match_result_payload()},
+        )
+
+        assert resp.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_explain_match_empty_document_maps_to_400(
+        self, active_client, mock_explain_service
+    ):
+        mock_explain_service.explain_match.side_effect = EmptyDocumentError(
+            "match_result has no overall_score to explain"
+        )
+
+        resp = active_client.post(
+            "/api/v1/ai/explain-match",
+            json={"match_result": _match_result_payload()},
+        )
+
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+        assert "overall_score" in resp.json()["detail"]
+
+    def test_explain_match_invalid_document_maps_to_422(
+        self, active_client, mock_explain_service
+    ):
+        mock_explain_service.explain_match.side_effect = InvalidDocumentError(
+            "AI explanation returned an empty summary"
+        )
+
+        resp = active_client.post(
+            "/api/v1/ai/explain-match",
+            json={"match_result": _match_result_payload()},
+        )
+
+        assert resp.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "empty summary" in resp.json()["detail"]
+
+    def test_explain_match_accepts_admin_role(
+        self, active_client, mock_explain_service
+    ):
+        mock_explain_service.explain_match.return_value = (
+            _explain_response_payload()
+        )
+
+        resp = active_client.post(
+            "/api/v1/ai/explain-match",
+            json={"match_result": _match_result_payload()},
+        )
+
+        assert resp.status_code == 200
+
+    def test_explain_match_accepts_candidate_role(
+        self, candidate_client, mock_explain_service
+    ):
+        mock_explain_service.explain_match.return_value = (
+            _explain_response_payload()
+        )
+
+        resp = candidate_client.post(
+            "/api/v1/ai/explain-match",
+            json={"match_result": _match_result_payload()},
+        )
+
+        assert resp.status_code == 200
+
+    def test_explain_match_accepts_recruiter_role(
+        self, recruiter_client, mock_explain_service
+    ):
+        mock_explain_service.explain_match.return_value = (
+            _explain_response_payload()
+        )
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/explain-match",
+            json={"match_result": _match_result_payload()},
+        )
+
+        assert resp.status_code == 200

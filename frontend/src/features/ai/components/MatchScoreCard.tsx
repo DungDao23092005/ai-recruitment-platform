@@ -2,8 +2,11 @@ import {
   CheckCircle2,
   XCircle,
   Lightbulb,
+  Sparkles,
 } from 'lucide-react'
+import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
   Card,
   CardContent,
@@ -11,10 +14,13 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { cn } from '@/utils/cn'
-import type { MatchResult } from '@/types/ai'
+import type { MatchResult, ParsedJob, ParsedResume } from '@/types/ai'
+import { ExplainMatchModal } from './ExplainMatchModal'
 
 export interface MatchScoreCardProps {
   matchResult: MatchResult
+  candidate?: ParsedResume | null
+  job?: ParsedJob | null
   className?: string
 }
 
@@ -40,8 +46,11 @@ export function formatPercent(value: number): string {
 
 export function MatchScoreCard({
   matchResult,
+  candidate,
+  job,
   className,
 }: MatchScoreCardProps) {
+  const [showExplain, setShowExplain] = useState(false)
   const overall = Math.round(matchResult.overall_score)
   const { text: scoreText, bar: scoreBar } = getScoreColor(overall)
 
@@ -171,7 +180,27 @@ export function MatchScoreCard({
             </ul>
           </div>
         ) : null}
+
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="w-full"
+          onClick={() => setShowExplain(true)}
+        >
+          <Sparkles className="h-4 w-4" aria-hidden="true" />
+          Xem giải thích AI
+        </Button>
       </CardContent>
+
+      {showExplain ? (
+        <ExplainMatchModal
+          matchResult={matchResult}
+          candidate={candidate}
+          job={job}
+          onClose={() => setShowExplain(false)}
+        />
+      ) : null}
     </Card>
   )
 }

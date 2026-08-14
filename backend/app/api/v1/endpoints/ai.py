@@ -22,6 +22,7 @@ from app.core.exceptions import (
     InvalidDocumentError,
 )
 from app.models import User
+from app.schemas.ai_explanation import ExplainMatchRequest, ExplainMatchResponse
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_matching import (
@@ -30,6 +31,7 @@ from app.schemas.ai_matching import (
 )
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.ai_matching_service import AIMatchingService
+from app.services.explainable_ai_service import ExplainableAIService
 
 router = APIRouter()
 
@@ -45,6 +47,10 @@ def _get_ai_service(
             SentenceTransformerEmbeddingProvider()
         ),
     )
+
+
+def _get_explainable_ai_service() -> ExplainableAIService:
+    return ExplainableAIService()
 
 
 @router.post(
@@ -138,6 +144,34 @@ async def match_candidate_and_job(
         resume_vector=data.resume_vector,
         job_vector=data.job_vector,
     )
+
+
+@router.post(
+    "/explain-match",
+    response_model=ExplainMatchResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def explain_match(
+    data: ExplainMatchRequest,
+    current_user: User = Depends(get_current_active_user),
+    service: ExplainableAIService = Depends(_get_explainable_ai_service),
+) -> ExplainMatchResponse:
+    try:
+        return await service.explain_match(
+            match_result=data.match_result,
+            candidate=data.candidate,
+            job=data.job,
+        )
+    except EmptyDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except InvalidDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get(

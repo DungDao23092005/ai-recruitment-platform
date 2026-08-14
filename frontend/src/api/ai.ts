@@ -1,6 +1,8 @@
 import apiClient from '@/api/client'
 import type {
   CandidateMatchRecommendation,
+  ExplainMatchRequest,
+  ExplainMatchResponse,
   JobMatchRecommendation,
   MatchRequest,
   MatchResult,
@@ -49,4 +51,13 @@ export async function matchCandidateWithJob(
   data: MatchRequest,
 ): Promise<MatchResult> {
   return apiClient.post<MatchResult, MatchResult>('/ai/match', data)
+}
+
+export async function explainMatch(
+  data: ExplainMatchRequest,
+): Promise<ExplainMatchResponse> {
+  return apiClient.post<ExplainMatchResponse, ExplainMatchResponse>(
+    '/ai/explain-match',
+    data,
+  )
 }

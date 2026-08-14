@@ -100,7 +100,10 @@ export function CandidateRecommendationCard({
             Xem chi tiết Match Score
           </summary>
           <div className="mt-3">
-            <MatchScoreCard matchResult={match_result} />
+            <MatchScoreCard
+              matchResult={match_result}
+              candidate={parsed_resume}
+            />
           </div>
         </details>
       </CardContent>
