@@ -16,7 +16,7 @@ export function Navbar() {
       : currentUser?.role === 'recruiter'
         ? '/recruiter/profile'
         : currentUser?.role === 'admin'
-          ? '/admin/overview'
+          ? '/admin/dashboard'
           : '/'
 
   return (
@@ -87,6 +87,21 @@ export function Navbar() {
           (currentUser?.role === 'recruiter' ||
             currentUser?.role === 'admin') ? (
             <>
+              {currentUser?.role === 'admin' ? (
+                <NavLink
+                  to="/admin/dashboard"
+                  className={({ isActive }) =>
+                    cn(
+                      'rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                      isActive
+                        ? 'bg-secondary text-secondary-foreground'
+                        : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                    )
+                  }
+                >
+                  Admin Dashboard
+                </NavLink>
+              ) : null}
               <NavLink
                 to="/recruiter/portal"
                 className={({ isActive }) =>

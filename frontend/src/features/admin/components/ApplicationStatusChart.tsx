@@ -1,0 +1,85 @@
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
+import { cn } from '@/utils/cn'
+import type { ApplicationStatusCounts } from '@/types/admin'
+
+export interface ApplicationStatusChartProps {
+  counts: ApplicationStatusCounts
+}
+
+interface StatusRow {
+  key: keyof ApplicationStatusCounts
+  label: string
+  className: string
+}
+
+const STATUS_ROWS: StatusRow[] = [
+  { key: 'applied', label: 'Applied', className: 'bg-blue-500' },
+  {
+    key: 'under_review',
+    label: 'Under review',
+    className: 'bg-cyan-500',
+  },
+  {
+    key: 'shortlisted',
+    label: 'Shortlisted',
+    className: 'bg-violet-500',
+  },
+  {
+    key: 'interviewing',
+    label: 'Interviewing',
+    className: 'bg-amber-500',
+  },
+  { key: 'accepted', label: 'Accepted', className: 'bg-emerald-500' },
+  { key: 'rejected', label: 'Rejected', className: 'bg-rose-500' },
+  { key: 'withdrawn', label: 'Withdrawn', className: 'bg-gray-400' },
+]
+
+export function ApplicationStatusChart({
+  counts,
+}: ApplicationStatusChartProps) {
+  const total = STATUS_ROWS.reduce(
+    (sum, row) => sum + (counts[row.key] ?? 0),
+    0,
+  )
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg">Đơn ứng tuyển theo trạng thái</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {total === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            Chưa có dữ liệu đơn ứng tuyển.
+          </p>
+        ) : (
+          STATUS_ROWS.map((row) => {
+            const value = counts[row.key] ?? 0
+            const percent = total > 0 ? Math.round((value / total) * 100) : 0
+            return (
+              <div key={row.key}>
+                <div className="mb-1 flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">{row.label}</span>
+                  <span className="font-medium">
+                    {value} ({percent}%)
+                  </span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+                  <div
+                    className={cn('h-full rounded-full', row.className)}
+                    style={{ width: `${percent}%` }}
+                  />
+                </div>
+              </div>
+            )
+          })
+        )}
+      </CardContent>
+    </Card>
+  )
+}

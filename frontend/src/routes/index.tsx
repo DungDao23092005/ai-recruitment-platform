@@ -13,6 +13,7 @@ import { JobDetailPage } from '@/pages/jobs/JobDetailPage'
 import { ResumeUploadPage } from '@/features/candidate/pages/ResumeUploadPage'
 import { CandidatePortalPage } from '@/features/candidate/pages/CandidatePortalPage'
 import { CandidateRecommendationsPage } from '@/pages/candidate/CandidateRecommendationsPage'
+import { AdminDashboardPage } from '@/features/admin/pages/AdminDashboardPage'
 import { RecruiterPortalPage } from '@/features/recruiter/pages/RecruiterPortalPage'
 import { RecruiterCompanyPage } from '@/features/recruiter/pages/RecruiterCompanyPage'
 import { RecruiterJobsPage } from '@/features/recruiter/pages/RecruiterJobsPage'
@@ -159,6 +160,14 @@ export function AppRouter() {
               }
             />
           </Route>
+          <Route
+            path="/admin/dashboard"
+            element={
+              <RoleGuard allowedRoles={['admin']}>
+                <AdminDashboardPage />
+              </RoleGuard>
+            }
+          />
           <Route
             path="/admin/overview"
             element={

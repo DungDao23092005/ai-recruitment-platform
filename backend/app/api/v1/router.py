@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    admin,
     ai,
     applications,
     auth,
@@ -22,3 +23,4 @@ api_router.include_router(
     applications.router, prefix="/applications", tags=["Applications"]
 )
 api_router.include_router(ai.router, prefix="/ai", tags=["AI Engine"])
+api_router.include_router(admin.router, prefix="/admin", tags=["Admin"])
