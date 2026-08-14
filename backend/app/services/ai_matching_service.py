@@ -11,7 +11,7 @@ from app.ai.matching.matching_engine import MatchingEngine
 from app.ai.parsers.job_parser import JobParser
 from app.ai.parsers.resume_parser import ResumeParser
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
-from app.core.exceptions import EmptyDocumentError
+from app.core.exceptions import EmptyDocumentError, EntityNotFoundException
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_matching import (
@@ -119,7 +119,7 @@ class AIMatchingService:
     async def recommend_jobs_for_candidate(
         self,
         candidate_id: uuid.UUID,
-        parsed_resume: ParsedResumeSchema,
+        parsed_resume: ParsedResumeSchema | None = None,
         candidate_vector: list[float] | None = None,
         jobs_data: list[tuple[uuid.UUID, ParsedJobSchema, list[float] | None]]
         | None = None,
@@ -129,7 +129,25 @@ class AIMatchingService:
         effective_limit = max(1, min(100, limit))
 
         if candidate_vector is None:
-            candidate_vector = self.embedding_service.embed_resume(parsed_resume)
+            if parsed_resume is not None:
+                candidate_vector = self.embedding_service.embed_resume(
+                    parsed_resume
+                )
+            else:
+                retrieved = await self.vector_repository.retrieve_vector(
+                    collection_name="resumes",
+                    point_id=candidate_id,
+                )
+                if retrieved is None:
+                    raise EntityNotFoundException(
+                        f"Resume vector for Candidate {candidate_id} "
+                        "not found in vector repository"
+                    )
+                candidate_vector = retrieved["vector"]
+                skills = retrieved.get("payload", {}).get("skills", [])
+                parsed_resume = parsed_resume or ParsedResumeSchema(
+                    skills=skills
+                )
 
         recommendations: list[JobMatchRecommendation] = []
 
@@ -193,7 +211,7 @@ class AIMatchingService:
     async def recommend_candidates_for_job(
         self,
         job_id: uuid.UUID,
-        parsed_job: ParsedJobSchema,
+        parsed_job: ParsedJobSchema | None = None,
         job_vector: list[float] | None = None,
         candidates_data: list[
             tuple[uuid.UUID, ParsedResumeSchema, list[float] | None]
@@ -205,7 +223,23 @@ class AIMatchingService:
         effective_limit = max(1, min(100, limit))
 
         if job_vector is None:
-            job_vector = self.embedding_service.embed_job(parsed_job)
+            if parsed_job is not None:
+                job_vector = self.embedding_service.embed_job(parsed_job)
+            else:
+                retrieved = await self.vector_repository.retrieve_vector(
+                    collection_name="jobs",
+                    point_id=job_id,
+                )
+                if retrieved is None:
+                    raise EntityNotFoundException(
+                        f"Job vector for Job {job_id} "
+                        "not found in vector repository"
+                    )
+                job_vector = retrieved["vector"]
+                payload = retrieved.get("payload", {}) or {}
+                parsed_job = parsed_job or ParsedJobSchema(
+                    required_skills=payload.get("skills", [])
+                )
 
         recommendations: list[CandidateMatchRecommendation] = []
 

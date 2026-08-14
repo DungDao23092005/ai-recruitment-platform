@@ -11,7 +11,7 @@ from app.ai.interfaces.base_provider import BaseVectorRepository
 from app.ai.matching.matching_engine import MatchingEngine
 from app.ai.parsers.job_parser import JobParser
 from app.ai.parsers.resume_parser import ResumeParser
-from app.core.exceptions import EmptyDocumentError
+from app.core.exceptions import EmptyDocumentError, EntityNotFoundException
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_resume import ParsedResumeSchema
@@ -269,3 +269,365 @@ async def test_recommend_jobs_qdrant_vector_repository_fallback(
     ].search_similar.assert_awaited_once_with(
         collection_name="jobs", query_vector=[0.1] * 384, limit=5
     )
+
+
+@pytest.mark.asyncio
+async def test_recommend_jobs_calls_retrieve_vector_when_no_vector(
+    ai_service, mock_dependencies
+):
+    cand_id = uuid.uuid4()
+    target_job_id = uuid.uuid4()
+
+    retrieved = {
+        "id": str(cand_id),
+        "vector": [0.3] * 384,
+        "payload": {"candidate_id": str(cand_id), "skills": ["Python"]},
+    }
+    mock_dependencies["vector_repository"].retrieve_vector.return_value = (
+        retrieved
+    )
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(target_job_id),
+            "score": 0.8,
+            "payload": {"skills": ["Python"]},
+            "vector": [0.1] * 384,
+        }
+    ]
+    match_res = MatchResultSchema(
+        overall_score=80.0,
+        cosine_similarity=0.8,
+        skill_coverage_score=1.0,
+        experience_match_score=0.5,
+    )
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        match_res
+    )
+
+    recs = await ai_service.recommend_jobs_for_candidate(
+        candidate_id=cand_id,
+        limit=5,
+    )
+
+    mock_dependencies[
+        "vector_repository"
+    ].retrieve_vector.assert_awaited_once_with(
+        collection_name="resumes", point_id=cand_id
+    )
+    assert len(recs) == 1
+    assert recs[0].job_id == target_job_id
+
+
+@pytest.mark.asyncio
+async def test_recommend_jobs_retrieve_missing_raises_not_found(
+    ai_service, mock_dependencies
+):
+    cand_id = uuid.uuid4()
+    mock_dependencies["vector_repository"].retrieve_vector.return_value = None
+
+    with pytest.raises(EntityNotFoundException):
+        await ai_service.recommend_jobs_for_candidate(
+            candidate_id=cand_id, limit=5
+        )
+
+
+@pytest.mark.asyncio
+async def test_recommend_jobs_explicit_vector_skips_retrieve(
+    ai_service, mock_dependencies
+):
+    cand_id = uuid.uuid4()
+    target_job_id = uuid.uuid4()
+
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(target_job_id),
+            "score": 0.9,
+            "payload": {"skills": ["Python"]},
+            "vector": [0.1] * 384,
+        }
+    ]
+    match_res = MatchResultSchema(
+        overall_score=90.0,
+        cosine_similarity=0.9,
+        skill_coverage_score=1.0,
+        experience_match_score=1.0,
+    )
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        match_res
+    )
+
+    await ai_service.recommend_jobs_for_candidate(
+        candidate_id=cand_id,
+        candidate_vector=[0.7] * 384,
+        limit=5,
+    )
+
+    mock_dependencies["vector_repository"].retrieve_vector.assert_not_awaited()
+    mock_dependencies[
+        "vector_repository"
+    ].search_similar.assert_awaited_once_with(
+        collection_name="jobs",
+        query_vector=[0.7] * 384,
+        limit=5,
+    )
+
+
+@pytest.mark.asyncio
+async def test_recommend_jobs_explicit_parsed_resume_embeds_not_retrieves(
+    ai_service, mock_dependencies
+):
+    cand_id = uuid.uuid4()
+    target_job_id = uuid.uuid4()
+    parsed_resume = ParsedResumeSchema(skills=["Python"])
+
+    mock_dependencies["embedding_service"].embed_resume.return_value = [
+        0.4
+    ] * 384
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(target_job_id),
+            "score": 0.75,
+            "payload": {"skills": ["Python"]},
+            "vector": [0.1] * 384,
+        }
+    ]
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        MatchResultSchema(
+            overall_score=75.0,
+            cosine_similarity=0.75,
+            skill_coverage_score=1.0,
+            experience_match_score=0.5,
+        )
+    )
+
+    await ai_service.recommend_jobs_for_candidate(
+        candidate_id=cand_id,
+        parsed_resume=parsed_resume,
+        limit=5,
+    )
+
+    mock_dependencies["vector_repository"].retrieve_vector.assert_not_awaited()
+    mock_dependencies["embedding_service"].embed_resume.assert_called_once_with(
+        parsed_resume
+    )
+
+
+@pytest.mark.asyncio
+async def test_recommend_jobs_retrieve_payload_skills_build_parsed_resume(
+    ai_service, mock_dependencies
+):
+    cand_id = uuid.uuid4()
+    target_job_id = uuid.uuid4()
+
+    mock_dependencies["vector_repository"].retrieve_vector.return_value = {
+        "id": str(cand_id),
+        "vector": [0.3] * 384,
+        "payload": {"skills": ["Python", "SQL"]},
+    }
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(target_job_id),
+            "score": 0.8,
+            "payload": {"skills": ["Python"]},
+            "vector": [0.1] * 384,
+        }
+    ]
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        MatchResultSchema(
+            overall_score=80.0,
+            cosine_similarity=0.8,
+            skill_coverage_score=1.0,
+            experience_match_score=0.5,
+        )
+    )
+
+    recs = await ai_service.recommend_jobs_for_candidate(
+        candidate_id=cand_id, limit=5
+    )
+
+    resume_arg = mock_dependencies[
+        "matching_engine"
+    ].match_resume_to_job.call_args.kwargs["resume"]
+    assert resume_arg.skills == ["Python", "SQL"]
+
+
+@pytest.mark.asyncio
+async def test_recommend_jobs_retrieve_payload_preserves_parsed_resume(
+    ai_service, mock_dependencies
+):
+    cand_id = uuid.uuid4()
+    target_job_id = uuid.uuid4()
+    parsed_resume = ParsedResumeSchema(
+        full_name="Jane",
+        skills=["Python", "SQL"],
+        total_years_experience=4.0,
+    )
+
+    mock_dependencies["vector_repository"].retrieve_vector.return_value = {
+        "id": str(cand_id),
+        "vector": [0.3] * 384,
+        "payload": {"skills": ["Python", "SQL"]},
+    }
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(target_job_id),
+            "score": 0.8,
+            "payload": {"skills": ["Python"]},
+            "vector": [0.1] * 384,
+        }
+    ]
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        MatchResultSchema(
+            overall_score=80.0,
+            cosine_similarity=0.8,
+            skill_coverage_score=1.0,
+            experience_match_score=0.5,
+        )
+    )
+
+    recs = await ai_service.recommend_jobs_for_candidate(
+        candidate_id=cand_id,
+        parsed_resume=parsed_resume,
+        limit=5,
+    )
+
+    assert len(recs) == 1
+    resume_arg = mock_dependencies[
+        "matching_engine"
+    ].match_resume_to_job.call_args.kwargs["resume"]
+    assert resume_arg is parsed_resume
+    assert resume_arg.total_years_experience == 4.0
+
+
+@pytest.mark.asyncio
+async def test_recommend_candidates_calls_retrieve_vector_when_no_vector(
+    ai_service, mock_dependencies
+):
+    job_id = uuid.uuid4()
+    target_cand_id = uuid.uuid4()
+
+    mock_dependencies["vector_repository"].retrieve_vector.return_value = {
+        "id": str(job_id),
+        "vector": [0.2] * 384,
+        "payload": {"job_id": str(job_id), "skills": ["Python"]},
+    }
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(target_cand_id),
+            "score": 0.85,
+            "payload": {"candidate_id": str(target_cand_id), "skills": ["Python"]},
+            "vector": [0.1] * 384,
+        }
+    ]
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        MatchResultSchema(
+            overall_score=85.0,
+            cosine_similarity=0.85,
+            skill_coverage_score=1.0,
+            experience_match_score=0.5,
+        )
+    )
+
+    recs = await ai_service.recommend_candidates_for_job(
+        job_id=job_id, limit=5
+    )
+
+    mock_dependencies[
+        "vector_repository"
+    ].retrieve_vector.assert_awaited_once_with(
+        collection_name="jobs", point_id=job_id
+    )
+    assert len(recs) == 1
+    assert recs[0].candidate_id == target_cand_id
+
+
+@pytest.mark.asyncio
+async def test_recommend_candidates_retrieve_missing_raises_not_found(
+    ai_service, mock_dependencies
+):
+    job_id = uuid.uuid4()
+    mock_dependencies["vector_repository"].retrieve_vector.return_value = None
+
+    with pytest.raises(EntityNotFoundException):
+        await ai_service.recommend_candidates_for_job(
+            job_id=job_id, limit=5
+        )
+
+
+@pytest.mark.asyncio
+async def test_recommend_candidates_explicit_vector_skips_retrieve(
+    ai_service, mock_dependencies
+):
+    job_id = uuid.uuid4()
+    target_cand_id = uuid.uuid4()
+
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(target_cand_id),
+            "score": 0.8,
+            "payload": {"candidate_id": str(target_cand_id), "skills": ["Python"]},
+            "vector": [0.1] * 384,
+        }
+    ]
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        MatchResultSchema(
+            overall_score=80.0,
+            cosine_similarity=0.8,
+            skill_coverage_score=1.0,
+            experience_match_score=0.5,
+        )
+    )
+
+    await ai_service.recommend_candidates_for_job(
+        job_id=job_id,
+        job_vector=[0.6] * 384,
+        limit=5,
+    )
+
+    mock_dependencies["vector_repository"].retrieve_vector.assert_not_awaited()
+    mock_dependencies[
+        "vector_repository"
+    ].search_similar.assert_awaited_once_with(
+        collection_name="resumes",
+        query_vector=[0.6] * 384,
+        limit=5,
+    )
+
+
+@pytest.mark.asyncio
+async def test_recommend_candidates_retrieve_payload_skills_build_parsed_job(
+    ai_service, mock_dependencies
+):
+    job_id = uuid.uuid4()
+    target_cand_id = uuid.uuid4()
+
+    mock_dependencies["vector_repository"].retrieve_vector.return_value = {
+        "id": str(job_id),
+        "vector": [0.2] * 384,
+        "payload": {"job_id": str(job_id), "skills": ["Python"]},
+    }
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(target_cand_id),
+            "score": 0.8,
+            "payload": {"candidate_id": str(target_cand_id), "skills": ["Python"]},
+            "vector": [0.1] * 384,
+        }
+    ]
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        MatchResultSchema(
+            overall_score=80.0,
+            cosine_similarity=0.8,
+            skill_coverage_score=1.0,
+            experience_match_score=0.5,
+        )
+    )
+
+    recs = await ai_service.recommend_candidates_for_job(
+        job_id=job_id, limit=5
+    )
+
+    job_arg = mock_dependencies[
+        "matching_engine"
+    ].match_resume_to_job.call_args.kwargs["job"]
+    assert job_arg.required_skills == ["Python"]

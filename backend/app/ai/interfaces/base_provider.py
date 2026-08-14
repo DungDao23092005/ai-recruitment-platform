@@ -59,6 +59,22 @@ class BaseVectorRepository(ABC):
         pass
 
     @abstractmethod
+    async def retrieve_vector(
+        self,
+        collection_name: str,
+        point_id: str | uuid.UUID,
+    ) -> dict[str, Any] | None:
+        """Retrieve a vector point by ID together with vector data
+        and payload metadata.
+
+        Returns:
+            A dict of the form ``{"id": str, "vector": list[float],
+            "payload": dict}`` when the point exists, or ``None`` when
+            it does not.
+        """
+        pass
+
+    @abstractmethod
     async def search_similar(
         self,
         collection_name: str,

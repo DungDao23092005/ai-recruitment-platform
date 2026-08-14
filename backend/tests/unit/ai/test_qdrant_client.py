@@ -284,3 +284,151 @@ def test_soft_delete_filter_definition():
     assert SOFT_DELETE_FILTER.must_not == [
         FieldCondition(key="is_deleted", match=MatchValue(value=True))
     ]
+
+
+def _make_record(point_id: str, vector: list[float], payload: dict):
+    return SimpleNamespace(id=point_id, vector=vector, payload=payload)
+
+
+@pytest.mark.asyncio
+async def test_retrieve_existing_vector(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    vector = _vector()
+    payload = {"candidate_id": "c-1", "skills": ["Python"]}
+    mock_client.retrieve.return_value = [
+        _make_record("point-1", vector, payload)
+    ]
+
+    result = await repo.retrieve_vector("resumes", "point-1")
+
+    assert result == {"id": "point-1", "vector": vector, "payload": payload}
+
+
+@pytest.mark.asyncio
+async def test_retrieve_uuid_point_id(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    point_id = uuid.uuid4()
+    mock_client.retrieve.return_value = [
+        _make_record(str(point_id), _vector(), {})
+    ]
+
+    result = await repo.retrieve_vector("resumes", point_id)
+
+    assert result["id"] == str(point_id)
+
+
+@pytest.mark.asyncio
+async def test_retrieve_string_point_id(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    mock_client.retrieve.return_value = [
+        _make_record("job-9", _vector(), {})
+    ]
+
+    result = await repo.retrieve_vector("jobs", "job-9")
+
+    assert result["id"] == "job-9"
+
+
+@pytest.mark.asyncio
+async def test_retrieve_missing_point_returns_none(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    mock_client.retrieve.return_value = []
+
+    result = await repo.retrieve_vector("resumes", "missing-1")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_retrieve_uses_correct_collection(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    mock_client.retrieve.return_value = [_make_record("point-1", _vector(), {})]
+
+    await repo.retrieve_vector("jobs", "point-1")
+
+    mock_client.retrieve.assert_awaited_once()
+    assert mock_client.retrieve.call_args.kwargs["collection_name"] == "jobs"
+
+
+@pytest.mark.asyncio
+async def test_retrieve_uses_ids_list(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    mock_client.retrieve.return_value = [_make_record("point-1", _vector(), {})]
+
+    await repo.retrieve_vector("resumes", "point-1")
+
+    assert mock_client.retrieve.call_args.kwargs["ids"] == ["point-1"]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_with_vectors_true(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    mock_client.retrieve.return_value = [_make_record("p", _vector(), {})]
+
+    await repo.retrieve_vector("resumes", "p")
+
+    assert mock_client.retrieve.call_args.kwargs["with_vectors"] is True
+
+
+@pytest.mark.asyncio
+async def test_retrieve_with_payload_true(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    mock_client.retrieve.return_value = [_make_record("p", _vector(), {})]
+
+    await repo.retrieve_vector("resumes", "p")
+
+    assert mock_client.retrieve.call_args.kwargs["with_payload"] is True
+
+
+@pytest.mark.asyncio
+async def test_retrieve_failure_maps_to_ai_error(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    mock_client.retrieve.side_effect = RuntimeError("connection refused")
+
+    with pytest.raises(AIError):
+        await repo.retrieve_vector("resumes", "point-1")
+
+    error_message = None
+    try:
+        await repo.retrieve_vector("resumes", "point-1")
+    except AIError as exc:
+        error_message = str(exc)
+    assert "connection refused" not in (error_message or "")
+    assert "resumes" in (error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_retrieve_payload_preserved(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    payload = {"skills": ["Python", "SQL"], "is_deleted": False}
+    mock_client.retrieve.return_value = [
+        _make_record("point-1", _vector(), payload)
+    ]
+
+    result = await repo.retrieve_vector("resumes", "point-1")
+
+    assert result["payload"] == payload
+
+
+@pytest.mark.asyncio
+async def test_retrieve_vector_preserved(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    vector = [0.5, 0.25, 0.125]
+    mock_client.retrieve.return_value = [
+        _make_record("point-1", vector, {"k": "v"})
+    ]
+
+    result = await repo.retrieve_vector("resumes", "point-1")
+
+    assert result["vector"] == vector

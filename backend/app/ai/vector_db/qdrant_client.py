@@ -162,6 +162,38 @@ class QdrantVectorRepository(BaseVectorRepository):
                 f"'{collection_name}'"
             ) from exc
 
+    async def retrieve_vector(
+        self,
+        collection_name: str,
+        point_id: str | uuid.UUID,
+    ) -> dict[str, Any] | None:
+        """Retrieve a vector point by ID together with vector data and payload."""
+        serialized_id = self._serialize_point_id(point_id)
+        try:
+            points = await self.client.retrieve(
+                collection_name=collection_name,
+                ids=[serialized_id],
+                with_vectors=True,
+                with_payload=True,
+            )
+        except AIError:
+            raise
+        except Exception as exc:
+            raise AIError(
+                f"Failed to retrieve vector from collection "
+                f"'{collection_name}'"
+            ) from exc
+
+        if not points:
+            return None
+
+        point = points[0]
+        return {
+            "id": serialized_id,
+            "vector": point.vector,
+            "payload": point.payload or {},
+        }
+
     async def search_similar(
         self,
         collection_name: str,
