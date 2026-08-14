@@ -53,6 +53,21 @@ export function Navbar() {
               {link.label}
             </NavLink>
           ))}
+          {isAuthenticated && currentUser ? (
+            <NavLink
+              to="/ai/chat"
+              className={({ isActive }) =>
+                cn(
+                  'rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                  isActive
+                    ? 'bg-secondary text-secondary-foreground'
+                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                )
+              }
+            >
+              Trợ lý AI
+            </NavLink>
+          ) : null}
           {isAuthenticated && currentUser?.role === 'candidate' ? (
             <>
               <NavLink

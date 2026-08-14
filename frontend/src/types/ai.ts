@@ -92,3 +92,31 @@ export interface SemanticSearchParams {
   limit?: number
   score_threshold?: number
 }
+
+export type ChatRole = 'user' | 'assistant'
+
+export interface ChatMessage {
+  role: ChatRole
+  content: string
+}
+
+export type ChatSourceType = 'job' | 'resume'
+
+export interface ChatSource {
+  source_type: ChatSourceType
+  entity_id: string
+  title: string
+  relevance_score: number
+  skills: string[]
+}
+
+export interface ChatRequest {
+  message: string
+  history?: ChatMessage[]
+}
+
+export interface ChatResponse {
+  reply: string
+  sources: ChatSource[]
+  suggested_followups: string[]
+}

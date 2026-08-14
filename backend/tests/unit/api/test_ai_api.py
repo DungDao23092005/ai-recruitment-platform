@@ -12,6 +12,7 @@ from app.api.deps import get_current_user
 from app.api.v1.endpoints.ai import (
     _get_ai_service,
     _get_explainable_ai_service,
+    _get_rag_chat_service,
     _get_semantic_search_service,
 )
 from app.core.exceptions import (
@@ -73,13 +74,28 @@ def mock_search_service():
 
 
 @pytest.fixture
-def client(mock_service, mock_explain_service, mock_search_service):
+def mock_rag_chat_service():
+    service = MagicMock()
+    service.chat = AsyncMock()
+    return service
+
+
+@pytest.fixture
+def client(
+    mock_service,
+    mock_explain_service,
+    mock_search_service,
+    mock_rag_chat_service,
+):
     app.dependency_overrides[_get_ai_service] = lambda: mock_service
     app.dependency_overrides[_get_explainable_ai_service] = (
         lambda: mock_explain_service
     )
     app.dependency_overrides[_get_semantic_search_service] = (
         lambda: mock_search_service
+    )
+    app.dependency_overrides[_get_rag_chat_service] = (
+        lambda: mock_rag_chat_service
     )
     with TestClient(app) as c:
         yield c
@@ -667,3 +683,155 @@ class TestSearchCandidates:
         )
 
         assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+
+
+def _chat_response_payload():
+    return {
+        "reply": "Dựa trên dữ kiện được cung cấp, bạn nên tập trung vào Python.",
+        "sources": [
+            {
+                "source_type": "job",
+                "entity_id": str(uuid.uuid4()),
+                "title": "Job abc12345",
+                "relevance_score": 0.87,
+                "skills": ["Python", "FastAPI"],
+            }
+        ],
+        "suggested_followups": ["Lộ trình AI Engineer?"],
+    }
+
+
+class TestChat:
+    def test_chat_success(self, active_client, mock_rag_chat_service):
+        mock_rag_chat_service.chat.return_value = _chat_response_payload()
+
+        resp = active_client.post(
+            "/api/v1/ai/chat",
+            json={"message": "Tư vấn lộ trình AI Engineer"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["reply"].startswith("Dựa trên dữ kiện")
+        assert body["sources"][0]["source_type"] == "job"
+        assert body["suggested_followups"] == ["Lộ trình AI Engineer?"]
+        mock_rag_chat_service.chat.assert_called_once()
+
+    def test_chat_passes_history(self, active_client, mock_rag_chat_service):
+        mock_rag_chat_service.chat.return_value = _chat_response_payload()
+
+        resp = active_client.post(
+            "/api/v1/ai/chat",
+            json={
+                "message": "Tiếp tục tư vấn",
+                "history": [
+                    {"role": "user", "content": "Xin chào"},
+                    {"role": "assistant", "content": "Chào bạn!"},
+                ],
+            },
+        )
+
+        assert resp.status_code == 200
+        kwargs = mock_rag_chat_service.chat.call_args.kwargs
+        assert kwargs["message"] == "Tiếp tục tư vấn"
+        assert len(kwargs["history"]) == 2
+        assert kwargs["history"][0].role == "user"
+
+    def test_chat_unauthorized(self, unauthorized_client):
+        resp = unauthorized_client.post(
+            "/api/v1/ai/chat", json={"message": "Xin chào"}
+        )
+
+        assert resp.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_chat_empty_message_rejected(self, active_client):
+        resp = active_client.post(
+            "/api/v1/ai/chat", json={"message": ""}
+        )
+
+        assert resp.status_code == 422
+
+    def test_chat_missing_message_rejected(self, active_client):
+        resp = active_client.post("/api/v1/ai/chat", json={})
+
+        assert resp.status_code == 422
+
+    def test_chat_too_long_message_rejected(self, active_client):
+        resp = active_client.post(
+            "/api/v1/ai/chat", json={"message": "a" * 2001}
+        )
+
+        assert resp.status_code == 422
+
+    def test_chat_history_over_limit_rejected(self, active_client):
+        resp = active_client.post(
+            "/api/v1/ai/chat",
+            json={
+                "message": "Xin chào",
+                "history": [
+                    {"role": "user", "content": "x"}
+                    for _ in range(11)
+                ],
+            },
+        )
+
+        assert resp.status_code == 422
+
+    def test_chat_empty_document_maps_to_400(
+        self, active_client, mock_rag_chat_service
+    ):
+        mock_rag_chat_service.chat.side_effect = EmptyDocumentError(
+            "Chat message cannot be empty"
+        )
+
+        resp = active_client.post(
+            "/api/v1/ai/chat", json={"message": "Xin chào"}
+        )
+
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_chat_invalid_document_maps_to_400(
+        self, active_client, mock_rag_chat_service
+    ):
+        mock_rag_chat_service.chat.side_effect = InvalidDocumentError(
+            "Gemini API request failed"
+        )
+
+        resp = active_client.post(
+            "/api/v1/ai/chat", json={"message": "Xin chào"}
+        )
+
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_chat_ai_failure_maps_to_502(
+        self, active_client, mock_rag_chat_service
+    ):
+        mock_rag_chat_service.chat.side_effect = AIError("Qdrant down")
+
+        resp = active_client.post(
+            "/api/v1/ai/chat", json={"message": "Xin chào"}
+        )
+
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+
+    def test_chat_accepts_candidate_role(
+        self, candidate_client, mock_rag_chat_service
+    ):
+        mock_rag_chat_service.chat.return_value = _chat_response_payload()
+
+        resp = candidate_client.post(
+            "/api/v1/ai/chat", json={"message": "Xin chào"}
+        )
+
+        assert resp.status_code == 200
+
+    def test_chat_accepts_recruiter_role(
+        self, recruiter_client, mock_rag_chat_service
+    ):
+        mock_rag_chat_service.chat.return_value = _chat_response_payload()
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/chat", json={"message": "Xin chào"}
+        )
+
+        assert resp.status_code == 200

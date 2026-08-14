@@ -1,6 +1,8 @@
 import apiClient from '@/api/client'
 import type {
   CandidateMatchRecommendation,
+  ChatRequest,
+  ChatResponse,
   ExplainMatchRequest,
   ExplainMatchResponse,
   JobMatchRecommendation,
@@ -92,4 +94,10 @@ export async function searchCandidates(
       },
     },
   )
+}
+
+export async function sendChatMessage(
+  data: ChatRequest,
+): Promise<ChatResponse> {
+  return apiClient.post<ChatResponse, ChatResponse>('/ai/chat', data)
 }

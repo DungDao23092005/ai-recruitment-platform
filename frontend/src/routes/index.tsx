@@ -22,6 +22,7 @@ import { JobCreatePage } from '@/features/recruiter/pages/JobCreatePage'
 import { JobApplicantsPage } from '@/features/recruiter/pages/JobApplicantsPage'
 import { JobRecommendationsPage } from '@/features/recruiter/pages/JobRecommendationsPage'
 import { SemanticCandidateSearchPage } from '@/features/recruiter/pages/SemanticCandidateSearchPage'
+import { AIChatPage } from '@/pages/ai/AIChatPage'
 import { ProtectedRoute } from '@/components/common/ProtectedRoute'
 import { RoleGuard } from '@/components/common/RoleGuard'
 import type { UserRole } from '@/types/auth'
@@ -76,6 +77,14 @@ export function AppRouter() {
               <ProtectedByRole allowedRoles={['candidate', 'recruiter', 'admin']}>
                 <SemanticJobSearchPage />
               </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/ai/chat"
+            element={
+              <RoleGuard allowedRoles={['candidate', 'recruiter', 'admin']}>
+                <AIChatPage />
+              </RoleGuard>
             }
           />
           <Route

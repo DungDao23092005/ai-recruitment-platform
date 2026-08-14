@@ -23,6 +23,7 @@ from app.core.exceptions import (
     InvalidDocumentError,
 )
 from app.models import User
+from app.schemas.ai_chat import ChatRequest, ChatResponse
 from app.schemas.ai_explanation import ExplainMatchRequest, ExplainMatchResponse
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
@@ -34,6 +35,7 @@ from app.schemas.ai_resume import ParsedResumeSchema
 from app.schemas.ai_search import SemanticSearchResult
 from app.services.ai_matching_service import AIMatchingService
 from app.services.explainable_ai_service import ExplainableAIService
+from app.services.rag_chat_service import RAGChatService
 from app.services.semantic_search_service import SemanticSearchService
 
 router = APIRouter()
@@ -58,6 +60,10 @@ def _get_explainable_ai_service() -> ExplainableAIService:
 
 def _get_semantic_search_service() -> SemanticSearchService:
     return SemanticSearchService()
+
+
+def _get_rag_chat_service() -> RAGChatService:
+    return RAGChatService()
 
 
 @router.post(
@@ -206,6 +212,39 @@ async def recommend_jobs_for_candidate(
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/chat",
+    response_model=ChatResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def ai_chat(
+    data: ChatRequest,
+    current_user: User = Depends(get_current_active_user),
+    service: RAGChatService = Depends(_get_rag_chat_service),
+) -> ChatResponse:
+    try:
+        return await service.chat(
+            message=data.message,
+            user_role=current_user.role,
+            history=data.history,
+        )
+    except EmptyDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except InvalidDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except AIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
 
