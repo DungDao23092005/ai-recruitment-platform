@@ -1,4 +1,10 @@
-import { Outlet } from 'react-router-dom'
+import { Link, Outlet } from 'react-router-dom'
+
+const SIDEBAR_LINKS = [
+  { to: '/', label: 'Home' },
+  { to: '/jobs', label: 'Việc làm' },
+  { to: '/health', label: 'Health' },
+]
 
 export function DashboardLayout() {
   return (
@@ -8,14 +14,20 @@ export function DashboardLayout() {
           Dashboard
         </div>
         <nav className="flex flex-col gap-1 p-2" aria-label="Dashboard">
-          <span className="px-3 py-2 text-sm text-muted-foreground">
-            Navigation coming soon
-          </span>
+          {SIDEBAR_LINKS.map((link) => (
+            <Link
+              key={link.to}
+              to={link.to}
+              className="rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              {link.label}
+            </Link>
+          ))}
         </nav>
       </aside>
       <div className="flex flex-1 flex-col">
         <header className="flex h-14 items-center border-b px-6">
-          <span className="text-sm font-medium">Topbar</span>
+          <span className="text-sm font-medium">AI Recruitment Platform</span>
         </header>
         <main className="flex-1 p-6">
           <Outlet />
