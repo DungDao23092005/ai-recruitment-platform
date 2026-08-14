@@ -2,8 +2,23 @@ import { Link, NavLink } from 'react-router-dom'
 import { Sparkles } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { NAV_LINKS } from '@/routes'
+import { useAuth } from '@/contexts/AuthContext'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { USER_ROLE_LABELS } from '@/types/auth'
 
 export function Navbar() {
+  const { currentUser, isAuthenticated, isLoading, logout } = useAuth()
+
+  const profilePath =
+    currentUser?.role === 'candidate'
+      ? '/candidate/profile'
+      : currentUser?.role === 'recruiter'
+        ? '/recruiter/profile'
+        : currentUser?.role === 'admin'
+          ? '/admin/overview'
+          : '/'
+
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <nav
@@ -20,7 +35,8 @@ export function Navbar() {
           </span>
           <span>AI Recruitment</span>
         </Link>
-        <div className="flex items-center gap-1">
+
+        <div className="hidden items-center gap-1 md:flex">
           {NAV_LINKS.map((link) => (
             <NavLink
               key={link.to}
@@ -37,6 +53,45 @@ export function Navbar() {
               {link.label}
             </NavLink>
           ))}
+        </div>
+
+        <div className="flex items-center gap-2">
+          {isLoading ? null : isAuthenticated && currentUser ? (
+            <>
+              <Badge variant="ai-gradient" className="hidden sm:inline-flex">
+                {USER_ROLE_LABELS[currentUser.role]}
+              </Badge>
+              <span className="hidden text-sm text-muted-foreground md:inline">
+                {currentUser.email}
+              </span>
+              <Link to={profilePath}>
+                <Button variant="ghost" size="sm">
+                  Profile
+                </Button>
+              </Link>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => logout()}
+                type="button"
+              >
+                Logout
+              </Button>
+            </>
+          ) : (
+            <>
+              <Link to="/login">
+                <Button variant="ghost" size="sm">
+                  Login
+                </Button>
+              </Link>
+              <Link to="/register">
+                <Button variant="default" size="sm">
+                  Register
+                </Button>
+              </Link>
+            </>
+          )}
         </div>
       </nav>
     </header>

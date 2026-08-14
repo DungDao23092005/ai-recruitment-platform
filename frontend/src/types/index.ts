@@ -1,16 +1,12 @@
 export type { HealthStatus } from '@/api/endpoints'
-
-export interface UserRole {
-  value: string
-  label: string
-}
+export type { UserRole } from '@/types/auth'
 
 export interface NavLink {
   to: string
   label: string
 }
 
-export const USER_ROLES: UserRole[] = [
+export const USER_ROLES: { value: string; label: string }[] = [
   { value: 'candidate', label: 'Candidate' },
   { value: 'recruiter', label: 'Recruiter' },
   { value: 'admin', label: 'Admin' },
