@@ -54,19 +54,34 @@ export function Navbar() {
             </NavLink>
           ))}
           {isAuthenticated && currentUser?.role === 'candidate' ? (
-            <NavLink
-              to="/candidate/cv-upload"
-              className={({ isActive }) =>
-                cn(
-                  'rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                  isActive
-                    ? 'bg-secondary text-secondary-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-                )
-              }
-            >
-              Upload CV
-            </NavLink>
+            <>
+              <NavLink
+                to="/candidate/recommendations"
+                className={({ isActive }) =>
+                  cn(
+                    'rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                    isActive
+                      ? 'bg-secondary text-secondary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  )
+                }
+              >
+                Gợi ý việc làm
+              </NavLink>
+              <NavLink
+                to="/candidate/cv-upload"
+                className={({ isActive }) =>
+                  cn(
+                    'rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                    isActive
+                      ? 'bg-secondary text-secondary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  )
+                }
+              >
+                Upload CV
+              </NavLink>
+            </>
           ) : null}
           {isAuthenticated &&
           (currentUser?.role === 'recruiter' ||

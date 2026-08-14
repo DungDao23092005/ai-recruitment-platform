@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { MapPin, Building, Users } from 'lucide-react'
+import { MapPin, Building, Users, Sparkles } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -48,7 +48,16 @@ export function RecruiterJobCard({ job }: RecruiterJobCardProps) {
           </span>
         </div>
       </CardContent>
-      <CardFooter>
+      <CardFooter className="flex-col gap-2">
+        <Link
+          to={`/recruiter/jobs/${job.id}/recommendations`}
+          className="w-full"
+        >
+          <Button className="w-full">
+            <Sparkles className="h-4 w-4" aria-hidden="true" />
+            Gợi ý Ứng viên AI
+          </Button>
+        </Link>
         <Link to={`/recruiter/jobs/${job.id}/applicants`} className="w-full">
           <Button variant="outline" className="w-full">
             <Users className="h-4 w-4" aria-hidden="true" />

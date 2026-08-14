@@ -1,6 +1,7 @@
 import { Routes, Route } from 'react-router-dom'
 import { MainLayout } from '@/layouts/MainLayout'
 import { AuthLayout } from '@/layouts/AuthLayout'
+import { DashboardLayout } from '@/layouts/DashboardLayout'
 import { HomePage } from '@/pages/HomePage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { HealthCheckPage } from '@/pages/HealthCheckPage'
@@ -11,11 +12,13 @@ import { JobsPage } from '@/pages/jobs/JobsPage'
 import { JobDetailPage } from '@/pages/jobs/JobDetailPage'
 import { ResumeUploadPage } from '@/features/candidate/pages/ResumeUploadPage'
 import { CandidatePortalPage } from '@/features/candidate/pages/CandidatePortalPage'
+import { CandidateRecommendationsPage } from '@/pages/candidate/CandidateRecommendationsPage'
 import { RecruiterPortalPage } from '@/features/recruiter/pages/RecruiterPortalPage'
 import { RecruiterCompanyPage } from '@/features/recruiter/pages/RecruiterCompanyPage'
 import { RecruiterJobsPage } from '@/features/recruiter/pages/RecruiterJobsPage'
 import { JobCreatePage } from '@/features/recruiter/pages/JobCreatePage'
 import { JobApplicantsPage } from '@/features/recruiter/pages/JobApplicantsPage'
+import { JobRecommendationsPage } from '@/features/recruiter/pages/JobRecommendationsPage'
 import { ProtectedRoute } from '@/components/common/ProtectedRoute'
 import { RoleGuard } from '@/components/common/RoleGuard'
 import type { UserRole } from '@/types/auth'
@@ -88,6 +91,16 @@ export function AppRouter() {
               </ProtectedByRole>
             }
           />
+          <Route element={<DashboardLayout />}>
+            <Route
+              path="/candidate/recommendations"
+              element={
+                <ProtectedByRole allowedRoles={['candidate']}>
+                  <CandidateRecommendationsPage />
+                </ProtectedByRole>
+              }
+            />
+          </Route>
           <Route
             path="/recruiter/profile"
             element={
@@ -136,6 +149,16 @@ export function AppRouter() {
               </ProtectedByRole>
             }
           />
+          <Route element={<DashboardLayout />}>
+            <Route
+              path="/recruiter/jobs/:id/recommendations"
+              element={
+                <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                  <JobRecommendationsPage />
+                </ProtectedByRole>
+              }
+            />
+          </Route>
           <Route
             path="/admin/overview"
             element={

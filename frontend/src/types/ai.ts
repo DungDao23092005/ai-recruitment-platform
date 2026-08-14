@@ -29,3 +29,39 @@ export interface ParsedResume {
   certifications: string[]
   languages: string[]
 }
+
+export interface ParsedJob {
+  title: string | null
+  summary: string | null
+  required_skills: string[]
+  preferred_skills: string[]
+  minimum_years_experience: number | null
+  education_level: string | null
+}
+
+export interface MatchResult {
+  overall_score: number
+  cosine_similarity: number
+  skill_coverage_score: number
+  experience_match_score: number
+  matching_skills: string[]
+  skill_gap: string[]
+  match_reasons: string[]
+}
+
+export interface JobMatchRecommendation {
+  job_id: string
+  parsed_job: ParsedJob | null
+  match_result: MatchResult
+}
+
+export interface CandidateMatchRecommendation {
+  candidate_id: string
+  parsed_resume: ParsedResume | null
+  match_result: MatchResult
+}
+
+export interface MatchRequest {
+  parsed_resume: ParsedResume
+  parsed_job: ParsedJob
+}
