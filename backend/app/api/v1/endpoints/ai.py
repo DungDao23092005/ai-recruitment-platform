@@ -25,6 +25,10 @@ from app.core.exceptions import (
 from app.models import User
 from app.schemas.ai_chat import ChatRequest, ChatResponse
 from app.schemas.ai_explanation import ExplainMatchRequest, ExplainMatchResponse
+from app.schemas.ai_interview import (
+    GenerateInterviewQuestionsRequest,
+    GenerateInterviewQuestionsResponse,
+)
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_matching import (
@@ -35,6 +39,7 @@ from app.schemas.ai_resume import ParsedResumeSchema
 from app.schemas.ai_search import SemanticSearchResult
 from app.services.ai_matching_service import AIMatchingService
 from app.services.explainable_ai_service import ExplainableAIService
+from app.services.interview_generator_service import InterviewGeneratorService
 from app.services.rag_chat_service import RAGChatService
 from app.services.semantic_search_service import SemanticSearchService
 
@@ -64,6 +69,10 @@ def _get_semantic_search_service() -> SemanticSearchService:
 
 def _get_rag_chat_service() -> RAGChatService:
     return RAGChatService()
+
+
+def _get_interview_generator_service() -> InterviewGeneratorService:
+    return InterviewGeneratorService()
 
 
 @router.post(
@@ -183,6 +192,37 @@ async def explain_match(
     except InvalidDocumentError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/generate-interview-questions",
+    response_model=GenerateInterviewQuestionsResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def generate_interview_questions(
+    data: GenerateInterviewQuestionsRequest,
+    current_user: User = Depends(require_recruiter),
+    service: InterviewGeneratorService = Depends(
+        _get_interview_generator_service
+    ),
+) -> GenerateInterviewQuestionsResponse:
+    try:
+        return await service.generate_questions(data)
+    except EmptyDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except InvalidDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except AIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
 

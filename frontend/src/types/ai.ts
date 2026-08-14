@@ -120,3 +120,42 @@ export interface ChatResponse {
   sources: ChatSource[]
   suggested_followups: string[]
 }
+
+export type QuestionCategory =
+  | 'technical'
+  | 'behavioral'
+  | 'experience'
+  | 'skill_gap'
+
+export type QuestionDifficulty = 'easy' | 'medium' | 'hard'
+
+export type QuestionGenerationDifficulty =
+  | 'easy'
+  | 'medium'
+  | 'hard'
+  | 'mixed'
+
+export interface InterviewQuestion {
+  question: string
+  category: QuestionCategory
+  difficulty: QuestionDifficulty
+  target_skill_or_topic: string
+  evaluation_criteria: string
+  sample_answer_points: string[]
+}
+
+export interface GenerateInterviewQuestionsRequest {
+  job: ParsedJob
+  candidate?: ParsedResume | null
+  match_result?: MatchResult | null
+  num_questions: number
+  difficulty: QuestionGenerationDifficulty
+  focus_areas: string[]
+}
+
+export interface GenerateInterviewQuestionsResponse {
+  job_title: string
+  candidate_title: string | null
+  total_questions: number
+  questions: InterviewQuestion[]
+}

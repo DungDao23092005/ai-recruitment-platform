@@ -5,6 +5,8 @@ import type {
   ChatResponse,
   ExplainMatchRequest,
   ExplainMatchResponse,
+  GenerateInterviewQuestionsRequest,
+  GenerateInterviewQuestionsResponse,
   JobMatchRecommendation,
   MatchRequest,
   MatchResult,
@@ -100,4 +102,13 @@ export async function sendChatMessage(
   data: ChatRequest,
 ): Promise<ChatResponse> {
   return apiClient.post<ChatResponse, ChatResponse>('/ai/chat', data)
+}
+
+export async function generateInterviewQuestions(
+  data: GenerateInterviewQuestionsRequest,
+): Promise<GenerateInterviewQuestionsResponse> {
+  return apiClient.post<
+    GenerateInterviewQuestionsResponse,
+    GenerateInterviewQuestionsResponse
+  >('/ai/generate-interview-questions', data)
 }

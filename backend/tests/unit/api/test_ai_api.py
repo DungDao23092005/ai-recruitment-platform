@@ -12,6 +12,7 @@ from app.api.deps import get_current_user
 from app.api.v1.endpoints.ai import (
     _get_ai_service,
     _get_explainable_ai_service,
+    _get_interview_generator_service,
     _get_rag_chat_service,
     _get_semantic_search_service,
 )
@@ -81,11 +82,19 @@ def mock_rag_chat_service():
 
 
 @pytest.fixture
+def mock_interview_generator_service():
+    service = MagicMock()
+    service.generate_questions = AsyncMock()
+    return service
+
+
+@pytest.fixture
 def client(
     mock_service,
     mock_explain_service,
     mock_search_service,
     mock_rag_chat_service,
+    mock_interview_generator_service,
 ):
     app.dependency_overrides[_get_ai_service] = lambda: mock_service
     app.dependency_overrides[_get_explainable_ai_service] = (
@@ -96,6 +105,9 @@ def client(
     )
     app.dependency_overrides[_get_rag_chat_service] = (
         lambda: mock_rag_chat_service
+    )
+    app.dependency_overrides[_get_interview_generator_service] = (
+        lambda: mock_interview_generator_service
     )
     with TestClient(app) as c:
         yield c
@@ -835,3 +847,202 @@ class TestChat:
         )
 
         assert resp.status_code == 200
+
+
+def _interview_question_payload():
+    return {
+        "question": "Explain how you handle React state.",
+        "category": "technical",
+        "difficulty": "medium",
+        "target_skill_or_topic": "React",
+        "evaluation_criteria": "Demonstrates understanding of state management.",
+        "sample_answer_points": ["Mentions hooks", "Explains trade-offs"],
+    }
+
+
+def _interview_response_payload():
+    return {
+        "job_title": "Senior Frontend Engineer",
+        "candidate_title": "Frontend Engineer",
+        "total_questions": 1,
+        "questions": [_interview_question_payload()],
+    }
+
+
+def _interview_request_payload():
+    return {
+        "job": {
+            "title": "Senior Frontend Engineer",
+            "summary": "Build modern web applications with React.",
+            "required_skills": ["React", "TypeScript"],
+            "preferred_skills": ["Next.js"],
+            "minimum_years_experience": 4,
+        },
+        "candidate": {
+            "full_name": "John Doe",
+            "title": "Frontend Engineer",
+            "skills": ["React", "TypeScript"],
+        },
+        "num_questions": 5,
+        "difficulty": "medium",
+        "focus_areas": ["Performance"],
+    }
+
+
+class TestGenerateInterviewQuestions:
+    def test_generate_questions_success(
+        self, recruiter_client, mock_interview_generator_service
+    ):
+        mock_interview_generator_service.generate_questions.return_value = (
+            _interview_response_payload()
+        )
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/generate-interview-questions",
+            json=_interview_request_payload(),
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["job_title"] == "Senior Frontend Engineer"
+        assert body["total_questions"] == 1
+        assert body["questions"][0]["category"] == "technical"
+        mock_interview_generator_service.generate_questions.assert_called_once()
+
+    def test_generate_questions_passes_config(
+        self, recruiter_client, mock_interview_generator_service
+    ):
+        mock_interview_generator_service.generate_questions.return_value = (
+            _interview_response_payload()
+        )
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/generate-interview-questions",
+            json=_interview_request_payload(),
+        )
+
+        assert resp.status_code == 200
+        request = (
+            mock_interview_generator_service.generate_questions.call_args.args[0]
+        )
+        assert request.num_questions == 5
+        assert request.difficulty == "medium"
+        assert request.focus_areas == ["Performance"]
+
+    def test_generate_questions_admin_allowed(
+        self, active_client, mock_interview_generator_service
+    ):
+        mock_interview_generator_service.generate_questions.return_value = (
+            _interview_response_payload()
+        )
+
+        resp = active_client.post(
+            "/api/v1/ai/generate-interview-questions",
+            json=_interview_request_payload(),
+        )
+
+        assert resp.status_code == 200
+        mock_interview_generator_service.generate_questions.assert_called_once()
+
+    def test_generate_questions_anonymous_unauthorized(
+        self, unauthorized_client, mock_interview_generator_service
+    ):
+        resp = unauthorized_client.post(
+            "/api/v1/ai/generate-interview-questions",
+            json=_interview_request_payload(),
+        )
+
+        assert resp.status_code == status.HTTP_401_UNAUTHORIZED
+        mock_interview_generator_service.generate_questions.assert_not_called()
+
+    def test_generate_questions_candidate_forbidden(
+        self, candidate_client, mock_interview_generator_service
+    ):
+        resp = candidate_client.post(
+            "/api/v1/ai/generate-interview-questions",
+            json=_interview_request_payload(),
+        )
+
+        assert resp.status_code == status.HTTP_403_FORBIDDEN
+        mock_interview_generator_service.generate_questions.assert_not_called()
+
+    def test_generate_questions_invalid_difficulty_rejected(
+        self, recruiter_client, mock_interview_generator_service
+    ):
+        payload = _interview_request_payload()
+        payload["difficulty"] = "expert"
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/generate-interview-questions", json=payload
+        )
+
+        assert resp.status_code == 422
+        mock_interview_generator_service.generate_questions.assert_not_called()
+
+    def test_generate_questions_num_questions_out_of_range_rejected(
+        self, recruiter_client, mock_interview_generator_service
+    ):
+        payload = _interview_request_payload()
+        payload["num_questions"] = 0
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/generate-interview-questions", json=payload
+        )
+
+        assert resp.status_code == 422
+        mock_interview_generator_service.generate_questions.assert_not_called()
+
+    def test_generate_questions_missing_job_rejected(
+        self, recruiter_client, mock_interview_generator_service
+    ):
+        payload = _interview_request_payload()
+        payload.pop("job")
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/generate-interview-questions", json=payload
+        )
+
+        assert resp.status_code == 422
+        mock_interview_generator_service.generate_questions.assert_not_called()
+
+    def test_generate_questions_empty_job_maps_to_400(
+        self, recruiter_client, mock_interview_generator_service
+    ):
+        mock_interview_generator_service.generate_questions.side_effect = (
+            EmptyDocumentError("job has no content to generate questions from")
+        )
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/generate-interview-questions",
+            json=_interview_request_payload(),
+        )
+
+        assert resp.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_generate_questions_invalid_llm_response_maps_to_422(
+        self, recruiter_client, mock_interview_generator_service
+    ):
+        mock_interview_generator_service.generate_questions.side_effect = (
+            InvalidDocumentError("AI interview generator returned no questions")
+        )
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/generate-interview-questions",
+            json=_interview_request_payload(),
+        )
+
+        assert resp.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    def test_generate_questions_ai_failure_maps_to_502(
+        self, recruiter_client, mock_interview_generator_service
+    ):
+        mock_interview_generator_service.generate_questions.side_effect = AIError(
+            "Gemini API request failed"
+        )
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/generate-interview-questions",
+            json=_interview_request_payload(),
+        )
+
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY

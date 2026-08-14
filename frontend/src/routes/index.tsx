@@ -21,6 +21,7 @@ import { RecruiterJobsPage } from '@/features/recruiter/pages/RecruiterJobsPage'
 import { JobCreatePage } from '@/features/recruiter/pages/JobCreatePage'
 import { JobApplicantsPage } from '@/features/recruiter/pages/JobApplicantsPage'
 import { JobRecommendationsPage } from '@/features/recruiter/pages/JobRecommendationsPage'
+import { InterviewGeneratorPage } from '@/features/recruiter/pages/InterviewGeneratorPage'
 import { SemanticCandidateSearchPage } from '@/features/recruiter/pages/SemanticCandidateSearchPage'
 import { AIChatPage } from '@/pages/ai/AIChatPage'
 import { ProtectedRoute } from '@/components/common/ProtectedRoute'
@@ -175,6 +176,16 @@ export function AppRouter() {
               element={
                 <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
                   <JobRecommendationsPage />
+                </ProtectedByRole>
+              }
+            />
+          </Route>
+          <Route element={<DashboardLayout />}>
+            <Route
+              path="/recruiter/jobs/:id/interview"
+              element={
+                <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                  <InterviewGeneratorPage />
                 </ProtectedByRole>
               }
             />
