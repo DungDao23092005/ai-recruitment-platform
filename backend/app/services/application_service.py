@@ -82,3 +82,9 @@ class ApplicationService:
             await self.session.rollback()
             raise
         return application
+
+    async def list_applications_by_job(
+        self,
+        job_id: uuid.UUID,
+    ) -> list[Application]:
+        return await self.applications.list_by_job(job_id)

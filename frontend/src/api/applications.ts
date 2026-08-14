@@ -6,3 +6,11 @@ export async function applyJob(jobId: string): Promise<Application> {
     job_id: jobId,
   })
 }
+
+export async function getApplicationsByJob(
+  jobId: string,
+): Promise<Application[]> {
+  return apiClient.get<Application[], Application[]>('/applications', {
+    params: { job_id: jobId },
+  })
+}

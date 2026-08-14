@@ -11,6 +11,11 @@ import { JobsPage } from '@/pages/jobs/JobsPage'
 import { JobDetailPage } from '@/pages/jobs/JobDetailPage'
 import { ResumeUploadPage } from '@/features/candidate/pages/ResumeUploadPage'
 import { CandidatePortalPage } from '@/features/candidate/pages/CandidatePortalPage'
+import { RecruiterPortalPage } from '@/features/recruiter/pages/RecruiterPortalPage'
+import { RecruiterCompanyPage } from '@/features/recruiter/pages/RecruiterCompanyPage'
+import { RecruiterJobsPage } from '@/features/recruiter/pages/RecruiterJobsPage'
+import { JobCreatePage } from '@/features/recruiter/pages/JobCreatePage'
+import { JobApplicantsPage } from '@/features/recruiter/pages/JobApplicantsPage'
 import { ProtectedRoute } from '@/components/common/ProtectedRoute'
 import { RoleGuard } from '@/components/common/RoleGuard'
 import type { UserRole } from '@/types/auth'
@@ -88,6 +93,46 @@ export function AppRouter() {
             element={
               <ProtectedByRole allowedRoles={['recruiter']}>
                 <ProfilePage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/recruiter/portal"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                <RecruiterPortalPage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/recruiter/company"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                <RecruiterCompanyPage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/recruiter/jobs"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                <RecruiterJobsPage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/recruiter/jobs/new"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                <JobCreatePage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/recruiter/jobs/:id/applicants"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                <JobApplicantsPage />
               </ProtectedByRole>
             }
           />

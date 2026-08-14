@@ -128,6 +128,41 @@ class TestApplyJob:
         session.rollback.assert_awaited_once()
 
 
+class TestListApplicationsByJob:
+    def test_returns_applications_for_job(self):
+        session = make_session()
+        service = make_service(session)
+        job_id = uuid.uuid4()
+        expected = [make_application(), make_application()]
+        service.applications.list_by_job.return_value = expected
+
+        result = asyncio.run(service.list_applications_by_job(job_id))
+
+        service.applications.list_by_job.assert_awaited_once_with(job_id)
+        assert result == expected
+
+    def test_returns_empty_list_when_no_applications(self):
+        session = make_session()
+        service = make_service(session)
+        service.applications.list_by_job.return_value = []
+
+        result = asyncio.run(
+            service.list_applications_by_job(uuid.uuid4())
+        )
+
+        assert result == []
+
+    def test_passes_correct_job_id_to_repository(self):
+        session = make_session()
+        service = make_service(session)
+        job_id = uuid.uuid4()
+        service.applications.list_by_job.return_value = []
+
+        asyncio.run(service.list_applications_by_job(job_id))
+
+        service.applications.list_by_job.assert_awaited_once_with(job_id)
+
+
 class TestUpdateApplicationStatus:
     def test_valid_transition(self):
         session = make_session()

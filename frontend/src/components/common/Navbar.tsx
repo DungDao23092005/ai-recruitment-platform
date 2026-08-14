@@ -68,6 +68,38 @@ export function Navbar() {
               Upload CV
             </NavLink>
           ) : null}
+          {isAuthenticated &&
+          (currentUser?.role === 'recruiter' ||
+            currentUser?.role === 'admin') ? (
+            <>
+              <NavLink
+                to="/recruiter/portal"
+                className={({ isActive }) =>
+                  cn(
+                    'rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                    isActive
+                      ? 'bg-secondary text-secondary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  )
+                }
+              >
+                Quản lý tuyển dụng
+              </NavLink>
+              <NavLink
+                to="/recruiter/jobs/new"
+                className={({ isActive }) =>
+                  cn(
+                    'rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                    isActive
+                      ? 'bg-secondary text-secondary-foreground'
+                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                  )
+                }
+              >
+                Đăng tin
+              </NavLink>
+            </>
+          ) : null}
         </div>
 
         <div className="flex items-center gap-2">

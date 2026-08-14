@@ -66,6 +66,29 @@ async def apply_job(
     return ApplicationRead.model_validate(application)
 
 
+@router.get(
+    "",
+    response_model=list[ApplicationRead],
+)
+async def list_applications(
+    job_id: uuid.UUID | None = None,
+    skip: int = 0,
+    limit: int = 100,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> list[ApplicationRead]:
+    if job_id is not None:
+        applications = await ApplicationService(db).list_applications_by_job(
+            job_id
+        )
+    else:
+        applications = []
+    return [
+        ApplicationRead.model_validate(a)
+        for a in applications[skip : skip + limit]
+    ]
+
+
 @router.patch(
     "/{id}/status",
     response_model=ApplicationRead,

@@ -9,6 +9,11 @@ export type {
 } from '@/types/job'
 export type { Application, ApplicationStatus } from '@/types/application'
 export type {
+  Company,
+  CompanyCreateData,
+  CompanySize,
+} from '@/types/company'
+export type {
   Education,
   ParsedResume,
   WorkExperience,
