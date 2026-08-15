@@ -9,6 +9,7 @@ from app.domain.enums import JobStatus
 from app.models import Company, Job
 from app.repositories import CompanyRepository, JobRepository
 from app.schemas.job import JobCreate
+from app.services.user_service import UserService
 
 
 class JobService:
@@ -72,6 +73,29 @@ class JobService:
         limit: int = 10,
     ) -> list[Job]:
         return await self.jobs.list_active_jobs(skip=skip, limit=limit)
+
+    async def list_recruiter_jobs(
+        self,
+        user_id: uuid.UUID,
+        skip: int = 0,
+        limit: int = 10,
+    ) -> list[Job]:
+        user = await UserService(self.session).get_user_with_profile(user_id)
+        profile = user.recruiter_profile if user is not None else None
+        if profile is None or profile.company_id is None:
+            return []
+        return await self.jobs.list_jobs_by_company(
+            profile.company_id,
+            skip=skip,
+            limit=limit,
+        )
+
+    async def list_all_jobs(
+        self,
+        skip: int = 0,
+        limit: int = 10,
+    ) -> list[Job]:
+        return await self.jobs.list_all_jobs(skip=skip, limit=limit)
 
     async def _commit_and_refresh(self, entity) -> None:
         try:

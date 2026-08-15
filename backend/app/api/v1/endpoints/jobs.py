@@ -71,6 +71,28 @@ async def list_jobs(
 
 
 @router.get(
+    "/mine",
+    response_model=list[JobRead],
+)
+async def list_my_jobs(
+    current_user: User = Depends(require_recruiter),
+    skip: int = 0,
+    limit: int = 10,
+    db: AsyncSession = Depends(get_db),
+) -> list[JobRead]:
+    service = JobService(db)
+    if current_user.role == UserRole.ADMIN:
+        jobs = await service.list_all_jobs(skip=skip, limit=limit)
+    else:
+        jobs = await service.list_recruiter_jobs(
+            current_user.id,
+            skip=skip,
+            limit=limit,
+        )
+    return [JobRead.model_validate(j) for j in jobs]
+
+
+@router.get(
     "/{id}",
     response_model=JobRead,
 )

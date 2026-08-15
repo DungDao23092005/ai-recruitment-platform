@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Briefcase, PlusCircle } from 'lucide-react'
-import { getJobs } from '@/api/jobs'
+import { getMyJobs } from '@/api/jobs'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -22,7 +22,7 @@ export function RecruiterJobsPage() {
   const load = () => {
     setState({ kind: 'loading' })
 
-    getJobs({ skip: 0, limit: 50 })
+    getMyJobs({ skip: 0, limit: 50 })
       .then((jobs) => {
         setState({ kind: 'success', jobs })
       })

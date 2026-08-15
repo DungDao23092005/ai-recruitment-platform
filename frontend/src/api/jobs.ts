@@ -5,6 +5,10 @@ export async function getJobs(params: JobListParams): Promise<Job[]> {
   return apiClient.get<Job[], Job[]>('/jobs', { params })
 }
 
+export async function getMyJobs(params: JobListParams): Promise<Job[]> {
+  return apiClient.get<Job[], Job[]>('/jobs/mine', { params })
+}
+
 export async function getJobById(id: string): Promise<Job> {
   return apiClient.get<Job, Job>(`/jobs/${id}`)
 }
