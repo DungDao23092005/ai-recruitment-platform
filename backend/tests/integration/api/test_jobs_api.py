@@ -477,3 +477,96 @@ class TestMyJobs:
         ids = [job["id"] for job in resp.json()]
         assert published["id"] in ids
         assert draft["id"] not in ids
+
+
+class TestJobCompanyName:
+    """company_name enrichment on all JobRead responses (OPTION A)."""
+
+    @staticmethod
+    def create_company(client, run_async, slug, tax_code):
+        body = {**COMPANY_BODY, "slug": slug, "tax_code": tax_code}
+        resp = run_async(client.post(f"{API_V1}/companies", json=body))
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    def test_public_list_includes_company_name(
+        self, client, recruiter_client, run_async
+    ):
+        company = self.create_company(
+            recruiter_client, run_async, "acme-name", "444444444"
+        )
+        body = {
+            **JOB_BODY,
+            "company_id": company["id"],
+            "status": "published",
+        }
+        job = run_async(
+            recruiter_client.post(f"{API_V1}/jobs", json=body)
+        ).json()
+
+        resp = run_async(client.get(f"{API_V1}/jobs"))
+
+        assert resp.status_code == 200
+        match = next(
+            item for item in resp.json() if item["id"] == job["id"]
+        )
+        assert match["company_name"] == company["name"]
+        assert match["company_id"] == company["id"]
+
+    def test_detail_includes_company_name(
+        self, client, recruiter_client, run_async
+    ):
+        company = self.create_company(
+            recruiter_client, run_async, "acme-name", "444444444"
+        )
+        body = {
+            **JOB_BODY,
+            "company_id": company["id"],
+            "status": "published",
+        }
+        job = run_async(
+            recruiter_client.post(f"{API_V1}/jobs", json=body)
+        ).json()
+
+        resp = run_async(client.get(f"{API_V1}/jobs/{job['id']}"))
+
+        assert resp.status_code == 200
+        assert resp.json()["company_name"] == company["name"]
+
+    def test_mine_includes_company_name(self, recruiter_client, run_async):
+        company = self.create_company(
+            recruiter_client, run_async, "acme-name", "444444444"
+        )
+        body = {
+            **JOB_BODY,
+            "company_id": company["id"],
+            "status": "published",
+        }
+        job = run_async(
+            recruiter_client.post(f"{API_V1}/jobs", json=body)
+        ).json()
+
+        resp = run_async(recruiter_client.get(f"{API_V1}/jobs/mine"))
+
+        assert resp.status_code == 200
+        match = next(
+            item for item in resp.json() if item["id"] == job["id"]
+        )
+        assert match["company_name"] == company["name"]
+
+    def test_create_response_includes_company_name(
+        self, recruiter_client, run_async
+    ):
+        company = self.create_company(
+            recruiter_client, run_async, "acme-name", "444444444"
+        )
+        body = {
+            **JOB_BODY,
+            "company_id": company["id"],
+            "status": "published",
+        }
+
+        resp = run_async(recruiter_client.post(f"{API_V1}/jobs", json=body))
+
+        assert resp.status_code == 201
+        assert resp.json()["company_name"] == company["name"]

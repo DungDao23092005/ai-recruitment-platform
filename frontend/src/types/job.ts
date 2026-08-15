@@ -7,6 +7,7 @@ export type WorkplaceType = 'on_site' | 'hybrid' | 'remote'
 export interface Job {
   id: string
   company_id: string
+  company_name: string | null
   title: string
   description: string
   status: JobStatus

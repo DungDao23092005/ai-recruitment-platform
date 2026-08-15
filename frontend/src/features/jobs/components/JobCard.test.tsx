@@ -8,6 +8,7 @@ import type { Job } from '@/types/job'
 const mockJob: Job = {
   id: 'job-1',
   company_id: '00000000-0000-0000-0000-000000000001',
+  company_name: 'TechNova AI',
   title: 'Senior Frontend Engineer',
   description: 'Build modern web applications with React.',
   status: 'published',
@@ -30,10 +31,19 @@ describe('JobCard', () => {
     ).toBeInTheDocument()
   })
 
-  it('renders company information', () => {
+  it('renders company name', () => {
     render(
       <MemoryRouter>
         <JobCard job={mockJob} />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('Công ty TechNova AI')).toBeInTheDocument()
+  })
+
+  it('falls back to company id prefix when company_name is null', () => {
+    render(
+      <MemoryRouter>
+        <JobCard job={{ ...mockJob, company_name: null }} />
       </MemoryRouter>,
     )
     expect(screen.getByText(/Công ty 00000000/)).toBeInTheDocument()

@@ -8,13 +8,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, require_recruiter
 from app.core.exceptions import EntityNotFoundException
 from app.domain.enums import JobStatus, UserRole
-from app.models import User
+from app.models import Job, User
 from app.schemas.job import JobCreate, JobRead
 from app.services.company_service import CompanyService
 from app.services.job_service import JobService
 from app.services.user_service import UserService
 
 router = APIRouter()
+
+
+def to_job_read(job: Job) -> JobRead:
+    read = JobRead.model_validate(job)
+    read.company_name = job.company.name if job.company is not None else None
+    return read
 
 
 @router.post(
@@ -54,7 +60,7 @@ async def create_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
-    return JobRead.model_validate(job)
+    return to_job_read(job)
 
 
 @router.get(
@@ -67,7 +73,7 @@ async def list_jobs(
     db: AsyncSession = Depends(get_db),
 ) -> list[JobRead]:
     jobs = await JobService(db).list_jobs(skip=skip, limit=limit)
-    return [JobRead.model_validate(j) for j in jobs]
+    return [to_job_read(j) for j in jobs]
 
 
 @router.get(
@@ -89,7 +95,7 @@ async def list_my_jobs(
             skip=skip,
             limit=limit,
         )
-    return [JobRead.model_validate(j) for j in jobs]
+    return [to_job_read(j) for j in jobs]
 
 
 @router.get(
@@ -101,10 +107,10 @@ async def get_job(
     db: AsyncSession = Depends(get_db),
 ) -> JobRead:
     service = JobService(db)
-    job = await service.jobs.get_by_id(id)
+    job = await service.jobs.get_job_with_company(id)
     if job is None or job.is_deleted or job.status != JobStatus.PUBLISHED:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Job not found",
         )
-    return JobRead.model_validate(job)
+    return to_job_read(job)

@@ -41,7 +41,7 @@ export function JobCard({ job }: JobCardProps) {
         </div>
         <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
           <Building className="h-4 w-4 text-primary/70" aria-hidden="true" />
-          Công ty {job.company_id.slice(0, 8)}
+          Công ty {job.company_name ?? job.company_id.slice(0, 8)}
         </p>
       </CardHeader>
       <CardContent className="flex-1 space-y-3">

@@ -142,7 +142,7 @@ export function JobDetailPage() {
           </CardTitle>
           <CardDescription className="flex items-center gap-1.5 text-sm">
             <Building className="h-4 w-4 text-primary/70" aria-hidden="true" />
-            Công ty {job.company_id.slice(0, 8)}
+            Công ty {job.company_name ?? job.company_id.slice(0, 8)}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">

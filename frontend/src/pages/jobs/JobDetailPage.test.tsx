@@ -13,6 +13,7 @@ import type { User } from '@/types/auth'
 const mockJob: Job = {
   id: 'job-1',
   company_id: '00000000-0000-0000-0000-000000000001',
+  company_name: 'TechNova AI',
   title: 'Senior Frontend Engineer',
   description: 'Build modern web applications.',
   status: 'published',
@@ -96,6 +97,26 @@ describe('JobDetailPage', () => {
     expect(screen.getByText('Ho Chi Minh City')).toBeInTheDocument()
     expect(screen.getByText('Toàn thời gian')).toBeInTheDocument()
     expect(screen.getByText('Từ xa')).toBeInTheDocument()
+  })
+
+  it('renders the company name', async () => {
+    mockedGetJobById.mockResolvedValue(mockJob)
+
+    renderJobDetailPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Công ty TechNova AI')).toBeInTheDocument()
+    })
+  })
+
+  it('falls back to company id prefix when company_name is null', async () => {
+    mockedGetJobById.mockResolvedValue({ ...mockJob, company_name: null })
+
+    renderJobDetailPage()
+
+    await waitFor(() => {
+      expect(screen.getByText(/Công ty 00000000/)).toBeInTheDocument()
+    })
   })
 
   it('shows loading state while fetching', async () => {

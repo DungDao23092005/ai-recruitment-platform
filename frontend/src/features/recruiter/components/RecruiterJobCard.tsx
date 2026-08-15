@@ -36,7 +36,7 @@ export function RecruiterJobCard({ job }: RecruiterJobCardProps) {
         <CardDescription className="flex items-center gap-1">
           <Building className="h-4 w-4" aria-hidden="true" />
           <span className="text-xs uppercase text-muted-foreground">
-            Công ty: {job.company_id.slice(0, 8)}
+            Công ty: {job.company_name ?? job.company_id.slice(0, 8)}
           </span>
         </CardDescription>
       </CardHeader>
