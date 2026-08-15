@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
+  ChevronLeft,
   ClipboardCopy,
   Printer,
   RefreshCw,
@@ -25,10 +26,10 @@ import type { ParsedJob } from '@/types/ai'
 const NUM_QUESTIONS_OPTIONS = [3, 5, 10, 15]
 
 const DIFFICULTY_OPTIONS: { value: QuestionGenerationDifficulty; label: string }[] = [
-  { value: 'easy', label: 'Easy' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'hard', label: 'Hard' },
-  { value: 'mixed', label: 'Mixed' },
+  { value: 'easy', label: 'Dễ' },
+  { value: 'medium', label: 'Trung bình' },
+  { value: 'hard', label: 'Khó' },
+  { value: 'mixed', label: 'Kết hợp' },
 ]
 
 type PageState =
@@ -92,7 +93,11 @@ export function InterviewGeneratorPage() {
 
   const load = useCallback(() => {
     if (!id) {
-      setPageState({ kind: 'error', message: 'Job not found', notFound: true })
+      setPageState({
+        kind: 'error',
+        message: 'Không tìm thấy tin tuyển dụng',
+        notFound: true,
+      })
       return
     }
     setPageState({ kind: 'loading' })
@@ -104,7 +109,9 @@ export function InterviewGeneratorPage() {
         const notFound = status === 404
         setPageState({
           kind: 'error',
-          message: notFound ? 'Job not found' : getFriendlyErrorMessage(err),
+          message: notFound
+            ? 'Không tìm thấy tin tuyển dụng'
+            : getFriendlyErrorMessage(err),
           notFound,
         })
       })
@@ -198,20 +205,20 @@ export function InterviewGeneratorPage() {
     return (
       <div className="container flex min-h-[50vh] flex-col items-center justify-center py-10 text-center">
         <p className="text-5xl font-bold text-primary">
-          {pageState.notFound ? '404' : 'Error'}
+          {pageState.notFound ? '404' : 'Lỗi'}
         </p>
         <h1 className="mt-4 text-2xl font-semibold tracking-tight">
           {pageState.message}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {pageState.notFound
-            ? 'The job you are looking for does not exist.'
-            : 'Something went wrong while loading the job.'}
+            ? 'Tin tuyển dụng bạn tìm kiếm không tồn tại.'
+            : 'Đã xảy ra lỗi khi tải tin tuyển dụng.'}
         </p>
         <div className="mt-6 flex items-center gap-3">
           {pageState.notFound ? (
             <Link to="/recruiter/jobs">
-              <Button variant="outline">Back to jobs</Button>
+              <Button variant="outline">Quay lại tin tuyển dụng</Button>
             </Link>
           ) : (
             <Button variant="outline" onClick={load}>
@@ -231,7 +238,8 @@ export function InterviewGeneratorPage() {
       <div className="mb-6 flex items-center gap-2">
         <Link to="/recruiter/jobs">
           <Button variant="ghost" size="sm">
-            &larr; Back to jobs
+            <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+            Quay lại tin tuyển dụng
           </Button>
         </Link>
       </div>
@@ -247,7 +255,7 @@ export function InterviewGeneratorPage() {
       >
         <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
           <div className="space-y-2">
-            <p className="text-sm font-medium">Số lượng câu hỏi</p>
+            <p className="text-sm font-medium">Số câu hỏi</p>
             <div className="flex flex-wrap gap-2">
               {NUM_QUESTIONS_OPTIONS.map((option) => (
                 <button
@@ -289,7 +297,7 @@ export function InterviewGeneratorPage() {
           </div>
 
           <div className="space-y-2">
-            <p className="text-sm font-medium">Trọng tâm (focus areas)</p>
+            <p className="text-sm font-medium">Chủ đề tập trung</p>
             <div className="flex items-center gap-2">
               <Input
                 name="focus-area"
@@ -368,7 +376,7 @@ export function InterviewGeneratorPage() {
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" onClick={copyQuestions}>
                 <ClipboardCopy className="h-4 w-4" aria-hidden="true" />
-                Copy câu hỏi
+                Sao chép câu hỏi
               </Button>
               <Button variant="outline" size="sm" onClick={() => window.print()}>
                 <Printer className="h-4 w-4" aria-hidden="true" />

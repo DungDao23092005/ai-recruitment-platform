@@ -139,10 +139,10 @@ describe('JobRecommendationsPage', () => {
       }),
     )
 
-    renderPage()
+    const { container } = renderPage()
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Loading')).toBeInTheDocument()
+      expect(container.querySelector('.animate-pulse')).toBeInTheDocument()
     })
 
     resolveJob(mockJob)
@@ -182,9 +182,7 @@ describe('JobRecommendationsPage', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(
-          /Chưa tìm thấy ứng viên phù hợp/i,
-        ),
+        screen.getByText('Chưa có ứng viên gợi ý'),
       ).toBeInTheDocument()
     })
   })
@@ -221,7 +219,7 @@ describe('JobRecommendationsPage', () => {
 
     await waitFor(() => {
       expect(screen.getByText('404')).toBeInTheDocument()
-      expect(screen.getByText('Job not found')).toBeInTheDocument()
+      expect(screen.getByText('Không tìm thấy tin tuyển dụng')).toBeInTheDocument()
     })
   })
 })

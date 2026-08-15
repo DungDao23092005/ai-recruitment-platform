@@ -252,7 +252,7 @@ describe('ExplainMatchModal', () => {
     expect(screen.queryByText(/secret internal stack/i)).not.toBeInTheDocument()
     expect(
       screen.getByText(
-        'Unable to connect to server. Please check your connection and try again.',
+        'Không thể kết nối tới máy chủ. Vui lòng kiểm tra kết nối và thử lại.',
       ),
     ).toBeInTheDocument()
   })
@@ -304,7 +304,7 @@ describe('ExplainMatchModal', () => {
       ).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /Close/i }))
+    fireEvent.click(screen.getAllByRole('button', { name: /Đóng/i })[0])
 
     expect(onClose).toHaveBeenCalledTimes(1)
   })

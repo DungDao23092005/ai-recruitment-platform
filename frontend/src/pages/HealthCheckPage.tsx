@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { ArrowLeft, Server } from 'lucide-react'
 import endpoints, { type HealthStatus } from '@/api/endpoints'
 import { Spinner } from '@/components/ui/spinner'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { PageHeader } from '@/components/common/PageHeader'
 
 type HealthState =
   | { kind: 'loading' }
@@ -23,7 +26,7 @@ export function HealthCheckPage() {
       .catch((error: unknown) => {
         if (!active) return
         const message =
-          error instanceof Error ? error.message : 'Unknown error'
+          error instanceof Error ? error.message : 'Lỗi không xác định'
         setState({ kind: 'error', message })
       })
 
@@ -33,61 +36,68 @@ export function HealthCheckPage() {
   }, [])
 
   return (
-    <div className="container py-10">
-      <h1 className="text-2xl font-semibold tracking-tight">Health Check</h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Verifying connectivity to the backend API.
-      </p>
+    <div className="container py-10 sm:py-12">
+      <PageHeader
+        eyebrow="Vận hành"
+        title="Kiểm tra sức khỏe hệ thống"
+        description="Xác minh kết nối tới API backend của nền tảng."
+      />
 
-      <div className="mt-6 max-w-xl space-y-3">
+      <div className="mt-6 max-w-xl space-y-4">
         {state.kind === 'loading' ? (
-          <div className="flex items-center gap-3 text-sm text-muted-foreground">
+          <div className="flex items-center gap-3 rounded-xl border bg-card p-4 text-sm text-muted-foreground">
             <Spinner size="sm" />
-            <span>Checking backend...</span>
+            <span>Đang kiểm tra backend...</span>
           </div>
         ) : null}
 
         {state.kind === 'success' ? (
-          <>
+          <div className="rounded-xl border bg-card p-5 shadow-soft">
             <div className="flex items-center gap-2">
-              <Badge variant="success">Healthy</Badge>
-              <span className="text-sm text-muted-foreground">
-                {state.data.service ?? 'Backend API'}
+              <Badge variant="success">Hoạt động tốt</Badge>
+              <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                <Server className="h-4 w-4" aria-hidden="true" />
+                {state.data.service ?? 'API Backend'}
               </span>
             </div>
-            <dl className="rounded-lg border bg-muted/30 p-4 text-sm">
-              <div className="flex justify-between gap-4 py-1">
-                <dt className="text-muted-foreground">Status</dt>
+            <dl className="mt-4 space-y-1 border-t pt-4 text-sm">
+              <div className="flex items-center justify-between gap-4 py-1">
+                <dt className="text-muted-foreground">Trạng thái</dt>
                 <dd className="font-medium">{state.data.status}</dd>
               </div>
-              <div className="flex justify-between gap-4 py-1">
-                <dt className="text-muted-foreground">Version</dt>
-                <dd className="font-medium">{state.data.version ?? 'N/A'}</dd>
-              </div>
-              <div className="flex justify-between gap-4 py-1">
-                <dt className="text-muted-foreground">Environment</dt>
+              <div className="flex items-center justify-between gap-4 py-1">
+                <dt className="text-muted-foreground">Phiên bản</dt>
                 <dd className="font-medium">
-                  {state.data.environment ?? 'N/A'}
+                  {state.data.version ?? 'Chưa có'}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-4 py-1">
+                <dt className="text-muted-foreground">Môi trường</dt>
+                <dd className="font-medium">
+                  {state.data.environment ?? 'Chưa có'}
                 </dd>
               </div>
             </dl>
-          </>
-        ) : null}
-
-        {state.kind === 'error' ? (
-          <div className="flex items-center gap-2">
-            <Badge variant="destructive">Unreachable</Badge>
-            <span className="text-sm text-muted-foreground">
-              {state.message}. Is the backend running?
-            </span>
           </div>
         ) : null}
 
-        <p className="text-sm text-muted-foreground">
-          <Link to="/" className="text-primary underline underline-offset-4">
-            Back to home
-          </Link>
-        </p>
+        {state.kind === 'error' ? (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4">
+            <div className="flex items-center gap-2">
+              <Badge variant="destructive">Không kết nối được</Badge>
+              <span className="text-sm text-muted-foreground">
+                {state.message}. Backend có đang chạy không?
+              </span>
+            </div>
+          </div>
+        ) : null}
+
+        <Link to="/">
+          <Button variant="ghost" size="sm" className="text-muted-foreground">
+            <ArrowLeft className="mr-1.5 h-4 w-4" aria-hidden="true" />
+            Về trang chủ
+          </Button>
+        </Link>
       </div>
     </div>
   )

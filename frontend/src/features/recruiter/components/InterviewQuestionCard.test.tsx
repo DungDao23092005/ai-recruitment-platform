@@ -64,9 +64,9 @@ describe('InterviewQuestionCard', () => {
   })
 
   it('renders category label map correctly', () => {
-    expect(CATEGORY_LABELS.behavioral).toBe('Behavioral')
-    expect(CATEGORY_LABELS.experience).toBe('Experience')
-    expect(CATEGORY_LABELS.skill_gap).toBe('Skill Gap')
+    expect(CATEGORY_LABELS.behavioral).toBe('Hành vi')
+    expect(CATEGORY_LABELS.experience).toBe('Kinh nghiệm')
+    expect(CATEGORY_LABELS.skill_gap).toBe('Khoảng cách kỹ năng')
     expect(DIFFICULTY_LABELS.easy).toBe('Dễ')
     expect(DIFFICULTY_LABELS.hard).toBe('Khó')
   })

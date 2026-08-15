@@ -19,10 +19,10 @@ export function JobsPage() {
   } = useJobs()
 
   return (
-    <div className="container py-10">
+    <div className="container py-10 sm:py-12">
       <PageHeader
         title="Việc làm"
-        description="Explore job opportunities tailored for you."
+        description="Khám phá cơ hội nghề nghiệp được tuyển chọn dành riêng cho bạn."
       />
 
       <div className="space-y-6">

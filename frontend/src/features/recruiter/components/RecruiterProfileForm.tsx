@@ -44,24 +44,29 @@ export function RecruiterProfileForm() {
     <form onSubmit={handleSubmit} className="space-y-4" noValidate>
       <Input
         name="full_name"
-        label="Full name"
-        placeholder="Jane Smith"
+        label="Họ và tên"
+        placeholder="Trần Thị Bích"
         value={values.full_name}
-        onChange={(e) => setValues((v) => ({ ...v, full_name: e.target.value }))}
+        onChange={(e) =>
+          setValues((v) => ({ ...v, full_name: e.target.value }))
+        }
       />
       <Input
         name="position"
-        label="Position"
-        placeholder="Talent Acquisition Lead"
+        label="Vị trí"
+        placeholder="Trưởng phòng Tuyển dụng"
         value={values.position}
         onChange={(e) => setValues((v) => ({ ...v, position: e.target.value }))}
       />
       <Input
         name="company_id"
-        label="Company ID (optional)"
-        placeholder="e.g. 3fa85f64-5717-4562-b3fc-2c963f66afa6"
+        label="Mã công ty (tùy chọn)"
+        placeholder="vd: 3fa85f64-5717-4562-b3fc-2c963f66afa6"
+        helperText="Có thể liên kết tài khoản với công ty đã tạo trên nền tảng."
         value={values.company_id}
-        onChange={(e) => setValues((v) => ({ ...v, company_id: e.target.value }))}
+        onChange={(e) =>
+          setValues((v) => ({ ...v, company_id: e.target.value }))
+        }
       />
 
       {apiError ? (
@@ -71,13 +76,13 @@ export function RecruiterProfileForm() {
       ) : null}
 
       {success ? (
-        <p role="status" className="text-sm font-medium text-green-600">
-          Recruiter profile saved successfully.
+        <p role="status" className="text-sm font-medium text-success">
+          Đã lưu hồ sơ nhà tuyển dụng.
         </p>
       ) : null}
 
       <Button type="submit" className="w-full" isLoading={submitting}>
-        Save profile
+        Lưu hồ sơ
       </Button>
     </form>
   )

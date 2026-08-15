@@ -17,7 +17,7 @@ interface FormErrors {
 function validate(values: FormValues): FormErrors {
   const errors: FormErrors = {}
   if (values.phone && !/^[0-9+\-() ]+$/.test(values.phone)) {
-    errors.phone = 'Enter a valid phone number'
+    errors.phone = 'Vui lòng nhập số điện thoại hợp lệ'
   }
   return errors
 }
@@ -63,14 +63,16 @@ export function CandidateProfileForm() {
     <form onSubmit={handleSubmit} className="space-y-4" noValidate>
       <Input
         name="full_name"
-        label="Full name"
-        placeholder="John Doe"
+        label="Họ và tên"
+        placeholder="Nguyễn Văn An"
         value={values.full_name}
-        onChange={(e) => setValues((v) => ({ ...v, full_name: e.target.value }))}
+        onChange={(e) =>
+          setValues((v) => ({ ...v, full_name: e.target.value }))
+        }
       />
       <Input
         name="phone"
-        label="Phone"
+        label="Số điện thoại"
         placeholder="+84 900 123 456"
         value={values.phone}
         onChange={(e) => setValues((v) => ({ ...v, phone: e.target.value }))}
@@ -78,7 +80,7 @@ export function CandidateProfileForm() {
       />
       <Input
         name="title"
-        label="Title"
+        label="Vị trí / Chức danh"
         placeholder="Senior Frontend Engineer"
         value={values.title}
         onChange={(e) => setValues((v) => ({ ...v, title: e.target.value }))}
@@ -91,13 +93,13 @@ export function CandidateProfileForm() {
       ) : null}
 
       {success ? (
-        <p role="status" className="text-sm font-medium text-green-600">
-          Candidate profile saved successfully.
+        <p role="status" className="text-sm font-medium text-success">
+          Đã lưu hồ sơ ứng viên.
         </p>
       ) : null}
 
       <Button type="submit" className="w-full" isLoading={submitting}>
-        Save profile
+        Lưu hồ sơ
       </Button>
     </form>
   )

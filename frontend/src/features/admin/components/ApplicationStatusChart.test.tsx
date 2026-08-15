@@ -27,13 +27,13 @@ const emptyCounts: ApplicationStatusCounts = {
 describe('ApplicationStatusChart', () => {
   it('renders all status labels', () => {
     render(<ApplicationStatusChart counts={mockCounts} />)
-    expect(screen.getByText('Applied')).toBeInTheDocument()
-    expect(screen.getByText('Under review')).toBeInTheDocument()
-    expect(screen.getByText('Shortlisted')).toBeInTheDocument()
-    expect(screen.getByText('Interviewing')).toBeInTheDocument()
-    expect(screen.getByText('Accepted')).toBeInTheDocument()
-    expect(screen.getByText('Rejected')).toBeInTheDocument()
-    expect(screen.getByText('Withdrawn')).toBeInTheDocument()
+    expect(screen.getByText('Đã nộp')).toBeInTheDocument()
+    expect(screen.getByText('Đang xem xét')).toBeInTheDocument()
+    expect(screen.getByText('Lọt vòng ngắn')).toBeInTheDocument()
+    expect(screen.getByText('Đang phỏng vấn')).toBeInTheDocument()
+    expect(screen.getByText('Đã chấp nhận')).toBeInTheDocument()
+    expect(screen.getByText('Từ chối')).toBeInTheDocument()
+    expect(screen.getByText('Đã rút')).toBeInTheDocument()
   })
 
   it('renders counts and percentages', () => {

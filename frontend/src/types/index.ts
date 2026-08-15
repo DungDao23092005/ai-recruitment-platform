@@ -25,7 +25,7 @@ export interface NavLink {
 }
 
 export const USER_ROLES: { value: string; label: string }[] = [
-  { value: 'candidate', label: 'Candidate' },
-  { value: 'recruiter', label: 'Recruiter' },
-  { value: 'admin', label: 'Admin' },
+  { value: 'candidate', label: 'Ứng viên' },
+  { value: 'recruiter', label: 'Nhà tuyển dụng' },
+  { value: 'admin', label: 'Quản trị viên' },
 ]

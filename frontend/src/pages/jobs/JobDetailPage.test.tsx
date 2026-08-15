@@ -94,8 +94,8 @@ describe('JobDetailPage', () => {
       ).toBeInTheDocument()
     })
     expect(screen.getByText('Ho Chi Minh City')).toBeInTheDocument()
-    expect(screen.getByText('Full time')).toBeInTheDocument()
-    expect(screen.getByText('Remote')).toBeInTheDocument()
+    expect(screen.getByText('Toàn thời gian')).toBeInTheDocument()
+    expect(screen.getByText('Từ xa')).toBeInTheDocument()
   })
 
   it('shows loading state while fetching', async () => {
@@ -106,10 +106,10 @@ describe('JobDetailPage', () => {
       }),
     )
 
-    renderJobDetailPage()
+    const { container } = renderJobDetailPage()
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Loading')).toBeInTheDocument()
+      expect(container.querySelector('.animate-pulse')).not.toBeNull()
     })
 
     resolve(mockJob)
@@ -124,7 +124,7 @@ describe('JobDetailPage', () => {
 
     await waitFor(() => {
       expect(screen.getByText('404')).toBeInTheDocument()
-      expect(screen.getByText('Job not found')).toBeInTheDocument()
+      expect(screen.getByText('Không tìm thấy công việc')).toBeInTheDocument()
     })
   })
 
@@ -139,11 +139,11 @@ describe('JobDetailPage', () => {
       ).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /Apply now/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Ứng tuyển ngay/i }))
 
     await waitFor(() => {
       expect(
-        screen.getByRole('dialog', { name: 'Confirm application' }),
+        screen.getByRole('dialog', { name: 'Xác nhận ứng tuyển' }),
       ).toBeInTheDocument()
     })
   })
@@ -167,15 +167,15 @@ describe('JobDetailPage', () => {
       ).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /Apply now/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Ứng tuyển ngay/i }))
     await waitFor(() => {
       expect(
-        screen.getByRole('dialog', { name: 'Confirm application' }),
+        screen.getByRole('dialog', { name: 'Xác nhận ứng tuyển' }),
       ).toBeInTheDocument()
     })
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Confirm application' }),
+      screen.getByRole('button', { name: 'Xác nhận ứng tuyển' }),
     )
 
     await waitFor(() => {
@@ -203,15 +203,15 @@ describe('JobDetailPage', () => {
       ).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /Apply now/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Ứng tuyển ngay/i }))
     await waitFor(() => {
       expect(
-        screen.getByRole('dialog', { name: 'Confirm application' }),
+        screen.getByRole('dialog', { name: 'Xác nhận ứng tuyển' }),
       ).toBeInTheDocument()
     })
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Confirm application' }),
+      screen.getByRole('button', { name: 'Xác nhận ứng tuyển' }),
     )
 
     await waitFor(() => {
@@ -232,7 +232,7 @@ describe('JobDetailPage', () => {
       ).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /Apply now/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Ứng tuyển ngay/i }))
 
     await waitFor(() => {
       expect(screen.getByText('Login Page')).toBeInTheDocument()
@@ -250,10 +250,10 @@ describe('JobDetailPage', () => {
       ).toBeInTheDocument()
     })
 
-    const applyButton = screen.getByRole('button', { name: /Apply now/i })
+    const applyButton = screen.getByRole('button', { name: /Ứng tuyển ngay/i })
     expect(applyButton).toBeDisabled()
     expect(
-      screen.getByText('Only candidates can apply for jobs.'),
+      screen.getByText('Chỉ ứng viên mới có thể ứng tuyển.'),
     ).toBeInTheDocument()
   })
 })

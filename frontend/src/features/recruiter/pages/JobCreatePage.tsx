@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Sparkles } from 'lucide-react'
+import { Building, FileText, Sparkles } from 'lucide-react'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
+import { EmptyState } from '@/components/ui/empty-state'
 import {
   Card,
   CardContent,
@@ -26,44 +27,51 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
 
   if (!companyIdValue) {
     return (
-      <div className="container py-10">
+      <div className="space-y-6">
         <PageHeader
-          title="Post a Job"
-          description="Create a new job posting with AI-assisted JD parsing."
+          eyebrow="Nhà tuyển dụng"
+          title="Đăng tin tuyển dụng"
+          description="Tạo tin tuyển dụng mới với sự hỗ trợ của AI bóc tách kỹ năng JD."
         />
-        <Card>
-          <CardContent className="flex min-h-[30vh] flex-col items-center justify-center gap-3 py-10 text-center">
-            <p className="text-sm font-medium text-muted-foreground">
-              Bạn cần tạo company trước khi đăng tin tuyển dụng.
-            </p>
-            <Link to="/recruiter/company">
-              <Button>Create a company</Button>
-            </Link>
-          </CardContent>
-        </Card>
+        <EmptyState
+          icon={<Building className="h-6 w-6" aria-hidden="true" />}
+          title="Chưa có công ty"
+          description="Bạn cần tạo công ty trước khi đăng tin tuyển dụng."
+        >
+          <Link to="/recruiter/company">
+            <Button>
+              <Building className="h-4 w-4" aria-hidden="true" />
+              Tạo công ty
+            </Button>
+          </Link>
+        </EmptyState>
       </div>
     )
   }
 
   return (
-    <div className="container py-10">
+    <div className="space-y-6">
       <PageHeader
-        title="Post a Job"
-        description="Create a new job posting with AI-assisted JD parsing."
+        eyebrow="Nhà tuyển dụng"
+        title="Đăng tin tuyển dụng"
+        description="Tạo tin tuyển dụng mới với sự hỗ trợ của AI bóc tách kỹ năng JD."
         actions={
           <Button variant="outline" onClick={() => setShowAiModal(true)}>
             <Sparkles className="h-4 w-4" aria-hidden="true" />
-            AI Bóc Tách Kỹ Năng
+            Phân tích JD bằng AI
           </Button>
         }
       />
 
       <Card>
         <CardHeader>
-          <CardTitle>Job details</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <FileText className="h-5 w-5 text-primary" aria-hidden="true" />
+            Thông tin tin tuyển dụng
+          </CardTitle>
           <CardDescription>
-            Fill in the job information. You can use AI to extract skills from
-            a job description.
+            Điền thông tin công việc. Bạn có thể dùng AI để trích xuất kỹ năng
+            từ bản mô tả công việc.
           </CardDescription>
         </CardHeader>
         <CardContent>

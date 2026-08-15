@@ -27,13 +27,13 @@ interface StatItem {
 
 function StatCard({ label, value, icon: Icon }: StatItem) {
   return (
-    <Card>
+    <Card className="transition-shadow hover:shadow-soft">
       <CardContent className="flex items-center gap-4 py-5">
-        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-secondary text-secondary-foreground">
+        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
           <Icon className="h-5 w-5" aria-hidden="true" />
         </div>
         <div>
-          <p className="text-2xl font-bold">{value}</p>
+          <p className="font-display text-2xl font-bold">{value}</p>
           <p className="text-xs uppercase text-muted-foreground">{label}</p>
         </div>
       </CardContent>

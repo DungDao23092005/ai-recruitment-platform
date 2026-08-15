@@ -72,7 +72,9 @@ describe('AdminDashboardPage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByText('Tổng quan hệ thống')).toBeInTheDocument()
+      expect(
+        screen.getAllByText('Tổng quan hệ thống').length,
+      ).toBeGreaterThan(0)
       expect(screen.getByText('10')).toBeInTheDocument()
       expect(screen.getByText('20')).toBeInTheDocument()
     })
@@ -86,7 +88,7 @@ describe('AdminDashboardPage', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText('Đơn ứng tuyển theo trạng thái'),
+        screen.getByText('Trạng thái đơn ứng tuyển'),
       ).toBeInTheDocument()
       expect(screen.getByText('5 (25%)')).toBeInTheDocument()
     })
@@ -104,7 +106,7 @@ describe('AdminDashboardPage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByText('Healthy')).toBeInTheDocument()
+      expect(screen.getByText('Hoạt động tốt')).toBeInTheDocument()
       expect(
         screen.getByText('AI Recruitment Platform API'),
       ).toBeInTheDocument()
@@ -145,7 +147,7 @@ describe('AdminDashboardPage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByText('Unreachable')).toBeInTheDocument()
+      expect(screen.getByText('Không kết nối được')).toBeInTheDocument()
     })
   })
 })

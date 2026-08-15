@@ -54,7 +54,7 @@ export interface RecruiterProfileData {
 }
 
 export const USER_ROLE_LABELS: Record<UserRole, string> = {
-  admin: 'Admin',
-  candidate: 'Candidate',
-  recruiter: 'Recruiter',
+  admin: 'Quản trị viên',
+  candidate: 'Ứng viên',
+  recruiter: 'Nhà tuyển dụng',
 }

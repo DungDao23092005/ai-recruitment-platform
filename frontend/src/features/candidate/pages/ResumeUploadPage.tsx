@@ -8,18 +8,17 @@ export function ResumeUploadPage() {
   const [parsedResume, setParsedResume] = useState<ParsedResume | null>(null)
 
   return (
-    <div className="container py-10">
+    <div className="space-y-6">
       <PageHeader
-        title="Upload CV"
-        description="Upload your PDF resume and let AI extract your professional profile."
+        eyebrow="Hồ sơ"
+        title="Tải lên CV"
+        description="Tải lên CV PDF và để AI trích xuất hồ sơ chuyên môn của bạn."
       />
 
       <div className="max-w-2xl space-y-6">
         <ResumeUpload onParsed={setParsedResume} />
 
-        {parsedResume ? (
-          <ParsedResumeView resume={parsedResume} />
-        ) : null}
+        {parsedResume ? <ParsedResumeView resume={parsedResume} /> : null}
       </div>
     </div>
   )

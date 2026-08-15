@@ -31,7 +31,7 @@ export function CompanyCard({ company }: CompanyCardProps) {
       <CardContent className="space-y-3 text-sm">
         <p className="flex items-center gap-1 text-muted-foreground">
           <FileText className="h-4 w-4" aria-hidden="true" />
-          Tax code: {company.tax_code}
+          Mã số thuế: {company.tax_code}
         </p>
         <Badge variant="neutral">{COMPANY_SIZE_LABELS[company.size]}</Badge>
       </CardContent>

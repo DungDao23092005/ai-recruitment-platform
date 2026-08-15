@@ -5,6 +5,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { cn } from '@/utils/cn'
+import { APPLICATION_STATUS_LABELS } from '@/features/recruiter/components/StatusUpdateModal'
 import type { ApplicationStatusCounts } from '@/types/admin'
 
 export interface ApplicationStatusChartProps {
@@ -13,30 +14,17 @@ export interface ApplicationStatusChartProps {
 
 interface StatusRow {
   key: keyof ApplicationStatusCounts
-  label: string
   className: string
 }
 
 const STATUS_ROWS: StatusRow[] = [
-  { key: 'applied', label: 'Applied', className: 'bg-blue-500' },
-  {
-    key: 'under_review',
-    label: 'Under review',
-    className: 'bg-cyan-500',
-  },
-  {
-    key: 'shortlisted',
-    label: 'Shortlisted',
-    className: 'bg-violet-500',
-  },
-  {
-    key: 'interviewing',
-    label: 'Interviewing',
-    className: 'bg-amber-500',
-  },
-  { key: 'accepted', label: 'Accepted', className: 'bg-emerald-500' },
-  { key: 'rejected', label: 'Rejected', className: 'bg-rose-500' },
-  { key: 'withdrawn', label: 'Withdrawn', className: 'bg-gray-400' },
+  { key: 'applied', className: 'bg-blue-500' },
+  { key: 'under_review', className: 'bg-cyan-500' },
+  { key: 'shortlisted', className: 'bg-violet-500' },
+  { key: 'interviewing', className: 'bg-amber-500' },
+  { key: 'accepted', className: 'bg-emerald-500' },
+  { key: 'rejected', className: 'bg-rose-500' },
+  { key: 'withdrawn', className: 'bg-gray-400' },
 ]
 
 export function ApplicationStatusChart({
@@ -50,7 +38,7 @@ export function ApplicationStatusChart({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-lg">Đơn ứng tuyển theo trạng thái</CardTitle>
+        <CardTitle className="text-lg">Trạng thái đơn ứng tuyển</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         {total === 0 ? (
@@ -64,7 +52,9 @@ export function ApplicationStatusChart({
             return (
               <div key={row.key}>
                 <div className="mb-1 flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground">{row.label}</span>
+                  <span className="text-muted-foreground">
+                    {APPLICATION_STATUS_LABELS[row.key]}
+                  </span>
                   <span className="font-medium">
                     {value} ({percent}%)
                   </span>

@@ -163,7 +163,7 @@ export function ChatMessageBubble({
                 <Badge
                   variant="neutral"
                   className="shrink-0 text-xs font-bold"
-                  aria-label={`Relevance score ${formatSourceScore(source.relevance_score)}`}
+                  aria-label={`Độ liên quan ${formatSourceScore(source.relevance_score)}`}
                 >
                   {formatSourceScore(source.relevance_score)}
                 </Badge>

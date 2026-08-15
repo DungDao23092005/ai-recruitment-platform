@@ -44,7 +44,7 @@ describe('ParsedResumeView', () => {
 
   it('renders experience information', () => {
     render(<ParsedResumeView resume={mockResume} />)
-    expect(screen.getByText('7 years experience')).toBeInTheDocument()
+    expect(screen.getByText('7 năm kinh nghiệm')).toBeInTheDocument()
   })
 
   it('renders skills', () => {
@@ -56,13 +56,13 @@ describe('ParsedResumeView', () => {
   it('renders experiences with position and company', () => {
     render(<ParsedResumeView resume={mockResume} />)
     expect(
-      screen.getByText(/Data Scientist at Tech Corp/i),
+      screen.getByText(/Data Scientist tại Tech Corp/i),
     ).toBeInTheDocument()
   })
 
   it('renders education with institution and degree', () => {
     render(<ParsedResumeView resume={mockResume} />)
-    expect(screen.getByText(/Bachelor in Computer Science/i)).toBeInTheDocument()
+    expect(screen.getByText(/Bachelor.*Computer Science/)).toBeInTheDocument()
     expect(screen.getByText(/University of Science/)).toBeInTheDocument()
   })
 
@@ -88,9 +88,11 @@ describe('ParsedResumeView', () => {
     }
 
     render(<ParsedResumeView resume={emptyResume} />)
-    expect(screen.getByText('Unnamed candidate')).toBeInTheDocument()
+    expect(screen.getByText('Ứng viên chưa có tên')).toBeInTheDocument()
     expect(
-      screen.getByText('No additional details were extracted from this resume.'),
+      screen.getByText(
+        'Không có thông tin chi tiết nào khác được trích xuất từ CV này.',
+      ),
     ).toBeInTheDocument()
   })
 })

@@ -33,7 +33,7 @@ function renderLoginPage() {
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
-          <Route path="/candidate/profile" element={<div>Candidate Profile Page</div>} />
+          <Route path="/candidate/portal" element={<div>Candidate Portal Page</div>} />
         </Routes>
       </AuthProvider>
     </MemoryRouter>,
@@ -49,11 +49,13 @@ describe('LoginPage', () => {
   it('shows validation errors for empty form', async () => {
     renderLoginPage()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Đăng nhập' }))
 
     await waitFor(() => {
-      expect(screen.getByText('Email is required')).toBeInTheDocument()
-      expect(screen.getByText('Password is required')).toBeInTheDocument()
+      expect(screen.getByText('Email không được để trống')).toBeInTheDocument()
+      expect(
+        screen.getByText('Mật khẩu không được để trống'),
+      ).toBeInTheDocument()
     })
     expect(mockedLogin).not.toHaveBeenCalled()
   })
@@ -70,10 +72,10 @@ describe('LoginPage', () => {
     fireEvent.change(screen.getByLabelText('Email'), {
       target: { value: 'candidate@example.com' },
     })
-    fireEvent.change(screen.getByLabelText('Password'), {
+    fireEvent.change(screen.getByLabelText('Mật khẩu'), {
       target: { value: 'password1' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Đăng nhập' }))
 
     await waitFor(() => {
       expect(mockedLogin).toHaveBeenCalledWith({
@@ -93,14 +95,14 @@ describe('LoginPage', () => {
     fireEvent.change(screen.getByLabelText('Email'), {
       target: { value: 'candidate@example.com' },
     })
-    fireEvent.change(screen.getByLabelText('Password'), {
+    fireEvent.change(screen.getByLabelText('Mật khẩu'), {
       target: { value: 'wrongpass' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Đăng nhập' }))
 
     await waitFor(() => {
       expect(
-        screen.getByText('Incorrect email or password.'),
+        screen.getByText('Email hoặc mật khẩu không chính xác.'),
       ).toBeInTheDocument()
     })
   })
@@ -119,12 +121,12 @@ describe('LoginPage', () => {
     fireEvent.change(screen.getByLabelText('Email'), {
       target: { value: 'candidate@example.com' },
     })
-    fireEvent.change(screen.getByLabelText('Password'), {
+    fireEvent.change(screen.getByLabelText('Mật khẩu'), {
       target: { value: 'password1' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Đăng nhập' }))
 
-    const button = screen.getByRole('button', { name: /Loading/i })
+    const button = screen.getByRole('button', { name: /Đang tải/i })
     expect(button).toBeDisabled()
 
     resolveLogin({ access_token: 'token-abc', token_type: 'bearer' })
@@ -142,14 +144,14 @@ describe('LoginPage', () => {
     fireEvent.change(screen.getByLabelText('Email'), {
       target: { value: 'candidate@example.com' },
     })
-    fireEvent.change(screen.getByLabelText('Password'), {
+    fireEvent.change(screen.getByLabelText('Mật khẩu'), {
       target: { value: 'password1' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Đăng nhập' }))
 
     await waitFor(() => {
       expect(
-        screen.getByText('Candidate Profile Page'),
+        screen.getByText('Candidate Portal Page'),
       ).toBeInTheDocument()
     })
   })

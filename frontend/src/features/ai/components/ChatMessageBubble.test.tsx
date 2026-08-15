@@ -48,7 +48,7 @@ describe('ChatMessageBubble', () => {
     expect(screen.getByText('Nguồn tham khảo')).toBeInTheDocument()
     expect(screen.getByText('Job abc12345')).toBeInTheDocument()
     expect(screen.getByText(/Python, FastAPI/)).toBeInTheDocument()
-    expect(screen.getByLabelText('Relevance score 87%')).toBeInTheDocument()
+    expect(screen.getByLabelText('Độ liên quan 87%')).toBeInTheDocument()
   })
 
   it('does not render citations when none provided', () => {

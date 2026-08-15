@@ -22,7 +22,7 @@ function formatYearsExperience(value: number | null): string | null {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return null
   }
-  return `${value} years`
+  return `${value} năm`
 }
 
 export function CandidateRecommendationCard({
@@ -33,7 +33,7 @@ export function CandidateRecommendationCard({
   const { text: scoreText } = getScoreColor(overall)
 
   const fullName =
-    parsed_resume?.full_name ?? `Candidate ${candidate_id.slice(0, 8)}`
+    parsed_resume?.full_name ?? `Ứng viên ${candidate_id.slice(0, 8)}`
   const title = parsed_resume?.title
   const experience = formatYearsExperience(
     parsed_resume?.total_years_experience ?? null,
@@ -41,33 +41,33 @@ export function CandidateRecommendationCard({
   const skills = parsed_resume?.skills ?? []
 
   return (
-    <Card className="flex h-full flex-col transition-shadow hover:shadow-md">
+    <Card className="flex h-full flex-col border-border/70 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-soft">
       <CardHeader className="pb-4">
-        <div className="flex items-start justify-between gap-2">
-          <CardTitle className="text-lg">{fullName}</CardTitle>
+        <div className="flex items-start justify-between gap-3">
+          <CardTitle className="font-display text-lg font-semibold leading-snug">
+            {fullName}
+          </CardTitle>
           <Badge
             variant="neutral"
-            className={cn('shrink-0 text-sm font-bold', scoreText)}
-            aria-label={`Match score ${overall} percent`}
+            className={cn('shrink-0 font-bold', scoreText)}
+            aria-label={`Điểm đối sánh ${overall} phần trăm`}
           >
             {overall}%
           </Badge>
         </div>
-        {title ? (
-          <CardDescription>{title}</CardDescription>
-        ) : null}
+        {title ? <CardDescription>{title}</CardDescription> : null}
       </CardHeader>
       <CardContent className="flex-1 space-y-4">
         {experience ? (
           <p className="text-sm text-muted-foreground">
-            {experience} experience
+            Kinh nghiệm: {experience}
           </p>
         ) : null}
 
         {skills.length > 0 ? (
           <div className="space-y-1.5">
-            <p className="text-xs font-medium uppercase text-muted-foreground">
-              Skills
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Kỹ năng
             </p>
             <div className="flex flex-wrap gap-1.5">
               {skills.map((skill) => (
@@ -81,8 +81,8 @@ export function CandidateRecommendationCard({
 
         {match_result.skill_gap.length > 0 ? (
           <div className="space-y-1.5">
-            <p className="text-xs font-medium uppercase text-muted-foreground">
-              Skill gap
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Khoảng cách kỹ năng
             </p>
             <div className="flex flex-wrap gap-1.5">
               {match_result.skill_gap.map((skill) => (

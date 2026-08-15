@@ -2,17 +2,19 @@ import { useState } from 'react'
 import { User } from 'lucide-react'
 import apiClient from '@/api/client'
 import { Button } from '@/components/ui/button'
+import { Modal } from '@/components/ui/modal'
+import { Select } from '@/components/ui/select'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { Application, ApplicationStatus } from '@/types/application'
 
 export const APPLICATION_STATUS_LABELS: Record<ApplicationStatus, string> = {
-  applied: 'Applied',
-  under_review: 'Under review',
-  shortlisted: 'Shortlisted',
-  interviewing: 'Interviewing',
-  accepted: 'Accepted',
-  rejected: 'Rejected',
-  withdrawn: 'Withdrawn',
+  applied: 'Đã nộp',
+  under_review: 'Đang xem xét',
+  shortlisted: 'Lọt vòng ngắn',
+  interviewing: 'Đang phỏng vấn',
+  accepted: 'Đã chấp nhận',
+  rejected: 'Từ chối',
+  withdrawn: 'Đã rút',
 }
 
 export const APPLICATION_STATUS_OPTIONS: ApplicationStatus[] = [
@@ -60,86 +62,66 @@ export function StatusUpdateModal({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Update application status"
-      onClick={onClose}
+    <Modal
+      onClose={onClose}
+      size="sm"
+      ariaLabel="Cập nhật trạng thái đơn ứng tuyển"
+      title={
+        <span className="flex items-center gap-2">
+          <User className="h-5 w-5 text-primary" aria-hidden="true" />
+          Cập nhật trạng thái
+        </span>
+      }
+      description={`Đơn ứng tuyển ${application.id.slice(0, 8)}`}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={submitting}>
+            Đóng
+          </Button>
+          <Button
+            onClick={handleUpdate}
+            isLoading={submitting}
+            disabled={success}
+          >
+            Lưu trạng thái
+          </Button>
+        </>
+      }
     >
-      <div className="w-full max-w-md" onClick={(e) => e.stopPropagation()}>
-        <div className="rounded-lg border bg-background shadow-lg">
-          <div className="border-b p-5">
-            <h2 className="flex items-center gap-2 text-lg font-semibold">
-              <User className="h-5 w-5 text-primary" aria-hidden="true" />
-              Update status
-            </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Application {application.id.slice(0, 8)}
-            </p>
-          </div>
+      <div className="space-y-4">
+        <Select
+          id="application-status"
+          name="status"
+          label="Trạng thái"
+          value={status}
+          onChange={(e) => setStatus(e.target.value as ApplicationStatus)}
+          helperText="Chuyển trạng thái theo quy trình tuyển dụng của nền tảng."
+        >
+          {APPLICATION_STATUS_OPTIONS.map((option) => (
+            <option key={option} value={option}>
+              {APPLICATION_STATUS_LABELS[option]}
+            </option>
+          ))}
+        </Select>
 
-          <div className="space-y-4 p-5">
-            <div className="flex flex-col gap-1.5">
-              <label
-                htmlFor="application-status"
-                className="text-sm font-medium leading-none"
-              >
-                Status
-              </label>
-              <select
-                id="application-status"
-                name="status"
-                value={status}
-                onChange={(e) =>
-                  setStatus(e.target.value as ApplicationStatus)
-                }
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                {APPLICATION_STATUS_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {APPLICATION_STATUS_LABELS[option]}
-                  </option>
-                ))}
-              </select>
-              <span className="text-xs text-muted-foreground">
-                Backend status transitions apply.
-              </span>
-            </div>
+        {success ? (
+          <p
+            role="status"
+            className="rounded-md bg-success/10 px-3 py-2 text-sm font-medium text-success"
+          >
+            Cập nhật trạng thái thành công
+          </p>
+        ) : null}
 
-            {success ? (
-              <p
-                role="status"
-                className="rounded-md bg-green-50 px-3 py-2 text-sm font-medium text-green-700"
-              >
-                Status updated successfully
-              </p>
-            ) : null}
-
-            {error ? (
-              <p
-                role="alert"
-                className="rounded-md bg-red-50 px-3 py-2 text-sm font-medium text-destructive"
-              >
-                {error}
-              </p>
-            ) : null}
-          </div>
-
-          <div className="flex items-center justify-end gap-2 border-t p-4">
-            <Button variant="ghost" onClick={onClose} disabled={submitting}>
-              Close
-            </Button>
-            <Button
-              onClick={handleUpdate}
-              isLoading={submitting}
-              disabled={success}
-            >
-              Save status
-            </Button>
-          </div>
-        </div>
+        {error ? (
+          <p
+            role="alert"
+            className="rounded-md bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive"
+          >
+            {error}
+          </p>
+        ) : null}
       </div>
-    </div>
+    </Modal>
   )
 }

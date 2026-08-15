@@ -53,10 +53,10 @@ describe('JobCreatePage', () => {
 
     expect(
       screen.getByText(
-        /Bạn cần tạo company trước khi đăng tin tuyển dụng/i,
+        /Bạn cần tạo công ty trước khi đăng tin tuyển dụng/i,
       ),
     ).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Create a company/i })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: /Tạo công ty/i })).toHaveAttribute(
       'href',
       '/recruiter/company',
     )
@@ -69,10 +69,10 @@ describe('JobCreatePage', () => {
       </MemoryRouter>,
     )
 
-    expect(screen.getByText('Job details')).toBeInTheDocument()
-    expect(screen.getByLabelText('Job title')).toBeInTheDocument()
+    expect(screen.getByText('Thông tin tin tuyển dụng')).toBeInTheDocument()
+    expect(screen.getByLabelText('Tiêu đề công việc')).toBeInTheDocument()
     expect(
-      screen.getByRole('button', { name: /AI Bóc Tách Kỹ Năng/i }),
+      screen.getByRole('button', { name: /Phân tích JD bằng AI/i }),
     ).toBeInTheDocument()
   })
 
@@ -85,14 +85,14 @@ describe('JobCreatePage', () => {
       </MemoryRouter>,
     )
 
-    fireEvent.change(screen.getByLabelText('Job title'), {
+    fireEvent.change(screen.getByLabelText('Tiêu đề công việc'), {
       target: { value: 'Senior Frontend Engineer' },
     })
-    fireEvent.change(screen.getByLabelText('Description'), {
+    fireEvent.change(screen.getByLabelText('Mô tả công việc'), {
       target: { value: 'Build modern web applications with React.' },
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /Create job/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Tạo tin tuyển dụng/i }))
 
     await waitFor(() => {
       expect(mockedPost).toHaveBeenCalledWith('/jobs', {
@@ -105,7 +105,7 @@ describe('JobCreatePage', () => {
         status: 'draft',
       })
       expect(
-        screen.getByText('Job created successfully.'),
+        screen.getByText('Tạo tin tuyển dụng thành công.'),
       ).toBeInTheDocument()
     })
   })
@@ -120,20 +120,20 @@ describe('JobCreatePage', () => {
     )
 
     fireEvent.click(
-      screen.getByRole('button', { name: /AI Bóc Tách Kỹ Năng/i }),
+      screen.getByRole('button', { name: /Phân tích JD bằng AI/i }),
     )
 
     const dialog = screen.getByRole('dialog', {
-      name: 'AI job description parser',
+      name: 'AI phân tích JD',
     })
     expect(dialog).toBeInTheDocument()
 
-    fireEvent.change(within(dialog).getByLabelText(/Raw job description/i), {
+    fireEvent.change(within(dialog).getByLabelText(/Mô tả công việc/), {
       target: { value: 'Build modern web applications with React.' },
     })
 
     fireEvent.click(
-      within(dialog).getByRole('button', { name: /AI Bóc Tách Kỹ Năng/i }),
+      within(dialog).getByRole('button', { name: /Phân tích JD bằng AI/i }),
     )
 
     await waitFor(() => {

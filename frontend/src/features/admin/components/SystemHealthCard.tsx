@@ -32,7 +32,7 @@ export function SystemHealthCard({
           size="sm"
           onClick={onRefresh}
           disabled={status === 'loading'}
-          aria-label="Refresh system health"
+          aria-label="Làm mới trạng thái hệ thống"
         >
           <RefreshCw className="h-4 w-4" aria-hidden="true" />
         </Button>
@@ -51,26 +51,26 @@ export function SystemHealthCard({
           <div className="space-y-3">
             <div className="flex items-center gap-2">
               <CheckCircle2 className="h-5 w-5 text-emerald-600" aria-hidden="true" />
-              <Badge variant="success">Healthy</Badge>
+              <Badge variant="success">Hoạt động tốt</Badge>
             </div>
             <dl className="rounded-lg border bg-muted/30 p-4 text-sm">
               <div className="flex justify-between gap-4 py-1">
                 <dt className="flex items-center gap-1 text-muted-foreground">
                   <Server className="h-4 w-4" aria-hidden="true" />
-                  Service
+                  Dịch vụ
                 </dt>
                 <dd className="font-medium">{health.service ?? 'Backend API'}</dd>
               </div>
               <div className="flex justify-between gap-4 py-1">
-                <dt className="text-muted-foreground">Status</dt>
+                <dt className="text-muted-foreground">Trạng thái</dt>
                 <dd className="font-medium">{health.status}</dd>
               </div>
               <div className="flex justify-between gap-4 py-1">
-                <dt className="text-muted-foreground">Version</dt>
+                <dt className="text-muted-foreground">Phiên bản</dt>
                 <dd className="font-medium">{health.version ?? 'N/A'}</dd>
               </div>
               <div className="flex justify-between gap-4 py-1">
-                <dt className="text-muted-foreground">Environment</dt>
+                <dt className="text-muted-foreground">Môi trường</dt>
                 <dd className="font-medium">
                   {health.environment ?? 'N/A'}
                 </dd>
@@ -83,10 +83,10 @@ export function SystemHealthCard({
           <div className="space-y-3">
             <div className="flex items-center gap-2">
               <XCircle className="h-5 w-5 text-rose-600" aria-hidden="true" />
-              <Badge variant="destructive">Unreachable</Badge>
+              <Badge variant="destructive">Không kết nối được</Badge>
             </div>
             <p className="text-sm text-muted-foreground">
-              {error ?? 'Cannot reach the backend API. Is it running?'}
+              {error ?? 'Không thể kết nối tới backend API. Backend có đang chạy không?'}
             </p>
           </div>
         ) : null}

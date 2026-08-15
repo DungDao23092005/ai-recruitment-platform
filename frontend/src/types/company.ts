@@ -21,7 +21,7 @@ export const COMPANY_SIZE_LABELS: Record<CompanySize, string> = {
   seed: 'Seed',
   startup: 'Startup',
   sme: 'SME',
-  enterprise: 'Enterprise',
+  enterprise: 'Doanh nghiệp lớn',
 }
 
 export const COMPANY_SIZES: CompanySize[] = [

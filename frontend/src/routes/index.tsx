@@ -1,7 +1,7 @@
 import { Routes, Route } from 'react-router-dom'
 import { MainLayout } from '@/layouts/MainLayout'
 import { AuthLayout } from '@/layouts/AuthLayout'
-import { DashboardLayout } from '@/layouts/DashboardLayout'
+import { AppShell } from '@/layouts/AppShell'
 import { HomePage } from '@/pages/HomePage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { HealthCheckPage } from '@/pages/HealthCheckPage'
@@ -34,9 +34,9 @@ export interface AppNavLink {
 }
 
 export const NAV_LINKS: AppNavLink[] = [
-  { to: '/', label: 'Home' },
+  { to: '/', label: 'Trang chủ' },
   { to: '/jobs', label: 'Việc làm' },
-  { to: '/health', label: 'Health' },
+  { to: '/health', label: 'Sức khỏe hệ thống' },
 ]
 
 function ProtectedByRole({
@@ -49,19 +49,6 @@ function ProtectedByRole({
   return <RoleGuard allowedRoles={allowedRoles}>{children}</RoleGuard>
 }
 
-function AdminPlaceholder() {
-  return (
-    <div className="container py-10">
-      <h1 className="text-2xl font-semibold tracking-tight">
-        Admin Overview
-      </h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        Admin dashboard is coming soon.
-      </p>
-    </div>
-  )
-}
-
 export function AppRouter() {
   return (
     <Routes>
@@ -70,8 +57,15 @@ export function AppRouter() {
         <Route path="/health" element={<HealthCheckPage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/jobs/:id" element={<JobDetailPage />} />
+      </Route>
 
-        <Route element={<ProtectedRoute />}>
+      <Route element={<AuthLayout />}>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+      </Route>
+
+      <Route element={<ProtectedRoute />}>
+        <Route element={<AppShell />}>
           <Route
             path="/jobs/search"
             element={
@@ -112,16 +106,14 @@ export function AppRouter() {
               </ProtectedByRole>
             }
           />
-          <Route element={<DashboardLayout />}>
-            <Route
-              path="/candidate/recommendations"
-              element={
-                <ProtectedByRole allowedRoles={['candidate']}>
-                  <CandidateRecommendationsPage />
-                </ProtectedByRole>
-              }
-            />
-          </Route>
+          <Route
+            path="/candidate/recommendations"
+            element={
+              <ProtectedByRole allowedRoles={['candidate']}>
+                <CandidateRecommendationsPage />
+              </ProtectedByRole>
+            }
+          />
           <Route
             path="/recruiter/profile"
             element={
@@ -170,36 +162,30 @@ export function AppRouter() {
               </ProtectedByRole>
             }
           />
-          <Route element={<DashboardLayout />}>
-            <Route
-              path="/recruiter/jobs/:id/recommendations"
-              element={
-                <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
-                  <JobRecommendationsPage />
-                </ProtectedByRole>
-              }
-            />
-          </Route>
-          <Route element={<DashboardLayout />}>
-            <Route
-              path="/recruiter/jobs/:id/interview"
-              element={
-                <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
-                  <InterviewGeneratorPage />
-                </ProtectedByRole>
-              }
-            />
-          </Route>
-          <Route element={<DashboardLayout />}>
-            <Route
-              path="/recruiter/search/candidates"
-              element={
-                <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
-                  <SemanticCandidateSearchPage />
-                </ProtectedByRole>
-              }
-            />
-          </Route>
+          <Route
+            path="/recruiter/jobs/:id/recommendations"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                <JobRecommendationsPage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/recruiter/jobs/:id/interview"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                <InterviewGeneratorPage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/recruiter/search/candidates"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                <SemanticCandidateSearchPage />
+              </ProtectedByRole>
+            }
+          />
           <Route
             path="/admin/dashboard"
             element={
@@ -208,20 +194,7 @@ export function AppRouter() {
               </RoleGuard>
             }
           />
-          <Route
-            path="/admin/overview"
-            element={
-              <RoleGuard allowedRoles={['admin']}>
-                <AdminPlaceholder />
-              </RoleGuard>
-            }
-          />
         </Route>
-      </Route>
-
-      <Route element={<AuthLayout />}>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/register" element={<RegisterPage />} />
       </Route>
 
       <Route path="*" element={<NotFoundPage />} />

@@ -40,13 +40,13 @@ function fillValidForm() {
   fireEvent.change(screen.getByLabelText('Email'), {
     target: { value: 'candidate@example.com' },
   })
-  fireEvent.change(screen.getByLabelText('Password'), {
+  fireEvent.change(screen.getByLabelText('Mật khẩu'), {
     target: { value: 'password1' },
   })
-  fireEvent.change(screen.getByLabelText('Confirm password'), {
+  fireEvent.change(screen.getByLabelText('Xác nhận mật khẩu'), {
     target: { value: 'password1' },
   })
-  fireEvent.change(screen.getByLabelText('Role'), {
+  fireEvent.change(screen.getByLabelText('Vai trò'), {
     target: { value: 'candidate' },
   })
 }
@@ -59,15 +59,17 @@ describe('RegisterPage', () => {
   it('shows errors for empty fields', async () => {
     renderRegisterPage()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo tài khoản' }))
 
     await waitFor(() => {
-      expect(screen.getByText('Email is required')).toBeInTheDocument()
-      expect(screen.getByText('Password is required')).toBeInTheDocument()
+      expect(screen.getByText('Email không được để trống')).toBeInTheDocument()
       expect(
-        screen.getByText('Please confirm your password'),
+        screen.getByText('Mật khẩu không được để trống'),
       ).toBeInTheDocument()
-      expect(screen.getByText('Please select a role')).toBeInTheDocument()
+      expect(
+        screen.getByText('Vui lòng xác nhận mật khẩu'),
+      ).toBeInTheDocument()
+      expect(screen.getByText('Vui lòng chọn vai trò')).toBeInTheDocument()
     })
     expect(mockedRegister).not.toHaveBeenCalled()
   })
@@ -78,11 +80,11 @@ describe('RegisterPage', () => {
     fireEvent.change(screen.getByLabelText('Email'), {
       target: { value: 'not-an-email' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo tài khoản' }))
 
     await waitFor(() => {
       expect(
-        screen.getByText('Enter a valid email address'),
+        screen.getByText('Vui lòng nhập địa chỉ email hợp lệ'),
       ).toBeInTheDocument()
     })
   })
@@ -90,14 +92,14 @@ describe('RegisterPage', () => {
   it('shows short password error', async () => {
     renderRegisterPage()
 
-    fireEvent.change(screen.getByLabelText('Password'), {
+    fireEvent.change(screen.getByLabelText('Mật khẩu'), {
       target: { value: 'short' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo tài khoản' }))
 
     await waitFor(() => {
       expect(
-        screen.getByText('Password must be at least 8 characters'),
+        screen.getByText('Mật khẩu phải có ít nhất 8 ký tự'),
       ).toBeInTheDocument()
     })
   })
@@ -105,17 +107,17 @@ describe('RegisterPage', () => {
   it('shows password mismatch error', async () => {
     renderRegisterPage()
 
-    fireEvent.change(screen.getByLabelText('Password'), {
+    fireEvent.change(screen.getByLabelText('Mật khẩu'), {
       target: { value: 'password1' },
     })
-    fireEvent.change(screen.getByLabelText('Confirm password'), {
+    fireEvent.change(screen.getByLabelText('Xác nhận mật khẩu'), {
       target: { value: 'different1' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo tài khoản' }))
 
     await waitFor(() => {
       expect(
-        screen.getByText('Passwords do not match'),
+        screen.getByText('Mật khẩu xác nhận không khớp'),
       ).toBeInTheDocument()
     })
   })
@@ -126,16 +128,16 @@ describe('RegisterPage', () => {
     fireEvent.change(screen.getByLabelText('Email'), {
       target: { value: 'candidate@example.com' },
     })
-    fireEvent.change(screen.getByLabelText('Password'), {
+    fireEvent.change(screen.getByLabelText('Mật khẩu'), {
       target: { value: 'password1' },
     })
-    fireEvent.change(screen.getByLabelText('Confirm password'), {
+    fireEvent.change(screen.getByLabelText('Xác nhận mật khẩu'), {
       target: { value: 'password1' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo tài khoản' }))
 
     await waitFor(() => {
-      expect(screen.getByText('Please select a role')).toBeInTheDocument()
+      expect(screen.getByText('Vui lòng chọn vai trò')).toBeInTheDocument()
     })
   })
 
@@ -145,7 +147,7 @@ describe('RegisterPage', () => {
     renderRegisterPage()
 
     fillValidForm()
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo tài khoản' }))
 
     await waitFor(() => {
       expect(mockedRegister).toHaveBeenCalledWith({
@@ -167,7 +169,7 @@ describe('RegisterPage', () => {
     renderRegisterPage()
 
     fillValidForm()
-    fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo tài khoản' }))
 
     await waitFor(() => {
       expect(

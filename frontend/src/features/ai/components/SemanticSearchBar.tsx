@@ -58,7 +58,7 @@ export function SemanticSearchBar({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={placeholder}
-          aria-label="Semantic search query"
+          aria-label="Từ khóa tìm kiếm ngữ nghĩa"
           className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
         <Button
@@ -117,7 +117,7 @@ export function SemanticSearchBar({
                 <Badge
                   variant="neutral"
                   className="shrink-0 text-sm font-bold"
-                  aria-label={`Semantic score ${formatSearchScore(result.score)}`}
+                  aria-label={`Độ phù hợp ${formatSearchScore(result.score)}`}
                 >
                   {formatSearchScore(result.score)}
                 </Badge>

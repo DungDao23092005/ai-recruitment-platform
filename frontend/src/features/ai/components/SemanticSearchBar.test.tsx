@@ -28,7 +28,7 @@ describe('SemanticSearchBar', () => {
     render(<SemanticSearchBar searchFn={mockSearchFn} />)
 
     expect(
-      screen.getByLabelText('Semantic search query'),
+      screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'),
     ).toBeInTheDocument()
     expect(
       screen.getByRole('button', { name: /Tìm kiếm/i }),
@@ -38,7 +38,7 @@ describe('SemanticSearchBar', () => {
   it('clicking search calls searchFn with the query', async () => {
     render(<SemanticSearchBar searchFn={mockSearchFn} />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'python backend' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
@@ -51,10 +51,10 @@ describe('SemanticSearchBar', () => {
   it('pressing Enter triggers search', async () => {
     render(<SemanticSearchBar searchFn={mockSearchFn} />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'react developer' },
     })
-    fireEvent.submit(screen.getByRole('searchbox', { name: /search/i }))
+    fireEvent.submit(screen.getByRole('searchbox', { name: /Từ khóa/i }))
 
     await waitFor(() => {
       expect(mockSearchFn).toHaveBeenCalledWith('react developer')
@@ -76,7 +76,7 @@ describe('SemanticSearchBar', () => {
 
     render(<SemanticSearchBar searchFn={mockSearchFn} />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'react' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
@@ -89,7 +89,7 @@ describe('SemanticSearchBar', () => {
   it('renders results with score', async () => {
     render(<SemanticSearchBar searchFn={mockSearchFn} />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'python' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
@@ -98,7 +98,7 @@ describe('SemanticSearchBar', () => {
       expect(screen.getByText('job-1')).toBeInTheDocument()
       expect(screen.getByText('Python')).toBeInTheDocument()
       expect(
-        screen.getByLabelText('Semantic score 87%'),
+        screen.getByLabelText('Độ phù hợp 87%'),
       ).toBeInTheDocument()
     })
   })
@@ -108,7 +108,7 @@ describe('SemanticSearchBar', () => {
 
     render(<SemanticSearchBar searchFn={mockSearchFn} />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'nothing' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
@@ -129,7 +129,7 @@ describe('SemanticSearchBar', () => {
 
     render(<SemanticSearchBar searchFn={mockSearchFn} />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'react' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
@@ -153,7 +153,7 @@ describe('SemanticSearchBar', () => {
 
     render(<SemanticSearchBar searchFn={mockSearchFn} />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'react' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))

@@ -16,7 +16,7 @@ const Spinner = React.forwardRef<HTMLDivElement, SpinnerProps>(
     <div
       ref={ref}
       role="status"
-      aria-label="Loading"
+      aria-label="Đang tải"
       className={cn('inline-block', className)}
       {...props}
     >
@@ -26,7 +26,7 @@ const Spinner = React.forwardRef<HTMLDivElement, SpinnerProps>(
           sizeClasses[size],
         )}
       />
-      <span className="sr-only">Loading...</span>
+      <span className="sr-only">Đang tải...</span>
     </div>
   ),
 )

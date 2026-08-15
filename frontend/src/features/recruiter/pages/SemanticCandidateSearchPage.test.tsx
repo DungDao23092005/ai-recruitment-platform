@@ -37,7 +37,7 @@ describe('SemanticCandidateSearchPage', () => {
   it('searches candidates with the typed query', async () => {
     render(<SemanticCandidateSearchPage />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'react developer' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
@@ -52,7 +52,7 @@ describe('SemanticCandidateSearchPage', () => {
   it('renders candidate search results', async () => {
     render(<SemanticCandidateSearchPage />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'react' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
@@ -68,7 +68,7 @@ describe('SemanticCandidateSearchPage', () => {
 
     render(<SemanticCandidateSearchPage />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'nothing' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
@@ -89,7 +89,7 @@ describe('SemanticCandidateSearchPage', () => {
 
     render(<SemanticCandidateSearchPage />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'react' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))

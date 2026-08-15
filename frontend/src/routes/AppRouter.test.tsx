@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
@@ -180,7 +180,7 @@ describe('AppRouter public routes', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'AI Recruitment Platform' }),
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
   })
@@ -198,10 +198,10 @@ describe('AppRouter public routes', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'Health Check' }),
+        screen.getByRole('heading', { name: 'Kiểm tra sức khỏe hệ thống' }),
       ).toBeInTheDocument()
     })
-    expect(screen.getByText('Healthy')).toBeInTheDocument()
+    expect(screen.getByText('Hoạt động tốt')).toBeInTheDocument()
   })
 })
 
@@ -213,7 +213,7 @@ describe('AppRouter role guards', () => {
     renderAt('/candidate/profile')
 
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Sign in' })).toBeInTheDocument()
+      expect(screen.getByRole('heading', { name: 'Đăng nhập' })).toBeInTheDocument()
     })
   })
 
@@ -224,7 +224,7 @@ describe('AppRouter role guards', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'Candidate Portal' }),
+        screen.getByRole('heading', { name: 'Tổng quan ứng viên' }),
       ).toBeInTheDocument()
     })
   })
@@ -236,11 +236,11 @@ describe('AppRouter role guards', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'AI Recruitment Platform' }),
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
     expect(
-      screen.queryByRole('heading', { name: 'Recruiter Portal' }),
+      screen.queryByRole('heading', { name: 'Tổng quan tuyển dụng' }),
     ).not.toBeInTheDocument()
   })
 
@@ -251,7 +251,7 @@ describe('AppRouter role guards', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'Recruiter Portal' }),
+        screen.getByRole('heading', { name: 'Tổng quan tuyển dụng' }),
       ).toBeInTheDocument()
     })
   })
@@ -263,11 +263,11 @@ describe('AppRouter role guards', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'AI Recruitment Platform' }),
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
     expect(
-      screen.queryByRole('heading', { name: 'Candidate Portal' }),
+      screen.queryByRole('heading', { name: 'Tổng quan ứng viên' }),
     ).not.toBeInTheDocument()
   })
 
@@ -278,7 +278,7 @@ describe('AppRouter role guards', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'Admin Dashboard' }),
+        screen.getByRole('heading', { name: 'Tổng quan hệ thống', level: 1 }),
       ).toBeInTheDocument()
     })
   })
@@ -290,11 +290,11 @@ describe('AppRouter role guards', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'AI Recruitment Platform' }),
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
     expect(
-      screen.queryByRole('heading', { name: 'Admin Dashboard' }),
+      screen.queryByRole('heading', { name: 'Tổng quan hệ thống' }),
     ).not.toBeInTheDocument()
   })
 })
@@ -306,7 +306,7 @@ describe('AppRouter recruiter job routes', () => {
     renderAt('/recruiter/jobs/job-1/interview')
 
     await waitFor(() => {
-      expect(screen.getByText('Số lượng câu hỏi')).toBeInTheDocument()
+      expect(screen.getByText('Số câu hỏi')).toBeInTheDocument()
     })
     expect(mockedGetJobById).toHaveBeenCalledWith('job-1')
   })
@@ -318,7 +318,7 @@ describe('AppRouter recruiter job routes', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'Gợi ý Ứng viên AI' }),
+        screen.getByRole('heading', { name: 'Ứng viên phù hợp cho vị trí' }),
       ).toBeInTheDocument()
     })
     expect(mockedGetJobById).toHaveBeenCalledWith('job-1')
@@ -337,7 +337,7 @@ describe('AppRouter AI routes', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'Trợ lý AI' }),
+        screen.getByRole('heading', { name: 'Trợ lý AI tuyển dụng' }),
       ).toBeInTheDocument()
     })
   })
@@ -361,7 +361,7 @@ describe('AppRouter AI routes', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'AI Recruitment Platform' }),
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
   })
@@ -375,12 +375,17 @@ describe('AppRouter Navbar integration', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'AI Recruitment Platform' }),
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
-    expect(screen.getByText('Trợ lý AI')).toBeInTheDocument()
-    expect(screen.getByText('Tìm việc AI')).toBeInTheDocument()
-    expect(screen.getByText('Gợi ý việc làm')).toBeInTheDocument()
+    const candidateNav = screen.getByRole('navigation', {
+      name: 'Điều hướng chính',
+    })
+    expect(within(candidateNav).getByText('Trợ lý AI')).toBeInTheDocument()
+    expect(within(candidateNav).getByText('Tìm việc AI')).toBeInTheDocument()
+    expect(
+      within(candidateNav).getByText('Gợi ý việc làm'),
+    ).toBeInTheDocument()
   })
 
   it('renders recruiter nav links for a recruiter', async () => {
@@ -390,12 +395,19 @@ describe('AppRouter Navbar integration', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'AI Recruitment Platform' }),
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
-    expect(screen.getByText('Trợ lý AI')).toBeInTheDocument()
-    expect(screen.getByText('Quản lý tuyển dụng')).toBeInTheDocument()
-    expect(screen.getByText('Tìm ứng viên AI')).toBeInTheDocument()
+    const recruiterNav = screen.getByRole('navigation', {
+      name: 'Điều hướng chính',
+    })
+    expect(within(recruiterNav).getByText('Trợ lý AI')).toBeInTheDocument()
+    expect(
+      within(recruiterNav).getByText('Quản lý tuyển dụng'),
+    ).toBeInTheDocument()
+    expect(
+      within(recruiterNav).getByText('Tìm ứng viên AI'),
+    ).toBeInTheDocument()
   })
 
   it('renders admin dashboard link for an admin', async () => {
@@ -405,10 +417,15 @@ describe('AppRouter Navbar integration', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'AI Recruitment Platform' }),
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
-    expect(screen.getByText('Admin Dashboard')).toBeInTheDocument()
-    expect(screen.getByText('Quản lý tuyển dụng')).toBeInTheDocument()
+    const adminNav = screen.getByRole('navigation', {
+      name: 'Điều hướng chính',
+    })
+    expect(within(adminNav).getByText('Bảng điều khiển')).toBeInTheDocument()
+    expect(
+      within(adminNav).getByText('Quản lý tuyển dụng'),
+    ).toBeInTheDocument()
   })
 })

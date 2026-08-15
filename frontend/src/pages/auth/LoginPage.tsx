@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { LogIn } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -25,20 +26,20 @@ interface FormErrors {
 function validate(values: FormValues): FormErrors {
   const errors: FormErrors = {}
   if (!values.email.trim()) {
-    errors.email = 'Email is required'
+    errors.email = 'Email không được để trống'
   } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email.trim())) {
-    errors.email = 'Enter a valid email address'
+    errors.email = 'Vui lòng nhập địa chỉ email hợp lệ'
   }
   if (!values.password) {
-    errors.password = 'Password is required'
+    errors.password = 'Mật khẩu không được để trống'
   }
   return errors
 }
 
 function homeForRole(role: string): string {
-  if (role === 'candidate') return '/candidate/profile'
-  if (role === 'recruiter') return '/recruiter/profile'
-  return '/admin/overview'
+  if (role === 'candidate') return '/candidate/portal'
+  if (role === 'recruiter') return '/recruiter/portal'
+  return '/admin/dashboard'
 }
 
 export function LoginPage() {
@@ -52,6 +53,8 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false)
 
   const from = (location.state as { from?: string } | null)?.from
+  const justRegistered = (location.state as { registered?: boolean } | null)
+    ?.registered
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -65,7 +68,10 @@ export function LoginPage() {
 
     setSubmitting(true)
     try {
-      const user = await login({ email: values.email.trim(), password: values.password })
+      const user = await login({
+        email: values.email.trim(),
+        password: values.password,
+      })
       navigate(from ?? homeForRole(user.role), { replace: true })
     } catch (error) {
       setApiError(getFriendlyErrorMessage(error))
@@ -75,20 +81,31 @@ export function LoginPage() {
   }
 
   return (
-    <Card className="w-full">
+    <Card className="w-full shadow-soft">
       <CardHeader>
-        <CardTitle>Sign in</CardTitle>
+        <CardTitle className="font-display text-xl font-bold">
+          Đăng nhập
+        </CardTitle>
         <CardDescription>
-          Enter your credentials to access your account.
+          Đăng nhập để tiếp tục sử dụng nền tảng tuyển dụng AI.
         </CardDescription>
       </CardHeader>
       <CardContent>
+        {justRegistered ? (
+          <p
+            role="status"
+            className="mb-4 rounded-md bg-success/10 px-3 py-2 text-sm font-medium text-success"
+          >
+            Tạo tài khoản thành công. Vui lòng đăng nhập để tiếp tục.
+          </p>
+        ) : null}
+
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
           <Input
             type="email"
             name="email"
             label="Email"
-            placeholder="you@example.com"
+            placeholder="ban@example.com"
             autoComplete="email"
             value={values.email}
             onChange={(e) => setValues((v) => ({ ...v, email: e.target.value }))}
@@ -97,10 +114,12 @@ export function LoginPage() {
           <Input
             type="password"
             name="password"
-            label="Password"
+            label="Mật khẩu"
             autoComplete="current-password"
             value={values.password}
-            onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
+            onChange={(e) =>
+              setValues((v) => ({ ...v, password: e.target.value }))
+            }
             error={errors.password}
           />
 
@@ -111,14 +130,18 @@ export function LoginPage() {
           ) : null}
 
           <Button type="submit" className="w-full" isLoading={submitting}>
-            Sign in
+            <LogIn className="h-4 w-4" aria-hidden="true" />
+            Đăng nhập
           </Button>
         </form>
 
         <p className="mt-4 text-center text-sm text-muted-foreground">
-          Don&apos;t have an account?{' '}
-          <Link to="/register" className="text-primary underline underline-offset-4">
-            Register
+          Chưa có tài khoản?{' '}
+          <Link
+            to="/register"
+            className="font-medium text-primary underline underline-offset-4"
+          >
+            Đăng ký ngay
           </Link>
         </p>
       </CardContent>

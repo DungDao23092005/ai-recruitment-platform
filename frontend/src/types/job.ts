@@ -23,21 +23,21 @@ export interface JobListParams {
 }
 
 export const JOB_TYPE_LABELS: Record<JobType, string> = {
-  full_time: 'Full time',
-  part_time: 'Part time',
-  contract: 'Contract',
-  internship: 'Internship',
+  full_time: 'Toàn thời gian',
+  part_time: 'Bán thời gian',
+  contract: 'Hợp đồng',
+  internship: 'Thực tập sinh',
 }
 
 export const WORKPLACE_TYPE_LABELS: Record<WorkplaceType, string> = {
-  on_site: 'On-site',
+  on_site: 'Tại văn phòng',
   hybrid: 'Hybrid',
-  remote: 'Remote',
+  remote: 'Từ xa',
 }
 
 export const JOB_STATUS_LABELS: Record<JobStatus, string> = {
-  draft: 'Draft',
-  published: 'Published',
-  closed: 'Closed',
-  expired: 'Expired',
+  draft: 'Bản nháp',
+  published: 'Đã đăng',
+  closed: 'Đã đóng',
+  expired: 'Hết hạn',
 }

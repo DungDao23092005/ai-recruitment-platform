@@ -108,10 +108,10 @@ export function AIChatPage() {
   }
 
   return (
-    <div className="container flex h-[calc(100vh-4rem)] flex-col py-6">
+    <div className="flex h-[calc(100dvh-7rem)] flex-col sm:h-[calc(100dvh-8rem)]">
       <PageHeader
-        title="Trợ lý AI"
-        description="Hỏi đáp về nghề nghiệp, kỹ năng và tin tuyển dụng — được trả lời dựa trên dữ liệu thực tế của nền tảng."
+        title="Trợ lý AI tuyển dụng"
+        description="Đặt câu hỏi về việc làm, ứng viên và tuyển dụng — được trả lời dựa trên dữ liệu thực tế của nền tảng."
       />
 
       <div className="flex flex-1 flex-col overflow-hidden rounded-xl border bg-card/40">

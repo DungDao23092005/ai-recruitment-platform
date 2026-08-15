@@ -37,7 +37,7 @@ describe('SemanticJobSearchPage', () => {
   it('searches jobs with the typed query', async () => {
     render(<SemanticJobSearchPage />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'python backend' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
@@ -52,7 +52,7 @@ describe('SemanticJobSearchPage', () => {
   it('renders job search results', async () => {
     render(<SemanticJobSearchPage />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'python' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
@@ -72,7 +72,7 @@ describe('SemanticJobSearchPage', () => {
 
     render(<SemanticJobSearchPage />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'react' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
@@ -93,7 +93,7 @@ describe('SemanticJobSearchPage', () => {
 
     render(<SemanticJobSearchPage />)
 
-    fireEvent.change(screen.getByLabelText('Semantic search query'), {
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
       target: { value: 'react' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))

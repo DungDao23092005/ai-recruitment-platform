@@ -12,10 +12,10 @@ import type {
 } from '@/types/ai'
 
 export const CATEGORY_LABELS: Record<QuestionCategory, string> = {
-  technical: 'Technical',
-  behavioral: 'Behavioral',
-  experience: 'Experience',
-  skill_gap: 'Skill Gap',
+  technical: 'Kỹ thuật',
+  behavioral: 'Hành vi',
+  experience: 'Kinh nghiệm',
+  skill_gap: 'Khoảng cách kỹ năng',
 }
 
 export const DIFFICULTY_LABELS: Record<QuestionDifficulty, string> = {

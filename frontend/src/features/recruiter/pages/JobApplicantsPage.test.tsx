@@ -100,10 +100,10 @@ describe('JobApplicantsPage', () => {
       }),
     )
 
-    renderJobApplicantsPage()
+    const { container } = renderJobApplicantsPage()
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Loading')).toBeInTheDocument()
+      expect(container.querySelector('.animate-pulse')).toBeInTheDocument()
     })
 
     resolveJob(mockJob)
@@ -120,8 +120,8 @@ describe('JobApplicantsPage', () => {
       expect(
         screen.getByText('Senior Frontend Engineer'),
       ).toBeInTheDocument()
-      expect(screen.getByText('Candidate 11111111')).toBeInTheDocument()
-      expect(screen.getByText('Candidate 22222222')).toBeInTheDocument()
+      expect(screen.getByText('Ứng viên 11111111')).toBeInTheDocument()
+      expect(screen.getByText('Ứng viên 22222222')).toBeInTheDocument()
     })
   })
 
@@ -132,8 +132,8 @@ describe('JobApplicantsPage', () => {
     renderJobApplicantsPage()
 
     await waitFor(() => {
-      expect(screen.getByText('Applied')).toBeInTheDocument()
-      expect(screen.getByText('Shortlisted')).toBeInTheDocument()
+      expect(screen.getByText('Đã nộp')).toBeInTheDocument()
+      expect(screen.getByText('Lọt vòng ngắn')).toBeInTheDocument()
     })
   })
 
@@ -146,19 +146,19 @@ describe('JobApplicantsPage', () => {
     await waitFor(() => {
       expect(
         screen.getByRole('button', {
-          name: /Update status for application app-1/i,
+          name: /Cập nhật trạng thái cho đơn ứng tuyển app-1/i,
         }),
       ).toBeInTheDocument()
     })
 
     fireEvent.click(
       screen.getByRole('button', {
-        name: /Update status for application app-1/i,
+        name: /Cập nhật trạng thái cho đơn ứng tuyển app-1/i,
       }),
     )
 
     expect(
-      screen.getByRole('dialog', { name: 'Update application status' }),
+      screen.getByRole('dialog', { name: 'Cập nhật trạng thái đơn ứng tuyển' }),
     ).toBeInTheDocument()
   })
 
@@ -170,7 +170,7 @@ describe('JobApplicantsPage', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText('No applicants yet.'),
+        screen.getByText('Chưa có ứng viên'),
       ).toBeInTheDocument()
     })
   })
@@ -199,7 +199,7 @@ describe('JobApplicantsPage', () => {
 
     await waitFor(() => {
       expect(screen.getByText('404')).toBeInTheDocument()
-      expect(screen.getByText('Job not found')).toBeInTheDocument()
+      expect(screen.getByText('Không tìm thấy tin tuyển dụng')).toBeInTheDocument()
     })
   })
 })

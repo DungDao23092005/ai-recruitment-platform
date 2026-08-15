@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type DragEvent } from 'react'
-import { UploadCloud, FileText } from 'lucide-react'
+import { UploadCloud, FileText, RefreshCw } from 'lucide-react'
 import { parseResume } from '@/api/ai'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { Button } from '@/components/ui/button'
@@ -22,10 +22,10 @@ export function ResumeUpload({ onParsed }: ResumeUploadProps) {
 
   const validateFile = useCallback((file: File): string | null => {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
-      return 'Only PDF files are allowed.'
+      return 'Chỉ chấp nhận tệp PDF.'
     }
     if (file.size > MAX_FILE_SIZE_BYTES) {
-      return 'File is too large. Maximum size is 10MB.'
+      return 'Tệp quá lớn. Kích thước tối đa là 10MB.'
     }
     return null
   }, [])
@@ -80,7 +80,7 @@ export function ResumeUpload({ onParsed }: ResumeUploadProps) {
       <div
         role="button"
         tabIndex={0}
-        aria-label="Upload resume PDF"
+        aria-label="Tải lên CV PDF"
         onClick={() => inputRef.current?.click()}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -94,17 +94,21 @@ export function ResumeUpload({ onParsed }: ResumeUploadProps) {
         onDragLeave={() => setDragActive(false)}
         onDrop={handleDrop}
         className={cn(
-          'flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed p-10 text-center transition-colors',
+          'flex flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed p-10 text-center transition-colors',
           dragActive
             ? 'border-primary bg-primary/5'
-            : 'border-muted-foreground/30 hover:border-primary/50',
+            : 'border-muted-foreground/30 hover:border-primary/50 hover:bg-muted/20',
         )}
       >
-        <UploadCloud className="h-10 w-10 text-muted-foreground" />
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+          <UploadCloud className="h-6 w-6" aria-hidden="true" />
+        </div>
         <div>
-          <p className="font-medium">Drag &amp; drop your resume here</p>
+          <p className="font-display font-semibold text-foreground">
+            Kéo &amp; thả CV của bạn vào đây
+          </p>
           <p className="mt-1 text-sm text-muted-foreground">
-            or click to browse. PDF only, maximum 10MB.
+            hoặc nhấp để chọn tệp. Chỉ hỗ trợ PDF, tối đa 10MB.
           </p>
         </div>
         <input
@@ -124,9 +128,9 @@ export function ResumeUpload({ onParsed }: ResumeUploadProps) {
       ) : null}
 
       {isUploading ? (
-        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+        <div className="flex items-center gap-3 rounded-xl border bg-muted/30 p-3 text-sm text-muted-foreground">
           <Spinner size="sm" />
-          <span>Uploading and parsing your resume...</span>
+          <span>Đang tải lên và phân tích CV của bạn...</span>
         </div>
       ) : null}
 
@@ -143,7 +147,8 @@ export function ResumeUpload({ onParsed }: ResumeUploadProps) {
           onClick={() => inputRef.current?.click()}
           disabled={isUploading}
         >
-          Choose a different file
+          <RefreshCw className="h-4 w-4" aria-hidden="true" />
+          Chọn tệp khác
         </Button>
       ) : null}
     </div>

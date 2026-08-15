@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Briefcase, PlusCircle } from 'lucide-react'
 import { getJobs } from '@/api/jobs'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
-import { Spinner } from '@/components/ui/spinner'
+import { Skeleton } from '@/components/ui/skeleton'
+import { ErrorBanner } from '@/components/ui/error-banner'
+import { EmptyState } from '@/components/ui/empty-state'
 import { RecruiterJobCard } from '@/features/recruiter/components/RecruiterJobCard'
+import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { Job } from '@/types/job'
 
 type JobsState =
@@ -15,65 +19,77 @@ type JobsState =
 export function RecruiterJobsPage() {
   const [state, setState] = useState<JobsState>({ kind: 'loading' })
 
-  useEffect(() => {
-    let active = true
+  const load = () => {
     setState({ kind: 'loading' })
 
     getJobs({ skip: 0, limit: 50 })
       .then((jobs) => {
-        if (active) setState({ kind: 'success', jobs })
+        setState({ kind: 'success', jobs })
       })
       .catch((err) => {
-        if (!active) return
-        const message =
-          err instanceof Error ? err.message : 'Unable to load jobs'
-        setState({ kind: 'error', message })
+        setState({
+          kind: 'error',
+          message: getFriendlyErrorMessage(err),
+        })
       })
+  }
 
-    return () => {
-      active = false
-    }
+  useEffect(() => {
+    load()
   }, [])
 
   return (
-    <div className="container py-10">
+    <div className="space-y-6">
       <PageHeader
-        title="Job Postings"
-        description="Manage your job postings and their applicants."
+        eyebrow="Nhà tuyển dụng"
+        title="Tin tuyển dụng"
+        description="Quản lý các tin tuyển dụng và ứng viên của bạn."
         actions={
           <Link to="/recruiter/jobs/new">
-            <Button>Post a job</Button>
+            <Button>
+              <PlusCircle className="h-4 w-4" aria-hidden="true" />
+              Đăng tin tuyển dụng
+            </Button>
           </Link>
         }
       />
 
       {state.kind === 'loading' ? (
-        <div className="flex min-h-[40vh] items-center justify-center">
-          <Spinner size="lg" />
+        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <div
+              key={index}
+              className="space-y-3 rounded-xl border bg-card p-5"
+            >
+              <Skeleton className="h-5 w-3/4" />
+              <Skeleton className="h-4 w-1/2" />
+              <Skeleton className="h-16 w-full" />
+              <div className="flex gap-2 pt-2">
+                <Skeleton className="h-9 w-full" />
+              </div>
+            </div>
+          ))}
         </div>
       ) : null}
 
       {state.kind === 'error' ? (
-        <div className="flex min-h-[40vh] flex-col items-center justify-center gap-3 text-center">
-          <p className="text-sm font-medium text-destructive">
-            {state.message}
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Unable to load jobs right now.
-          </p>
-        </div>
+        <ErrorBanner message={state.message} onRetry={load} />
       ) : null}
 
       {state.kind === 'success' ? (
         state.jobs.length === 0 ? (
-          <div className="flex min-h-[40vh] flex-col items-center justify-center gap-3 text-center">
-            <p className="text-sm text-muted-foreground">
-              No jobs yet. Create your first job posting.
-            </p>
+          <EmptyState
+            icon={<Briefcase className="h-6 w-6" aria-hidden="true" />}
+            title="Chưa có tin tuyển dụng"
+            description="Tạo tin tuyển dụng đầu tiên của bạn để bắt đầu nhận hồ sơ ứng viên."
+          >
             <Link to="/recruiter/jobs/new">
-              <Button variant="outline">Post a job</Button>
+              <Button>
+                <PlusCircle className="h-4 w-4" aria-hidden="true" />
+                Đăng tin tuyển dụng
+              </Button>
             </Link>
-          </div>
+          </EmptyState>
         ) : (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {state.jobs.map((job) => (

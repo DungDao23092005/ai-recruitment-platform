@@ -1,8 +1,10 @@
 import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { UserPlus } from 'lucide-react'
 import { register as registerApi } from '@/api/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import {
   Card,
   CardContent,
@@ -11,6 +13,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { getFriendlyErrorMessage } from '@/utils/errors'
+import { USER_ROLES } from '@/types'
 import type { UserRole } from '@/types/auth'
 
 interface FormValues {
@@ -31,25 +34,25 @@ function validate(values: FormValues): FormErrors {
   const errors: FormErrors = {}
 
   if (!values.email.trim()) {
-    errors.email = 'Email is required'
+    errors.email = 'Email không được để trống'
   } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email.trim())) {
-    errors.email = 'Enter a valid email address'
+    errors.email = 'Vui lòng nhập địa chỉ email hợp lệ'
   }
 
   if (!values.password) {
-    errors.password = 'Password is required'
+    errors.password = 'Mật khẩu không được để trống'
   } else if (values.password.length < 8) {
-    errors.password = 'Password must be at least 8 characters'
+    errors.password = 'Mật khẩu phải có ít nhất 8 ký tự'
   }
 
   if (!values.confirmPassword) {
-    errors.confirmPassword = 'Please confirm your password'
+    errors.confirmPassword = 'Vui lòng xác nhận mật khẩu'
   } else if (values.confirmPassword !== values.password) {
-    errors.confirmPassword = 'Passwords do not match'
+    errors.confirmPassword = 'Mật khẩu xác nhận không khớp'
   }
 
   if (!values.role) {
-    errors.role = 'Please select a role'
+    errors.role = 'Vui lòng chọn vai trò'
   }
 
   return errors
@@ -78,7 +81,7 @@ export function RegisterPage() {
     }
 
     if (values.role !== 'candidate' && values.role !== 'recruiter') {
-      setErrors({ role: 'Please select a valid role' })
+      setErrors({ role: 'Vui lòng chọn vai trò hợp lệ' })
       return
     }
 
@@ -89,7 +92,7 @@ export function RegisterPage() {
         password: values.password,
         role: values.role,
       })
-      navigate('/login', { replace: true })
+      navigate('/login', { replace: true, state: { registered: true } })
     } catch (error) {
       setApiError(getFriendlyErrorMessage(error))
     } finally {
@@ -98,11 +101,13 @@ export function RegisterPage() {
   }
 
   return (
-    <Card className="w-full">
+    <Card className="w-full shadow-soft">
       <CardHeader>
-        <CardTitle>Create account</CardTitle>
+        <CardTitle className="font-display text-xl font-bold">
+          Tạo tài khoản
+        </CardTitle>
         <CardDescription>
-          Register as a candidate or recruiter to get started.
+          Đăng ký với tư cách ứng viên hoặc nhà tuyển dụng để bắt đầu.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -111,7 +116,7 @@ export function RegisterPage() {
             type="email"
             name="email"
             label="Email"
-            placeholder="you@example.com"
+            placeholder="ban@example.com"
             autoComplete="email"
             value={values.email}
             onChange={(e) => setValues((v) => ({ ...v, email: e.target.value }))}
@@ -120,16 +125,18 @@ export function RegisterPage() {
           <Input
             type="password"
             name="password"
-            label="Password"
+            label="Mật khẩu"
             autoComplete="new-password"
             value={values.password}
-            onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
+            onChange={(e) =>
+              setValues((v) => ({ ...v, password: e.target.value }))
+            }
             error={errors.password}
           />
           <Input
             type="password"
             name="confirmPassword"
-            label="Confirm password"
+            label="Xác nhận mật khẩu"
             autoComplete="new-password"
             value={values.confirmPassword}
             onChange={(e) =>
@@ -138,33 +145,26 @@ export function RegisterPage() {
             error={errors.confirmPassword}
           />
 
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="role" className="text-sm font-medium leading-none">
-              Role
-            </label>
-            <select
-              id="role"
-              name="role"
-              value={values.role}
-              onChange={(e) =>
-                setValues((v) => ({
-                  ...v,
-                  role: e.target.value as UserRole,
-                }))
-              }
-              aria-invalid={errors.role ? true : undefined}
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <option value="">Select a role</option>
-              <option value="candidate">Candidate</option>
-              <option value="recruiter">Recruiter</option>
-            </select>
-            {errors.role ? (
-              <span className="text-xs font-medium text-destructive">
-                {errors.role}
-              </span>
-            ) : null}
-          </div>
+          <Select
+            id="role"
+            name="role"
+            label="Vai trò"
+            value={values.role}
+            onChange={(e) =>
+              setValues((v) => ({
+                ...v,
+                role: e.target.value as UserRole,
+              }))
+            }
+            error={errors.role}
+          >
+            <option value="">Chọn vai trò</option>
+            {USER_ROLES.filter((role) => role.value !== 'admin').map((role) => (
+              <option key={role.value} value={role.value}>
+                {role.label}
+              </option>
+            ))}
+          </Select>
 
           {apiError ? (
             <p role="alert" className="text-sm font-medium text-destructive">
@@ -173,14 +173,18 @@ export function RegisterPage() {
           ) : null}
 
           <Button type="submit" className="w-full" isLoading={submitting}>
-            Create account
+            <UserPlus className="h-4 w-4" aria-hidden="true" />
+            Tạo tài khoản
           </Button>
         </form>
 
         <p className="mt-4 text-center text-sm text-muted-foreground">
-          Already have an account?{' '}
-          <Link to="/login" className="text-primary underline underline-offset-4">
-            Sign in
+          Đã có tài khoản?{' '}
+          <Link
+            to="/login"
+            className="font-medium text-primary underline underline-offset-4"
+          >
+            Đăng nhập
           </Link>
         </p>
       </CardContent>

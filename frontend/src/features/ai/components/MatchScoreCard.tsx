@@ -7,6 +7,8 @@ import {
 import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
+import { ScoreRing } from '@/components/ui/score-ring'
 import {
   Card,
   CardContent,
@@ -27,14 +29,28 @@ export interface MatchScoreCardProps {
 export function getScoreColor(score: number): {
   text: string
   bar: string
+  progress: 'success' | 'warning' | 'danger'
 } {
   if (score >= 75) {
-    return { text: 'text-emerald-600', bar: 'bg-emerald-500' }
+    return { text: 'text-success', bar: 'bg-success', progress: 'success' }
   }
   if (score >= 50) {
-    return { text: 'text-amber-600', bar: 'bg-amber-500' }
+    return { text: 'text-warning', bar: 'bg-warning', progress: 'warning' }
   }
-  return { text: 'text-rose-600', bar: 'bg-rose-500' }
+  return { text: 'text-destructive', bar: 'bg-destructive', progress: 'danger' }
+}
+
+export function matchLevelLabel(score: number): {
+  label: string
+  variant: 'success' | 'warning' | 'destructive'
+} {
+  if (score >= 75) {
+    return { label: 'Rất phù hợp', variant: 'success' }
+  }
+  if (score >= 50) {
+    return { label: 'Phù hợp trung bình', variant: 'warning' }
+  }
+  return { label: 'Ít phù hợp', variant: 'destructive' }
 }
 
 export function formatPercent(value: number): string {
@@ -52,21 +68,22 @@ export function MatchScoreCard({
 }: MatchScoreCardProps) {
   const [showExplain, setShowExplain] = useState(false)
   const overall = Math.round(matchResult.overall_score)
-  const { text: scoreText, bar: scoreBar } = getScoreColor(overall)
+  const { text: scoreText } = getScoreColor(overall)
+  const level = matchLevelLabel(overall)
 
   const breakdown = [
     {
-      label: 'Cosine Similarity',
+      label: 'Độ tương đồng ngữ nghĩa',
       value: formatPercent(matchResult.cosine_similarity),
       raw: matchResult.cosine_similarity,
     },
     {
-      label: 'Skill Coverage',
+      label: 'Độ phủ kỹ năng',
       value: formatPercent(matchResult.skill_coverage_score),
       raw: matchResult.skill_coverage_score,
     },
     {
-      label: 'Experience Match',
+      label: 'Độ khớp kinh nghiệm',
       value: formatPercent(matchResult.experience_match_score),
       raw: matchResult.experience_match_score,
     },
@@ -75,45 +92,39 @@ export function MatchScoreCard({
   return (
     <Card className={cn('flex h-full flex-col', className)}>
       <CardHeader className="pb-4">
-        <CardTitle className="text-lg">Match Score</CardTitle>
+        <CardTitle className="font-display text-lg font-semibold">
+          Điểm đối sánh
+        </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-1 flex-col gap-5">
-        <div className="flex items-center gap-4">
-          <div
-            className={cn(
-              'flex h-16 w-16 items-center justify-center rounded-full border-4 text-2xl font-bold',
-              scoreText,
-              scoreBar,
-            )}
-            aria-label={`Overall score ${overall} percent`}
-          >
-            {overall}%
-          </div>
+        <div className="flex items-center gap-5">
+          <ScoreRing
+            value={overall}
+            size={88}
+            strokeWidth={7}
+            label={`Điểm tổng thể ${overall} phần trăm`}
+          />
           <div className="space-y-1">
-            <p className={cn('text-3xl font-bold', scoreText)}>{overall}%</p>
-            <p className="text-xs uppercase text-muted-foreground">
-              Overall Score
+            <p className={cn('font-display text-3xl font-bold', scoreText)}>
+              {overall}%
             </p>
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">
+              Điểm tổng thể
+            </p>
+            <Badge variant={level.variant}>{level.label}</Badge>
           </div>
         </div>
 
         <div className="space-y-3">
           {breakdown.map((item) => {
-            const { bar } = getScoreColor(item.raw * 100)
+            const { progress } = getScoreColor(item.raw * 100)
             return (
               <div key={item.label}>
                 <div className="mb-1 flex items-center justify-between text-sm">
                   <span className="text-muted-foreground">{item.label}</span>
                   <span className="font-medium">{item.value}</span>
                 </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
-                  <div
-                    className={cn('h-full rounded-full', bar)}
-                    style={{
-                      width: `${Math.min(100, Math.max(0, item.raw * 100))}%`,
-                    }}
-                  />
-                </div>
+                <Progress value={item.raw * 100} variant={progress} />
               </div>
             )
           })}
@@ -123,10 +134,10 @@ export function MatchScoreCard({
           <div className="space-y-1.5">
             <p className="flex items-center gap-1.5 text-sm font-medium">
               <CheckCircle2
-                className="h-4 w-4 text-emerald-600"
+                className="h-4 w-4 text-success"
                 aria-hidden="true"
               />
-              Matching Skills
+              Kỹ năng khớp
             </p>
             {matchResult.matching_skills.length > 0 ? (
               <div className="flex flex-wrap gap-1.5">
@@ -138,15 +149,18 @@ export function MatchScoreCard({
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">
-                No matching skills found.
+                Chưa có kỹ năng khớp nào.
               </p>
             )}
           </div>
 
           <div className="space-y-1.5">
             <p className="flex items-center gap-1.5 text-sm font-medium">
-              <XCircle className="h-4 w-4 text-rose-600" aria-hidden="true" />
-              Skill Gap
+              <XCircle
+                className="h-4 w-4 text-destructive"
+                aria-hidden="true"
+              />
+              Khoảng cách kỹ năng
             </p>
             {matchResult.skill_gap.length > 0 ? (
               <div className="flex flex-wrap gap-1.5">
@@ -158,7 +172,7 @@ export function MatchScoreCard({
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">
-                No skill gaps detected.
+                Không phát hiện khoảng cách kỹ năng.
               </p>
             )}
           </div>
@@ -168,10 +182,10 @@ export function MatchScoreCard({
           <div className="space-y-1.5">
             <p className="flex items-center gap-1.5 text-sm font-medium">
               <Lightbulb
-                className="h-4 w-4 text-amber-500"
+                className="h-4 w-4 text-warning"
                 aria-hidden="true"
               />
-              Why this match
+              Vì sao phù hợp
             </p>
             <ul className="list-inside list-disc space-y-1 text-sm text-muted-foreground">
               {matchResult.match_reasons.map((reason) => (
@@ -185,7 +199,7 @@ export function MatchScoreCard({
           type="button"
           variant="outline"
           size="sm"
-          className="w-full"
+          className="mt-auto w-full"
           onClick={() => setShowExplain(true)}
         >
           <Sparkles className="h-4 w-4" aria-hidden="true" />

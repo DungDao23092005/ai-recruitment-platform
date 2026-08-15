@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { ChevronLeft, Users } from 'lucide-react'
 import { getJobById } from '@/api/jobs'
 import { getApplicationsByJob } from '@/api/applications'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
-import { Spinner } from '@/components/ui/spinner'
+import { Skeleton } from '@/components/ui/skeleton'
+import { EmptyState } from '@/components/ui/empty-state'
 import {
   Card,
   CardContent,
@@ -30,7 +32,11 @@ export function JobApplicantsPage() {
 
   useEffect(() => {
     if (!id) {
-      setState({ kind: 'error', message: 'Job not found', notFound: true })
+      setState({
+        kind: 'error',
+        message: 'Không tìm thấy tin tuyển dụng',
+        notFound: true,
+      })
       return
     }
 
@@ -49,7 +55,7 @@ export function JobApplicantsPage() {
         setState({
           kind: 'error',
           message: notFound
-            ? 'Job not found'
+            ? 'Không tìm thấy tin tuyển dụng'
             : getFriendlyErrorMessage(err),
           notFound,
         })
@@ -62,29 +68,39 @@ export function JobApplicantsPage() {
 
   if (state.kind === 'loading') {
     return (
-      <div className="flex min-h-[50vh] items-center justify-center">
-        <Spinner size="lg" />
+      <div className="space-y-6">
+        <Skeleton className="h-9 w-1/2" />
+        <Skeleton className="h-20 w-full" />
+        <div className="space-y-3">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <Skeleton key={index} className="h-20 w-full" />
+          ))}
+        </div>
       </div>
     )
   }
 
   if (state.kind === 'error') {
     return (
-      <div className="container flex min-h-[50vh] flex-col items-center justify-center py-10 text-center">
-        <p className="text-5xl font-bold text-primary">
-          {state.notFound ? '404' : 'Error'}
-        </p>
-        <h1 className="mt-4 text-2xl font-semibold tracking-tight">
-          {state.message}
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {state.notFound
-            ? 'The job you are looking for does not exist.'
-            : 'Something went wrong while loading applicants.'}
-        </p>
-        <Link to="/recruiter/jobs" className="mt-6">
-          <Button variant="outline">Back to jobs</Button>
-        </Link>
+      <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 text-center">
+        <div>
+          <p className="text-5xl font-bold text-primary">
+            {state.notFound ? '404' : 'Lỗi'}
+          </p>
+          <h1 className="mt-4 text-2xl font-semibold tracking-tight">
+            {state.message}
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {state.notFound
+              ? 'Tin tuyển dụng bạn tìm kiếm không tồn tại.'
+              : 'Đã xảy ra lỗi khi tải danh sách ứng viên.'}
+          </p>
+        </div>
+        {state.notFound ? (
+          <Link to="/recruiter/jobs">
+            <Button variant="outline">Quay lại tin tuyển dụng</Button>
+          </Link>
+        ) : null}
       </div>
     )
   }
@@ -92,24 +108,24 @@ export function JobApplicantsPage() {
   const { job, applications } = state
 
   return (
-    <div className="container py-10">
-      <div className="mb-6 flex items-center gap-2">
-        <Link to="/recruiter/jobs">
-          <Button variant="ghost" size="sm">
-            &larr; Back to jobs
-          </Button>
-        </Link>
-      </div>
+    <div className="space-y-6">
+      <Link to="/recruiter/jobs">
+        <Button variant="ghost" size="sm">
+          <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+          Quay lại tin tuyển dụng
+        </Button>
+      </Link>
 
       <PageHeader
-        title="Applicants"
-        description={`Manage applications for "${job.title}".`}
+        eyebrow="Nhà tuyển dụng"
+        title="Ứng viên"
+        description={`Quản lý đơn ứng tuyển cho tin tuyển dụng "${job.title}".`}
       />
 
-      <Card className="mb-6">
+      <Card>
         <CardHeader>
           <CardTitle className="text-xl">{job.title}</CardTitle>
-          <CardDescription className="flex items-center gap-2">
+          <CardDescription className="flex flex-wrap items-center gap-2">
             <Badge variant="ai-gradient">
               {JOB_STATUS_LABELS[job.status]}
             </Badge>
@@ -123,7 +139,15 @@ export function JobApplicantsPage() {
         </CardContent>
       </Card>
 
-      <ApplicantList applications={applications} />
+      {applications.length === 0 ? (
+        <EmptyState
+          icon={<Users className="h-6 w-6" aria-hidden="true" />}
+          title="Chưa có ứng viên"
+          description="Tin tuyển dụng này chưa nhận được đơn ứng tuyển nào."
+        />
+      ) : (
+        <ApplicantList applications={applications} />
+      )}
     </div>
   )
 }

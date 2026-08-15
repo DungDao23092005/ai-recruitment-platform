@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { FileUp, RefreshCw } from 'lucide-react'
+import { FileUp, Sparkles } from 'lucide-react'
 import { getJobRecommendations } from '@/api/ai'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
-import { Spinner } from '@/components/ui/spinner'
+import { Skeleton } from '@/components/ui/skeleton'
+import { ErrorBanner } from '@/components/ui/error-banner'
+import { EmptyState } from '@/components/ui/empty-state'
 import { JobRecommendationCard } from '@/features/ai/components/JobRecommendationCard'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { JobMatchRecommendation } from '@/types/ai'
@@ -42,47 +44,39 @@ export function CandidateRecommendationsPage() {
   }, [load])
 
   return (
-    <div className="container py-10">
+    <div className="space-y-6">
       <PageHeader
-        title="Gợi ý việc làm"
-        description="Top jobs được AI gợi ý dựa trên kỹ năng và kinh nghiệm của bạn."
+        eyebrow="Ứng viên"
+        title="Việc làm phù hợp với bạn"
+        description="Top công việc được AI gợi ý dựa trên kỹ năng và kinh nghiệm của bạn."
       />
 
       {state.kind === 'loading' ? (
-        <div className="flex min-h-[40vh] flex-col items-center justify-center gap-4 text-center">
-          <Spinner size="lg" />
-          <p className="text-sm text-muted-foreground">
-            AI đang phân tích và đối sánh hồ sơ...
-          </p>
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <Skeleton key={index} className="h-64 w-full" />
+          ))}
         </div>
       ) : null}
 
       {state.kind === 'error' ? (
-        <div className="flex min-h-[40vh] flex-col items-center justify-center gap-4 text-center">
-          <p className="max-w-md text-sm text-muted-foreground">
-            {state.message}
-          </p>
-          <Button variant="outline" onClick={load}>
-            <RefreshCw className="h-4 w-4" aria-hidden="true" />
-            Thử lại
-          </Button>
-        </div>
+        <ErrorBanner message={state.message} onRetry={load} />
       ) : null}
 
       {state.kind === 'success' ? (
         state.recommendations.length === 0 ? (
-          <div className="flex min-h-[40vh] flex-col items-center justify-center gap-4 text-center">
-            <p className="max-w-md text-sm text-muted-foreground">
-              Chưa có gợi ý việc làm phù hợp. Hãy tải lên CV PDF tại mục Hồ
-              sơ để AI phân tích kỹ năng của bạn!
-            </p>
+          <EmptyState
+            icon={<Sparkles className="h-6 w-6" aria-hidden="true" />}
+            title="Chưa có gợi ý việc làm"
+            description="Chưa có gợi ý việc làm phù hợp. Hãy tải lên CV PDF để AI phân tích kỹ năng của bạn!"
+          >
             <Link to="/candidate/cv-upload">
               <Button>
                 <FileUp className="h-4 w-4" aria-hidden="true" />
                 Tải lên CV
               </Button>
             </Link>
-          </div>
+          </EmptyState>
         ) : (
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
             {state.recommendations.map((recommendation) => (

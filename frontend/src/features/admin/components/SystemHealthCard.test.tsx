@@ -35,7 +35,7 @@ describe('SystemHealthCard', () => {
         onRefresh={vi.fn()}
       />,
     )
-    expect(screen.getByText('Healthy')).toBeInTheDocument()
+    expect(screen.getByText('Hoạt động tốt')).toBeInTheDocument()
     expect(
       screen.getByText('AI Recruitment Platform API'),
     ).toBeInTheDocument()
@@ -52,7 +52,7 @@ describe('SystemHealthCard', () => {
         onRefresh={vi.fn()}
       />,
     )
-    expect(screen.getByText('Unreachable')).toBeInTheDocument()
+    expect(screen.getByText('Không kết nối được')).toBeInTheDocument()
     expect(screen.getByText('Cannot connect')).toBeInTheDocument()
   })
 
@@ -67,7 +67,7 @@ describe('SystemHealthCard', () => {
       />,
     )
     fireEvent.click(
-      screen.getByRole('button', { name: 'Refresh system health' }),
+      screen.getByRole('button', { name: 'Làm mới trạng thái hệ thống' }),
     )
     expect(onRefresh).toHaveBeenCalledTimes(1)
   })

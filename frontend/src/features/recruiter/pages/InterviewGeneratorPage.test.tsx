@@ -86,10 +86,10 @@ describe('InterviewGeneratorPage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByText('Số lượng câu hỏi')).toBeInTheDocument()
+      expect(screen.getByText('Số câu hỏi')).toBeInTheDocument()
     })
     expect(screen.getByText('Độ khó')).toBeInTheDocument()
-    expect(screen.getByText('Trọng tâm (focus areas)')).toBeInTheDocument()
+    expect(screen.getByText('Chủ đề tập trung')).toBeInTheDocument()
     expect(
       screen.getByRole('button', { name: /Tạo bộ câu hỏi/i }),
     ).toBeInTheDocument()
@@ -126,11 +126,11 @@ describe('InterviewGeneratorPage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByText('Số lượng câu hỏi')).toBeInTheDocument()
+      expect(screen.getByText('Số câu hỏi')).toBeInTheDocument()
     })
 
     fireEvent.click(screen.getByRole('button', { name: '10' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Hard' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Khó' }))
 
     fireEvent.change(screen.getByLabelText('Thêm trọng tâm'), {
       target: { value: 'Performance testing' },
@@ -180,7 +180,7 @@ describe('InterviewGeneratorPage', () => {
         screen.getByText('Explain how you handle React state.'),
       ).toBeInTheDocument()
     })
-    expect(screen.getByText('Technical')).toBeInTheDocument()
+    expect(screen.getByText('Kỹ thuật')).toBeInTheDocument()
     expect(screen.getByText('Mentions hooks')).toBeInTheDocument()
   })
 
@@ -234,7 +234,7 @@ describe('InterviewGeneratorPage', () => {
       expect(screen.getByText('Explain how you handle React state.')).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /Copy câu hỏi/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Sao chép câu hỏi/i }))
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalled()

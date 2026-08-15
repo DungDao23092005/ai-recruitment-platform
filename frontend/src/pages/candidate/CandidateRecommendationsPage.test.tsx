@@ -95,12 +95,10 @@ describe('CandidateRecommendationsPage', () => {
       }),
     )
 
-    renderPage()
+    const { container } = renderPage()
 
     await waitFor(() => {
-      expect(
-        screen.getByText('AI đang phân tích và đối sánh hồ sơ...'),
-      ).toBeInTheDocument()
+      expect(container.querySelector('.animate-pulse')).not.toBeNull()
     })
 
     resolve(mockRecommendations)
@@ -126,7 +124,7 @@ describe('CandidateRecommendationsPage', () => {
 
     await waitFor(() => {
       const scoreBadges = screen
-        .getAllByLabelText(/Match score \d+ percent/i)
+        .getAllByLabelText(/Điểm đối sánh \d+ phần trăm/i)
         .map((el) => Number(el.textContent?.replace('%', '')))
       expect(scoreBadges).toEqual([91, 82])
     })

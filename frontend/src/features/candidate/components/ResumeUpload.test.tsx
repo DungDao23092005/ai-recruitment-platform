@@ -40,7 +40,7 @@ describe('ResumeUpload', () => {
   it('rejects non-PDF files', async () => {
     render(<ResumeUpload />)
 
-    const input = screen.getByLabelText('Upload resume PDF') as HTMLElement
+    const input = screen.getByLabelText('Tải lên CV PDF') as HTMLElement
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
 
     const txtFile = new File(['hello'], 'resume.txt', { type: 'text/plain' })
@@ -48,7 +48,7 @@ describe('ResumeUpload', () => {
     fireEvent.change(fileInput, { target: { files: [txtFile] } })
 
     await waitFor(() => {
-      expect(screen.getByText('Only PDF files are allowed.')).toBeInTheDocument()
+      expect(screen.getByText('Chỉ chấp nhận tệp PDF.')).toBeInTheDocument()
     })
     expect(mockedParseResume).not.toHaveBeenCalled()
     expect(input).toBeTruthy()
@@ -63,7 +63,7 @@ describe('ResumeUpload', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText('File is too large. Maximum size is 10MB.'),
+        screen.getByText('Tệp quá lớn. Kích thước tối đa là 10MB.'),
       ).toBeInTheDocument()
     })
     expect(mockedParseResume).not.toHaveBeenCalled()
@@ -86,7 +86,7 @@ describe('ResumeUpload', () => {
     await waitFor(() => {
       expect(mockedParseResume).toHaveBeenCalled()
       expect(
-        screen.getByText('Uploading and parsing your resume...'),
+        screen.getByText('Đang tải lên và phân tích CV của bạn...'),
       ).toBeInTheDocument()
     })
 

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { createCompany } from '@/api/companies'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { COMPANY_SIZE_LABELS, COMPANY_SIZES } from '@/types/company'
 import type { Company, CompanySize } from '@/types/company'
@@ -26,15 +27,16 @@ interface FormErrors {
 function validate(values: FormValues): FormErrors {
   const errors: FormErrors = {}
   if (!values.name.trim()) {
-    errors.name = 'Company name is required'
+    errors.name = 'Tên công ty là bắt buộc'
   }
   if (!values.slug.trim()) {
-    errors.slug = 'Slug is required'
+    errors.slug = 'Slug là bắt buộc'
   } else if (!/^[a-z0-9-]+$/.test(values.slug.trim())) {
-    errors.slug = 'Slug can only contain lowercase letters, numbers and hyphens'
+    errors.slug =
+      'Slug chỉ được chứa chữ thường, chữ số và dấu gạch ngang'
   }
   if (!values.tax_code.trim()) {
-    errors.tax_code = 'Tax code is required'
+    errors.tax_code = 'Mã số thuế là bắt buộc'
   }
   return errors
 }
@@ -80,7 +82,7 @@ export function CompanyForm({ onCreated }: CompanyFormProps) {
           ?.status === 400 &&
         /tax_code|already exists|duplicate/i.test(message)
       ) {
-        setApiError('Tax code already registered. Please check and try again.')
+        setApiError('Mã số thuế đã được đăng ký. Vui lòng kiểm tra lại.')
       } else {
         setApiError(message)
       }
@@ -93,8 +95,8 @@ export function CompanyForm({ onCreated }: CompanyFormProps) {
     <form onSubmit={handleSubmit} className="space-y-4" noValidate>
       <Input
         name="name"
-        label="Company name"
-        placeholder="Acme Corporation"
+        label="Tên công ty"
+        placeholder="Công ty TNHH ABC"
         value={values.name}
         onChange={(e) => setValues((v) => ({ ...v, name: e.target.value }))}
         error={errors.name}
@@ -102,43 +104,34 @@ export function CompanyForm({ onCreated }: CompanyFormProps) {
       <Input
         name="slug"
         label="Slug"
-        placeholder="acme-corporation"
+        placeholder="abc-corporation"
         value={values.slug}
         onChange={(e) => setValues((v) => ({ ...v, slug: e.target.value }))}
         error={errors.slug}
-        helperText="Lowercase letters, numbers and hyphens only."
+        helperText="Chỉ gồm chữ thường, chữ số và dấu gạch ngang."
       />
       <Input
         name="tax_code"
-        label="Tax code"
+        label="Mã số thuế"
         placeholder="0312345678"
         value={values.tax_code}
         onChange={(e) => setValues((v) => ({ ...v, tax_code: e.target.value }))}
         error={errors.tax_code}
       />
-      <div className="flex flex-col gap-1.5">
-        <label
-          htmlFor="company-size"
-          className="text-sm font-medium leading-none"
-        >
-          Company size
-        </label>
-        <select
-          id="company-size"
-          name="size"
-          value={values.size}
-          onChange={(e) =>
-            setValues((v) => ({ ...v, size: e.target.value as CompanySize }))
-          }
-          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          {COMPANY_SIZES.map((size) => (
-            <option key={size} value={size}>
-              {COMPANY_SIZE_LABELS[size]}
-            </option>
-          ))}
-        </select>
-      </div>
+      <Select
+        name="size"
+        label="Quy mô công ty"
+        value={values.size}
+        onChange={(e) =>
+          setValues((v) => ({ ...v, size: e.target.value as CompanySize }))
+        }
+      >
+        {COMPANY_SIZES.map((size) => (
+          <option key={size} value={size}>
+            {COMPANY_SIZE_LABELS[size]}
+          </option>
+        ))}
+      </Select>
 
       {apiError ? (
         <p role="alert" className="text-sm font-medium text-destructive">
@@ -148,12 +141,12 @@ export function CompanyForm({ onCreated }: CompanyFormProps) {
 
       {success ? (
         <p role="status" className="text-sm font-medium text-green-600">
-          Company created successfully.
+          Tạo công ty thành công.
         </p>
       ) : null}
 
       <Button type="submit" className="w-full" isLoading={submitting}>
-        Create company
+        Tạo công ty
       </Button>
     </form>
   )

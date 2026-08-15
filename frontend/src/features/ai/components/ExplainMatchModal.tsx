@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Sparkles, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Modal } from '@/components/ui/modal'
 import { Spinner } from '@/components/ui/spinner'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { explainMatch } from '@/api/ai'
@@ -17,6 +18,17 @@ export interface ExplainMatchModalProps {
   candidate?: ParsedResume | null
   job?: ParsedJob | null
   onClose: () => void
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="font-display text-sm font-semibold text-foreground">
+        {title}
+      </p>
+      {children}
+    </div>
+  )
 }
 
 export function ExplainMatchModal({
@@ -55,114 +67,98 @@ export function ExplainMatchModal({
   }, [])
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Giải Thích Chi Tiết Độ Phù Hợp Bằng AI"
-      onClick={onClose}
+    <Modal
+      onClose={onClose}
+      size="lg"
+      ariaLabel="Giải Thích Chi Tiết Độ Phù Hợp Bằng AI"
+      title={
+        <span className="flex items-center gap-2">
+          <Sparkles className="h-5 w-5 text-primary" aria-hidden="true" />
+          Giải Thích Chi Tiết Độ Phù Hợp Bằng AI
+        </span>
+      }
+      description="Gemini giải thích kết quả đối sánh dựa trên dữ kiện đã được cung cấp."
+      footer={
+        <Button variant="ghost" onClick={onClose} disabled={isLoading}>
+          Đóng
+        </Button>
+      }
     >
-      <div
-        className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-lg border bg-background shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="border-b p-5">
-          <h2 className="flex items-center gap-2 text-lg font-semibold">
-            <Sparkles className="h-5 w-5 text-primary" aria-hidden="true" />
-            Giải Thích Chi Tiết Độ Phù Hợp Bằng AI
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Gemini giải thích kết quả đối sánh dựa trên dữ kiện đã được cung cấp.
-          </p>
-        </div>
+      <div className="space-y-5">
+        {isLoading ? (
+          <div className="flex items-center gap-3 rounded-xl border bg-muted/30 p-4 text-sm text-muted-foreground">
+            <Spinner size="sm" />
+            <span>Gemini AI đang phân tích dữ liệu đối sánh...</span>
+          </div>
+        ) : null}
 
-        <div className="flex-1 space-y-5 overflow-y-auto p-5">
-          {isLoading ? (
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-              <Spinner size="sm" />
-              <span>Gemini AI đang phân tích dữ liệu đối sánh...</span>
-            </div>
-          ) : null}
+        {error ? (
+          <div role="alert" className="space-y-3">
+            <p className="text-sm font-medium text-destructive">{error}</p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={loadExplanation}
+            >
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              Thử lại
+            </Button>
+          </div>
+        ) : null}
 
-          {error ? (
-            <div role="alert" className="space-y-3">
-              <p className="text-sm font-medium text-destructive">{error}</p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={loadExplanation}
-              >
-                <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                Thử lại
-              </Button>
-            </div>
-          ) : null}
+        {explanation ? (
+          <div className="space-y-5">
+            <Section title="Tóm tắt">
+              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                {explanation.summary}
+              </p>
+            </Section>
 
-          {explanation ? (
-            <div className="space-y-5">
-              <div>
-                <p className="text-sm font-medium">Summary</p>
+            <Section title="Điểm mạnh">
+              {explanation.strengths.length > 0 ? (
+                <ul className="mt-1 list-inside list-disc space-y-1 text-sm text-muted-foreground">
+                  {explanation.strengths.map((strength) => (
+                    <li key={strength}>{strength}</li>
+                  ))}
+                </ul>
+              ) : (
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {explanation.summary}
+                  Không xác định được điểm mạnh.
                 </p>
-              </div>
+              )}
+            </Section>
 
-              <div>
-                <p className="text-sm font-medium">Strengths</p>
-                {explanation.strengths.length > 0 ? (
-                  <ul className="mt-1 list-inside list-disc space-y-1 text-sm text-muted-foreground">
-                    {explanation.strengths.map((strength) => (
-                      <li key={strength}>{strength}</li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    No strengths identified.
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <p className="text-sm font-medium">Skill Gaps</p>
-                {explanation.skill_gaps.length > 0 ? (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {explanation.skill_gaps.map((skill) => (
-                      <Badge key={skill} variant="destructive">
-                        {skill}
-                      </Badge>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    No skill gaps detected.
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <p className="text-sm font-medium">Experience Analysis</p>
+            <Section title="Khoảng cách kỹ năng">
+              {explanation.skill_gaps.length > 0 ? (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {explanation.skill_gaps.map((skill) => (
+                    <Badge key={skill} variant="destructive">
+                      {skill}
+                    </Badge>
+                  ))}
+                </div>
+              ) : (
                 <p className="mt-1 text-sm text-muted-foreground">
-                  {explanation.experience_analysis}
+                  Không phát hiện khoảng cách kỹ năng.
                 </p>
-              </div>
+              )}
+            </Section>
 
-              <div>
-                <p className="text-sm font-medium">Recommendation</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {explanation.recommendation}
-                </p>
-              </div>
-            </div>
-          ) : null}
-        </div>
+            <Section title="Phân tích kinh nghiệm">
+              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                {explanation.experience_analysis}
+              </p>
+            </Section>
 
-        <div className="flex items-center justify-end gap-2 border-t p-4">
-          <Button variant="ghost" onClick={onClose} disabled={isLoading}>
-            Close
-          </Button>
-        </div>
+            <Section title="Đề xuất">
+              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                {explanation.recommendation}
+              </p>
+            </Section>
+          </div>
+        ) : null}
       </div>
-    </div>
+    </Modal>
   )
 }

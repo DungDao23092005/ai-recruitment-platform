@@ -3,7 +3,9 @@ import { Sparkles } from 'lucide-react'
 import apiClient from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Spinner } from '@/components/ui/spinner'
+import { Modal } from '@/components/ui/modal'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { Badge } from '@/components/ui/badge'
 
@@ -31,7 +33,7 @@ export function AIPredictJDModal({ onClose, onApply }: AIPredictJDModalProps) {
   const handleParse = async (event: FormEvent) => {
     event.preventDefault()
     if (!rawJd.trim()) {
-      setError('Please paste the job description first.')
+      setError('Vui lòng dán mô tả công việc trước.')
       return
     }
     setIsLoading(true)
@@ -55,134 +57,21 @@ export function AIPredictJDModal({ onClose, onApply }: AIPredictJDModalProps) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="AI job description parser"
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-lg border bg-background shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="border-b p-5">
-          <h2 className="flex items-center gap-2 text-lg font-semibold">
-            <Sparkles className="h-5 w-5 text-primary" aria-hidden="true" />
-            AI Bóc Tách Kỹ Năng
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Paste your job description and let AI extract skills and
-            requirements.
-          </p>
-        </div>
-
-        <div className="flex-1 space-y-4 overflow-y-auto p-5">
-          <Input
-            name="job_title"
-            label="Job title (optional)"
-            placeholder="Senior Frontend Engineer"
-            value={jobTitle}
-            onChange={(e) => setJobTitle(e.target.value)}
-          />
-          <div className="flex flex-col gap-1.5">
-            <label
-              htmlFor="raw-jd"
-              className="text-sm font-medium leading-none"
-            >
-              Raw job description
-            </label>
-            <textarea
-              id="raw-jd"
-              name="job_description"
-              rows={8}
-              value={rawJd}
-              onChange={(e) => setRawJd(e.target.value)}
-              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              placeholder="Paste the full job description here..."
-            />
-          </div>
-
-          <Button
-            type="button"
-            onClick={handleParse}
-            disabled={isLoading}
-            isLoading={isLoading}
-          >
-            <Sparkles className="h-4 w-4" aria-hidden="true" />
-            AI Bóc Tách Kỹ Năng
-          </Button>
-
-          {error ? (
-            <p role="alert" className="text-sm font-medium text-destructive">
-              {error}
-            </p>
-          ) : null}
-
-          {isLoading ? (
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-              <Spinner size="sm" />
-              <span>Đang phân tích JD...</span>
-            </div>
-          ) : null}
-
-          {parsed ? (
-            <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
-              {parsed.title ? (
-                <p className="text-sm">
-                  <span className="font-medium">Title: </span>
-                  {parsed.title}
-                </p>
-              ) : null}
-              {parsed.summary ? (
-                <p className="text-sm">
-                  <span className="font-medium">Summary: </span>
-                  {parsed.summary}
-                </p>
-              ) : null}
-              {parsed.required_skills.length > 0 ? (
-                <div className="space-y-1">
-                  <p className="text-sm font-medium">Required skills</p>
-                  <div className="flex flex-wrap gap-2">
-                    {parsed.required_skills.map((skill) => (
-                      <Badge key={skill} variant="neutral">
-                        {skill}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-              {parsed.preferred_skills.length > 0 ? (
-                <div className="space-y-1">
-                  <p className="text-sm font-medium">Preferred skills</p>
-                  <div className="flex flex-wrap gap-2">
-                    {parsed.preferred_skills.map((skill) => (
-                      <Badge key={skill} variant="warning">
-                        {skill}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-              {parsed.minimum_years_experience != null ? (
-                <p className="text-sm">
-                  <span className="font-medium">Min experience: </span>
-                  {parsed.minimum_years_experience} years
-                </p>
-              ) : null}
-              {parsed.education_level ? (
-                <p className="text-sm">
-                  <span className="font-medium">Education: </span>
-                  {parsed.education_level}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="flex items-center justify-end gap-2 border-t p-4">
+    <Modal
+      onClose={onClose}
+      ariaLabel="AI phân tích JD"
+      size="lg"
+      title={
+        <span className="flex items-center gap-2">
+          <Sparkles className="h-5 w-5 text-primary" aria-hidden="true" />
+          AI phân tích JD
+        </span>
+      }
+      description="Dán mô tả công việc của bạn và để AI trích xuất kỹ năng cùng yêu cầu."
+      footer={
+        <>
           <Button variant="ghost" onClick={onClose} disabled={isLoading}>
-            Close
+            Đóng
           </Button>
           <Button
             disabled={!parsed}
@@ -190,10 +79,105 @@ export function AIPredictJDModal({ onClose, onApply }: AIPredictJDModalProps) {
               if (parsed) onApply?.(parsed)
             }}
           >
-            Áp dụng vào Form
+            <Sparkles className="h-4 w-4" aria-hidden="true" />
+            Áp dụng vào tin tuyển dụng
           </Button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      <form onSubmit={handleParse} className="space-y-4" noValidate>
+        <Input
+          name="job_title"
+          label="Tiêu đề công việc (tùy chọn)"
+          placeholder="Kỹ sư Frontend cấp cao"
+          value={jobTitle}
+          onChange={(e) => setJobTitle(e.target.value)}
+        />
+        <Textarea
+          name="job_description"
+          label="Mô tả công việc"
+          rows={8}
+          value={rawJd}
+          onChange={(e) => setRawJd(e.target.value)}
+          placeholder="Dán toàn bộ mô tả công việc vào đây..."
+        />
+
+        <Button
+          type="submit"
+          disabled={isLoading}
+          isLoading={isLoading}
+          loadingText="Đang phân tích JD..."
+        >
+          <Sparkles className="h-4 w-4" aria-hidden="true" />
+          Phân tích JD bằng AI
+        </Button>
+
+        {error ? (
+          <p role="alert" className="text-sm font-medium text-destructive">
+            {error}
+          </p>
+        ) : null}
+
+        {isLoading ? (
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
+            <Spinner size="sm" />
+            <span>Đang phân tích JD bằng AI...</span>
+          </div>
+        ) : null}
+
+        {parsed ? (
+          <div className="space-y-3 rounded-lg border bg-muted/20 p-4">
+            {parsed.title ? (
+              <p className="text-sm">
+                <span className="font-medium">Tiêu đề: </span>
+                {parsed.title}
+              </p>
+            ) : null}
+            {parsed.summary ? (
+              <p className="text-sm">
+                <span className="font-medium">Tóm tắt: </span>
+                {parsed.summary}
+              </p>
+            ) : null}
+            {parsed.required_skills.length > 0 ? (
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Kỹ năng bắt buộc</p>
+                <div className="flex flex-wrap gap-2">
+                  {parsed.required_skills.map((skill) => (
+                    <Badge key={skill} variant="neutral">
+                      {skill}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {parsed.preferred_skills.length > 0 ? (
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Kỹ năng mong muốn</p>
+                <div className="flex flex-wrap gap-2">
+                  {parsed.preferred_skills.map((skill) => (
+                    <Badge key={skill} variant="warning">
+                      {skill}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {parsed.minimum_years_experience != null ? (
+              <p className="text-sm">
+                <span className="font-medium">Kinh nghiệm tối thiểu: </span>
+                {parsed.minimum_years_experience} năm
+              </p>
+            ) : null}
+            {parsed.education_level ? (
+              <p className="text-sm">
+                <span className="font-medium">Trình độ học vấn: </span>
+                {parsed.education_level}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </form>
+    </Modal>
   )
 }

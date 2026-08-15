@@ -33,12 +33,12 @@ describe('AIPredictJDModal', () => {
     render(<AIPredictJDModal onClose={vi.fn()} />)
 
     fireEvent.click(
-      screen.getByRole('button', { name: /AI Bóc Tách Kỹ Năng/i }),
+      screen.getByRole('button', { name: /Phân tích JD bằng AI/i }),
     )
 
     await waitFor(() => {
       expect(
-        screen.getByText('Please paste the job description first.'),
+        screen.getByText('Vui lòng dán mô tả công việc trước.'),
       ).toBeInTheDocument()
     })
     expect(mockedPost).not.toHaveBeenCalled()
@@ -49,15 +49,15 @@ describe('AIPredictJDModal', () => {
 
     render(<AIPredictJDModal onClose={vi.fn()} />)
 
-    fireEvent.change(screen.getByLabelText(/Job title/i), {
+    fireEvent.change(screen.getByLabelText(/Tiêu đề công việc/), {
       target: { value: 'Senior Frontend Engineer' },
     })
-    fireEvent.change(screen.getByLabelText(/Raw job description/i), {
+    fireEvent.change(screen.getByLabelText(/Mô tả công việc/), {
       target: { value: 'Build modern web applications with React.' },
     })
 
     fireEvent.click(
-      screen.getByRole('button', { name: /AI Bóc Tách Kỹ Năng/i }),
+      screen.getByRole('button', { name: /Phân tích JD bằng AI/i }),
     )
 
     await waitFor(() => {
@@ -74,12 +74,12 @@ describe('AIPredictJDModal', () => {
 
     render(<AIPredictJDModal onClose={vi.fn()} />)
 
-    fireEvent.change(screen.getByLabelText(/Raw job description/i), {
+    fireEvent.change(screen.getByLabelText(/Mô tả công việc/), {
       target: { value: 'Build modern web applications with React.' },
     })
 
     fireEvent.click(
-      screen.getByRole('button', { name: /AI Bóc Tách Kỹ Năng/i }),
+      screen.getByRole('button', { name: /Phân tích JD bằng AI/i }),
     )
 
     await waitFor(() => {
@@ -87,7 +87,7 @@ describe('AIPredictJDModal', () => {
       expect(screen.getByText('React')).toBeInTheDocument()
       expect(screen.getByText('TypeScript')).toBeInTheDocument()
       expect(screen.getByText('Next.js')).toBeInTheDocument()
-      expect(screen.getByText(/3 years/)).toBeInTheDocument()
+      expect(screen.getByText(/3 năm/)).toBeInTheDocument()
       expect(screen.getByText('Bachelor degree')).toBeInTheDocument()
     })
   })
@@ -98,15 +98,15 @@ describe('AIPredictJDModal', () => {
     render(<AIPredictJDModal onClose={vi.fn()} />)
 
     const applyButton = screen.getByRole('button', {
-      name: /Áp dụng vào Form/i,
+      name: /Áp dụng vào tin tuyển dụng/i,
     })
     expect(applyButton).toBeDisabled()
 
-    fireEvent.change(screen.getByLabelText(/Raw job description/i), {
+    fireEvent.change(screen.getByLabelText(/Mô tả công việc/), {
       target: { value: 'Build modern web applications with React.' },
     })
     fireEvent.click(
-      screen.getByRole('button', { name: /AI Bóc Tách Kỹ Năng/i }),
+      screen.getByRole('button', { name: /Phân tích JD bằng AI/i }),
     )
 
     await waitFor(() => {
@@ -120,21 +120,21 @@ describe('AIPredictJDModal', () => {
 
     render(<AIPredictJDModal onClose={vi.fn()} onApply={onApply} />)
 
-    fireEvent.change(screen.getByLabelText(/Raw job description/i), {
+    fireEvent.change(screen.getByLabelText(/Mô tả công việc/), {
       target: { value: 'Build modern web applications with React.' },
     })
     fireEvent.click(
-      screen.getByRole('button', { name: /AI Bóc Tách Kỹ Năng/i }),
+      screen.getByRole('button', { name: /Phân tích JD bằng AI/i }),
     )
 
     await waitFor(() => {
       expect(
-        screen.getByRole('button', { name: /Áp dụng vào Form/i }),
+        screen.getByRole('button', { name: /Áp dụng vào tin tuyển dụng/i }),
       ).toBeEnabled()
     })
 
     fireEvent.click(
-      screen.getByRole('button', { name: /Áp dụng vào Form/i }),
+      screen.getByRole('button', { name: /Áp dụng vào tin tuyển dụng/i }),
     )
 
     await waitFor(() => {
@@ -151,11 +151,11 @@ describe('AIPredictJDModal', () => {
 
     render(<AIPredictJDModal onClose={vi.fn()} />)
 
-    fireEvent.change(screen.getByLabelText(/Raw job description/i), {
+    fireEvent.change(screen.getByLabelText(/Mô tả công việc/), {
       target: { value: 'Build modern web applications with React.' },
     })
     fireEvent.click(
-      screen.getByRole('button', { name: /AI Bóc Tách Kỹ Năng/i }),
+      screen.getByRole('button', { name: /Phân tích JD bằng AI/i }),
     )
 
     await waitFor(() => {

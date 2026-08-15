@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { RefreshCw } from 'lucide-react'
+import { ChevronLeft, RefreshCw, UserRoundSearch } from 'lucide-react'
 import { getJobById } from '@/api/jobs'
 import { getCandidateRecommendations } from '@/api/ai'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
-import { Spinner } from '@/components/ui/spinner'
+import { Skeleton } from '@/components/ui/skeleton'
+import { EmptyState } from '@/components/ui/empty-state'
 import { CandidateRecommendationCard } from '@/features/ai/components/CandidateRecommendationCard'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { CandidateMatchRecommendation } from '@/types/ai'
@@ -28,7 +29,11 @@ export function JobRecommendationsPage() {
 
   const load = useCallback(() => {
     if (!id) {
-      setState({ kind: 'error', message: 'Job not found', notFound: true })
+      setState({
+        kind: 'error',
+        message: 'Không tìm thấy tin tuyển dụng',
+        notFound: true,
+      })
       return
     }
 
@@ -47,7 +52,9 @@ export function JobRecommendationsPage() {
         const notFound = status === 404
         setState({
           kind: 'error',
-          message: notFound ? 'Job not found' : getFriendlyErrorMessage(err),
+          message: notFound
+            ? 'Không tìm thấy tin tuyển dụng'
+            : getFriendlyErrorMessage(err),
           notFound,
         })
       })
@@ -59,30 +66,37 @@ export function JobRecommendationsPage() {
 
   if (state.kind === 'loading') {
     return (
-      <div className="flex min-h-[50vh] items-center justify-center">
-        <Spinner size="lg" />
+      <div className="space-y-6">
+        <Skeleton className="h-9 w-1/2" />
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <Skeleton key={index} className="h-64 w-full" />
+          ))}
+        </div>
       </div>
     )
   }
 
   if (state.kind === 'error') {
     return (
-      <div className="container flex min-h-[50vh] flex-col items-center justify-center py-10 text-center">
-        <p className="text-5xl font-bold text-primary">
-          {state.notFound ? '404' : 'Error'}
-        </p>
-        <h1 className="mt-4 text-2xl font-semibold tracking-tight">
-          {state.message}
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {state.notFound
-            ? 'The job you are looking for does not exist.'
-            : 'Something went wrong while loading recommendations.'}
-        </p>
-        <div className="mt-6 flex items-center gap-3">
+      <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 text-center">
+        <div>
+          <p className="text-5xl font-bold text-primary">
+            {state.notFound ? '404' : 'Lỗi'}
+          </p>
+          <h1 className="mt-4 text-2xl font-semibold tracking-tight">
+            {state.message}
+          </h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {state.notFound
+              ? 'Tin tuyển dụng bạn tìm kiếm không tồn tại.'
+              : 'Đã xảy ra lỗi khi tải danh sách ứng viên gợi ý.'}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
           {state.notFound ? (
             <Link to="/recruiter/jobs">
-              <Button variant="outline">Back to jobs</Button>
+              <Button variant="outline">Quay lại tin tuyển dụng</Button>
             </Link>
           ) : (
             <Button variant="outline" onClick={load}>
@@ -98,27 +112,26 @@ export function JobRecommendationsPage() {
   const { job, recommendations } = state
 
   return (
-    <div className="container py-10">
-      <div className="mb-6 flex items-center gap-2">
-        <Link to="/recruiter/jobs">
-          <Button variant="ghost" size="sm">
-            &larr; Back to jobs
-          </Button>
-        </Link>
-      </div>
+    <div className="space-y-6">
+      <Link to="/recruiter/jobs">
+        <Button variant="ghost" size="sm">
+          <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+          Quay lại tin tuyển dụng
+        </Button>
+      </Link>
 
       <PageHeader
-        title="Gợi ý Ứng viên AI"
-        description={`Top candidates được AI gợi ý cho tin tuyển dụng "${job.title}".`}
+        eyebrow="Nhà tuyển dụng"
+        title="Ứng viên phù hợp cho vị trí"
+        description={`Top ứng viên được AI gợi ý cho tin tuyển dụng "${job.title}".`}
       />
 
       {recommendations.length === 0 ? (
-        <div className="flex min-h-[30vh] items-center justify-center text-center">
-          <p className="max-w-md text-sm text-muted-foreground">
-            Chưa tìm thấy ứng viên phù hợp với yêu cầu của tin tuyển dụng
-            này.
-          </p>
-        </div>
+        <EmptyState
+          icon={<UserRoundSearch className="h-6 w-6" aria-hidden="true" />}
+          title="Chưa có ứng viên gợi ý"
+          description="Chưa tìm thấy ứng viên phù hợp với yêu cầu của tin tuyển dụng này."
+        />
       ) : (
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
           {recommendations.map((recommendation) => (

@@ -30,11 +30,11 @@ describe('CompanyForm', () => {
   it('requires company name', async () => {
     render(<CompanyForm />)
 
-    fireEvent.click(screen.getByRole('button', { name: /Create company/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Tạo công ty/i }))
 
     await waitFor(() => {
       expect(
-        screen.getByText('Company name is required'),
+        screen.getByText('Tên công ty là bắt buộc'),
       ).toBeInTheDocument()
     })
     expect(mockedCreateCompany).not.toHaveBeenCalled()
@@ -43,14 +43,14 @@ describe('CompanyForm', () => {
   it('requires tax code', async () => {
     render(<CompanyForm />)
 
-    fireEvent.change(screen.getByLabelText('Company name'), {
+    fireEvent.change(screen.getByLabelText('Tên công ty'), {
       target: { value: 'Acme Corporation' },
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /Create company/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Tạo công ty/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('Tax code is required')).toBeInTheDocument()
+      expect(screen.getByText('Mã số thuế là bắt buộc')).toBeInTheDocument()
     })
     expect(mockedCreateCompany).not.toHaveBeenCalled()
   })
@@ -58,7 +58,7 @@ describe('CompanyForm', () => {
   it('allows selecting company size', () => {
     render(<CompanyForm />)
 
-    const sizeSelect = screen.getByLabelText('Company size')
+    const sizeSelect = screen.getByLabelText('Quy mô công ty')
     fireEvent.change(sizeSelect, { target: { value: 'enterprise' } })
 
     expect((sizeSelect as HTMLSelectElement).value).toBe('enterprise')
@@ -69,17 +69,17 @@ describe('CompanyForm', () => {
 
     render(<CompanyForm />)
 
-    fireEvent.change(screen.getByLabelText('Company name'), {
+    fireEvent.change(screen.getByLabelText('Tên công ty'), {
       target: { value: 'Acme Corporation' },
     })
     fireEvent.change(screen.getByLabelText('Slug'), {
       target: { value: 'acme-corporation' },
     })
-    fireEvent.change(screen.getByLabelText('Tax code'), {
+    fireEvent.change(screen.getByLabelText('Mã số thuế'), {
       target: { value: '0312345678' },
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /Create company/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Tạo công ty/i }))
 
     await waitFor(() => {
       expect(mockedCreateCompany).toHaveBeenCalledWith({
@@ -89,7 +89,7 @@ describe('CompanyForm', () => {
         size: 'startup',
       })
       expect(
-        screen.getByText('Company created successfully.'),
+        screen.getByText('Tạo công ty thành công.'),
       ).toBeInTheDocument()
     })
   })
@@ -106,22 +106,22 @@ describe('CompanyForm', () => {
 
     render(<CompanyForm />)
 
-    fireEvent.change(screen.getByLabelText('Company name'), {
+    fireEvent.change(screen.getByLabelText('Tên công ty'), {
       target: { value: 'Acme Corporation' },
     })
     fireEvent.change(screen.getByLabelText('Slug'), {
       target: { value: 'acme-corporation' },
     })
-    fireEvent.change(screen.getByLabelText('Tax code'), {
+    fireEvent.change(screen.getByLabelText('Mã số thuế'), {
       target: { value: '0312345678' },
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /Create company/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Tạo công ty/i }))
 
     await waitFor(() => {
       expect(
         screen.getByText(
-          'Tax code already registered. Please check and try again.',
+          'Mã số thuế đã được đăng ký. Vui lòng kiểm tra lại.',
         ),
       ).toBeInTheDocument()
     })
@@ -133,17 +133,17 @@ describe('CompanyForm', () => {
 
     render(<CompanyForm onCreated={onCreated} />)
 
-    fireEvent.change(screen.getByLabelText('Company name'), {
+    fireEvent.change(screen.getByLabelText('Tên công ty'), {
       target: { value: 'Acme Corporation' },
     })
     fireEvent.change(screen.getByLabelText('Slug'), {
       target: { value: 'acme-corporation' },
     })
-    fireEvent.change(screen.getByLabelText('Tax code'), {
+    fireEvent.change(screen.getByLabelText('Mã số thuế'), {
       target: { value: '0312345678' },
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /Create company/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Tạo công ty/i }))
 
     await waitFor(() => {
       expect(onCreated).toHaveBeenCalledWith(mockCompany)

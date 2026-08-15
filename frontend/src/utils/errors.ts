@@ -20,14 +20,14 @@ function isResponseError(error: unknown): error is HttpResponseError {
 
 export function getFriendlyErrorMessage(error: unknown): string {
   if (!isResponseError(error)) {
-    return 'Unable to connect to server. Please check your connection and try again.'
+    return 'Không thể kết nối tới máy chủ. Vui lòng kiểm tra kết nối và thử lại.'
   }
 
   const status = error.response?.status
   const data = error.response?.data as ApiErrorDetail | undefined
 
   if (status === 401) {
-    return 'Incorrect email or password.'
+    return 'Email hoặc mật khẩu không chính xác.'
   }
 
   if (data?.detail) {
@@ -43,12 +43,12 @@ export function getFriendlyErrorMessage(error: unknown): string {
   }
 
   if (status === 400) {
-    return 'The request could not be completed. Please try again.'
+    return 'Yêu cầu không thể hoàn tất. Vui lòng thử lại.'
   }
 
   if (status === 422) {
-    return 'Please check the form fields and try again.'
+    return 'Vui lòng kiểm tra lại các trường trong biểu mẫu.'
   }
 
-  return 'Something went wrong. Please try again.'
+  return 'Đã xảy ra lỗi. Vui lòng thử lại.'
 }

@@ -36,7 +36,7 @@ describe('JobCard', () => {
         <JobCard job={mockJob} />
       </MemoryRouter>,
     )
-    expect(screen.getByText(/Company ID:/)).toBeInTheDocument()
+    expect(screen.getByText(/Công ty 00000000/)).toBeInTheDocument()
   })
 
   it('renders location', () => {
@@ -54,8 +54,8 @@ describe('JobCard', () => {
         <JobCard job={mockJob} />
       </MemoryRouter>,
     )
-    expect(screen.getByText('Full time')).toBeInTheDocument()
-    expect(screen.getByText('Remote')).toBeInTheDocument()
+    expect(screen.getByText('Toàn thời gian')).toBeInTheDocument()
+    expect(screen.getByText('Từ xa')).toBeInTheDocument()
   })
 
   it('renders a link to the job detail page', () => {
@@ -64,7 +64,7 @@ describe('JobCard', () => {
         <JobCard job={mockJob} />
       </MemoryRouter>,
     )
-    const link = screen.getByRole('link', { name: /View details/i })
+    const link = screen.getByRole('link', { name: /Xem chi tiết/i })
     expect(link).toHaveAttribute('href', '/jobs/job-1')
   })
 })

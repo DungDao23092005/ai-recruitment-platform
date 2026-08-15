@@ -43,13 +43,13 @@ describe('CandidateRecommendationCard', () => {
 
   it('renders years of experience', () => {
     render(<CandidateRecommendationCard recommendation={mockRecommendation} />)
-    expect(screen.getByText('5 years experience')).toBeInTheDocument()
+    expect(screen.getByText('Kinh nghiệm: 5 năm')).toBeInTheDocument()
   })
 
   it('renders the match score', () => {
     render(<CandidateRecommendationCard recommendation={mockRecommendation} />)
     expect(
-      screen.getByLabelText('Match score 78 percent'),
+      screen.getByLabelText('Điểm đối sánh 78 phần trăm'),
     ).toBeInTheDocument()
   })
 
@@ -70,7 +70,7 @@ describe('CandidateRecommendationCard', () => {
         recommendation={{ ...mockRecommendation, parsed_resume: null }}
       />,
     )
-    expect(screen.getByText(/^Candidate /)).toBeInTheDocument()
+    expect(screen.getByText(/^Ứng viên /)).toBeInTheDocument()
   })
 
   it('omits experience when years are null', () => {
@@ -85,6 +85,6 @@ describe('CandidateRecommendationCard', () => {
         }}
       />,
     )
-    expect(screen.queryByText(/\byears experience\b/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Kinh nghiệm:/)).not.toBeInTheDocument()
   })
 })

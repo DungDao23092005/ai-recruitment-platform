@@ -2,6 +2,8 @@ import { useState, type FormEvent } from 'react'
 import apiClient from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
+import { Textarea } from '@/components/ui/textarea'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import {
   JOB_TYPE_LABELS,
@@ -38,10 +40,10 @@ interface FormErrors {
 function validate(values: FormValues): FormErrors {
   const errors: FormErrors = {}
   if (!values.title.trim()) {
-    errors.title = 'Job title is required'
+    errors.title = 'Tiêu đề công việc là bắt buộc'
   }
   if (!values.description.trim()) {
-    errors.description = 'Job description is required'
+    errors.description = 'Mô tả công việc là bắt buộc'
   }
   return errors
 }
@@ -103,126 +105,82 @@ export function JobForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-      <Input
-        name="title"
-        label="Job title"
-        placeholder="Senior Frontend Engineer"
-        value={values.title}
-        onChange={(e) => updateField('title', e.target.value)}
-        error={errors.title}
-      />
-      <div className="flex flex-col gap-1.5">
-        <label
-          htmlFor="job-description"
-          className="text-sm font-medium leading-none"
-        >
-          Description
-        </label>
-        <textarea
-          id="job-description"
+    <form onSubmit={handleSubmit} className="space-y-6" noValidate>
+      <div className="space-y-4">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Thông tin cơ bản
+        </h3>
+        <Input
+          name="title"
+          label="Tiêu đề công việc"
+          placeholder="Kỹ sư Frontend cấp cao"
+          value={values.title}
+          onChange={(e) => updateField('title', e.target.value)}
+          error={errors.title}
+        />
+        <Textarea
           name="description"
+          label="Mô tả công việc"
           rows={6}
           value={values.description}
           onChange={(e) => updateField('description', e.target.value)}
-          aria-invalid={errors.description ? true : undefined}
-          className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          placeholder="Describe the role, responsibilities and requirements..."
+          error={errors.description}
+          placeholder="Mô tả vai trò, trách nhiệm và yêu cầu công việc..."
         />
-        {errors.description ? (
-          <span className="text-xs font-medium text-destructive">
-            {errors.description}
-          </span>
-        ) : null}
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="job-type"
-            className="text-sm font-medium leading-none"
-          >
-            Job type
-          </label>
-          <select
-            id="job-type"
-            name="job_type"
-            value={values.job_type}
-            onChange={(e) =>
-              updateField('job_type', e.target.value as JobType)
-            }
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            {(Object.keys(JOB_TYPE_LABELS) as JobType[]).map((type) => (
+        <Select
+          name="job_type"
+          label="Loại công việc"
+          value={values.job_type}
+          onChange={(e) =>
+            updateField('job_type', e.target.value as JobType)
+          }
+        >
+          {(Object.keys(JOB_TYPE_LABELS) as JobType[]).map((type) => (
+            <option key={type} value={type}>
+              {JOB_TYPE_LABELS[type]}
+            </option>
+          ))}
+        </Select>
+
+        <Select
+          name="workplace_type"
+          label="Hình thức làm việc"
+          value={values.workplace_type}
+          onChange={(e) =>
+            updateField('workplace_type', e.target.value as WorkplaceType)
+          }
+        >
+          {(Object.keys(WORKPLACE_TYPE_LABELS) as WorkplaceType[]).map(
+            (type) => (
               <option key={type} value={type}>
-                {JOB_TYPE_LABELS[type]}
+                {WORKPLACE_TYPE_LABELS[type]}
               </option>
-            ))}
-          </select>
-        </div>
+            ),
+          )}
+        </Select>
 
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="workplace-type"
-            className="text-sm font-medium leading-none"
-          >
-            Workplace type
-          </label>
-          <select
-            id="workplace-type"
-            name="workplace_type"
-            value={values.workplace_type}
-            onChange={(e) =>
-              updateField('workplace_type', e.target.value as WorkplaceType)
-            }
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            {(Object.keys(WORKPLACE_TYPE_LABELS) as WorkplaceType[]).map(
-              (type) => (
-                <option key={type} value={type}>
-                  {WORKPLACE_TYPE_LABELS[type]}
-                </option>
-              ),
-            )}
-          </select>
-        </div>
+        <Input
+          name="location"
+          label="Địa điểm"
+          placeholder="Hồ Chí Minh"
+          value={values.location}
+          onChange={(e) => updateField('location', e.target.value)}
+        />
 
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="job-location"
-            className="text-sm font-medium leading-none"
-          >
-            Location
-          </label>
-          <Input
-            id="job-location"
-            name="location"
-            placeholder="Ho Chi Minh City"
-            value={values.location}
-            onChange={(e) => updateField('location', e.target.value)}
-          />
-        </div>
-
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="job-status"
-            className="text-sm font-medium leading-none"
-          >
-            Status
-          </label>
-          <select
-            id="job-status"
-            name="status"
-            value={values.status}
-            onChange={(e) =>
-              updateField('status', e.target.value as JobStatus)
-            }
-            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <option value="draft">{JOB_STATUS_LABELS.draft}</option>
-            <option value="published">{JOB_STATUS_LABELS.published}</option>
-          </select>
-        </div>
+        <Select
+          name="status"
+          label="Trạng thái"
+          value={values.status}
+          onChange={(e) =>
+            updateField('status', e.target.value as JobStatus)
+          }
+        >
+          <option value="draft">{JOB_STATUS_LABELS.draft}</option>
+          <option value="published">{JOB_STATUS_LABELS.published}</option>
+        </Select>
       </div>
 
       {apiError ? (
@@ -233,12 +191,12 @@ export function JobForm({
 
       {success ? (
         <p role="status" className="text-sm font-medium text-green-600">
-          Job created successfully.
+          Tạo tin tuyển dụng thành công.
         </p>
       ) : null}
 
       <Button type="submit" className="w-full" isLoading={submitting}>
-        Create job
+        Tạo tin tuyển dụng
       </Button>
     </form>
   )

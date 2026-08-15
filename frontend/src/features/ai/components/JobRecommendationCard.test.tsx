@@ -52,7 +52,7 @@ describe('JobRecommendationCard', () => {
   it('renders the match score', () => {
     renderCard()
     expect(
-      screen.getByLabelText('Match score 82 percent'),
+      screen.getByLabelText('Điểm đối sánh 82 phần trăm'),
     ).toBeInTheDocument()
   })
 
@@ -70,7 +70,7 @@ describe('JobRecommendationCard', () => {
   it('renders a CTA linking to the job detail route', () => {
     renderCard()
     const link = screen.getByRole('link', {
-      name: /Xem chi tiết Job & Nộp đơn/i,
+      name: /Xem chi tiết & Nộp đơn/i,
     })
     expect(link).toHaveAttribute('href', '/jobs/job-1')
   })
@@ -83,6 +83,6 @@ describe('JobRecommendationCard', () => {
         />
       </MemoryRouter>,
     )
-    expect(screen.getByText('Untitled role')).toBeInTheDocument()
+    expect(screen.getByText('Chưa có tên công việc')).toBeInTheDocument()
   })
 })

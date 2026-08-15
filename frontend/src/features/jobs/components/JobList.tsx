@@ -1,7 +1,15 @@
 import type { Job } from '@/types/job'
 import { JobCard } from '@/features/jobs/components/JobCard'
-import { Spinner } from '@/components/ui/spinner'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { ErrorBanner } from '@/components/ui/error-banner'
+import { EmptyState } from '@/components/ui/empty-state'
+import { Briefcase } from 'lucide-react'
+import {
+  Card,
+  CardContent,
+  CardHeader,
+} from '@/components/ui/card'
 
 export interface JobListProps {
   jobs: Job[]
@@ -22,30 +30,38 @@ export function JobList({
 }: JobListProps) {
   if (isLoading) {
     return (
-      <div className="flex min-h-[40vh] items-center justify-center">
-        <Spinner size="lg" />
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        {Array.from({ length: 6 }).map((_, index) => (
+          <Card key={index} className="p-5">
+            <CardHeader className="p-0">
+              <Skeleton className="h-5 w-3/4" />
+              <Skeleton className="mt-2 h-4 w-1/2" />
+            </CardHeader>
+            <CardContent className="mt-4 space-y-3 p-0">
+              <Skeleton className="h-16 w-full" />
+              <Skeleton className="h-9 w-full" />
+            </CardContent>
+          </Card>
+        ))}
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="flex min-h-[40vh] flex-col items-center justify-center gap-3 text-center">
-        <p className="text-sm font-medium text-destructive">{error}</p>
-        <p className="text-sm text-muted-foreground">
-          Unable to load jobs right now.
-        </p>
+      <div className="flex min-h-[40vh] items-center justify-center">
+        <ErrorBanner message={error} />
       </div>
     )
   }
 
   if (jobs.length === 0) {
     return (
-      <div className="flex min-h-[40vh] items-center justify-center text-center">
-        <p className="text-sm text-muted-foreground">
-          No jobs found. Try adjusting your filters.
-        </p>
-      </div>
+      <EmptyState
+        icon={<Briefcase className="h-5 w-5" aria-hidden="true" />}
+        title="Không tìm thấy việc làm"
+        description="Không có công việc nào khớp với bộ lọc hiện tại. Hãy điều chỉnh hoặc xóa bớt bộ lọc để xem thêm cơ hội."
+      />
     )
   }
 
@@ -65,10 +81,10 @@ export function JobList({
             disabled={page <= 1}
             onClick={() => onPageChange(page - 1)}
           >
-            Previous
+            Trước
           </Button>
           <span className="px-2 text-sm text-muted-foreground">
-            Page {page} of {totalPages}
+            Trang {page} / {totalPages}
           </span>
           <Button
             variant="outline"
@@ -76,7 +92,7 @@ export function JobList({
             disabled={page >= totalPages}
             onClick={() => onPageChange(page + 1)}
           >
-            Next
+            Sau
           </Button>
         </div>
       ) : null}
