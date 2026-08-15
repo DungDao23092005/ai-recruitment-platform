@@ -9,6 +9,7 @@ import type { Job } from '@/types/job'
 const mockDraftJob: Job = {
   id: 'job-draft-1',
   company_id: 'company-1',
+  company_name: null,
   title: 'Senior Frontend Engineer',
   description: 'Build modern web applications with React.',
   status: 'draft',
@@ -22,6 +23,7 @@ const mockDraftJob: Job = {
 const mockPublishedJob: Job = {
   id: 'job-published-1',
   company_id: 'company-1',
+  company_name: null,
   title: 'Backend Engineer',
   description: 'Build robust APIs.',
   status: 'published',

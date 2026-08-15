@@ -28,6 +28,7 @@ const mockUser: User = {
 const mockJob: Job = {
   id: 'job-1',
   company_id: 'company-1',
+  company_name: null,
   title: 'Backend Engineer',
   description: 'Build robust APIs.',
   status: 'published',

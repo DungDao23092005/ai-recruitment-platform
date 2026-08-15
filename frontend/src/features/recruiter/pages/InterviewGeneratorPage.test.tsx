@@ -14,6 +14,7 @@ import type { Job } from '@/types/job'
 const job: Job = {
   id: 'job-1',
   company_id: 'company-1',
+  company_name: null,
   title: 'Senior Frontend Engineer',
   description: 'Build modern web applications with React.',
   status: 'published',
