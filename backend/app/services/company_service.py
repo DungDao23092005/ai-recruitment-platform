@@ -43,6 +43,9 @@ class CompanyService:
     async def get_company_by_id(self, company_id: uuid.UUID) -> Company | None:
         return await self.companies.get_by_id(company_id)
 
+    async def list_companies(self) -> list[Company]:
+        return await self.companies.list_all()
+
     async def update_company(
         self,
         company_id: uuid.UUID,

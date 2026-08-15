@@ -7,9 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_recruiter
 from app.core.exceptions import ConflictException
+from app.domain.enums import UserRole
 from app.models import User
 from app.schemas.company import CompanyCreate, CompanyRead
 from app.services.company_service import CompanyService
+from app.services.user_service import UserService
 
 router = APIRouter()
 
@@ -31,7 +33,37 @@ async def create_company(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+    if current_user.role == UserRole.RECRUITER:
+        await UserService(db).attach_recruiter_to_company(
+            user_id=current_user.id,
+            company_id=company.id,
+        )
+
     return CompanyRead.model_validate(company)
+
+
+@router.get(
+    "",
+    response_model=list[CompanyRead],
+)
+async def list_companies(
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> list[CompanyRead]:
+    if current_user.role == UserRole.ADMIN:
+        companies = await CompanyService(db).list_companies()
+        return [CompanyRead.model_validate(c) for c in companies]
+
+    user = await UserService(db).get_user_with_profile(current_user.id)
+    profile = user.recruiter_profile if user is not None else None
+    if profile is None or profile.company_id is None:
+        return []
+
+    company = await CompanyService(db).get_company_by_id(profile.company_id)
+    if company is None:
+        return []
+    return [CompanyRead.model_validate(company)]
 
 
 @router.get(

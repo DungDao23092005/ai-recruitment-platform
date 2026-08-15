@@ -18,6 +18,40 @@ class UserService:
     async def get_user_by_id(self, user_id: uuid.UUID) -> User | None:
         return await self.users.get_by_id(user_id)
 
+    async def get_user_with_profile(self, user_id: uuid.UUID) -> User | None:
+        return await self.users.get_with_profile(user_id)
+
+    async def attach_recruiter_to_company(
+        self,
+        user_id: uuid.UUID,
+        company_id: uuid.UUID,
+    ) -> None:
+        """Associate a recruiter's profile with a company (ownership link).
+
+        Creates a ``RecruiterProfile`` if the user does not have one yet,
+        otherwise updates ``recruiter_profile.company_id``.
+        """
+        user = await self.users.get_with_profile(user_id)
+        if user is None:
+            raise EntityNotFoundException(f"User {user_id} not found")
+
+        if user.recruiter_profile is None:
+            profile = RecruiterProfile(user_id=user_id, company_id=company_id)
+            self.session.add(profile)
+            try:
+                await self.session.commit()
+                await self.session.refresh(profile)
+            except Exception:
+                await self.session.rollback()
+                raise
+        else:
+            user.recruiter_profile.company_id = company_id
+            try:
+                await self.session.commit()
+            except Exception:
+                await self.session.rollback()
+                raise
+
     async def create_candidate_profile(
         self,
         user_id: uuid.UUID,
