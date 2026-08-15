@@ -7,10 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_recruiter
 from app.core.exceptions import EntityNotFoundException
-from app.domain.enums import JobStatus
+from app.domain.enums import JobStatus, UserRole
 from app.models import User
 from app.schemas.job import JobCreate, JobRead
+from app.services.company_service import CompanyService
 from app.services.job_service import JobService
+from app.services.user_service import UserService
 
 router = APIRouter()
 
@@ -25,6 +27,26 @@ async def create_job(
     current_user: User = Depends(require_recruiter),
     db: AsyncSession = Depends(get_db),
 ) -> JobRead:
+    company = await CompanyService(db).get_company_by_id(data.company_id)
+    if company is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Company {data.company_id} not found",
+        )
+
+    if current_user.role != UserRole.ADMIN:
+        user = await UserService(db).get_user_with_profile(current_user.id)
+        profile = user.recruiter_profile if user is not None else None
+        owned_company_id = profile.company_id if profile is not None else None
+        if owned_company_id is None or owned_company_id != data.company_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "You do not have permission to create a job "
+                    "for this company"
+                ),
+            )
+
     try:
         job = await JobService(db).create_job(data)
     except EntityNotFoundException as exc:
