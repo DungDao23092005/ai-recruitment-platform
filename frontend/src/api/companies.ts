@@ -8,3 +8,7 @@ export async function createCompany(data: CompanyCreateData): Promise<Company> {
 export async function getCompanyById(id: string): Promise<Company> {
   return apiClient.get<Company, Company>(`/companies/${id}`)
 }
+
+export async function getCompanies(): Promise<Company[]> {
+  return apiClient.get<Company[], Company[]>('/companies')
+}

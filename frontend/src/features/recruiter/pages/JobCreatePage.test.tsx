@@ -4,6 +4,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { JobCreatePage } from './JobCreatePage'
 import apiClient from '@/api/client'
+import type { Company } from '@/types/company'
 import type { Job } from '@/types/job'
 import type { ParsedJob } from '@/features/recruiter/components/AIPredictJDModal'
 
@@ -19,6 +20,27 @@ const mockJob: Job = {
   created_at: '2026-01-15T00:00:00Z',
   updated_at: '2026-01-15T00:00:00Z',
 }
+
+const mockCompanies: Company[] = [
+  {
+    id: 'company-1',
+    name: 'Acme Corp',
+    slug: 'acme-corp',
+    tax_code: '123456789',
+    size: 'startup',
+    created_at: '2026-01-10T00:00:00Z',
+    updated_at: '2026-01-10T00:00:00Z',
+  },
+  {
+    id: 'company-2',
+    name: 'Beta Inc',
+    slug: 'beta-inc',
+    tax_code: '987654321',
+    size: 'sme',
+    created_at: '2026-02-01T00:00:00Z',
+    updated_at: '2026-02-01T00:00:00Z',
+  },
+]
 
 const mockParsedJob: ParsedJob = {
   title: 'Senior Frontend Engineer',
@@ -37,6 +59,7 @@ vi.mock('@/api/client', () => ({
   },
 }))
 
+const mockedGet = vi.mocked(apiClient.get)
 const mockedPost = vi.mocked(apiClient.post)
 
 beforeEach(() => {
@@ -44,22 +67,93 @@ beforeEach(() => {
 })
 
 describe('JobCreatePage', () => {
-  it('requires recruiter to have a company', () => {
+  it('shows the empty state when the recruiter has no company', async () => {
+    mockedGet.mockResolvedValue([] as never)
+
     render(
       <MemoryRouter>
-        <JobCreatePage companyId={null} />
+        <JobCreatePage />
       </MemoryRouter>,
     )
 
-    expect(
-      screen.getByText(
-        /Bạn cần tạo công ty trước khi đăng tin tuyển dụng/i,
-      ),
-    ).toBeInTheDocument()
+    await waitFor(() => {
+      expect(mockedGet).toHaveBeenCalledWith('/companies')
+      expect(
+        screen.getByText(/Bạn cần tạo công ty trước khi đăng tin tuyển dụng/i),
+      ).toBeInTheDocument()
+    })
     expect(screen.getByRole('link', { name: /Tạo công ty/i })).toHaveAttribute(
       'href',
       '/recruiter/company',
     )
+  })
+
+  it('fetches and displays the recruiter company when opening the page', async () => {
+    mockedGet.mockResolvedValue([mockCompanies[0]] as never)
+
+    render(
+      <MemoryRouter>
+        <JobCreatePage />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(mockedGet).toHaveBeenCalledWith('/companies')
+      expect(screen.getByText('Acme Corp')).toBeInTheDocument()
+      expect(screen.getByText('Thông tin tin tuyển dụng')).toBeInTheDocument()
+      expect(screen.getByLabelText('Tiêu đề công việc')).toBeInTheDocument()
+    })
+  })
+
+  it('shows a company selector when the recruiter has multiple companies', async () => {
+    mockedGet.mockResolvedValue(mockCompanies as never)
+
+    render(
+      <MemoryRouter>
+        <JobCreatePage />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Chọn công ty')).toBeInTheDocument()
+      expect(screen.getByText('Acme Corp')).toBeInTheDocument()
+      expect(screen.getByText('Beta Inc')).toBeInTheDocument()
+    })
+    expect(screen.queryByLabelText('Tiêu đề công việc')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('Beta Inc'))
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Tiêu đề công việc')).toBeInTheDocument()
+    })
+  })
+
+  it('shows a friendly error and recovers on retry', async () => {
+    const error = new Error('Network Error')
+    Object.assign(error, {
+      response: { status: 500, data: { detail: 'Không thể tải công ty' } },
+    })
+    mockedGet.mockRejectedValueOnce(error)
+
+    render(
+      <MemoryRouter>
+        <JobCreatePage />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Không thể tải công ty',
+      )
+    })
+
+    mockedGet.mockResolvedValueOnce([mockCompanies[0]] as never)
+    fireEvent.click(screen.getByRole('button', { name: /Thử lại/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Acme Corp')).toBeInTheDocument()
+      expect(screen.getByLabelText('Tiêu đề công việc')).toBeInTheDocument()
+    })
   })
 
   it('renders the job form when a company is present', () => {
@@ -74,6 +168,7 @@ describe('JobCreatePage', () => {
     expect(
       screen.getByRole('button', { name: /Phân tích JD bằng AI/i }),
     ).toBeInTheDocument()
+    expect(mockedGet).not.toHaveBeenCalled()
   })
 
   it('creates a job successfully', async () => {
