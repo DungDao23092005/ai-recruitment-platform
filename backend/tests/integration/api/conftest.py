@@ -110,3 +110,24 @@ def recruiter_client(client):
     auth_client = _make_auth_client(client, "recruiter")
     yield auth_client
     run(auth_client.aclose())
+
+
+@pytest.fixture
+def recruiter_a_client(client):
+    auth_client = _make_auth_client(client, "recruiter")
+    yield auth_client
+    run(auth_client.aclose())
+
+
+@pytest.fixture
+def recruiter_b_client(client):
+    auth_client = _make_auth_client(client, "recruiter")
+    yield auth_client
+    run(auth_client.aclose())
+
+
+@pytest.fixture
+def admin_client(client):
+    auth_client = _make_auth_client(client, "admin")
+    yield auth_client
+    run(auth_client.aclose())

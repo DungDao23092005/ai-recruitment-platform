@@ -166,3 +166,79 @@ class TestCreateRecruiterProfile:
 
         with pytest.raises(ConflictException):
             asyncio.run(service.create_recruiter_profile(user_id=user.id, data=data))
+
+
+class TestGetUserWithProfile:
+    def test_returns_user(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        service.users.get_with_profile.return_value = user
+
+        result = asyncio.run(service.get_user_with_profile(user.id))
+
+        assert result is user
+        service.users.get_with_profile.assert_awaited_once_with(user.id)
+
+    def test_returns_none_when_missing(self):
+        session = make_session()
+        service = make_service(session)
+        service.users.get_with_profile.return_value = None
+
+        result = asyncio.run(service.get_user_with_profile(uuid.uuid4()))
+
+        assert result is None
+
+
+class TestAttachRecruiterToCompany:
+    def test_creates_profile_when_recruiter_has_none(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        user.recruiter_profile = None
+        service.users.get_with_profile.return_value = user
+        company_id = uuid.uuid4()
+
+        asyncio.run(
+            service.attach_recruiter_to_company(user_id=user.id, company_id=company_id)
+        )
+
+        session.add.assert_called_once()
+        added_profile = session.add.call_args.args[0]
+        assert isinstance(added_profile, RecruiterProfile)
+        assert added_profile.user_id == user.id
+        assert added_profile.company_id == company_id
+        session.commit.assert_awaited_once()
+
+    def test_updates_existing_profile_company(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        profile = RecruiterProfile(user_id=user.id, company_id=uuid.uuid4())
+        user.recruiter_profile = profile
+        service.users.get_with_profile.return_value = user
+        new_company_id = uuid.uuid4()
+
+        asyncio.run(
+            service.attach_recruiter_to_company(
+                user_id=user.id, company_id=new_company_id
+            )
+        )
+
+        assert profile.company_id == new_company_id
+        session.add.assert_not_called()
+        session.commit.assert_awaited_once()
+
+    def test_user_not_found_raises(self):
+        session = make_session()
+        service = make_service(session)
+        service.users.get_with_profile.return_value = None
+
+        with pytest.raises(EntityNotFoundException):
+            asyncio.run(
+                service.attach_recruiter_to_company(
+                    user_id=uuid.uuid4(), company_id=uuid.uuid4()
+                )
+            )
+
+        session.commit.assert_not_awaited()

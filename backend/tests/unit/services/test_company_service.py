@@ -133,6 +133,28 @@ class TestGetCompanyById:
         assert result is None
 
 
+class TestListCompanies:
+    def test_returns_all_companies(self):
+        session = make_session()
+        service = make_service(session)
+        companies = [make_company(), make_company()]
+        service.companies.list_all.return_value = companies
+
+        result = asyncio.run(service.list_companies())
+
+        assert result == companies
+        service.companies.list_all.assert_awaited_once()
+
+    def test_returns_empty_list_when_none_exist(self):
+        session = make_session()
+        service = make_service(session)
+        service.companies.list_all.return_value = []
+
+        result = asyncio.run(service.list_companies())
+
+        assert result == []
+
+
 class TestUpdateCompany:
     def test_updates_name_and_size(self):
         session = make_session()

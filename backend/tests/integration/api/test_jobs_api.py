@@ -1,7 +1,10 @@
 import uuid
 
 import pytest
+from sqlalchemy import func, select
 
+from app.database.session import async_session_factory
+from app.models import Job
 from tests.integration.api.conftest import API_V1
 
 COMPANY_BODY = {
@@ -18,6 +21,16 @@ JOB_BODY = {
     "workplace_type": "remote",
     "location": "Ho Chi Minh",
 }
+
+
+async def count_jobs_for_company(company_id: str) -> int:
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(func.count())
+            .select_from(Job)
+            .where(Job.company_id == company_id)
+        )
+        return int(result.scalar_one())
 
 
 @pytest.fixture
@@ -71,6 +84,23 @@ class TestCompanies:
 
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"]
+
+    def test_list_companies_includes_created(
+        self, recruiter_client, run_async, created_company
+    ):
+        resp = run_async(recruiter_client.get(f"{API_V1}/companies"))
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert isinstance(body, list)
+        ids = [company["id"] for company in body]
+        assert created_company["id"] in ids
+
+    def test_list_companies_returns_empty(self, recruiter_client, run_async):
+        resp = run_async(recruiter_client.get(f"{API_V1}/companies"))
+
+        assert resp.status_code == 200
+        assert resp.json() == []
 
 
 class TestJobs:
@@ -182,3 +212,134 @@ class TestJobs:
         assert resp.status_code == 200
         ids = [item["id"] for item in resp.json()]
         assert job["id"] not in ids
+
+
+class TestCompanyOwnership:
+    """Security: recruiter-company ownership isolation (backend enforced)."""
+
+    @staticmethod
+    def create_company(client, run_async, slug, tax_code):
+        body = {**COMPANY_BODY, "slug": slug, "tax_code": tax_code}
+        resp = run_async(client.post(f"{API_V1}/companies", json=body))
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    def test_recruiter_a_sees_only_own_company(
+        self, recruiter_a_client, recruiter_b_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        company_b = self.create_company(
+            recruiter_b_client, run_async, "acme-b", "222222222"
+        )
+
+        list_a = run_async(
+            recruiter_a_client.get(f"{API_V1}/companies")
+        ).json()
+        list_b = run_async(
+            recruiter_b_client.get(f"{API_V1}/companies")
+        ).json()
+
+        ids_a = [c["id"] for c in list_a]
+        ids_b = [c["id"] for c in list_b]
+        assert company_a["id"] in ids_a
+        assert company_b["id"] not in ids_a
+        assert company_b["id"] in ids_b
+        assert company_a["id"] not in ids_b
+
+    def test_admin_sees_all_companies(
+        self,
+        admin_client,
+        recruiter_a_client,
+        recruiter_b_client,
+        run_async,
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        company_b = self.create_company(
+            recruiter_b_client, run_async, "acme-b", "222222222"
+        )
+
+        list_all = run_async(admin_client.get(f"{API_V1}/companies")).json()
+
+        ids = [c["id"] for c in list_all]
+        assert company_a["id"] in ids
+        assert company_b["id"] in ids
+
+    def test_recruiter_creates_job_for_own_company(
+        self, recruiter_a_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        body = {**JOB_BODY, "company_id": company_a["id"]}
+
+        resp = run_async(
+            recruiter_a_client.post(f"{API_V1}/jobs", json=body)
+        )
+
+        assert resp.status_code == 201
+        assert resp.json()["company_id"] == company_a["id"]
+
+    def test_recruiter_cannot_create_job_for_other_company(
+        self, recruiter_a_client, recruiter_b_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        company_b = self.create_company(
+            recruiter_b_client, run_async, "acme-b", "222222222"
+        )
+        assert company_a["id"] != company_b["id"]
+
+        body = {**JOB_BODY, "company_id": company_b["id"]}
+        resp = run_async(
+            recruiter_a_client.post(f"{API_V1}/jobs", json=body)
+        )
+
+        assert resp.status_code == 403
+        assert (
+            "permission" in resp.json()["detail"].lower()
+        )
+        count = run_async(count_jobs_for_company(company_b["id"]))
+        assert count == 0
+
+    def test_recruiter_without_company_cannot_create_job(
+        self, recruiter_client, recruiter_b_client, run_async
+    ):
+        company_b = self.create_company(
+            recruiter_b_client, run_async, "acme-b", "222222222"
+        )
+        body = {**JOB_BODY, "company_id": company_b["id"]}
+
+        resp = run_async(
+            recruiter_client.post(f"{API_V1}/jobs", json=body)
+        )
+
+        assert resp.status_code == 403
+
+    def test_unknown_company_returns_404(
+        self, recruiter_a_client, run_async
+    ):
+        body = {**JOB_BODY, "company_id": str(uuid.uuid4())}
+
+        resp = run_async(
+            recruiter_a_client.post(f"{API_V1}/jobs", json=body)
+        )
+
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"]
+
+    def test_admin_can_create_job_for_any_company(
+        self, admin_client, recruiter_b_client, run_async
+    ):
+        company_b = self.create_company(
+            recruiter_b_client, run_async, "acme-b", "222222222"
+        )
+        body = {**JOB_BODY, "company_id": company_b["id"]}
+
+        resp = run_async(admin_client.post(f"{API_V1}/jobs", json=body))
+
+        assert resp.status_code == 201
