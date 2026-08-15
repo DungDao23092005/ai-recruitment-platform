@@ -33,3 +33,19 @@ class RecruiterProfileCreate(BaseModel):
     full_name: str | None = None
     position: str | None = None
     company_id: uuid.UUID | None = None
+
+
+class RecruiterProfileUpdate(BaseModel):
+    full_name: str | None = None
+    position: str | None = None
+    company_id: uuid.UUID | None = None
+
+
+class RecruiterProfileRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    user_id: uuid.UUID
+    company_id: uuid.UUID | None
+    full_name: str | None
+    position: str | None

@@ -41,3 +41,18 @@ export async function createRecruiterProfile(
     data,
   )
 }
+
+export async function getRecruiterProfile(): Promise<RecruiterProfile> {
+  return apiClient.get<RecruiterProfile, RecruiterProfile>(
+    '/users/me/recruiter-profile',
+  )
+}
+
+export async function updateRecruiterProfile(
+  data: RecruiterProfileData,
+): Promise<RecruiterProfile> {
+  return apiClient.put<RecruiterProfile, RecruiterProfile>(
+    '/users/me/recruiter-profile',
+    data,
+  )
+}

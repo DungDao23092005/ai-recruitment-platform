@@ -17,6 +17,10 @@ class InvalidTransitionException(ServiceException):
     """Raised when a domain state transition is not allowed."""
 
 
+class ForbiddenException(ServiceException):
+    """Raised when an operation is not permitted for the caller."""
+
+
 class AIError(Exception):
     """Base class for all AI module errors."""
 

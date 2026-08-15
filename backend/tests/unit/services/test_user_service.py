@@ -4,11 +4,19 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.core.exceptions import ConflictException, EntityNotFoundException
+from app.core.exceptions import (
+    ConflictException,
+    EntityNotFoundException,
+    ForbiddenException,
+)
 from app.domain.enums import UserRole
-from app.models import CandidateProfile, RecruiterProfile, User
-from app.repositories import UserRepository
-from app.schemas.user import CandidateProfileCreate, RecruiterProfileCreate
+from app.models import CandidateProfile, Company, RecruiterProfile, User
+from app.repositories import CompanyRepository, UserRepository
+from app.schemas.user import (
+    CandidateProfileCreate,
+    RecruiterProfileCreate,
+    RecruiterProfileUpdate,
+)
 from app.services.user_service import UserService
 
 
@@ -33,6 +41,7 @@ def make_user(user_id: uuid.UUID | None = None) -> User:
 def make_service(session) -> UserService:
     service = UserService(session)
     service.users = AsyncMock(spec=UserRepository)
+    service.companies = AsyncMock(spec=CompanyRepository)
     return service
 
 
@@ -239,6 +248,195 @@ class TestAttachRecruiterToCompany:
                 service.attach_recruiter_to_company(
                     user_id=uuid.uuid4(), company_id=uuid.uuid4()
                 )
+            )
+
+        session.commit.assert_not_awaited()
+
+
+class TestGetRecruiterProfile:
+    def test_returns_profile(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        profile = RecruiterProfile(user_id=user.id)
+        user.recruiter_profile = profile
+        service.users.get_with_profile.return_value = user
+
+        result = asyncio.run(service.get_recruiter_profile(user.id))
+
+        assert result is profile
+
+    def test_returns_none_when_missing(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        user.recruiter_profile = None
+        service.users.get_with_profile.return_value = user
+
+        result = asyncio.run(service.get_recruiter_profile(user.id))
+
+        assert result is None
+
+    def test_user_not_found_raises(self):
+        session = make_session()
+        service = make_service(session)
+        service.users.get_with_profile.return_value = None
+
+        with pytest.raises(EntityNotFoundException):
+            asyncio.run(service.get_recruiter_profile(uuid.uuid4()))
+
+
+class TestUpsertRecruiterProfile:
+    def test_creates_profile_when_missing(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        user.recruiter_profile = None
+        service.users.get_with_profile.return_value = user
+        data = RecruiterProfileUpdate(
+            full_name="John Doe",
+            position="Hiring Manager",
+            company_id=None,
+        )
+
+        profile = asyncio.run(
+            service.upsert_recruiter_profile(user_id=user.id, data=data)
+        )
+
+        assert isinstance(profile, RecruiterProfile)
+        assert profile.user_id == user.id
+        assert profile.company_id is None
+        assert profile.full_name == "John Doe"
+        assert profile.position == "Hiring Manager"
+        session.add.assert_called_once_with(profile)
+        session.commit.assert_awaited_once()
+        session.refresh.assert_awaited_once_with(profile)
+
+    def test_updates_existing_profile_without_new_row(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        profile = RecruiterProfile(user_id=user.id)
+        user.recruiter_profile = profile
+        service.users.get_with_profile.return_value = user
+        data = RecruiterProfileUpdate(
+            full_name="Jane Doe",
+            position="Talent Lead",
+            company_id=None,
+        )
+
+        result = asyncio.run(
+            service.upsert_recruiter_profile(user_id=user.id, data=data)
+        )
+
+        assert result is profile
+        assert profile.full_name == "Jane Doe"
+        assert profile.position == "Talent Lead"
+        session.add.assert_not_called()
+        session.commit.assert_awaited_once()
+
+    def test_user_not_found_raises(self):
+        session = make_session()
+        service = make_service(session)
+        service.users.get_with_profile.return_value = None
+        data = RecruiterProfileUpdate()
+
+        with pytest.raises(EntityNotFoundException):
+            asyncio.run(
+                service.upsert_recruiter_profile(user_id=uuid.uuid4(), data=data)
+            )
+
+        session.commit.assert_not_awaited()
+
+    def test_commit_failure_rolls_back(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        user.recruiter_profile = None
+        service.users.get_with_profile.return_value = user
+        session.commit.side_effect = RuntimeError("db down")
+        data = RecruiterProfileUpdate()
+
+        with pytest.raises(RuntimeError):
+            asyncio.run(
+                service.upsert_recruiter_profile(user_id=user.id, data=data)
+            )
+
+        session.rollback.assert_awaited_once()
+
+    def test_links_owned_company(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        company_id = uuid.uuid4()
+        profile = RecruiterProfile(user_id=user.id, company_id=company_id)
+        user.recruiter_profile = profile
+        service.users.get_with_profile.return_value = user
+        service.companies.get_by_id.return_value = Company(id=company_id)
+        data = RecruiterProfileUpdate(
+            full_name="John Doe",
+            position="Hiring Manager",
+            company_id=company_id,
+        )
+
+        result = asyncio.run(
+            service.upsert_recruiter_profile(user_id=user.id, data=data)
+        )
+
+        assert result is profile
+        assert profile.company_id == company_id
+        service.companies.get_by_id.assert_awaited_once_with(company_id)
+
+    def test_rejects_other_recruiters_company(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        owned_company_id = uuid.uuid4()
+        other_company_id = uuid.uuid4()
+        profile = RecruiterProfile(
+            user_id=user.id, company_id=owned_company_id
+        )
+        user.recruiter_profile = profile
+        service.users.get_with_profile.return_value = user
+        service.companies.get_by_id.return_value = Company(id=other_company_id)
+        data = RecruiterProfileUpdate(company_id=other_company_id)
+
+        with pytest.raises(ForbiddenException):
+            asyncio.run(
+                service.upsert_recruiter_profile(user_id=user.id, data=data)
+            )
+
+        session.commit.assert_not_awaited()
+
+    def test_rejects_company_when_recruiter_owns_none(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        user.recruiter_profile = None
+        service.users.get_with_profile.return_value = user
+        company_id = uuid.uuid4()
+        service.companies.get_by_id.return_value = Company(id=company_id)
+        data = RecruiterProfileUpdate(company_id=company_id)
+
+        with pytest.raises(ForbiddenException):
+            asyncio.run(
+                service.upsert_recruiter_profile(user_id=user.id, data=data)
+            )
+
+        session.commit.assert_not_awaited()
+
+    def test_nonexistent_company_raises_not_found(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        user.recruiter_profile = None
+        service.users.get_with_profile.return_value = user
+        service.companies.get_by_id.return_value = None
+        data = RecruiterProfileUpdate(company_id=uuid.uuid4())
+
+        with pytest.raises(EntityNotFoundException):
+            asyncio.run(
+                service.upsert_recruiter_profile(user_id=user.id, data=data)
             )
 
         session.commit.assert_not_awaited()
