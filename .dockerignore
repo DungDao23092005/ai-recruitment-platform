@@ -1,0 +1,28 @@
+# Git
+.git
+.gitattributes
+
+# Secrets — never send to Docker build context
+.env
+.env.*
+
+# Docs & task files
+docs
+*.md
+
+# Frontend
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# Backend
+backend/.venv
+backend/__pycache__
+backend/.pytest_cache
+**/__pycache__
+**/*.pyc
+
+# OS / editor
+.DS_Store
+.vscode
+.idea
