@@ -48,6 +48,22 @@ function validate(values: FormValues): FormErrors {
   return errors
 }
 
+function isForbiddenError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error &&
+    (error as { response?: { status?: number } }).response?.status === 403
+  )
+}
+
+function getJobCreateErrorMessage(error: unknown): string {
+  if (isForbiddenError(error)) {
+    return 'Bạn không có quyền đăng tin tuyển dụng cho công ty này.'
+  }
+  return getFriendlyErrorMessage(error)
+}
+
 export function JobForm({
   companyId,
   onCreated,
@@ -91,7 +107,7 @@ export function JobForm({
       setSuccess(true)
       onCreated?.(job)
     } catch (error) {
-      setApiError(getFriendlyErrorMessage(error))
+      setApiError(getJobCreateErrorMessage(error))
     } finally {
       setSubmitting(false)
     }

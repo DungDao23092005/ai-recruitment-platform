@@ -137,6 +137,33 @@ describe('JobForm', () => {
     })
   })
 
+  it('shows a friendly forbidden message when job creation is unauthorized', async () => {
+    const error = new Error('Forbidden')
+    Object.assign(error, {
+      response: { status: 403, data: { detail: 'No permission' } },
+    })
+    mockedPost.mockRejectedValue(error)
+
+    render(<JobForm companyId="company-1" />)
+
+    fireEvent.change(screen.getByLabelText('Tiêu đề công việc'), {
+      target: { value: 'Senior Frontend Engineer' },
+    })
+    fireEvent.change(screen.getByLabelText('Mô tả công việc'), {
+      target: { value: 'Build modern web applications with React.' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Tạo tin tuyển dụng/i }))
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          'Bạn không có quyền đăng tin tuyển dụng cho công ty này.',
+        ),
+      ).toBeInTheDocument()
+    })
+  })
+
   it('allows only draft and published status options', () => {
     render(<JobForm companyId="company-1" />)
 
