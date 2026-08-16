@@ -8,11 +8,11 @@ from qdrant_client.models import Distance
 from app.core.exceptions import InvalidDocumentError
 from app.core.config import settings
 
+from tests.integration.conftest import run
 from .conftest import (
     QDRANT_AVAILABLE,
     SKIP_REASON_QDRANT,
     VECTOR_DIM,
-    run,
 )
 
 pytestmark = [

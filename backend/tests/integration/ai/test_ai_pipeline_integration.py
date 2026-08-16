@@ -13,6 +13,7 @@ from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.ai_matching_service import AIMatchingService
 
+from tests.integration.conftest import run
 from .conftest import (
     FakeEmbeddingProvider,
     FakeLLMProvider,
