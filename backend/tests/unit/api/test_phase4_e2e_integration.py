@@ -19,7 +19,7 @@ from app.ai.matching.cosine_engine import compute_cosine_similarity
 from app.ai.matching.matching_engine import MatchingEngine
 from app.ai.parsers.job_parser import JobParser
 from app.ai.parsers.resume_parser import ResumeParser
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_db
 from app.api.v1.endpoints.ai import (
     _get_ai_service,
     _get_explainable_ai_service,
@@ -30,7 +30,7 @@ from app.api.v1.endpoints.ai import (
 from app.api.v1.endpoints.admin import _get_admin_service
 from app.core.config import settings
 from app.core.exceptions import EmptyDocumentError
-from app.domain.enums import UserRole
+from app.domain.enums import JobStatus, UserRole
 from app.main import app
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
@@ -41,6 +41,7 @@ VECTOR_DIM = settings.VECTOR_DIMENSION
 
 KNOWN_CANDIDATE_ID = uuid.uuid4()
 KNOWN_JOB_ID = uuid.uuid4()
+KNOWN_COMPANY_ID = uuid.uuid4()
 
 MINIMAL_PDF_BYTES = (
     b"%PDF-1.4\n"
@@ -151,13 +152,21 @@ def build_pipeline_service() -> tuple[AIMatchingService, FakeVectorRepository]:
 
 
 class _FakeAttrs:
-    def __init__(self, profile):
+    def __init__(self, profile, recruiter_profile=None):
         self._profile = profile
+        self._recruiter_profile = recruiter_profile
 
     @property
     def candidate_profile(self):
         async def _resolve():
             return self._profile
+
+        return _resolve()
+
+    @property
+    def recruiter_profile(self):
+        async def _resolve():
+            return self._recruiter_profile
 
         return _resolve()
 
@@ -170,11 +179,14 @@ def make_user(
         if has_profile
         else None
     )
+    recruiter_profile = (
+        SimpleNamespace(company_id=KNOWN_COMPANY_ID) if role == UserRole.RECRUITER else None
+    )
     return SimpleNamespace(
         id=uuid.uuid4(),
         role=role,
         is_active=True,
-        awaitable_attrs=_FakeAttrs(profile),
+        awaitable_attrs=_FakeAttrs(profile, recruiter_profile),
     )
 
 
@@ -290,6 +302,55 @@ def _mock_admin_service():
     return service
 
 
+def _make_db_job() -> MagicMock:
+    job = MagicMock()
+    job.id = KNOWN_JOB_ID
+    job.company_id = KNOWN_COMPANY_ID
+    job.title = "Senior Python Developer"
+    job.description = "Backend role focused on Python and FastAPI."
+    job.status = JobStatus.PUBLISHED
+    job.is_deleted = False
+    job.company = SimpleNamespace(id=KNOWN_COMPANY_ID, name="TechNova AI")
+    job.skills = []
+    return job
+
+
+def _make_db_user(role: UserRole = UserRole.RECRUITER) -> MagicMock:
+    user = MagicMock()
+    user.id = uuid.uuid4()
+    user.role = role
+    user.recruiter_profile = SimpleNamespace(company_id=KNOWN_COMPANY_ID)
+    user.candidate_profile = SimpleNamespace(id=KNOWN_CANDIDATE_ID)
+    return user
+
+
+def _fake_db_session() -> MagicMock:
+    session = MagicMock()
+    session.add = MagicMock()
+
+    def _execute(stmt):
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = None
+        result.scalars().unique().first.return_value = None
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+        if "from jobs" in compiled:
+            result.scalars().unique().first.return_value = _make_db_job()
+        elif "from users" in compiled:
+            result.scalar_one_or_none.return_value = _make_db_user()
+        return result
+
+    session.execute = AsyncMock(side_effect=_execute)
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    return session
+
+
+async def _override_get_db():
+    yield _fake_db_session()
+
+
 @pytest.fixture
 def client(pipeline_service):
     store = pipeline_service.vector_repository.store
@@ -310,6 +371,7 @@ def client(pipeline_service):
         },
     )
     app.dependency_overrides[_get_ai_service] = lambda: pipeline_service
+    app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[_get_explainable_ai_service] = (
         lambda: _mock_explain_service()
     )

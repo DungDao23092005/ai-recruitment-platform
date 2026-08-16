@@ -76,6 +76,7 @@ vi.mock('@/api/auth', () => ({
 vi.mock('@/api/jobs', () => ({
   getJobs: vi.fn(),
   getJobById: vi.fn(),
+  getMyJobById: vi.fn(),
 }))
 
 vi.mock('@/api/ai', () => ({
@@ -119,6 +120,7 @@ vi.mock('@/api/endpoints', () => {
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
 const mockedGetJobs = vi.mocked(jobsApi.getJobs)
 const mockedGetJobById = vi.mocked(jobsApi.getJobById)
+const mockedGetMyJobById = vi.mocked(jobsApi.getMyJobById)
 const mockedSearchJobs = vi.mocked(aiApi.searchJobs)
 const mockedSearchCandidates = vi.mocked(aiApi.searchCandidates)
 const mockedGetJobRecommendations = vi.mocked(aiApi.getJobRecommendations)
@@ -158,6 +160,7 @@ beforeEach(() => {
   localStorage.clear()
   mockedGetJobs.mockResolvedValue([mockJob])
   mockedGetJobById.mockResolvedValue(mockJob)
+  mockedGetMyJobById.mockResolvedValue(mockJob)
   mockedSearchJobs.mockResolvedValue([])
   mockedSearchCandidates.mockResolvedValue([])
   mockedGetJobRecommendations.mockResolvedValue([])
@@ -309,7 +312,7 @@ describe('AppRouter recruiter job routes', () => {
     await waitFor(() => {
       expect(screen.getByText('Số câu hỏi')).toBeInTheDocument()
     })
-    expect(mockedGetJobById).toHaveBeenCalledWith('job-1')
+    expect(mockedGetMyJobById).toHaveBeenCalledWith('job-1')
   })
 
   it('renders job recommendations for a recruiter', async () => {
@@ -322,7 +325,7 @@ describe('AppRouter recruiter job routes', () => {
         screen.getByRole('heading', { name: 'Ứng viên phù hợp cho vị trí' }),
       ).toBeInTheDocument()
     })
-    expect(mockedGetJobById).toHaveBeenCalledWith('job-1')
+    expect(mockedGetMyJobById).toHaveBeenCalledWith('job-1')
     expect(mockedGetCandidateRecommendations).toHaveBeenCalledWith(
       'job-1',
       10,

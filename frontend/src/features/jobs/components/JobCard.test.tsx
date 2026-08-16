@@ -77,4 +77,21 @@ describe('JobCard', () => {
     const link = screen.getByRole('link', { name: /Xem chi tiết/i })
     expect(link).toHaveAttribute('href', '/jobs/job-1')
   })
+
+  it('creates the correct href per job.id for two different jobs', () => {
+    const jobA: Job = { ...mockJob, id: 'job-a', title: 'Job A' }
+    const jobB: Job = { ...mockJob, id: 'job-b', title: 'Job B' }
+
+    render(
+      <MemoryRouter>
+        <JobCard job={jobA} />
+        <JobCard job={jobB} />
+      </MemoryRouter>,
+    )
+
+    const links = screen.getAllByRole('link', { name: /Xem chi tiết/i })
+    expect(links).toHaveLength(2)
+    expect(links[0]).toHaveAttribute('href', '/jobs/job-a')
+    expect(links[1]).toHaveAttribute('href', '/jobs/job-b')
+  })
 })

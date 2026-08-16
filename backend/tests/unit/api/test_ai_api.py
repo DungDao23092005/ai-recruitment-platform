@@ -8,7 +8,7 @@ import pytest
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_db
 from app.api.v1.endpoints.ai import (
     _get_ai_service,
     _get_explainable_ai_service,
@@ -22,8 +22,11 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidDocumentError,
 )
-from app.domain.enums import UserRole
+from app.domain.enums import JobStatus, UserRole
 from app.main import app
+
+KNOWN_JOB_ID = uuid.uuid4()
+KNOWN_COMPANY_ID = uuid.uuid4()
 
 
 class _FakeAttrs:
@@ -47,6 +50,54 @@ class _FakeUser:
             SimpleNamespace(id=uuid.uuid4()) if has_profile else None
         )
         self.awaitable_attrs = _FakeAttrs(profile)
+
+
+def _make_db_job() -> MagicMock:
+    job = MagicMock()
+    job.id = KNOWN_JOB_ID
+    job.company_id = KNOWN_COMPANY_ID
+    job.title = "Backend Developer"
+    job.description = "Python FastAPI backend role."
+    job.status = JobStatus.PUBLISHED
+    job.is_deleted = False
+    job.company = SimpleNamespace(id=KNOWN_COMPANY_ID, name="TechNova AI")
+    job.skills = []
+    return job
+
+
+def _make_db_user() -> MagicMock:
+    user = MagicMock()
+    user.id = uuid.uuid4()
+    user.role = UserRole.RECRUITER
+    user.recruiter_profile = SimpleNamespace(company_id=KNOWN_COMPANY_ID)
+    return user
+
+
+def _fake_db_session() -> MagicMock:
+    session = MagicMock()
+    session.add = MagicMock()
+
+    def _execute(stmt):
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = None
+        result.scalars().unique().first.return_value = None
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+        if "from jobs" in compiled:
+            result.scalars().unique().first.return_value = _make_db_job()
+        elif "from users" in compiled:
+            result.scalar_one_or_none.return_value = _make_db_user()
+        return result
+
+    session.execute = AsyncMock(side_effect=_execute)
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    return session
+
+
+async def _override_get_db():
+    yield _fake_db_session()
 
 
 @pytest.fixture
@@ -109,6 +160,7 @@ def client(
     app.dependency_overrides[_get_interview_generator_service] = (
         lambda: mock_interview_generator_service
     )
+    app.dependency_overrides[get_db] = _override_get_db
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

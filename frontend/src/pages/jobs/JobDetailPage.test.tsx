@@ -1,5 +1,10 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useNavigate,
+} from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { JobDetailPage } from './JobDetailPage'
@@ -178,6 +183,7 @@ describe('JobDetailPage', () => {
       status: 'applied',
       created_at: '2026-01-20T00:00:00Z',
       updated_at: '2026-01-20T00:00:00Z',
+      candidate: null,
     })
 
     renderJobDetailPage()
@@ -276,5 +282,60 @@ describe('JobDetailPage', () => {
     expect(
       screen.getByText('Chỉ ứng viên mới có thể ứng tuyển.'),
     ).toBeInTheDocument()
+  })
+
+  it('reloads data with the new id when navigating /jobs/A → /jobs/B while mounted', async () => {
+    const jobB: Job = {
+      ...mockJob,
+      id: 'job-2',
+      title: 'Senior Backend Engineer',
+      description: 'Build backend APIs with FastAPI.',
+      company_name: 'TechNova Vietnam',
+    }
+    mockedGetJobById
+      .mockResolvedValueOnce(mockJob)
+      .mockResolvedValueOnce(jobB)
+
+    function NavToB() {
+      const navigate = useNavigate()
+      return (
+        <button onClick={() => navigate('/jobs/job-2')}>
+          Switch to B
+        </button>
+      )
+    }
+
+    vi.mocked(authApi.getCurrentUser).mockResolvedValue(candidateUser)
+    localStorage.setItem('ai_recruitment_token', 'token-abc')
+
+    render(
+      <MemoryRouter initialEntries={['/jobs/job-1']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/jobs/:id" element={<JobDetailPage />} />
+            <Route path="/login" element={<div>Login Page</div>} />
+          </Routes>
+          <NavToB />
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Senior Frontend Engineer'),
+      ).toBeInTheDocument()
+    })
+    expect(mockedGetJobById).toHaveBeenCalledWith('job-1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to B' }))
+
+    await waitFor(() => {
+      expect(mockedGetJobById).toHaveBeenNthCalledWith(2, 'job-2')
+      expect(screen.getByText('Senior Backend Engineer')).toBeInTheDocument()
+      expect(
+        screen.getByText('Build backend APIs with FastAPI.'),
+      ).toBeInTheDocument()
+      expect(screen.getByText('Công ty TechNova Vietnam')).toBeInTheDocument()
+    })
   })
 })
