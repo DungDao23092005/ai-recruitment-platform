@@ -12,8 +12,9 @@ from app.core.exceptions import (
 from app.domain.enums import ApplicationStatus
 from app.domain.models import Application as DomainApplication
 from app.domain.models.base import DomainException
-from app.models import Application, Job
+from app.models import Application, Job, User
 from app.repositories import ApplicationRepository, JobRepository
+from app.services.job_service import JobService
 
 
 class ApplicationService:
@@ -55,6 +56,7 @@ class ApplicationService:
 
     async def update_application_status(
         self,
+        current_user: User,
         application_id: uuid.UUID,
         new_status: ApplicationStatus,
     ) -> Application:
@@ -63,6 +65,16 @@ class ApplicationService:
             raise EntityNotFoundException(
                 f"Application {application_id} not found"
             )
+
+        try:
+            await JobService(self.session).get_recruiter_job_by_id(
+                current_user,
+                application.job_id,
+            )
+        except EntityNotFoundException:
+            raise EntityNotFoundException(
+                f"Application {application_id} not found"
+            ) from None
 
         domain = DomainApplication(
             candidate_id=application.candidate_id,

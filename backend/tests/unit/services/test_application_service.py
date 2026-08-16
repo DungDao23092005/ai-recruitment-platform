@@ -1,6 +1,7 @@
 import asyncio
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -9,7 +10,7 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidTransitionException,
 )
-from app.domain.enums import ApplicationStatus
+from app.domain.enums import ApplicationStatus, UserRole
 from app.models import Application, Job
 from app.repositories import ApplicationRepository, JobRepository
 from app.services.application_service import ApplicationService
@@ -22,6 +23,12 @@ def make_session() -> MagicMock:
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
     return session
+
+
+def make_user(
+    role: UserRole = UserRole.RECRUITER,
+) -> SimpleNamespace:
+    return SimpleNamespace(id=uuid.uuid4(), role=role, is_active=True)
 
 
 def make_application(
@@ -169,13 +176,21 @@ class TestUpdateApplicationStatus:
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
         service.applications.get_by_id.return_value = application
+        job = make_job()
 
-        result = asyncio.run(
-            service.update_application_status(
-                application_id=application.id,
-                new_status=ApplicationStatus.UNDER_REVIEW,
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=job
             )
-        )
+            result = asyncio.run(
+                service.update_application_status(
+                    current_user=make_user(),
+                    application_id=application.id,
+                    new_status=ApplicationStatus.UNDER_REVIEW,
+                )
+            )
 
         assert result is application
         assert application.status == ApplicationStatus.UNDER_REVIEW
@@ -187,14 +202,43 @@ class TestUpdateApplicationStatus:
         service = make_service(session)
         service.applications.get_by_id.return_value = None
 
-        with pytest.raises(EntityNotFoundException):
-            asyncio.run(
-                service.update_application_status(
-                    application_id=uuid.uuid4(),
-                    new_status=ApplicationStatus.UNDER_REVIEW,
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            with pytest.raises(EntityNotFoundException):
+                asyncio.run(
+                    service.update_application_status(
+                        current_user=make_user(),
+                        application_id=uuid.uuid4(),
+                        new_status=ApplicationStatus.UNDER_REVIEW,
+                    )
                 )
-            )
 
+        mock_job_service.return_value.get_recruiter_job_by_id.assert_not_called()
+        session.commit.assert_not_awaited()
+
+    def test_unowned_application_raises_not_found(self):
+        session = make_session()
+        service = make_service(session)
+        application = make_application(status=ApplicationStatus.APPLIED)
+        service.applications.get_by_id.return_value = application
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                side_effect=EntityNotFoundException("Application not found")
+            )
+            with pytest.raises(EntityNotFoundException):
+                asyncio.run(
+                    service.update_application_status(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        new_status=ApplicationStatus.UNDER_REVIEW,
+                    )
+                )
+
+        assert application.status == ApplicationStatus.APPLIED
         session.commit.assert_not_awaited()
 
     def test_invalid_transition_raises(self):
@@ -203,13 +247,20 @@ class TestUpdateApplicationStatus:
         application = make_application(status=ApplicationStatus.APPLIED)
         service.applications.get_by_id.return_value = application
 
-        with pytest.raises(InvalidTransitionException):
-            asyncio.run(
-                service.update_application_status(
-                    application_id=application.id,
-                    new_status=ApplicationStatus.ACCEPTED,
-                )
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=make_job()
             )
+            with pytest.raises(InvalidTransitionException):
+                asyncio.run(
+                    service.update_application_status(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        new_status=ApplicationStatus.ACCEPTED,
+                    )
+                )
 
         session.commit.assert_not_awaited()
         assert application.status == ApplicationStatus.APPLIED
@@ -221,12 +272,19 @@ class TestUpdateApplicationStatus:
         service.applications.get_by_id.return_value = application
         session.commit.side_effect = RuntimeError("db down")
 
-        with pytest.raises(RuntimeError):
-            asyncio.run(
-                service.update_application_status(
-                    application_id=application.id,
-                    new_status=ApplicationStatus.UNDER_REVIEW,
-                )
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=make_job()
             )
+            with pytest.raises(RuntimeError):
+                asyncio.run(
+                    service.update_application_status(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        new_status=ApplicationStatus.UNDER_REVIEW,
+                    )
+                )
 
         session.rollback.assert_awaited_once()

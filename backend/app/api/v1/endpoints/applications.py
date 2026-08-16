@@ -18,6 +18,7 @@ from app.schemas.application import (
     ApplicationStatusUpdate,
 )
 from app.services.application_service import ApplicationService
+from app.services.job_service import JobService
 from app.services.user_service import UserService
 
 router = APIRouter()
@@ -77,12 +78,18 @@ async def list_applications(
     current_user: User = Depends(require_recruiter),
     db: AsyncSession = Depends(get_db),
 ) -> list[ApplicationRead]:
-    if job_id is not None:
-        applications = await ApplicationService(db).list_applications_by_job(
-            job_id
-        )
-    else:
-        applications = []
+    if job_id is None:
+        return []
+    try:
+        await JobService(db).get_recruiter_job_by_id(current_user, job_id)
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    applications = await ApplicationService(db).list_applications_by_job(
+        job_id
+    )
     return [
         ApplicationRead.model_validate(a)
         for a in applications[skip : skip + limit]
@@ -101,6 +108,7 @@ async def update_application_status(
 ) -> ApplicationRead:
     try:
         application = await ApplicationService(db).update_application_status(
+            current_user=current_user,
             application_id=id,
             new_status=data.status,
         )

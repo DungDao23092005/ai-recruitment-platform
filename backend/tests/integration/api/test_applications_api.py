@@ -221,3 +221,312 @@ class TestApplicationStatusUpdate:
 
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"]
+
+
+class TestApplicationStatusOwnership:
+    """PATCH /applications/{id}/status — recruiter must own the application's job.
+
+    Cross-recruiter attempts return 404 (no existence leak) and must not
+    mutate the application.
+    """
+
+    @staticmethod
+    def create_company(client, run_async, slug, tax_code):
+        body = {**COMPANY_BODY, "slug": slug, "tax_code": tax_code}
+        resp = run_async(client.post(f"{API_V1}/companies", json=body))
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    @staticmethod
+    def create_job(client, run_async, company_id, title, status="published"):
+        body = {
+            **JOB_BODY,
+            "company_id": company_id,
+            "title": title,
+            "status": status,
+        }
+        resp = run_async(client.post(f"{API_V1}/jobs", json=body))
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    def test_recruiter_a_updates_own_application_status(
+        self, recruiter_a_client, candidate_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        job_a = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Job A"
+        )
+        create_candidate_profile(candidate_client, run_async)
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job_a["id"]}
+            )
+        ).json()
+
+        resp = run_async(
+            recruiter_a_client.patch(
+                f"{API_V1}/applications/{application['id']}/status",
+                json={"status": "under_review"},
+            )
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "under_review"
+
+    def test_recruiter_b_cannot_update_recruiter_a_application(
+        self, recruiter_a_client, recruiter_b_client, candidate_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        job_a = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Job A"
+        )
+        create_candidate_profile(candidate_client, run_async)
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job_a["id"]}
+            )
+        ).json()
+
+        resp = run_async(
+            recruiter_b_client.patch(
+                f"{API_V1}/applications/{application['id']}/status",
+                json={"status": "under_review"},
+            )
+        )
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == (
+            f"Application {application['id']} not found"
+        )
+
+        unchanged = run_async(
+            recruiter_a_client.get(
+                f"{API_V1}/applications", params={"job_id": job_a["id"]}
+            )
+        ).json()
+        assert unchanged[0]["status"] == "applied"
+
+    def test_cross_recruiter_and_nonexistent_responses_indistinguishable(
+        self, recruiter_a_client, recruiter_b_client, candidate_client, run_async
+    ):
+        import re
+
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        job_a = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Job A"
+        )
+        create_candidate_profile(candidate_client, run_async)
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job_a["id"]}
+            )
+        ).json()
+
+        cross_recruiter = run_async(
+            recruiter_b_client.patch(
+                f"{API_V1}/applications/{application['id']}/status",
+                json={"status": "under_review"},
+            )
+        )
+        nonexistent_id = uuid.uuid4()
+        nonexistent = run_async(
+            recruiter_b_client.patch(
+                f"{API_V1}/applications/{nonexistent_id}/status",
+                json={"status": "under_review"},
+            )
+        )
+
+        assert cross_recruiter.status_code == 404
+        assert nonexistent.status_code == 404
+        assert cross_recruiter.json()["detail"] == (
+            f"Application {application['id']} not found"
+        )
+        pattern = r"^Application [0-9a-fA-F-]{36} not found$"
+        assert re.match(pattern, cross_recruiter.json()["detail"]) is not None
+        assert re.match(pattern, nonexistent.json()["detail"]) is not None
+
+    def test_recruiter_b_cannot_update_with_any_status(
+        self, recruiter_a_client, recruiter_b_client, candidate_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        job_a = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Job A"
+        )
+        create_candidate_profile(candidate_client, run_async)
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job_a["id"]}
+            )
+        ).json()
+
+        for status in ("under_review", "shortlisted", "rejected"):
+            resp = run_async(
+                recruiter_b_client.patch(
+                    f"{API_V1}/applications/{application['id']}/status",
+                    json={"status": status},
+                )
+            )
+            assert resp.status_code == 404, status
+
+        unchanged = run_async(
+            recruiter_a_client.get(
+                f"{API_V1}/applications", params={"job_id": job_a["id"]}
+            )
+        ).json()
+        assert unchanged[0]["status"] == "applied"
+
+    def test_admin_updates_any_application(
+        self,
+        admin_client,
+        recruiter_b_client,
+        candidate_client,
+        run_async,
+    ):
+        company_b = self.create_company(
+            recruiter_b_client, run_async, "acme-b", "222222222"
+        )
+        job_b = self.create_job(
+            recruiter_b_client, run_async, company_b["id"], "Job B"
+        )
+        create_candidate_profile(candidate_client, run_async)
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job_b["id"]}
+            )
+        ).json()
+
+        resp = run_async(
+            admin_client.patch(
+                f"{API_V1}/applications/{application['id']}/status",
+                json={"status": "under_review"},
+            )
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "under_review"
+
+    def test_anonymous_gets_401(self, client, run_async):
+        resp = run_async(
+            client.patch(
+                f"{API_V1}/applications/{uuid.uuid4()}/status",
+                json={"status": "under_review"},
+            )
+        )
+
+        assert resp.status_code == 401
+
+    def test_candidate_gets_403(self, candidate_client, run_async):
+        resp = run_async(
+            candidate_client.patch(
+                f"{API_V1}/applications/{uuid.uuid4()}/status",
+                json={"status": "under_review"},
+            )
+        )
+
+        assert resp.status_code == 403
+
+
+class TestListApplicationsOwnership:
+    """GET /applications?job_id= — recruiter may only query own-company jobs."""
+
+    @staticmethod
+    def create_company(client, run_async, slug, tax_code):
+        body = {**COMPANY_BODY, "slug": slug, "tax_code": tax_code}
+        resp = run_async(client.post(f"{API_V1}/companies", json=body))
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    @staticmethod
+    def create_job(client, run_async, company_id, title, status="published"):
+        body = {
+            **JOB_BODY,
+            "company_id": company_id,
+            "title": title,
+            "status": status,
+        }
+        resp = run_async(client.post(f"{API_V1}/jobs", json=body))
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    def test_recruiter_a_lists_own_job_applications(
+        self, recruiter_a_client, candidate_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        job_a = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Job A"
+        )
+        create_candidate_profile(candidate_client, run_async)
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job_a["id"]}
+            )
+        ).json()
+
+        resp = run_async(
+            recruiter_a_client.get(
+                f"{API_V1}/applications", params={"job_id": job_a["id"]}
+            )
+        )
+
+        assert resp.status_code == 200
+        ids = [app["id"] for app in resp.json()]
+        assert application["id"] in ids
+
+    def test_recruiter_a_cannot_list_recruiter_b_job_applications(
+        self, recruiter_a_client, recruiter_b_client, run_async
+    ):
+        company_b = self.create_company(
+            recruiter_b_client, run_async, "acme-b", "222222222"
+        )
+        job_b = self.create_job(
+            recruiter_b_client, run_async, company_b["id"], "Job B"
+        )
+
+        resp = run_async(
+            recruiter_a_client.get(
+                f"{API_V1}/applications", params={"job_id": job_b["id"]}
+            )
+        )
+
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"]
+
+    def test_admin_lists_any_job_applications(
+        self,
+        admin_client,
+        recruiter_b_client,
+        candidate_client,
+        run_async,
+    ):
+        company_b = self.create_company(
+            recruiter_b_client, run_async, "acme-b", "222222222"
+        )
+        job_b = self.create_job(
+            recruiter_b_client, run_async, company_b["id"], "Job B"
+        )
+        create_candidate_profile(candidate_client, run_async)
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job_b["id"]}
+            )
+        ).json()
+
+        resp = run_async(
+            admin_client.get(
+                f"{API_V1}/applications", params={"job_id": job_b["id"]}
+            )
+        )
+
+        assert resp.status_code == 200
+        ids = [app["id"] for app in resp.json()]
+        assert application["id"] in ids
