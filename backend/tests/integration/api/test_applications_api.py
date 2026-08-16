@@ -530,3 +530,122 @@ class TestListApplicationsOwnership:
         assert resp.status_code == 200
         ids = [app["id"] for app in resp.json()]
         assert application["id"] in ids
+
+
+class TestApplicationCandidateEnrichment:
+    """GET /applications?job_id= returns safe candidate profile display data."""
+
+    @staticmethod
+    def create_company(client, run_async, slug, tax_code):
+        body = {**COMPANY_BODY, "slug": slug, "tax_code": tax_code}
+        resp = run_async(client.post(f"{API_V1}/companies", json=body))
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    @staticmethod
+    def create_job(client, run_async, company_id, title, status="published"):
+        body = {
+            **JOB_BODY,
+            "company_id": company_id,
+            "title": title,
+            "status": status,
+        }
+        resp = run_async(client.post(f"{API_V1}/jobs", json=body))
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    def test_application_contains_candidate_full_name(
+        self, recruiter_a_client, candidate_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        job_a = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Job A"
+        )
+        create_candidate_profile(candidate_client, run_async)
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job_a["id"]}
+            )
+        ).json()
+
+        resp = run_async(
+            recruiter_a_client.get(
+                f"{API_V1}/applications", params={"job_id": job_a["id"]}
+            )
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 1
+        app = body[0]
+        assert app["id"] == application["id"]
+        assert app["candidate"] is not None
+        assert app["candidate"]["full_name"] == "Jane Doe"
+        assert app["candidate"]["title"] == "Engineer"
+        assert "email" not in app["candidate"]
+        assert "phone" not in app["candidate"]
+        assert "user_id" not in app["candidate"]
+
+    def test_application_response_omits_sensitive_candidate_fields(
+        self, recruiter_a_client, candidate_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        job_a = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Job A"
+        )
+        profile = create_candidate_profile(candidate_client, run_async).json()
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job_a["id"]}
+            )
+        ).json()
+
+        resp = run_async(
+            recruiter_a_client.get(
+                f"{API_V1}/applications", params={"job_id": job_a["id"]}
+            )
+        )
+
+        assert resp.status_code == 200
+        candidate = resp.json()[0]["candidate"]
+        assert candidate["id"] == profile["id"]
+        assert set(candidate.keys()) == {"id", "full_name", "title"}
+        raw = resp.text
+        assert "password" not in raw.lower()
+        assert "phone" not in raw
+
+    def test_candidate_full_name_null_fallback(
+        self, recruiter_a_client, candidate_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        job_a = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Job A"
+        )
+        run_async(
+            candidate_client.post(
+                f"{API_V1}/users/me/candidate-profile",
+                json={"full_name": None, "title": None},
+            )
+        )
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job_a["id"]}
+            )
+        ).json()
+
+        resp = run_async(
+            recruiter_a_client.get(
+                f"{API_V1}/applications", params={"job_id": job_a["id"]}
+            )
+        )
+
+        assert resp.status_code == 200
+        candidate = resp.json()[0]["candidate"]
+        assert candidate["full_name"] is None
+        assert candidate["title"] is None

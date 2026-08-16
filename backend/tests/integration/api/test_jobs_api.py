@@ -570,3 +570,172 @@ class TestJobCompanyName:
 
         assert resp.status_code == 201
         assert resp.json()["company_name"] == company["name"]
+
+
+class TestMyJobDetail:
+    """GET /jobs/mine/{id} — recruiter-scoped job detail with ownership."""
+
+    @staticmethod
+    def create_company(client, run_async, slug, tax_code):
+        body = {**COMPANY_BODY, "slug": slug, "tax_code": tax_code}
+        resp = run_async(client.post(f"{API_V1}/companies", json=body))
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    @staticmethod
+    def create_job(client, run_async, company_id, title, status="draft"):
+        body = {
+            **JOB_BODY,
+            "company_id": company_id,
+            "title": title,
+            "status": status,
+        }
+        resp = run_async(client.post(f"{API_V1}/jobs", json=body))
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    def test_anonymous_gets_401(self, client, run_async):
+        resp = run_async(client.get(f"{API_V1}/jobs/mine/{uuid.uuid4()}"))
+
+        assert resp.status_code == 401
+
+    def test_candidate_gets_403(self, candidate_client, run_async):
+        resp = run_async(
+            candidate_client.get(f"{API_V1}/jobs/mine/{uuid.uuid4()}")
+        )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Not enough permissions"
+
+    def test_recruiter_own_draft_returns_200(
+        self, recruiter_a_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        draft = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Draft Job A"
+        )
+        assert draft["status"] == "draft"
+
+        resp = run_async(
+            recruiter_a_client.get(f"{API_V1}/jobs/mine/{draft['id']}")
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == draft["id"]
+        assert body["status"] == "draft"
+        assert body["company_name"] == company_a["name"]
+
+    def test_recruiter_own_published_returns_200(
+        self, recruiter_a_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        published = self.create_job(
+            recruiter_a_client,
+            run_async,
+            company_a["id"],
+            "Published Job A",
+            status="published",
+        )
+
+        resp = run_async(
+            recruiter_a_client.get(f"{API_V1}/jobs/mine/{published['id']}")
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "published"
+
+    def test_recruiter_b_cannot_access_recruiter_a_job(
+        self, recruiter_a_client, recruiter_b_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        job_a = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Job A"
+        )
+
+        resp = run_async(
+            recruiter_b_client.get(f"{API_V1}/jobs/mine/{job_a['id']}")
+        )
+
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"]
+
+    def test_admin_can_access_any_job(
+        self, admin_client, recruiter_a_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        draft_a = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Draft Job A"
+        )
+
+        resp = run_async(admin_client.get(f"{API_V1}/jobs/mine/{draft_a['id']}"))
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "draft"
+
+    def test_public_draft_still_404(
+        self, client, recruiter_a_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        draft = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Draft Job A"
+        )
+
+        resp = run_async(client.get(f"{API_V1}/jobs/{draft['id']}"))
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Job not found"
+
+    def test_public_published_still_200(
+        self, client, recruiter_a_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        published = self.create_job(
+            recruiter_a_client,
+            run_async,
+            company_a["id"],
+            "Published Job A",
+            status="published",
+        )
+
+        resp = run_async(client.get(f"{API_V1}/jobs/{published['id']}"))
+
+        assert resp.status_code == 200
+
+    def test_mine_list_and_detail_isolation(
+        self, recruiter_a_client, recruiter_b_client, run_async
+    ):
+        company_a = self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
+        company_b = self.create_company(
+            recruiter_b_client, run_async, "acme-b", "222222222"
+        )
+        draft_a = self.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Draft Job A"
+        )
+        draft_b = self.create_job(
+            recruiter_b_client, run_async, company_b["id"], "Draft Job B"
+        )
+
+        list_a = run_async(recruiter_a_client.get(f"{API_V1}/jobs/mine")).json()
+        ids_a = [job["id"] for job in list_a]
+        assert draft_a["id"] in ids_a
+        assert draft_b["id"] not in ids_a
+
+        detail_b = run_async(
+            recruiter_a_client.get(f"{API_V1}/jobs/mine/{draft_b['id']}")
+        )
+        assert detail_b.status_code == 404

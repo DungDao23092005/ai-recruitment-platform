@@ -99,6 +99,26 @@ async def list_my_jobs(
 
 
 @router.get(
+    "/mine/{job_id}",
+    response_model=JobRead,
+)
+async def get_my_job(
+    job_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> JobRead:
+    service = JobService(db)
+    try:
+        job = await service.get_recruiter_job_by_id(current_user, job_id)
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    return to_job_read(job)
+
+
+@router.get(
     "/{id}",
     response_model=JobRead,
 )

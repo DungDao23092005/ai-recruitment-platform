@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ChevronLeft, Users } from 'lucide-react'
-import { getJobById } from '@/api/jobs'
+import { ChevronLeft, RefreshCw, Users } from 'lucide-react'
+import { getMyJobById } from '@/api/jobs'
 import { getApplicationsByJob } from '@/api/applications'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
@@ -30,7 +30,7 @@ export function JobApplicantsPage() {
   const { id } = useParams<{ id: string }>()
   const [state, setState] = useState<PageState>({ kind: 'loading' })
 
-  useEffect(() => {
+  const load = useCallback(() => {
     if (!id) {
       setState({
         kind: 'error',
@@ -43,7 +43,7 @@ export function JobApplicantsPage() {
     let active = true
     setState({ kind: 'loading' })
 
-    Promise.all([getJobById(id), getApplicationsByJob(id)])
+    Promise.all([getMyJobById(id), getApplicationsByJob(id)])
       .then(([job, applications]) => {
         if (active) setState({ kind: 'success', job, applications })
       })
@@ -65,6 +65,10 @@ export function JobApplicantsPage() {
       active = false
     }
   }, [id])
+
+  useEffect(() => {
+    return load()
+  }, [load])
 
   if (state.kind === 'loading') {
     return (
@@ -100,7 +104,12 @@ export function JobApplicantsPage() {
           <Link to="/recruiter/jobs">
             <Button variant="outline">Quay lại tin tuyển dụng</Button>
           </Link>
-        ) : null}
+        ) : (
+          <Button variant="outline" onClick={load}>
+            <RefreshCw className="h-4 w-4" aria-hidden="true" />
+            Thử lại
+          </Button>
+        )}
       </div>
     )
   }

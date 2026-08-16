@@ -12,11 +12,17 @@ services:
     environment:
       DATABASE_HOST: mssql
       DATABASE_PORT: 1433
+      # Development database is isolated from the test database. Never point
+      # the dev backend at ai_recruitment_platform_itest/_test (pytest drop_all
+      # would destroy dev data).
+      DATABASE_NAME: ai_recruitment_platform
       REDIS_HOST: redis
       REDIS_PORT: 6379
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
       QDRANT_GRPC_PORT: 6334
+      # GEMINI_API_KEY đi qua env_file: .env (tránh ghi đè bằng giá trị rỗng)
+      GEMINI_GENERATION_MODEL: ${GEMINI_GENERATION_MODEL:-gemini-3.5-flash}
     depends_on:
       mssql:
         condition: service_healthy

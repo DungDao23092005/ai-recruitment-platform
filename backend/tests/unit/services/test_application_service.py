@@ -80,7 +80,9 @@ class TestApplyJob:
         assert application.job_id == job.id
         session.add.assert_called_once_with(application)
         session.commit.assert_awaited_once()
-        session.refresh.assert_awaited_once_with(application)
+        session.refresh.assert_awaited_once_with(
+            application, attribute_names=["candidate"]
+        )
 
     def test_job_not_found_raises(self):
         session = make_session()
@@ -195,7 +197,9 @@ class TestUpdateApplicationStatus:
         assert result is application
         assert application.status == ApplicationStatus.UNDER_REVIEW
         session.commit.assert_awaited_once()
-        session.refresh.assert_awaited_once_with(application)
+        session.refresh.assert_awaited_once_with(
+            application, attribute_names=["candidate"]
+        )
 
     def test_application_not_found_raises(self):
         session = make_session()

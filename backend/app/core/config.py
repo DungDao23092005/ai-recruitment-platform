@@ -33,6 +33,7 @@ class Settings(BaseSettings):
 
     # AI & Vector Database Configuration
     GEMINI_API_KEY: str = ""
+    GEMINI_GENERATION_MODEL: str = "gemini-3.5-flash"
     QDRANT_HOST: str = "localhost"
     QDRANT_PORT: int = 6333
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"

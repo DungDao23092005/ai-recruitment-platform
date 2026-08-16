@@ -5,8 +5,8 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import EntityNotFoundException, InvalidTransitionException
-from app.domain.enums import JobStatus
-from app.models import Company, Job
+from app.domain.enums import JobStatus, UserRole
+from app.models import Company, Job, User
 from app.repositories import CompanyRepository, JobRepository
 from app.schemas.job import JobCreate
 from app.services.user_service import UserService
@@ -80,15 +80,46 @@ class JobService:
         skip: int = 0,
         limit: int = 10,
     ) -> list[Job]:
-        user = await UserService(self.session).get_user_with_profile(user_id)
-        profile = user.recruiter_profile if user is not None else None
-        if profile is None or profile.company_id is None:
+        owned_company_id = await self._get_owned_company_id(user_id)
+        if owned_company_id is None:
             return []
         return await self.jobs.list_jobs_by_company(
-            profile.company_id,
+            owned_company_id,
             skip=skip,
             limit=limit,
         )
+
+    async def get_recruiter_job_by_id(
+        self,
+        user: User,
+        job_id: uuid.UUID,
+    ) -> Job:
+        """Resolve a job for a recruiter/admin with ownership enforced.
+
+        Admin can access any job (all statuses). A recruiter may only access
+        jobs belonging to the company they own. Raises
+        ``EntityNotFoundException`` for missing, soft-deleted, or unowned jobs
+        so existence is never leaked to other recruiters.
+        """
+        job = await self.jobs.get_job_with_company_and_skills(job_id)
+        if job is None:
+            raise EntityNotFoundException(f"Job {job_id} not found")
+
+        if user.role == UserRole.ADMIN:
+            return job
+
+        owned_company_id = await self._get_owned_company_id(user.id)
+        if owned_company_id is None or owned_company_id != job.company_id:
+            raise EntityNotFoundException(f"Job {job_id} not found")
+        return job
+
+    async def _get_owned_company_id(
+        self,
+        user_id: uuid.UUID,
+    ) -> uuid.UUID | None:
+        user = await UserService(self.session).get_user_with_profile(user_id)
+        profile = user.recruiter_profile if user is not None else None
+        return profile.company_id if profile is not None else None
 
     async def list_all_jobs(
         self,

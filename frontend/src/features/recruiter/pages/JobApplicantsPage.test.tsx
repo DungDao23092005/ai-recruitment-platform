@@ -30,6 +30,7 @@ const mockApplications: Application[] = [
     status: 'applied',
     created_at: '2026-01-20T00:00:00Z',
     updated_at: '2026-01-20T00:00:00Z',
+    candidate: null,
   },
   {
     id: 'app-2',
@@ -38,12 +39,13 @@ const mockApplications: Application[] = [
     status: 'shortlisted',
     created_at: '2026-01-21T00:00:00Z',
     updated_at: '2026-01-22T00:00:00Z',
+    candidate: null,
   },
 ]
 
 vi.mock('@/api/jobs', () => ({
   getJobs: vi.fn(),
-  getJobById: vi.fn(),
+  getMyJobById: vi.fn(),
 }))
 
 vi.mock('@/api/applications', () => ({
@@ -51,7 +53,7 @@ vi.mock('@/api/applications', () => ({
   getApplicationsByJob: vi.fn(),
 }))
 
-const mockedGetJobById = vi.mocked(jobsApi.getJobById)
+const mockedGetMyJobById = vi.mocked(jobsApi.getMyJobById)
 const mockedGetApplicationsByJob = vi.mocked(
   applicationsApi.getApplicationsByJob,
 )
@@ -76,13 +78,13 @@ beforeEach(() => {
 
 describe('JobApplicantsPage', () => {
   it('fetches job and applications on mount', async () => {
-    mockedGetJobById.mockResolvedValue(mockJob)
+    mockedGetMyJobById.mockResolvedValue(mockJob)
     mockedGetApplicationsByJob.mockResolvedValue(mockApplications)
 
     renderJobApplicantsPage()
 
     await waitFor(() => {
-      expect(mockedGetJobById).toHaveBeenCalledWith('job-1')
+      expect(mockedGetMyJobById).toHaveBeenCalledWith('job-1')
       expect(mockedGetApplicationsByJob).toHaveBeenCalledWith('job-1')
     })
   })
@@ -90,7 +92,7 @@ describe('JobApplicantsPage', () => {
   it('shows loading state while fetching', async () => {
     let resolveJob!: (value: Job) => void
     let resolveApps!: (value: Application[]) => void
-    mockedGetJobById.mockReturnValue(
+    mockedGetMyJobById.mockReturnValue(
       new Promise((r) => {
         resolveJob = r
       }),
@@ -112,7 +114,7 @@ describe('JobApplicantsPage', () => {
   })
 
   it('renders the job title and applicants', async () => {
-    mockedGetJobById.mockResolvedValue(mockJob)
+    mockedGetMyJobById.mockResolvedValue(mockJob)
     mockedGetApplicationsByJob.mockResolvedValue(mockApplications)
 
     renderJobApplicantsPage()
@@ -127,7 +129,7 @@ describe('JobApplicantsPage', () => {
   })
 
   it('renders candidate statuses', async () => {
-    mockedGetJobById.mockResolvedValue(mockJob)
+    mockedGetMyJobById.mockResolvedValue(mockJob)
     mockedGetApplicationsByJob.mockResolvedValue(mockApplications)
 
     renderJobApplicantsPage()
@@ -139,7 +141,7 @@ describe('JobApplicantsPage', () => {
   })
 
   it('opens the status update modal for an applicant', async () => {
-    mockedGetJobById.mockResolvedValue(mockJob)
+    mockedGetMyJobById.mockResolvedValue(mockJob)
     mockedGetApplicationsByJob.mockResolvedValue(mockApplications)
 
     renderJobApplicantsPage()
@@ -164,7 +166,7 @@ describe('JobApplicantsPage', () => {
   })
 
   it('shows empty state when there are no applicants', async () => {
-    mockedGetJobById.mockResolvedValue(mockJob)
+    mockedGetMyJobById.mockResolvedValue(mockJob)
     mockedGetApplicationsByJob.mockResolvedValue([])
 
     renderJobApplicantsPage()
@@ -181,7 +183,7 @@ describe('JobApplicantsPage', () => {
     Object.assign(error, {
       response: { status: 500, data: { detail: 'Server error' } },
     })
-    mockedGetJobById.mockResolvedValue(mockJob)
+    mockedGetMyJobById.mockResolvedValue(mockJob)
     mockedGetApplicationsByJob.mockRejectedValue(error)
 
     renderJobApplicantsPage()
@@ -191,16 +193,52 @@ describe('JobApplicantsPage', () => {
     })
   })
 
-  it('shows 404 when job is not found', async () => {
+it('shows 404 when job is not found', async () => {
     const error = new Error('Not Found')
     Object.assign(error, { response: { status: 404 } })
-    mockedGetJobById.mockRejectedValue(error)
+    mockedGetMyJobById.mockRejectedValue(error)
 
     renderJobApplicantsPage()
 
     await waitFor(() => {
       expect(screen.getByText('404')).toBeInTheDocument()
       expect(screen.getByText('Không tìm thấy tin tuyển dụng')).toBeInTheDocument()
+    })
+  })
+
+  it('renders own draft job', async () => {
+    const draftJob: Job = { ...mockJob, status: 'draft' }
+    mockedGetMyJobById.mockResolvedValue(draftJob)
+    mockedGetApplicationsByJob.mockResolvedValue([])
+
+    renderJobApplicantsPage()
+
+    await waitFor(() => {
+      expect(mockedGetMyJobById).toHaveBeenCalledWith('job-1')
+      expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      expect(screen.getByText('Bản nháp')).toBeInTheDocument()
+    })
+  })
+
+  it('retries the request after a failure', async () => {
+    const error = new Error('Server Error')
+    Object.assign(error, { response: { status: 500 } })
+    mockedGetMyJobById.mockRejectedValueOnce(error).mockResolvedValueOnce(mockJob)
+    mockedGetApplicationsByJob.mockResolvedValue(mockApplications)
+
+    renderJobApplicantsPage()
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Thử lại/i })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Thử lại/i }))
+
+await waitFor(() => {
+      expect(mockedGetMyJobById).toHaveBeenCalledTimes(2)
+      expect(
+        screen.getByText('Senior Frontend Engineer'),
+      ).toBeInTheDocument()
     })
   })
 })

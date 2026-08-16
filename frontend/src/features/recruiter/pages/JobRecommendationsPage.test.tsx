@@ -77,7 +77,7 @@ const mockRecommendations: CandidateMatchRecommendation[] = [
 
 vi.mock('@/api/jobs', () => ({
   getJobs: vi.fn(),
-  getJobById: vi.fn(),
+  getMyJobById: vi.fn(),
 }))
 
 vi.mock('@/api/ai', () => ({
@@ -87,7 +87,7 @@ vi.mock('@/api/ai', () => ({
   parseResume: vi.fn(),
 }))
 
-const mockedGetJobById = vi.mocked(jobsApi.getJobById)
+const mockedGetMyJobById = vi.mocked(jobsApi.getMyJobById)
 const mockedGetCandidateRecommendations = vi.mocked(
   aiApi.getCandidateRecommendations,
 )
@@ -112,13 +112,13 @@ beforeEach(() => {
 
 describe('JobRecommendationsPage', () => {
   it('fetches job and candidate recommendations with the job id', async () => {
-    mockedGetJobById.mockResolvedValue(mockJob)
+    mockedGetMyJobById.mockResolvedValue(mockJob)
     mockedGetCandidateRecommendations.mockResolvedValue(mockRecommendations)
 
     renderPage()
 
     await waitFor(() => {
-      expect(mockedGetJobById).toHaveBeenCalledWith('job-1')
+      expect(mockedGetMyJobById).toHaveBeenCalledWith('job-1')
       expect(mockedGetCandidateRecommendations).toHaveBeenCalledWith(
         'job-1',
         10,
@@ -129,7 +129,7 @@ describe('JobRecommendationsPage', () => {
   it('shows the loading state while fetching', async () => {
     let resolveJob!: (value: Job) => void
     let resolveRecs!: (value: CandidateMatchRecommendation[]) => void
-    mockedGetJobById.mockReturnValue(
+    mockedGetMyJobById.mockReturnValue(
       new Promise((r) => {
         resolveJob = r
       }),
@@ -151,7 +151,7 @@ describe('JobRecommendationsPage', () => {
   })
 
   it('renders candidate recommendation cards', async () => {
-    mockedGetJobById.mockResolvedValue(mockJob)
+    mockedGetMyJobById.mockResolvedValue(mockJob)
     mockedGetCandidateRecommendations.mockResolvedValue(mockRecommendations)
 
     renderPage()
@@ -163,7 +163,7 @@ describe('JobRecommendationsPage', () => {
   })
 
   it('renders the job title in the description', async () => {
-    mockedGetJobById.mockResolvedValue(mockJob)
+    mockedGetMyJobById.mockResolvedValue(mockJob)
     mockedGetCandidateRecommendations.mockResolvedValue(mockRecommendations)
 
     renderPage()
@@ -176,7 +176,7 @@ describe('JobRecommendationsPage', () => {
   })
 
   it('shows the empty state when there are no candidates', async () => {
-    mockedGetJobById.mockResolvedValue(mockJob)
+    mockedGetMyJobById.mockResolvedValue(mockJob)
     mockedGetCandidateRecommendations.mockResolvedValue([])
 
     renderPage()
@@ -193,7 +193,7 @@ describe('JobRecommendationsPage', () => {
     Object.assign(error, {
       response: { status: 500, data: { detail: 'Server error' } },
     })
-    mockedGetJobById.mockResolvedValue(mockJob)
+    mockedGetMyJobById.mockResolvedValue(mockJob)
     mockedGetCandidateRecommendations
       .mockRejectedValueOnce(error)
       .mockResolvedValueOnce(mockRecommendations)
@@ -211,16 +211,32 @@ describe('JobRecommendationsPage', () => {
     })
   })
 
-  it('shows 404 when job is not found', async () => {
+it('shows 404 when job is not found', async () => {
     const error = new Error('Not Found')
     Object.assign(error, { response: { status: 404 } })
-    mockedGetJobById.mockRejectedValue(error)
+    mockedGetMyJobById.mockRejectedValue(error)
 
     renderPage()
 
     await waitFor(() => {
       expect(screen.getByText('404')).toBeInTheDocument()
       expect(screen.getByText('Không tìm thấy tin tuyển dụng')).toBeInTheDocument()
+    })
+  })
+
+  it('renders own draft job', async () => {
+    const draftJob: Job = { ...mockJob, status: 'draft' }
+    mockedGetMyJobById.mockResolvedValue(draftJob)
+    mockedGetCandidateRecommendations.mockResolvedValue(mockRecommendations)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(mockedGetMyJobById).toHaveBeenCalledWith('job-1')
+      expect(
+        screen.getByText(/gợi ý cho tin tuyển dụng "Senior Frontend Engineer"/),
+      ).toBeInTheDocument()
+      expect(screen.getByText('John Doe')).toBeInTheDocument()
     })
   })
 })

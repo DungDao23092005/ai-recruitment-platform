@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ChevronLeft, RefreshCw, UserRoundSearch } from 'lucide-react'
-import { getJobById } from '@/api/jobs'
+import { getMyJobById } from '@/api/jobs'
 import { getCandidateRecommendations } from '@/api/ai'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
@@ -39,7 +39,7 @@ export function JobRecommendationsPage() {
 
     setState({ kind: 'loading' })
 
-    Promise.all([getJobById(id), getCandidateRecommendations(id, DEFAULT_LIMIT)])
+    Promise.all([getMyJobById(id), getCandidateRecommendations(id, DEFAULT_LIMIT)])
       .then(([job, recommendations]) => {
         const sorted = [...recommendations].sort(
           (a, b) => b.match_result.overall_score - a.match_result.overall_score,
