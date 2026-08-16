@@ -4,6 +4,9 @@ import os
 import uuid
 from typing import BinaryIO
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.ai.embeddings.embedding_service import EmbeddingService
 from app.ai.extractors.pdf_extractor import PDFTextExtractor
 from app.ai.interfaces.base_provider import BaseVectorRepository
@@ -12,6 +15,8 @@ from app.ai.parsers.job_parser import JobParser
 from app.ai.parsers.resume_parser import ResumeParser
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 from app.core.exceptions import EmptyDocumentError, EntityNotFoundException
+from app.models import CandidateProfile, Resume
+from app.repositories import ResumeRepository
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_matching import (
@@ -42,8 +47,10 @@ class AIMatchingService:
         self,
         candidate_id: uuid.UUID,
         pdf_source: bytes | str | os.PathLike[str] | BinaryIO,
+        session: AsyncSession | None = None,
+        source_name: str | None = None,
     ) -> ParsedResumeSchema:
-        """Extract text from PDF resume, parse structured data, generate embedding vector, and index to Qdrant."""
+        """Extract text from PDF resume, parse structured data, generate embedding vector, index to Qdrant, and persist the parsed resume row."""
         extracted_text = PDFTextExtractor.extract(pdf_source)
         parsed_resume = await self.resume_parser.parse(extracted_text)
 
@@ -60,7 +67,41 @@ class AIMatchingService:
             payload=payload,
         )
 
+        if session is not None:
+            await self._persist_resume(
+                session=session,
+                candidate_id=candidate_id,
+                source_name=source_name,
+                parsed_resume=parsed_resume,
+            )
+
         return parsed_resume
+
+    async def _persist_resume(
+        self,
+        session: AsyncSession,
+        candidate_id: uuid.UUID,
+        source_name: str | None,
+        parsed_resume: ParsedResumeSchema,
+    ) -> None:
+        """Persist the parsed resume as the candidate's primary Resume row.
+
+        The Qdrant vector remains the candidate's embedding; the DB Resume
+        row is the source of truth for parsed CV metadata. If persistence
+        fails, the error propagates so a failed upload is never reported as
+        successful.
+        """
+        repository = ResumeRepository(session, Resume)
+        try:
+            await repository.upsert_primary(
+                candidate_id=candidate_id,
+                title=source_name,
+                parsed_data=parsed_resume.model_dump(mode="json"),
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
     async def process_and_index_job(
         self,
@@ -208,6 +249,27 @@ class AIMatchingService:
         )
         return recommendations[:effective_limit]
 
+    async def _resolve_candidate_profiles(
+        self,
+        session: AsyncSession | None,
+        candidate_ids: list[uuid.UUID],
+    ) -> dict[uuid.UUID, CandidateProfile]:
+        """Resolve candidate profiles with ONE batched SQL query.
+
+        Returns a mapping candidate_id -> CandidateProfile for the given ids.
+        Soft-deleted candidates are excluded. Returns an empty mapping when
+        no session or ids are provided.
+        """
+        if session is None or not candidate_ids:
+            return {}
+
+        stmt = select(CandidateProfile).where(
+            CandidateProfile.id.in_(candidate_ids),
+            CandidateProfile.is_deleted == False,  # noqa: E712
+        )
+        result = await session.execute(stmt)
+        return {profile.id: profile for profile in result.scalars().all()}
+
     async def recommend_candidates_for_job(
         self,
         job_id: uuid.UUID,
@@ -218,6 +280,7 @@ class AIMatchingService:
         ]
         | None = None,
         limit: int = 10,
+        session: AsyncSession | None = None,
     ) -> list[CandidateMatchRecommendation]:
         """Recommend Top-K candidates for a Recruiter Job ranked by Match Score."""
         effective_limit = max(1, min(100, limit))
@@ -272,6 +335,20 @@ class AIMatchingService:
             limit=effective_limit,
         )
 
+        candidate_ids = [
+            uuid.UUID(
+                str(
+                    res.get("id")
+                    or res.get("payload", {}).get("candidate_id")
+                )
+            )
+            for res in qdrant_results
+            if res.get("id") or res.get("payload", {}).get("candidate_id")
+        ]
+        profiles = await self._resolve_candidate_profiles(
+            session, candidate_ids
+        )
+
         for res in qdrant_results:
             c_id_raw = res.get("id") or res.get("payload", {}).get(
                 "candidate_id"
@@ -280,8 +357,11 @@ class AIMatchingService:
                 continue
             c_id = uuid.UUID(str(c_id_raw))
             skills_in_payload = res.get("payload", {}).get("skills", [])
+            profile = profiles.get(c_id)
             fallback_parsed_resume = ParsedResumeSchema(
-                skills=skills_in_payload
+                skills=skills_in_payload,
+                full_name=profile.full_name if profile else None,
+                title=profile.title if profile else None,
             )
             match_result = self.matching_engine.match_resume_to_job(
                 resume=fallback_parsed_resume,

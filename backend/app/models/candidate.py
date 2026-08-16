@@ -33,8 +33,10 @@ class CandidateProfile(Base, TimestampMixin, SoftDeleteMixin):
     candidate_skills: Mapped[list[CandidateSkill]] = relationship(
         back_populates="candidate",
         cascade="all, delete-orphan",
+        overlaps="skills,candidates",
     )
     skills: Mapped[list[Skill]] = relationship(
         secondary="candidate_skills",
         back_populates="candidates",
+        overlaps="candidate_skills,candidate",
     )

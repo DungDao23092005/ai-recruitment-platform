@@ -7,6 +7,14 @@ import { StatusUpdateModal } from './StatusUpdateModal'
 import { APPLICATION_STATUS_LABELS } from './StatusUpdateModal'
 import type { Application } from '@/types/application'
 
+function getCandidateDisplayName(application: Application): string {
+  const fullName = application.candidate?.full_name
+  if (fullName) {
+    return fullName
+  }
+  return `Ứng viên ${application.candidate_id.slice(0, 8)}`
+}
+
 export interface ApplicantListProps {
   applications: Application[]
   onStatusChange?: (updated: Application) => void
@@ -41,7 +49,7 @@ export function ApplicantList({
               </div>
               <div>
                 <p className="font-medium">
-                  Ứng viên {application.candidate_id.slice(0, 8)}
+                  {getCandidateDisplayName(application)}
                 </p>
                 <p className="flex items-center gap-1 text-xs text-muted-foreground">
                   <CalendarDays className="h-3 w-3" aria-hidden="true" />

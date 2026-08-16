@@ -21,10 +21,13 @@ from .conftest import (
     VECTOR_DIM,
 )
 
-pytestmark = pytest.mark.skipif(
-    not QDRANT_AVAILABLE,
-    reason=SKIP_REASON_QDRANT,
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not QDRANT_AVAILABLE,
+        reason=SKIP_REASON_QDRANT,
+    ),
+    pytest.mark.asyncio,
+]
 
 API_V1 = settings.API_V1_STR
 
@@ -231,40 +234,36 @@ class TestRecommendCandidatesRealQdrant:
 
 
 class TestRecommendationsApi:
-    async def test_recommend_jobs_endpoint_with_real_qdrant(
+    def test_recommend_jobs_endpoint_with_real_qdrant(
         self,
         candidate_client,
         vector_repository,
         tracked,
         run_async,
     ):
-        await vector_repository.init_collections()
+        run_async(vector_repository.init_collections())
 
-        profile = run_async(
-            candidate_client.post(
-                f"{API_V1}/users/me/candidate-profile",
-                json={"full_name": "Jane Doe", "title": "Engineer"},
-            )
-        )
+        profile = run_async(candidate_client.post(
+            f"{API_V1}/users/me/candidate-profile",
+            json={"full_name": "Jane Doe", "title": "Engineer"},
+        ))
         assert profile.status_code == 201, profile.text
         candidate_id = uuid.UUID(profile.json()["id"])
         tracked("resumes", candidate_id)
 
-        await vector_repository.upsert_resume_vector(
+        run_async(vector_repository.upsert_resume_vector(
             candidate_id=candidate_id,
             vector=FakeEmbeddingProvider._hash_vector("Python FastAPI"),
             skills=["Python", "FastAPI"],
-        )
-        job_ids = await _seed_job_vectors(
+        ))
+        job_ids = run_async(_seed_job_vectors(
             vector_repository,
             [["Python", "FastAPI"], ["Java", "Spring"]],
-        )
+        ))
         for job_id in job_ids:
             tracked("jobs", job_id)
 
-        resp = run_async(
-            candidate_client.get(f"{API_V1}/ai/recommendations/jobs")
-        )
+        resp = run_async(candidate_client.get(f"{API_V1}/ai/recommendations/jobs"))
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -273,35 +272,56 @@ class TestRecommendationsApi:
         scores = [item["match_result"]["overall_score"] for item in body]
         assert scores == sorted(scores, reverse=True)
 
-    async def test_recommend_candidates_endpoint_with_real_qdrant(
+    def test_recommend_candidates_endpoint_with_real_qdrant(
         self,
         recruiter_client,
         vector_repository,
         tracked,
         run_async,
     ):
-        await vector_repository.init_collections()
+        run_async(vector_repository.init_collections())
 
-        job_id = uuid.uuid4()
+        company = run_async(recruiter_client.post(
+            f"{API_V1}/companies",
+            json={
+                "name": "Acme Corp",
+                "slug": f"acme-corp-{uuid.uuid4()}",
+                "tax_code": str(uuid.uuid4())[:15],
+                "size": "startup",
+            },
+        )).json()
+
+        job = run_async(recruiter_client.post(
+            f"{API_V1}/jobs",
+            json={
+                "title": "Backend Engineer",
+                "description": "Build robust APIs",
+                "job_type": "full_time",
+                "workplace_type": "remote",
+                "location": "Ho Chi Minh",
+                "status": "published",
+                "company_id": company["id"],
+            },
+        )).json()
+        job_id = uuid.UUID(job["id"])
+
         tracked("jobs", job_id)
-        await vector_repository.upsert_job_vector(
+        run_async(vector_repository.upsert_job_vector(
             job_id=job_id,
             vector=FakeEmbeddingProvider._hash_vector("Python FastAPI"),
             skills=["Python", "FastAPI"],
-        )
-        candidate_ids = await _seed_candidate_vectors(
+        ))
+        candidate_ids = run_async(_seed_candidate_vectors(
             vector_repository,
             [["Python", "FastAPI"], ["Java", "Spring"]],
-        )
+        ))
         for candidate_id in candidate_ids:
             tracked("resumes", candidate_id)
 
-        resp = run_async(
-            recruiter_client.get(
-                f"{API_V1}/ai/recommendations/candidates",
-                params={"job_id": str(job_id)},
-            )
-        )
+        resp = run_async(recruiter_client.get(
+            f"{API_V1}/ai/recommendations/candidates",
+            params={"job_id": str(job_id)},
+        ))
 
         assert resp.status_code == 200, resp.text
         body = resp.json()

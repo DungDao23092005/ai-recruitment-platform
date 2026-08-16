@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
@@ -11,6 +12,20 @@ from app.core.exceptions import InvalidDocumentError
 
 T = TypeVar("T", bound=BaseModel)
 
+logger = logging.getLogger(__name__)
+
+GEMINI_REQUEST_FAILED_MESSAGE = (
+    "Không thể xử lý yêu cầu AI. Vui lòng thử lại sau."
+)
+
+try:
+    from google import genai
+    from google.genai import types
+except ImportError as exc:  # pragma: no cover - environment dependent
+    genai = None
+    types = None
+    logger.warning("google-genai SDK is not installed: %s", exc)
+
 
 class GeminiLLMProvider(BaseLLMProvider):
     """Google Gemini LLM provider implementation using google-genai SDK."""
@@ -18,10 +33,10 @@ class GeminiLLMProvider(BaseLLMProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        model_name: str = "gemini-1.5-flash",
+        model_name: str | None = None,
     ) -> None:
         self.api_key = api_key or settings.GEMINI_API_KEY
-        self.model_name = model_name
+        self.model_name = model_name or settings.GEMINI_GENERATION_MODEL
 
     async def generate_structured_output(
         self,
@@ -36,13 +51,11 @@ class GeminiLLMProvider(BaseLLMProvider):
         if not self.api_key:
             raise InvalidDocumentError("GEMINI_API_KEY is not configured")
 
-        try:
-            from google import genai
-            from google.genai import types
-        except ImportError as exc:
+        if genai is None:
             raise InvalidDocumentError(
-                f"google-genai SDK is not installed: {exc}"
-            ) from exc
+                "google-genai SDK is not installed. "
+                "Please install google-genai and restart the service."
+            )
 
         client = genai.Client(api_key=self.api_key)
 
@@ -62,9 +75,12 @@ class GeminiLLMProvider(BaseLLMProvider):
                 config=config,
             )
         except Exception as exc:
-            raise InvalidDocumentError(
-                f"Gemini API request failed: {exc}"
-            ) from exc
+            logger.error(
+                "Gemini API request failed for model %s: %s",
+                self.model_name,
+                exc,
+            )
+            raise InvalidDocumentError(GEMINI_REQUEST_FAILED_MESSAGE) from exc
 
         raw_text = getattr(response, "text", None)
         if not raw_text:

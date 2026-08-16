@@ -3,7 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { InterviewGeneratorPage } from './InterviewGeneratorPage'
-import { getJobById } from '@/api/jobs'
+import { getMyJobById } from '@/api/jobs'
 import { generateInterviewQuestions } from '@/api/ai'
 import type {
   GenerateInterviewQuestionsResponse,
@@ -42,7 +42,7 @@ const response: GenerateInterviewQuestionsResponse = {
 }
 
 vi.mock('@/api/jobs', () => ({
-  getJobById: vi.fn(),
+  getMyJobById: vi.fn(),
 }))
 
 vi.mock('@/api/ai', () => ({
@@ -50,7 +50,7 @@ vi.mock('@/api/ai', () => ({
   getCandidateRecommendations: vi.fn(),
 }))
 
-const mockedGetJobById = vi.mocked(getJobById)
+const mockedGetMyJobById = vi.mocked(getMyJobById)
 const mockedGenerate = vi.mocked(generateInterviewQuestions)
 
 function renderPage() {
@@ -68,7 +68,7 @@ function renderPage() {
 
 beforeEach(() => {
   vi.resetAllMocks()
-  mockedGetJobById.mockResolvedValue(job)
+  mockedGetMyJobById.mockResolvedValue(job)
   mockedGenerate.mockResolvedValue(response)
 })
 
@@ -100,7 +100,7 @@ describe('InterviewGeneratorPage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(mockedGetJobById).toHaveBeenCalled()
+      expect(mockedGetMyJobById).toHaveBeenCalled()
     })
 
     fireEvent.click(screen.getByRole('button', { name: /Tạo bộ câu hỏi/i }))
@@ -157,7 +157,7 @@ describe('InterviewGeneratorPage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(mockedGetJobById).toHaveBeenCalled()
+      expect(mockedGetMyJobById).toHaveBeenCalled()
     })
 
     fireEvent.click(screen.getByRole('button', { name: /Tạo bộ câu hỏi/i }))
@@ -171,7 +171,7 @@ describe('InterviewGeneratorPage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(mockedGetJobById).toHaveBeenCalled()
+      expect(mockedGetMyJobById).toHaveBeenCalled()
     })
 
     fireEvent.click(screen.getByRole('button', { name: /Tạo bộ câu hỏi/i }))
@@ -197,7 +197,7 @@ describe('InterviewGeneratorPage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(mockedGetJobById).toHaveBeenCalled()
+      expect(mockedGetMyJobById).toHaveBeenCalled()
     })
 
     fireEvent.click(screen.getByRole('button', { name: /Tạo bộ câu hỏi/i }))
@@ -226,7 +226,7 @@ describe('InterviewGeneratorPage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(mockedGetJobById).toHaveBeenCalled()
+      expect(mockedGetMyJobById).toHaveBeenCalled()
     })
 
     fireEvent.click(screen.getByRole('button', { name: /Tạo bộ câu hỏi/i }))
@@ -245,8 +245,8 @@ describe('InterviewGeneratorPage', () => {
     expect(copied).toContain('Explain how you handle React state.')
   })
 
-  it('renders job error state when job is missing', async () => {
-    mockedGetJobById.mockRejectedValue({
+it('renders job error state when job is missing', async () => {
+    mockedGetMyJobById.mockRejectedValue({
       response: { status: 404, data: { detail: 'Not found' } },
     })
 
@@ -254,6 +254,43 @@ describe('InterviewGeneratorPage', () => {
 
     await waitFor(() => {
       expect(screen.getByText('404')).toBeInTheDocument()
+    })
+  })
+
+  it('renders own draft job', async () => {
+    const draftJob: Job = { ...job, status: 'draft' }
+    mockedGetMyJobById.mockResolvedValue(draftJob)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(mockedGetMyJobById).toHaveBeenCalledWith('job-1')
+      expect(
+        screen.getByText(/Tạo câu hỏi phỏng vấn cho tin tuyển dụng "Senior Frontend Engineer"/),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('retries the job request after a failure', async () => {
+    mockedGetMyJobById
+      .mockRejectedValueOnce({
+        response: { status: 500, data: { detail: 'Server error' } },
+      })
+      .mockResolvedValueOnce(job)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Thử lại/i })).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Thử lại/i }))
+
+    await waitFor(() => {
+      expect(mockedGetMyJobById).toHaveBeenCalledTimes(2)
+      expect(
+        screen.getByText(/Tạo câu hỏi phỏng vấn cho tin tuyển dụng "Senior Frontend Engineer"/),
+      ).toBeInTheDocument()
     })
   })
 })

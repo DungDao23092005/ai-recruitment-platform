@@ -8,7 +8,7 @@ import {
   Sparkles,
   X,
 } from 'lucide-react'
-import { getJobById } from '@/api/jobs'
+import { getMyJobById } from '@/api/jobs'
 import { generateInterviewQuestions } from '@/api/ai'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
@@ -101,7 +101,7 @@ export function InterviewGeneratorPage() {
       return
     }
     setPageState({ kind: 'loading' })
-    getJobById(id)
+    getMyJobById(id)
       .then((job) => setPageState({ kind: 'success', job }))
       .catch((err) => {
         const status = (err as Error & { response?: { status?: number } })

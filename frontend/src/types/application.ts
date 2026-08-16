@@ -7,6 +7,12 @@ export type ApplicationStatus =
   | 'rejected'
   | 'withdrawn'
 
+export interface CandidateProfileMinimal {
+  id: string
+  full_name: string | null
+  title: string | null
+}
+
 export interface Application {
   id: string
   candidate_id: string
@@ -14,4 +20,5 @@ export interface Application {
   status: ApplicationStatus
   created_at: string
   updated_at: string
+  candidate: CandidateProfileMinimal | null
 }

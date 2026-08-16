@@ -27,8 +27,8 @@ class CandidateSkill(Base):
         nullable=False,
     )
 
-    candidate: Mapped[CandidateProfile] = relationship(back_populates="candidate_skills")
-    skill: Mapped[Skill] = relationship(back_populates="candidate_skills")
+    candidate: Mapped[CandidateProfile] = relationship(back_populates="candidate_skills", overlaps="skills,candidates")
+    skill: Mapped[Skill] = relationship(back_populates="candidate_skills", overlaps="skills,candidates")
 
 
 class JobSkill(Base):
@@ -46,5 +46,5 @@ class JobSkill(Base):
     minimum_years: Mapped[float | None] = mapped_column(Float, nullable=True)
     weight: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
 
-    job: Mapped[Job] = relationship(back_populates="job_skills")
-    skill: Mapped[Skill] = relationship(back_populates="job_skills")
+    job: Mapped[Job] = relationship(back_populates="job_skills", overlaps="skills,jobs")
+    skill: Mapped[Skill] = relationship(back_populates="job_skills", overlaps="skills,jobs")

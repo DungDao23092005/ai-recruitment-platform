@@ -4,6 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.embeddings.embedding_service import (
     EmbeddingService,
@@ -13,6 +14,7 @@ from app.ai.interfaces.base_provider import BaseVectorRepository
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 from app.api.deps import (
     get_current_active_user,
+    get_db,
     require_candidate,
     require_recruiter,
 )
@@ -40,6 +42,7 @@ from app.schemas.ai_search import SemanticSearchResult
 from app.services.ai_matching_service import AIMatchingService
 from app.services.explainable_ai_service import ExplainableAIService
 from app.services.interview_generator_service import InterviewGeneratorService
+from app.services.job_service import JobService
 from app.services.rag_chat_service import RAGChatService
 from app.services.semantic_search_service import SemanticSearchService
 
@@ -83,6 +86,7 @@ def _get_interview_generator_service() -> InterviewGeneratorService:
 async def parse_resume(
     file: UploadFile,
     current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
     service: AIMatchingService = Depends(_get_ai_service),
 ) -> ParsedResumeSchema:
     pdf_bytes = await file.read()
@@ -96,6 +100,8 @@ async def parse_resume(
         return await service.process_and_index_resume(
             candidate_id=candidate_profile.id,
             pdf_source=pdf_bytes,
+            session=db,
+            source_name=file.filename,
         )
     except EmptyDocumentError as exc:
         raise HTTPException(
@@ -357,16 +363,40 @@ async def semantic_search_candidates(
 async def recommend_candidates_for_job(
     current_user: User = Depends(require_recruiter),
     service: AIMatchingService = Depends(_get_ai_service),
+    db: AsyncSession = Depends(get_db),
     job_id: uuid.UUID = Query(...),
     limit: int = Query(default=10, ge=1, le=100),
 ) -> list[CandidateMatchRecommendation]:
     try:
-        return await service.recommend_candidates_for_job(
-            job_id=job_id,
-            limit=limit,
-        )
+        job = await JobService(db).get_recruiter_job_by_id(current_user, job_id)
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+
+    parsed_job = ParsedJobSchema(
+        title=job.title,
+        summary=job.description,
+        required_skills=[skill.name for skill in job.skills],
+    )
+
+    try:
+        retrieved = await service.vector_repository.retrieve_vector(
+            collection_name="jobs",
+            point_id=job_id,
+        )
+    except Exception:
+        retrieved = None
+    if retrieved is not None:
+        job_vector = retrieved["vector"]
+    else:
+        job_vector = service.embedding_service.embed_job(parsed_job)
+
+    return await service.recommend_candidates_for_job(
+        job_id=job_id,
+        parsed_job=parsed_job,
+        job_vector=job_vector,
+        limit=limit,
+        session=db,
+    )

@@ -20,16 +20,20 @@ class Skill(Base, TimestampMixin, SoftDeleteMixin):
     candidate_skills: Mapped[list[CandidateSkill]] = relationship(
         back_populates="skill",
         cascade="all, delete-orphan",
+        overlaps="candidates,skills",
     )
     candidates: Mapped[list[CandidateProfile]] = relationship(
         secondary="candidate_skills",
         back_populates="skills",
+        overlaps="candidate_skills,skill",
     )
     job_skills: Mapped[list[JobSkill]] = relationship(
         back_populates="skill",
         cascade="all, delete-orphan",
+        overlaps="jobs,skills",
     )
     jobs: Mapped[list[Job]] = relationship(
         secondary="job_skills",
         back_populates="skills",
+        overlaps="job_skills,skill",
     )

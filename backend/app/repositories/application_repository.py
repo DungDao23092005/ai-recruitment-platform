@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.models import Application
 from app.repositories.base import BaseRepository
@@ -31,9 +32,13 @@ class ApplicationRepository(BaseRepository[Application]):
         return list(result.scalars().all())
 
     async def list_by_job(self, job_id: Any) -> list[Application]:
-        stmt = select(Application).where(
-            Application.job_id == job_id,
-            Application.is_deleted == False,  # noqa: E712
+        stmt = (
+            select(Application)
+            .options(selectinload(Application.candidate))
+            .where(
+                Application.job_id == job_id,
+                Application.is_deleted == False,  # noqa: E712
+            )
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

@@ -15,10 +15,13 @@ from .conftest import (
     run,
 )
 
-pytestmark = pytest.mark.skipif(
-    not QDRANT_AVAILABLE,
-    reason=SKIP_REASON_QDRANT,
-)
+pytestmark = [
+    pytest.mark.skipif(
+        not QDRANT_AVAILABLE,
+        reason=SKIP_REASON_QDRANT,
+    ),
+    pytest.mark.asyncio,
+]
 
 
 def _vector(dim: int = VECTOR_DIM) -> list[float]:

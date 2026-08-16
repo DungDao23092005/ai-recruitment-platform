@@ -13,6 +13,7 @@ const mockApplications: Application[] = [
     status: 'applied',
     created_at: '2026-01-20T00:00:00Z',
     updated_at: '2026-01-20T00:00:00Z',
+    candidate: null,
   },
   {
     id: 'app-2',
@@ -21,6 +22,7 @@ const mockApplications: Application[] = [
     status: 'shortlisted',
     created_at: '2026-01-21T00:00:00Z',
     updated_at: '2026-01-22T00:00:00Z',
+    candidate: null,
   },
 ]
 
@@ -47,6 +49,45 @@ describe('ApplicantList', () => {
     ).toBeInTheDocument()
     expect(
       screen.getByText('Ứng viên 22222222'),
+    ).toBeInTheDocument()
+  })
+
+  it('renders candidate full name when present', () => {
+    const applications: Application[] = [
+      {
+        ...mockApplications[0],
+        candidate: {
+          id: '11111111-1111-1111-1111-111111111111',
+          full_name: 'Nguyễn Văn A',
+          title: 'Backend Engineer',
+        },
+      },
+    ]
+
+    render(<ApplicantList applications={applications} />)
+
+    expect(screen.getByText('Nguyễn Văn A')).toBeInTheDocument()
+    expect(
+      screen.queryByText('Ứng viên 11111111'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('falls back to candidate id prefix when full name is null', () => {
+    const applications: Application[] = [
+      {
+        ...mockApplications[0],
+        candidate: {
+          id: '11111111-1111-1111-1111-111111111111',
+          full_name: null,
+          title: null,
+        },
+      },
+    ]
+
+    render(<ApplicantList applications={applications} />)
+
+    expect(
+      screen.getByText('Ứng viên 11111111'),
     ).toBeInTheDocument()
   })
 

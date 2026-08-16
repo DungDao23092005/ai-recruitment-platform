@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,6 +13,7 @@ from app.ai.matching.matching_engine import MatchingEngine
 from app.ai.parsers.job_parser import JobParser
 from app.ai.parsers.resume_parser import ResumeParser
 from app.core.exceptions import EmptyDocumentError, EntityNotFoundException
+from app.models import CandidateProfile, Resume
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_resume import ParsedResumeSchema
@@ -64,6 +66,156 @@ async def test_process_and_index_resume_success(ai_service, mock_dependencies):
     mock_dependencies["resume_parser"].parse.assert_awaited_once_with(
         "Extracted CV Text"
     )
+    mock_dependencies["vector_repository"].upsert_vector.assert_awaited_once()
+
+
+def _mock_db_session(existing: Resume | None = None) -> MagicMock:
+    session = MagicMock()
+    session.add = MagicMock()
+    session.execute = AsyncMock()
+    result_mock = MagicMock()
+    result_mock.scalar_one_or_none.return_value = existing
+    session.execute.return_value = result_mock
+    session.flush = AsyncMock()
+    session.refresh = AsyncMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    return session
+
+
+def test_process_and_index_resume_creates_resume_row(
+    ai_service, mock_dependencies
+):
+    cand_id = uuid.uuid4()
+    parsed_resume = ParsedResumeSchema(
+        full_name="John Doe",
+        email="john@example.com",
+        skills=["Python", "FastAPI"],
+        languages=["Vietnamese"],
+    )
+    mock_dependencies["resume_parser"].parse.return_value = parsed_resume
+    mock_dependencies["embedding_service"].embed_resume.return_value = [
+        0.1
+    ] * 384
+    session = _mock_db_session(existing=None)
+
+    with patch(
+        "app.ai.extractors.pdf_extractor.PDFTextExtractor.extract",
+        return_value="Extracted CV Text",
+    ):
+        result = asyncio.run(
+            ai_service.process_and_index_resume(
+                cand_id,
+                b"%PDF-1.7 fake",
+                session=session,
+                source_name="cv.pdf",
+            )
+        )
+
+    assert result == parsed_resume
+    mock_dependencies["vector_repository"].upsert_vector.assert_awaited_once()
+    session.add.assert_called_once()
+    added = session.add.call_args.args[0]
+    assert isinstance(added, Resume)
+    assert added.candidate_id == cand_id
+    assert added.title == "cv.pdf"
+    assert added.is_primary is True
+    assert added.parsed_data == parsed_resume.model_dump(mode="json")
+    session.commit.assert_awaited_once()
+
+
+def test_process_and_index_resume_updates_primary_resume_row(
+    ai_service, mock_dependencies
+):
+    cand_id = uuid.uuid4()
+    existing = Resume(
+        id=uuid.uuid4(),
+        candidate_id=cand_id,
+        title="old.pdf",
+        is_primary=True,
+        parsed_data={"skills": ["Old"]},
+    )
+    parsed_resume = ParsedResumeSchema(
+        full_name="John Doe",
+        skills=["Python", "FastAPI"],
+    )
+    mock_dependencies["resume_parser"].parse.return_value = parsed_resume
+    mock_dependencies["embedding_service"].embed_resume.return_value = [
+        0.1
+    ] * 384
+    session = _mock_db_session(existing=existing)
+
+    with patch(
+        "app.ai.extractors.pdf_extractor.PDFTextExtractor.extract",
+        return_value="Extracted CV Text",
+    ):
+        asyncio.run(
+            ai_service.process_and_index_resume(
+                cand_id,
+                b"%PDF-1.7 fake",
+                session=session,
+                source_name="new-cv.pdf",
+            )
+        )
+
+    session.add.assert_not_called()
+    assert existing.title == "new-cv.pdf"
+    assert existing.is_primary is True
+    assert existing.parsed_data == parsed_resume.model_dump(mode="json")
+    session.commit.assert_awaited_once()
+
+
+def test_process_and_index_resume_persistence_failure_raises(
+    ai_service, mock_dependencies
+):
+    cand_id = uuid.uuid4()
+    parsed_resume = ParsedResumeSchema(
+        full_name="John Doe",
+        skills=["Python"],
+    )
+    mock_dependencies["resume_parser"].parse.return_value = parsed_resume
+    mock_dependencies["embedding_service"].embed_resume.return_value = [
+        0.1
+    ] * 384
+    session = _mock_db_session(existing=None)
+    session.commit.side_effect = RuntimeError("db unavailable")
+
+    with patch(
+        "app.ai.extractors.pdf_extractor.PDFTextExtractor.extract",
+        return_value="Extracted CV Text",
+    ):
+        with pytest.raises(RuntimeError, match="db unavailable"):
+            asyncio.run(
+                ai_service.process_and_index_resume(
+                    cand_id,
+                    b"%PDF-1.7 fake",
+                    session=session,
+                    source_name="cv.pdf",
+                )
+            )
+
+    session.rollback.assert_awaited_once()
+
+
+def test_process_and_index_resume_skips_persistence_without_session(
+    ai_service, mock_dependencies
+):
+    cand_id = uuid.uuid4()
+    parsed_resume = ParsedResumeSchema(skills=["Python"])
+    mock_dependencies["resume_parser"].parse.return_value = parsed_resume
+    mock_dependencies["embedding_service"].embed_resume.return_value = [
+        0.1
+    ] * 384
+
+    with patch(
+        "app.ai.extractors.pdf_extractor.PDFTextExtractor.extract",
+        return_value="Extracted CV Text",
+    ):
+        result = asyncio.run(
+            ai_service.process_and_index_resume(cand_id, b"%PDF fake")
+        )
+
+    assert result == parsed_resume
     mock_dependencies["vector_repository"].upsert_vector.assert_awaited_once()
 
 
@@ -631,3 +783,199 @@ async def test_recommend_candidates_retrieve_payload_skills_build_parsed_job(
         "matching_engine"
     ].match_resume_to_job.call_args.kwargs["job"]
     assert job_arg.required_skills == ["Python"]
+
+
+def _make_profile_session(profiles: list[CandidateProfile]) -> MagicMock:
+    session = MagicMock()
+    session.execute = AsyncMock()
+    result_mock = MagicMock()
+    result_mock.scalars.return_value.all.return_value = profiles
+    session.execute.return_value = result_mock
+    return session
+
+
+def test_recommend_candidates_resolves_profiles_in_one_batch(
+    ai_service, mock_dependencies
+):
+    job_id = uuid.uuid4()
+    cand1_id = uuid.uuid4()
+    cand2_id = uuid.uuid4()
+
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(cand1_id),
+            "score": 0.9,
+            "payload": {"candidate_id": str(cand1_id), "skills": ["Python"]},
+            "vector": [0.1] * 384,
+        },
+        {
+            "id": str(cand2_id),
+            "score": 0.7,
+            "payload": {"candidate_id": str(cand2_id), "skills": ["SQL"]},
+            "vector": [0.2] * 384,
+        },
+    ]
+    match_res = MatchResultSchema(
+        overall_score=80.0,
+        cosine_similarity=0.8,
+        skill_coverage_score=1.0,
+        experience_match_score=0.5,
+    )
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        match_res
+    )
+
+    profile1 = CandidateProfile(
+        id=cand1_id,
+        user_id=uuid.uuid4(),
+        full_name="Jane Doe",
+        title="Backend Engineer",
+    )
+    profile2 = CandidateProfile(
+        id=cand2_id,
+        user_id=uuid.uuid4(),
+        full_name="John Smith",
+        title="Data Engineer",
+    )
+    session = _make_profile_session([profile1, profile2])
+
+    recs = asyncio.run(
+        ai_service.recommend_candidates_for_job(
+            job_id=job_id,
+            job_vector=[0.5] * 384,
+            limit=5,
+            session=session,
+        )
+    )
+
+    assert len(recs) == 2
+    by_id = {rec.candidate_id: rec for rec in recs}
+    assert by_id[cand1_id].parsed_resume.full_name == "Jane Doe"
+    assert by_id[cand1_id].parsed_resume.title == "Backend Engineer"
+    assert by_id[cand2_id].parsed_resume.full_name == "John Smith"
+    session.execute.assert_awaited_once()
+    stmt = session.execute.call_args.args[0]
+    from sqlalchemy.sql import Select as SQLSelect
+
+    assert isinstance(stmt, SQLSelect)
+    compiled_sql = str(
+        stmt.compile(compile_kwargs={"literal_binds": True})
+    )
+    assert str(cand1_id).replace("-", "") in compiled_sql
+    assert str(cand2_id).replace("-", "") in compiled_sql
+    assert "is_deleted" in compiled_sql
+
+
+def test_recommend_candidates_missing_profile_keeps_fallback(
+    ai_service, mock_dependencies
+):
+    job_id = uuid.uuid4()
+    cand1_id = uuid.uuid4()
+
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(cand1_id),
+            "score": 0.9,
+            "payload": {"candidate_id": str(cand1_id), "skills": ["Python"]},
+            "vector": [0.1] * 384,
+        }
+    ]
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        MatchResultSchema(
+            overall_score=80.0,
+            cosine_similarity=0.8,
+            skill_coverage_score=1.0,
+            experience_match_score=0.5,
+        )
+    )
+    session = _make_profile_session([])
+
+    recs = asyncio.run(
+        ai_service.recommend_candidates_for_job(
+            job_id=job_id,
+            job_vector=[0.5] * 384,
+            limit=5,
+            session=session,
+        )
+    )
+
+    assert len(recs) == 1
+    assert recs[0].parsed_resume.full_name is None
+    assert recs[0].parsed_resume.skills == ["Python"]
+
+
+def test_recommend_candidates_without_session_skips_db(
+    ai_service, mock_dependencies
+):
+    job_id = uuid.uuid4()
+    cand1_id = uuid.uuid4()
+
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(cand1_id),
+            "score": 0.9,
+            "payload": {"candidate_id": str(cand1_id), "skills": ["Python"]},
+            "vector": [0.1] * 384,
+        }
+    ]
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        MatchResultSchema(
+            overall_score=80.0,
+            cosine_similarity=0.8,
+            skill_coverage_score=1.0,
+            experience_match_score=0.5,
+        )
+    )
+
+    recs = asyncio.run(
+        ai_service.recommend_candidates_for_job(
+            job_id=job_id,
+            job_vector=[0.5] * 384,
+            limit=5,
+        )
+    )
+
+    assert len(recs) == 1
+    assert recs[0].parsed_resume.full_name is None
+    assert recs[0].parsed_resume.skills == ["Python"]
+
+
+def test_recommend_candidates_deleted_profiles_not_resolved(
+    ai_service, mock_dependencies
+):
+    job_id = uuid.uuid4()
+    cand1_id = uuid.uuid4()
+
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(cand1_id),
+            "score": 0.9,
+            "payload": {"candidate_id": str(cand1_id), "skills": ["Python"]},
+            "vector": [0.1] * 384,
+        }
+    ]
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        MatchResultSchema(
+            overall_score=80.0,
+            cosine_similarity=0.8,
+            skill_coverage_score=1.0,
+            experience_match_score=0.5,
+        )
+    )
+    session = _make_profile_session([])
+
+    asyncio.run(
+        ai_service.recommend_candidates_for_job(
+            job_id=job_id,
+            job_vector=[0.5] * 384,
+            limit=5,
+            session=session,
+        )
+    )
+
+    stmt = session.execute.call_args.args[0]
+    compiled_sql = str(
+        stmt.compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "is_deleted" in compiled_sql
+    assert str(cand1_id).replace("-", "") in compiled_sql

@@ -48,7 +48,9 @@ class ApplicationService:
         self.session.add(application)
         try:
             await self.session.commit()
-            await self.session.refresh(application)
+            await self.session.refresh(
+                application, attribute_names=["candidate"]
+            )
         except Exception:
             await self.session.rollback()
             raise
@@ -89,7 +91,9 @@ class ApplicationService:
         application.status = domain.status
         try:
             await self.session.commit()
-            await self.session.refresh(application)
+            await self.session.refresh(
+                application, attribute_names=["candidate"]
+            )
         except Exception:
             await self.session.rollback()
             raise
