@@ -8,6 +8,7 @@ import uuid
 import httpx
 import pytest
 from qdrant_client import AsyncQdrantClient
+from tests.integration.conftest import run
 
 from app.ai.interfaces.base_provider import (
     BaseEmbeddingProvider,
@@ -22,13 +23,6 @@ from app.schemas.ai_resume import ParsedResumeSchema
 QDRANT_HOST = settings.QDRANT_HOST
 QDRANT_PORT = settings.QDRANT_PORT
 VECTOR_DIM = settings.VECTOR_DIMENSION
-
-_LOOP = asyncio.new_event_loop()
-
-
-def run(coro) -> object:
-    return _LOOP.run_until_complete(coro)
-
 
 def is_qdrant_reachable(
     host: str | None = None, port: int | None = None
@@ -97,31 +91,6 @@ class FakeLLMProvider(BaseLLMProvider):
         if response_schema is ParsedJobSchema:
             return self.job
         raise InvalidDocumentError("Unsupported response schema")
-
-
-@pytest.fixture
-def run_async():
-    return run
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _ensure_db_schema():
-    """Create the DB schema when SQL Server is reachable so API
-    authentication fixtures can register/login real users."""
-    if not SQL_AVAILABLE:
-        yield
-        return
-    import app.models  # noqa: F401
-    from app.database.base_class import Base
-    from app.database.session import engine
-
-    async def _create_schema() -> None:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-
-    run(_create_schema())
-    yield
-    run(engine.dispose())
 
 
 @pytest.fixture

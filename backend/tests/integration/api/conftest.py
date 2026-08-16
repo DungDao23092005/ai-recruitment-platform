@@ -3,9 +3,11 @@ import uuid
 
 import httpx
 import pytest
+from tests.integration.conftest import run
 
 import app.models  # noqa: F401
 from app.api.deps import get_db
+from app.core.config import settings
 from app.database.base_class import Base
 from app.database.session import async_session_factory, engine
 from app.main import app
@@ -13,55 +15,7 @@ from app.main import app
 API_V1 = "/api/v1"
 PASSWORD = "password123"
 
-_LOOP = asyncio.new_event_loop()
 
-
-def run(coro) -> object:
-    return _LOOP.run_until_complete(coro)
-
-
-async def _drop_schema() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
-
-async def _create_schema() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _manage_engine():
-    run(engine.dispose())
-    yield
-    run(engine.dispose())
-    _LOOP.close()
-
-
-@pytest.fixture(autouse=True)
-def _reset_database():
-    run(_drop_schema())
-    run(_create_schema())
-    yield
-    run(_drop_schema())
-    run(engine.dispose())
-
-
-async def _override_get_db():
-    async with async_session_factory() as session:
-        yield session
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _override_db_dependency():
-    app.dependency_overrides[get_db] = _override_get_db
-    yield
-    app.dependency_overrides.pop(get_db, None)
-
-
-@pytest.fixture(scope="session")
-def run_async():
-    return run
 
 
 @pytest.fixture(scope="session")
@@ -100,6 +54,13 @@ def _make_auth_client(client: httpx.AsyncClient, role: str) -> httpx.AsyncClient
 
 @pytest.fixture
 def candidate_client(client):
+    auth_client = _make_auth_client(client, "candidate")
+    yield auth_client
+    run(auth_client.aclose())
+
+
+@pytest.fixture
+def candidate_b_client(client):
     auth_client = _make_auth_client(client, "candidate")
     yield auth_client
     run(auth_client.aclose())

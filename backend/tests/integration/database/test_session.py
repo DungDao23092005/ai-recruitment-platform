@@ -14,11 +14,17 @@ def test_database_connection_works(run_async):
 
 
 def test_connection_uses_test_database(run_async):
+    from app.core.config import settings
+
+    assert settings.DATABASE_NAME != "ai_recruitment_platform", (
+        "integration tests must never run against the development database"
+    )
+
     async def _check():
         async with engine.connect() as conn:
             return (await conn.execute(text("SELECT DB_NAME()"))).scalar()
 
-    assert run_async(_check()) == "ai_recruitment_platform_test"
+    assert run_async(_check()) == settings.DATABASE_NAME
 
 
 def test_session_commit_persists_row(run_async):
