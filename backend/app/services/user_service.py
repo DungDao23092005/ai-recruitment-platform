@@ -13,6 +13,7 @@ from app.models import CandidateProfile, Company, RecruiterProfile, User
 from app.repositories import CompanyRepository, UserRepository
 from app.schemas.user import (
     CandidateProfileCreate,
+    CandidateProfileUpdate,
     RecruiterProfileCreate,
     RecruiterProfileUpdate,
 )
@@ -126,6 +127,58 @@ class UserService:
         if user is None:
             raise EntityNotFoundException(f"User {user_id} not found")
         return user.recruiter_profile
+
+    async def get_candidate_profile(
+        self,
+        user_id: uuid.UUID,
+    ) -> CandidateProfile | None:
+        """Return the candidate's profile, or ``None`` if it does not exist."""
+        user = await self.users.get_with_profile(user_id)
+        if user is None:
+            raise EntityNotFoundException(f"User {user_id} not found")
+        return user.candidate_profile
+
+    async def upsert_candidate_profile(
+        self,
+        user_id: uuid.UUID,
+        data: CandidateProfileUpdate,
+    ) -> CandidateProfile:
+        """Create or update a candidate's profile (upsert).
+
+        The profile is always tied to the authenticated user's ``user_id``;
+        it never accepts a target ``user_id`` from the request body.
+        """
+        user = await self.users.get_with_profile(user_id)
+        if user is None:
+            raise EntityNotFoundException(f"User {user_id} not found")
+
+        if user.candidate_profile is None:
+            profile = CandidateProfile(
+                user_id=user_id,
+                full_name=data.full_name,
+                phone=data.phone,
+                title=data.title,
+            )
+            self.session.add(profile)
+            try:
+                await self.session.commit()
+                await self.session.refresh(profile)
+            except Exception:
+                await self.session.rollback()
+                raise
+            return profile
+
+        profile = user.candidate_profile
+        profile.full_name = data.full_name
+        profile.phone = data.phone
+        profile.title = data.title
+        try:
+            await self.session.commit()
+            await self.session.refresh(profile)
+        except Exception:
+            await self.session.rollback()
+            raise
+        return profile
 
     async def upsert_recruiter_profile(
         self,

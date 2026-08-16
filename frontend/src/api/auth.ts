@@ -2,6 +2,8 @@ import apiClient from '@/api/client'
 import type {
   CandidateProfile,
   CandidateProfileData,
+  CandidateProfileRead,
+  CandidateProfileUpdate,
   LoginCredentials,
   RecruiterProfile,
   RecruiterProfileData,
@@ -28,6 +30,21 @@ export async function createCandidateProfile(
   data: CandidateProfileData,
 ): Promise<CandidateProfile> {
   return apiClient.post<CandidateProfile, CandidateProfile>(
+    '/users/me/candidate-profile',
+    data,
+  )
+}
+
+export async function getCandidateProfile(): Promise<CandidateProfileRead> {
+  return apiClient.get<CandidateProfileRead, CandidateProfileRead>(
+    '/users/me/candidate-profile',
+  )
+}
+
+export async function updateCandidateProfile(
+  data: CandidateProfileUpdate,
+): Promise<CandidateProfileRead> {
+  return apiClient.put<CandidateProfileRead, CandidateProfileRead>(
     '/users/me/candidate-profile',
     data,
   )

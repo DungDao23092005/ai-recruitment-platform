@@ -11,9 +11,13 @@ from app.core.exceptions import (
     EntityNotFoundException,
     ForbiddenException,
 )
-from app.models import User
+from app.models import Resume, User
+from app.repositories import ResumeRepository
+from app.schemas.resume import ResumeRead
 from app.schemas.user import (
     CandidateProfileCreate,
+    CandidateProfileRead,
+    CandidateProfileUpdate,
     RecruiterProfileCreate,
     RecruiterProfileRead,
     RecruiterProfileUpdate,
@@ -55,6 +59,53 @@ async def create_candidate_profile(
         "phone": profile.phone,
         "title": profile.title,
     }
+
+
+@router.get(
+    "/me/candidate-profile",
+    response_model=CandidateProfileRead,
+)
+async def get_candidate_profile(
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+) -> CandidateProfileRead:
+    try:
+        profile = await UserService(db).get_candidate_profile(current_user.id)
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    if profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Candidate profile not found",
+        )
+    return CandidateProfileRead.model_validate(profile)
+
+
+@router.put(
+    "/me/candidate-profile",
+    response_model=CandidateProfileRead,
+)
+async def upsert_candidate_profile(
+    data: CandidateProfileUpdate,
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+) -> CandidateProfileRead:
+    try:
+        profile = await UserService(db).upsert_candidate_profile(
+            user_id=current_user.id,
+            data=data,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    return CandidateProfileRead.model_validate(profile)
 
 
 @router.post(
@@ -141,3 +192,34 @@ async def upsert_recruiter_profile(
         ) from exc
 
     return RecruiterProfileRead.model_validate(profile)
+
+
+@router.get(
+    "/me/resume",
+    response_model=ResumeRead,
+)
+async def get_my_resume(
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+) -> ResumeRead:
+    """Return the authenticated candidate's primary resume.
+
+    Identity always comes from the authenticated user's candidate profile;
+    the endpoint never accepts a candidate/resume id from the client.
+    """
+    user = await UserService(db).get_user_with_profile(current_user.id)
+    if user is None or user.candidate_profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Candidate profile not found",
+        )
+
+    resume = await ResumeRepository(db, Resume).get_primary_by_candidate(
+        user.candidate_profile.id
+    )
+    if resume is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Resume not found",
+        )
+    return ResumeRead.model_validate(resume)

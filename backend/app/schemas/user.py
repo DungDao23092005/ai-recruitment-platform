@@ -29,6 +29,22 @@ class CandidateProfileCreate(BaseModel):
     title: str | None = None
 
 
+class CandidateProfileUpdate(BaseModel):
+    full_name: str | None = None
+    phone: str | None = None
+    title: str | None = None
+
+
+class CandidateProfileRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    user_id: uuid.UUID
+    full_name: str | None
+    phone: str | None
+    title: str | None
+
+
 class RecruiterProfileCreate(BaseModel):
     full_name: str | None = None
     position: str | None = None

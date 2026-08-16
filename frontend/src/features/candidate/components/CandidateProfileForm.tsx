@@ -1,7 +1,9 @@
-import { useState, type FormEvent } from 'react'
-import { createCandidateProfile } from '@/api/auth'
+import { useEffect, useState, type FormEvent } from 'react'
+import { getCandidateProfile, updateCandidateProfile } from '@/api/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
+import { ErrorBanner } from '@/components/ui/error-banner'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 
 interface FormValues {
@@ -12,6 +14,15 @@ interface FormValues {
 
 interface FormErrors {
   phone?: string
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error &&
+    (error as { response?: { status?: number } }).response?.status === 404
+  )
 }
 
 function validate(values: FormValues): FormErrors {
@@ -29,9 +40,34 @@ export function CandidateProfileForm() {
     title: '',
   })
   const [errors, setErrors] = useState<FormErrors>({})
+  const [isLoading, setIsLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [apiError, setApiError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+
+  const loadProfile = async () => {
+    setIsLoading(true)
+    setLoadError(null)
+    try {
+      const profile = await getCandidateProfile()
+      setValues({
+        full_name: profile.full_name ?? '',
+        phone: profile.phone ?? '',
+        title: profile.title ?? '',
+      })
+    } catch (error) {
+      if (!isNotFoundError(error)) {
+        setLoadError(getFriendlyErrorMessage(error))
+      }
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadProfile()
+  }, [])
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -46,7 +82,7 @@ export function CandidateProfileForm() {
 
     setSubmitting(true)
     try {
-      await createCandidateProfile({
+      await updateCandidateProfile({
         full_name: values.full_name.trim() || null,
         phone: values.phone.trim() || null,
         title: values.title.trim() || null,
@@ -57,6 +93,25 @@ export function CandidateProfileForm() {
     } finally {
       setSubmitting(false)
     }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-10 w-full" />
+      </div>
+    )
+  }
+
+  if (loadError != null) {
+    return (
+      <ErrorBanner
+        message={loadError}
+        onRetry={() => void loadProfile()}
+      />
+    )
   }
 
   return (

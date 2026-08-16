@@ -9,8 +9,27 @@ import type { ParsedResume } from '@/types/ai'
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
+function isCandidateProfileRequiredError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error &&
+    (error as { response?: { status?: number; data?: { detail?: string } } })
+      .response?.status === 400 &&
+    (error as { response?: { data?: { detail?: string } } }).response?.data
+      ?.detail === 'Candidate profile required'
+  )
+}
+
+function getResumeUploadErrorMessage(error: unknown): string {
+  if (isCandidateProfileRequiredError(error)) {
+    return 'Hồ sơ ứng viên chưa được tạo. Vui lòng tạo hồ sơ trước khi tải CV.'
+  }
+  return getFriendlyErrorMessage(error)
+}
+
 export interface ResumeUploadProps {
-  onParsed?: (resume: ParsedResume) => void
+  onParsed?: (resume: ParsedResume, fileName?: string) => void
 }
 
 export function ResumeUpload({ onParsed }: ResumeUploadProps) {
@@ -43,9 +62,9 @@ export function ResumeUpload({ onParsed }: ResumeUploadProps) {
       setIsUploading(true)
       try {
         const parsed = await parseResume(file)
-        onParsed?.(parsed)
+        onParsed?.(parsed, file.name)
       } catch (err) {
-        setError(getFriendlyErrorMessage(err))
+        setError(getResumeUploadErrorMessage(err))
       } finally {
         setIsUploading(false)
       }

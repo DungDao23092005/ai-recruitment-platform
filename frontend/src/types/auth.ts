@@ -33,7 +33,21 @@ export interface CandidateProfile {
   title: string | null
 }
 
+export interface CandidateProfileRead {
+  id: string
+  user_id: string
+  full_name: string | null
+  phone: string | null
+  title: string | null
+}
+
 export interface CandidateProfileData {
+  full_name: string | null
+  phone: string | null
+  title: string | null
+}
+
+export interface CandidateProfileUpdate {
   full_name: string | null
   phone: string | null
   title: string | null

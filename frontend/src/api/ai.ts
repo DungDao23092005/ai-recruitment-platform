@@ -11,6 +11,7 @@ import type {
   MatchRequest,
   MatchResult,
   ParsedResume,
+  ResumeRead,
   SemanticSearchParams,
   SemanticSearchResult,
 } from '@/types/ai'
@@ -28,6 +29,10 @@ export async function parseResume(file: File): Promise<ParsedResume> {
       },
     },
   )
+}
+
+export async function getMyResume(): Promise<ResumeRead> {
+  return apiClient.get<ResumeRead, ResumeRead>('/users/me/resume')
 }
 
 export async function getJobRecommendations(

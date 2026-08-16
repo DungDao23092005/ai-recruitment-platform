@@ -30,6 +30,16 @@ export interface ParsedResume {
   languages: string[]
 }
 
+export interface ResumeRead {
+  id: string
+  candidate_id: string
+  title: string | null
+  is_primary: boolean
+  parsed_data: ParsedResume | null
+  created_at: string
+  updated_at: string
+}
+
 export interface ParsedJob {
   title: string | null
   summary: string | null

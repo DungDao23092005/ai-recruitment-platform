@@ -14,6 +14,7 @@ from app.models import CandidateProfile, Company, RecruiterProfile, User
 from app.repositories import CompanyRepository, UserRepository
 from app.schemas.user import (
     CandidateProfileCreate,
+    CandidateProfileUpdate,
     RecruiterProfileCreate,
     RecruiterProfileUpdate,
 )
@@ -251,6 +252,119 @@ class TestAttachRecruiterToCompany:
             )
 
         session.commit.assert_not_awaited()
+
+
+class TestGetCandidateProfile:
+    def test_returns_profile(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        profile = CandidateProfile(user_id=user.id)
+        user.candidate_profile = profile
+        service.users.get_with_profile.return_value = user
+
+        result = asyncio.run(service.get_candidate_profile(user.id))
+
+        assert result is profile
+
+    def test_returns_none_when_missing(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        user.candidate_profile = None
+        service.users.get_with_profile.return_value = user
+
+        result = asyncio.run(service.get_candidate_profile(user.id))
+
+        assert result is None
+
+    def test_user_not_found_raises(self):
+        session = make_session()
+        service = make_service(session)
+        service.users.get_with_profile.return_value = None
+
+        with pytest.raises(EntityNotFoundException):
+            asyncio.run(service.get_candidate_profile(uuid.uuid4()))
+
+
+class TestUpsertCandidateProfile:
+    def test_creates_profile_when_missing(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        user.candidate_profile = None
+        service.users.get_with_profile.return_value = user
+        data = CandidateProfileUpdate(
+            full_name="Jane Doe",
+            phone="0123456789",
+            title="Software Engineer",
+        )
+
+        profile = asyncio.run(
+            service.upsert_candidate_profile(user_id=user.id, data=data)
+        )
+
+        assert isinstance(profile, CandidateProfile)
+        assert profile.user_id == user.id
+        assert profile.full_name == "Jane Doe"
+        assert profile.phone == "0123456789"
+        assert profile.title == "Software Engineer"
+        session.add.assert_called_once_with(profile)
+        session.commit.assert_awaited_once()
+        session.refresh.assert_awaited_once_with(profile)
+
+    def test_updates_existing_profile_without_new_row(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        profile = CandidateProfile(user_id=user.id)
+        user.candidate_profile = profile
+        service.users.get_with_profile.return_value = user
+        data = CandidateProfileUpdate(
+            full_name="Jane Doe",
+            phone="0987654321",
+            title="Senior Engineer",
+        )
+
+        result = asyncio.run(
+            service.upsert_candidate_profile(user_id=user.id, data=data)
+        )
+
+        assert result is profile
+        assert profile.full_name == "Jane Doe"
+        assert profile.phone == "0987654321"
+        assert profile.title == "Senior Engineer"
+        session.add.assert_not_called()
+        session.commit.assert_awaited_once()
+
+    def test_user_not_found_raises(self):
+        session = make_session()
+        service = make_service(session)
+        service.users.get_with_profile.return_value = None
+        data = CandidateProfileUpdate()
+
+        with pytest.raises(EntityNotFoundException):
+            asyncio.run(
+                service.upsert_candidate_profile(user_id=uuid.uuid4(), data=data)
+            )
+
+        session.commit.assert_not_awaited()
+
+    def test_commit_failure_rolls_back(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        user.candidate_profile = None
+        service.users.get_with_profile.return_value = user
+        session.commit.side_effect = RuntimeError("db down")
+        data = CandidateProfileUpdate()
+
+        with pytest.raises(RuntimeError):
+            asyncio.run(
+                service.upsert_candidate_profile(user_id=user.id, data=data)
+            )
+
+        session.rollback.assert_awaited_once()
 
 
 class TestGetRecruiterProfile:

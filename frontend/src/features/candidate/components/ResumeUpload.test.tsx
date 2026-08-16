@@ -109,6 +109,28 @@ describe('ResumeUpload', () => {
     })
   })
 
+  it('maps "Candidate profile required" to a friendly Vietnamese message', async () => {
+    const error = new Error('Bad Request')
+    Object.assign(error, {
+      response: { status: 400, data: { detail: 'Candidate profile required' } },
+    })
+    mockedParseResume.mockRejectedValue(error)
+
+    render(<ResumeUpload />)
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    const pdfFile = makePdfFile('resume.pdf')
+    fireEvent.change(fileInput, { target: { files: [pdfFile] } })
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          'Hồ sơ ứng viên chưa được tạo. Vui lòng tạo hồ sơ trước khi tải CV.',
+        ),
+      ).toBeInTheDocument()
+    })
+  })
+
   it('calls onParsed with the parsed resume on success', async () => {
     mockedParseResume.mockResolvedValue(mockParsedResume)
     const onParsed = vi.fn()
@@ -120,7 +142,7 @@ describe('ResumeUpload', () => {
     fireEvent.change(fileInput, { target: { files: [pdfFile] } })
 
     await waitFor(() => {
-      expect(onParsed).toHaveBeenCalledWith(mockParsedResume)
+      expect(onParsed).toHaveBeenCalledWith(mockParsedResume, 'resume.pdf')
     })
   })
 })

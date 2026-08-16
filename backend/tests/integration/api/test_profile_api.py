@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.database.session import async_session_factory
-from app.models import RecruiterProfile
+from app.models import CandidateProfile, RecruiterProfile
 from tests.integration.api.conftest import API_V1
 
 COMPANY_BODY = {
@@ -19,6 +19,22 @@ PROFILE_BODY = {
     "position": "Hiring Manager",
     "company_id": None,
 }
+
+CANDIDATE_PROFILE_BODY = {
+    "full_name": "Jane Doe",
+    "phone": "0123456789",
+    "title": "Software Engineer",
+}
+
+
+async def count_candidate_profiles_for_user(user_id: str) -> int:
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(func.count())
+            .select_from(CandidateProfile)
+            .where(CandidateProfile.user_id == user_id)
+        )
+        return int(result.scalar_one())
 
 
 async def count_profiles_for_user(user_id: str) -> int:
@@ -37,6 +53,138 @@ async def get_profile_by_id(profile_id: str) -> RecruiterProfile | None:
             select(RecruiterProfile).where(RecruiterProfile.id == profile_id)
         )
         return result.scalar_one_or_none()
+
+
+class TestCandidateProfileLifecycle:
+    def test_anonymous_cannot_access(self, client, run_async):
+        get_resp = run_async(client.get(f"{API_V1}/users/me/candidate-profile"))
+        put_resp = run_async(
+            client.put(f"{API_V1}/users/me/candidate-profile", json={})
+        )
+
+        assert get_resp.status_code == 401
+        assert put_resp.status_code == 401
+
+    def test_recruiter_cannot_access(self, recruiter_client, run_async):
+        get_resp = run_async(
+            recruiter_client.get(f"{API_V1}/users/me/candidate-profile")
+        )
+        put_resp = run_async(
+            recruiter_client.put(
+                f"{API_V1}/users/me/candidate-profile", json=CANDIDATE_PROFILE_BODY
+            )
+        )
+
+        assert get_resp.status_code == 403
+        assert put_resp.status_code == 403
+
+    def test_fresh_candidate_get_returns_404(self, candidate_client, run_async):
+        resp = run_async(
+            candidate_client.get(f"{API_V1}/users/me/candidate-profile")
+        )
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Candidate profile not found"
+
+    def test_fresh_candidate_put_creates_profile(self, candidate_client, run_async):
+        resp = run_async(
+            candidate_client.put(
+                f"{API_V1}/users/me/candidate-profile", json=CANDIDATE_PROFILE_BODY
+            )
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["full_name"] == "Jane Doe"
+        assert body["phone"] == "0123456789"
+        assert body["title"] == "Software Engineer"
+        assert body["id"]
+        assert body["user_id"]
+        assert run_async(count_candidate_profiles_for_user(body["user_id"])) == 1
+
+    def test_existing_candidate_get_returns_profile(
+        self, candidate_client, run_async
+    ):
+        created = run_async(
+            candidate_client.put(
+                f"{API_V1}/users/me/candidate-profile", json=CANDIDATE_PROFILE_BODY
+            )
+        ).json()
+
+        resp = run_async(
+            candidate_client.get(f"{API_V1}/users/me/candidate-profile")
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["id"] == created["id"]
+        assert resp.json()["full_name"] == "Jane Doe"
+
+    def test_put_updates_same_profile_and_no_duplicate(
+        self, candidate_client, run_async
+    ):
+        created = run_async(
+            candidate_client.put(
+                f"{API_V1}/users/me/candidate-profile", json=CANDIDATE_PROFILE_BODY
+            )
+        ).json()
+
+        updated_body = {
+            "full_name": "Janet Doe",
+            "phone": "0987654321",
+            "title": "Senior Software Engineer",
+        }
+        updated = run_async(
+            candidate_client.put(
+                f"{API_V1}/users/me/candidate-profile", json=updated_body
+            )
+        ).json()
+
+        assert updated["id"] == created["id"]
+        assert updated["user_id"] == created["user_id"]
+        assert updated["full_name"] == "Janet Doe"
+        assert updated["phone"] == "0987654321"
+        assert updated["title"] == "Senior Software Engineer"
+        assert run_async(count_candidate_profiles_for_user(created["user_id"])) == 1
+
+    def test_candidate_cannot_read_or_update_other_candidates_profile(
+        self, candidate_client, candidate_b_client, run_async
+    ):
+        created = run_async(
+            candidate_client.put(
+                f"{API_V1}/users/me/candidate-profile", json=CANDIDATE_PROFILE_BODY
+            )
+        ).json()
+
+        get_resp = run_async(
+            candidate_b_client.get(f"{API_V1}/users/me/candidate-profile")
+        )
+        assert get_resp.status_code == 404
+
+        put_resp = run_async(
+            candidate_b_client.put(
+                f"{API_V1}/users/me/candidate-profile", json=CANDIDATE_PROFILE_BODY
+            )
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["id"] != created["id"]
+        assert run_async(count_candidate_profiles_for_user(created["user_id"])) == 1
+        assert run_async(count_candidate_profiles_for_user(put_resp.json()["user_id"])) == 1
+
+    def test_existing_post_behavior_unchanged(self, candidate_client, run_async):
+        create = run_async(
+            candidate_client.post(
+                f"{API_V1}/users/me/candidate-profile", json=CANDIDATE_PROFILE_BODY
+            )
+        )
+        assert create.status_code == 201
+
+        duplicate = run_async(
+            candidate_client.post(
+                f"{API_V1}/users/me/candidate-profile", json=CANDIDATE_PROFILE_BODY
+            )
+        )
+        assert duplicate.status_code == 400
+        assert "already has a candidate profile" in duplicate.json()["detail"]
 
 
 class TestRecruiterProfileLifecycle:
