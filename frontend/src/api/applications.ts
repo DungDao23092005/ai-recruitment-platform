@@ -7,6 +7,14 @@ export async function applyJob(jobId: string): Promise<Application> {
   })
 }
 
+export async function withdrawApplication(
+  applicationId: string,
+): Promise<Application> {
+  return apiClient.patch<Application, Application>(
+    `/applications/mine/${applicationId}/withdraw`,
+  )
+}
+
 export async function getApplicationsByJob(
   jobId: string,
 ): Promise<Application[]> {

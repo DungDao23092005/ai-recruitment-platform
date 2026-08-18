@@ -22,6 +22,7 @@ export interface UseJobsResult {
   setWorkplaceType: (value: WorkplaceType | '') => void
   setJobType: (value: JobType | '') => void
   setLocation: (value: string) => void
+  clearFilters: () => void
   goToPage: (page: number) => void
   refresh: () => void
 }
@@ -106,6 +107,15 @@ export function useJobs(): UseJobsResult {
     setPage(nextPage)
   }, [])
 
+  const clearFilters = useCallback(() => {
+    setFilters({
+      keyword: '',
+      workplace_type: '',
+      job_type: '',
+      location: '',
+    })
+  }, [])
+
   const refresh = useCallback(() => {
     void load()
   }, [load])
@@ -121,6 +131,7 @@ export function useJobs(): UseJobsResult {
     setWorkplaceType,
     setJobType,
     setLocation,
+    clearFilters,
     goToPage,
     refresh,
   }

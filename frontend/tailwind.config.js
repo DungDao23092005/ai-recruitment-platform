@@ -72,9 +72,9 @@ export default {
         sm: 'calc(var(--radius) - 4px)',
       },
       boxShadow: {
-        soft: '0 1px 2px 0 hsl(224 76% 8% / 0.04), 0 10px 30px -12px hsl(224 76% 8% / 0.12)',
-        'soft-lg': '0 2px 4px 0 hsl(224 76% 8% / 0.04), 0 24px 48px -16px hsl(224 76% 8% / 0.18)',
-        ai: '0 0 0 1px hsl(243 75% 59% / 0.12), 0 12px 32px -12px hsl(243 75% 59% / 0.28)',
+        soft: '0 1px 2px 0 hsl(224 76% 8% / 0.05), 0 8px 24px -12px hsl(224 76% 8% / 0.1)',
+        'soft-lg': '0 2px 4px 0 hsl(224 76% 8% / 0.04), 0 24px 48px -16px hsl(224 76% 8% / 0.16)',
+        ai: '0 0 0 1px hsl(252 83% 54% / 0.12), 0 12px 32px -12px hsl(252 83% 54% / 0.26)',
       },
       keyframes: {
         'accordion-down': {

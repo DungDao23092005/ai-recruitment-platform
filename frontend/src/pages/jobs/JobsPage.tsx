@@ -15,6 +15,7 @@ export function JobsPage() {
     setWorkplaceType,
     setJobType,
     setLocation,
+    clearFilters,
     goToPage,
   } = useJobs()
 
@@ -32,6 +33,7 @@ export function JobsPage() {
           onWorkplaceTypeChange={setWorkplaceType}
           onJobTypeChange={setJobType}
           onLocationChange={setLocation}
+          onClear={clearFilters}
         />
         <JobList
           jobs={jobs}

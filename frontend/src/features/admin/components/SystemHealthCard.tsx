@@ -50,7 +50,7 @@ export function SystemHealthCard({
         {status === 'healthy' && health ? (
           <div className="space-y-3">
             <div className="flex items-center gap-2">
-              <CheckCircle2 className="h-5 w-5 text-emerald-600" aria-hidden="true" />
+              <CheckCircle2 className="h-5 w-5 text-success" aria-hidden="true" />
               <Badge variant="success">Hoạt động tốt</Badge>
             </div>
             <dl className="rounded-lg border bg-muted/30 p-4 text-sm">
@@ -82,7 +82,7 @@ export function SystemHealthCard({
         {status === 'unhealthy' ? (
           <div className="space-y-3">
             <div className="flex items-center gap-2">
-              <XCircle className="h-5 w-5 text-rose-600" aria-hidden="true" />
+              <XCircle className="h-5 w-5 text-destructive" aria-hidden="true" />
               <Badge variant="destructive">Không kết nối được</Badge>
             </div>
             <p className="text-sm text-muted-foreground">

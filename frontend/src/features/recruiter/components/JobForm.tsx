@@ -206,7 +206,7 @@ export function JobForm({
       ) : null}
 
       {success ? (
-        <p role="status" className="text-sm font-medium text-green-600">
+        <p role="status" className="text-sm font-medium text-success">
           Tạo tin tuyển dụng thành công.
         </p>
       ) : null}

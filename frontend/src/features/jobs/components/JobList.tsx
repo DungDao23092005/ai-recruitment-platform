@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorBanner } from '@/components/ui/error-banner'
 import { EmptyState } from '@/components/ui/empty-state'
-import { Briefcase } from 'lucide-react'
+import { Briefcase, ChevronLeft, ChevronRight } from 'lucide-react'
 import {
   Card,
   CardContent,
@@ -80,7 +80,9 @@ export function JobList({
             size="sm"
             disabled={page <= 1}
             onClick={() => onPageChange(page - 1)}
+            aria-label="Trang trước"
           >
+            <ChevronLeft className="h-4 w-4" aria-hidden="true" />
             Trước
           </Button>
           <span className="px-2 text-sm text-muted-foreground">
@@ -91,8 +93,10 @@ export function JobList({
             size="sm"
             disabled={page >= totalPages}
             onClick={() => onPageChange(page + 1)}
+            aria-label="Trang sau"
           >
             Sau
+            <ChevronRight className="h-4 w-4" aria-hidden="true" />
           </Button>
         </div>
       ) : null}

@@ -4,64 +4,64 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 224 71% 8%;
+    --background: 222 30% 98%;
+    --foreground: 224 71% 6%;
     --card: 0 0% 100%;
-    --card-foreground: 224 71% 8%;
+    --card-foreground: 224 71% 6%;
     --popover: 0 0% 100%;
-    --popover-foreground: 224 71% 8%;
-    --primary: 243 75% 59%;
+    --popover-foreground: 224 71% 6%;
+    --primary: 236 72% 47%;
     --primary-foreground: 210 40% 98%;
-    --secondary: 213 40% 96%;
-    --secondary-foreground: 224 47% 12%;
-    --muted: 213 40% 96%;
+    --secondary: 220 26% 95%;
+    --secondary-foreground: 224 47% 10%;
+    --muted: 220 26% 95%;
     --muted-foreground: 215 20% 42%;
-    --accent: 213 40% 96%;
-    --accent-foreground: 224 47% 12%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 210 40% 98%;
-    --success: 160 84% 39%;
+    --accent: 236 65% 96%;
+    --accent-foreground: 236 55% 32%;
+    --destructive: 0 70% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 160 84% 36%;
     --success-foreground: 0 0% 100%;
-    --warning: 38 92% 50%;
+    --warning: 38 92% 46%;
     --warning-foreground: 0 0% 100%;
-    --info: 199 89% 48%;
+    --info: 199 89% 45%;
     --info-foreground: 0 0% 100%;
-    --ai: 262 83% 58%;
+    --ai: 252 83% 54%;
     --ai-foreground: 0 0% 100%;
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 243 75% 59%;
+    --border: 218 24% 89%;
+    --input: 218 24% 87%;
+    --ring: 236 72% 47%;
     --radius: 0.625rem;
   }
 
   .dark {
-    --background: 224 71% 5%;
+    --background: 224 50% 4%;
     --foreground: 210 40% 98%;
-    --card: 224 71% 7%;
+    --card: 224 45% 6%;
     --card-foreground: 210 40% 98%;
-    --popover: 224 71% 7%;
+    --popover: 224 45% 6%;
     --popover-foreground: 210 40% 98%;
-    --primary: 243 80% 70%;
-    --primary-foreground: 224 47% 12%;
-    --secondary: 217 32% 17%;
+    --primary: 236 76% 66%;
+    --primary-foreground: 224 47% 10%;
+    --secondary: 220 25% 16%;
     --secondary-foreground: 210 40% 98%;
-    --muted: 217 32% 17%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 217 32% 17%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 63% 42%;
+    --muted: 220 25% 16%;
+    --muted-foreground: 215 20% 62%;
+    --accent: 236 45% 18%;
+    --accent-foreground: 236 80% 82%;
+    --destructive: 0 63% 44%;
     --destructive-foreground: 210 40% 98%;
-    --success: 160 60% 45%;
-    --success-foreground: 224 71% 8%;
+    --success: 160 55% 45%;
+    --success-foreground: 224 71% 6%;
     --warning: 38 92% 55%;
-    --warning-foreground: 224 71% 8%;
+    --warning-foreground: 224 71% 6%;
     --info: 199 89% 55%;
-    --info-foreground: 224 71% 8%;
-    --ai: 262 83% 70%;
-    --ai-foreground: 224 71% 8%;
-    --border: 217 32% 18%;
-    --input: 217 32% 18%;
-    --ring: 224 76% 48%;
+    --info-foreground: 224 71% 6%;
+    --ai: 252 85% 68%;
+    --ai-foreground: 224 71% 6%;
+    --border: 220 22% 16%;
+    --input: 220 22% 16%;
+    --ring: 236 76% 60%;
   }
 }
 
@@ -90,7 +90,7 @@
     @apply text-balance;
   }
   ::selection {
-    background: hsl(243 75% 59% / 0.18);
+    background: hsl(236 72% 47% / 0.16);
   }
   :focus-visible {
     outline: 2px solid hsl(var(--ring));
@@ -102,17 +102,15 @@
   .ai-gradient {
     background: linear-gradient(
       135deg,
-      hsl(243 75% 59%) 0%,
-      hsl(262 83% 58%) 55%,
-      hsl(300 70% 55%) 110%
+      hsl(236 72% 47%) 0%,
+      hsl(252 75% 52%) 100%
     );
   }
   .ai-text {
     background: linear-gradient(
       120deg,
-      hsl(243 80% 55%) 0%,
-      hsl(262 85% 55%) 60%,
-      hsl(300 70% 52%) 110%
+      hsl(236 72% 44%) 0%,
+      hsl(252 80% 52%) 100%
     );
     -webkit-background-clip: text;
     background-clip: text;
@@ -122,9 +120,19 @@
     text-wrap: balance;
   }
   .bg-grid {
-    background-image: linear-gradient(hsl(224 71% 8% / 0.04) 1px, transparent 1px),
-      linear-gradient(90deg, hsl(224 71% 8% / 0.04) 1px, transparent 1px);
+    background-image: linear-gradient(hsl(224 71% 8% / 0.045) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(224 71% 8% / 0.045) 1px, transparent 1px);
     background-size: 32px 32px;
+  }
+  .bg-grid-fade {
+    background-image: linear-gradient(hsl(224 71% 8% / 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(224 71% 8% / 0.03) 1px, transparent 1px);
+    background-size: 32px 32px;
+    mask-image: radial-gradient(ellipse 80% 70% at 50% 0%, black 40%, transparent 100%);
+    -webkit-mask-image: radial-gradient(ellipse 80% 70% at 50% 0%, black 40%, transparent 100%);
+  }
+  .card-hover {
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
   }
 }
 

@@ -140,7 +140,7 @@ export function CompanyForm({ onCreated }: CompanyFormProps) {
       ) : null}
 
       {success ? (
-        <p role="status" className="text-sm font-medium text-green-600">
+        <p role="status" className="text-sm font-medium text-success">
           Tạo công ty thành công.
         </p>
       ) : null}

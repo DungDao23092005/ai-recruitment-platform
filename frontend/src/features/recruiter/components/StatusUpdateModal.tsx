@@ -4,6 +4,7 @@ import apiClient from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
+import { ApplicationStatusBadge } from '@/components/common/ApplicationStatusBadge'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { Application, ApplicationStatus } from '@/types/application'
 
@@ -17,15 +18,18 @@ export const APPLICATION_STATUS_LABELS: Record<ApplicationStatus, string> = {
   withdrawn: 'Đã rút',
 }
 
-export const APPLICATION_STATUS_OPTIONS: ApplicationStatus[] = [
-  'applied',
-  'under_review',
-  'shortlisted',
-  'interviewing',
-  'accepted',
-  'rejected',
-  'withdrawn',
-]
+export const RECRUITER_STATUS_TRANSITIONS: Record<
+  ApplicationStatus,
+  ApplicationStatus[]
+> = {
+  applied: ['under_review'],
+  under_review: ['shortlisted'],
+  shortlisted: ['interviewing'],
+  interviewing: ['accepted', 'rejected'],
+  accepted: [],
+  rejected: [],
+  withdrawn: [],
+}
 
 export interface StatusUpdateModalProps {
   application: Application
@@ -38,7 +42,10 @@ export function StatusUpdateModal({
   onClose,
   onSuccess,
 }: StatusUpdateModalProps) {
-  const [status, setStatus] = useState<ApplicationStatus>(application.status)
+  const statusOptions = RECRUITER_STATUS_TRANSITIONS[application.status]
+  const [status, setStatus] = useState<ApplicationStatus>(
+    statusOptions[0] ?? application.status,
+  )
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
@@ -72,7 +79,11 @@ export function StatusUpdateModal({
           Cập nhật trạng thái
         </span>
       }
-      description={`Đơn ứng tuyển ${application.id.slice(0, 8)}`}
+      description={
+        application.candidate?.full_name
+          ? `Ứng viên: ${application.candidate.full_name}`
+          : `Đơn ứng tuyển ${application.id.slice(0, 8)}`
+      }
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={submitting}>
@@ -81,7 +92,7 @@ export function StatusUpdateModal({
           <Button
             onClick={handleUpdate}
             isLoading={submitting}
-            disabled={success}
+            disabled={success || statusOptions.length === 0}
           >
             Lưu trạng thái
           </Button>
@@ -89,20 +100,33 @@ export function StatusUpdateModal({
       }
     >
       <div className="space-y-4">
-        <Select
-          id="application-status"
-          name="status"
-          label="Trạng thái"
-          value={status}
-          onChange={(e) => setStatus(e.target.value as ApplicationStatus)}
-          helperText="Chuyển trạng thái theo quy trình tuyển dụng của nền tảng."
-        >
-          {APPLICATION_STATUS_OPTIONS.map((option) => (
-            <option key={option} value={option}>
-              {APPLICATION_STATUS_LABELS[option]}
-            </option>
-          ))}
-        </Select>
+        <div className="flex flex-wrap items-center gap-2 rounded-lg bg-muted/40 px-3 py-2.5 text-sm">
+          <span className="text-muted-foreground">Trạng thái hiện tại:</span>
+          <ApplicationStatusBadge status={application.status} />
+        </div>
+
+        {statusOptions.length > 0 ? (
+          <Select
+            id="application-status"
+            name="status"
+            label="Trạng thái"
+            value={status}
+            onChange={(e) => setStatus(e.target.value as ApplicationStatus)}
+            helperText="Chuyển trạng thái theo quy trình tuyển dụng của nền tảng."
+          >
+            {statusOptions.map((option) => (
+              <option key={option} value={option}>
+                {APPLICATION_STATUS_LABELS[option]}
+              </option>
+            ))}
+          </Select>
+        ) : (
+          <p className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+            Đơn ứng tuyển ở trạng thái{' '}
+            {APPLICATION_STATUS_LABELS[application.status]}, không còn trạng
+            thái tuyển dụng nào để chuyển đến.
+          </p>
+        )}
 
         {success ? (
           <p

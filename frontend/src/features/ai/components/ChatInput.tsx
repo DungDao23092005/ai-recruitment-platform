@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { SendHorizontal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
 
 export interface ChatInputProps {
   onSend: (message: string) => void
@@ -27,14 +28,14 @@ export function ChatInput({
 
   return (
     <form onSubmit={handleSubmit} className="flex items-end gap-2">
-      <textarea
+      <Textarea
         name="chat-message"
         rows={1}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder={placeholder}
         aria-label="Tin nhắn chat"
-        className="max-h-40 flex-1 resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className="max-h-40 min-h-0 flex-1 resize-none"
       />
       <Button
         type="submit"

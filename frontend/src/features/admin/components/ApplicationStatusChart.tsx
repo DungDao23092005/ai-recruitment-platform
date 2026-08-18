@@ -5,7 +5,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { cn } from '@/utils/cn'
-import { APPLICATION_STATUS_LABELS } from '@/features/recruiter/components/StatusUpdateModal'
+import { APPLICATION_STATUS_LABELS } from '@/components/common/ApplicationStatusBadge'
 import type { ApplicationStatusCounts } from '@/types/admin'
 
 export interface ApplicationStatusChartProps {
@@ -18,13 +18,13 @@ interface StatusRow {
 }
 
 const STATUS_ROWS: StatusRow[] = [
-  { key: 'applied', className: 'bg-blue-500' },
-  { key: 'under_review', className: 'bg-cyan-500' },
-  { key: 'shortlisted', className: 'bg-violet-500' },
-  { key: 'interviewing', className: 'bg-amber-500' },
-  { key: 'accepted', className: 'bg-emerald-500' },
-  { key: 'rejected', className: 'bg-rose-500' },
-  { key: 'withdrawn', className: 'bg-gray-400' },
+  { key: 'applied', className: 'bg-info' },
+  { key: 'under_review', className: 'bg-primary' },
+  { key: 'shortlisted', className: 'bg-ai' },
+  { key: 'interviewing', className: 'bg-warning' },
+  { key: 'accepted', className: 'bg-success' },
+  { key: 'rejected', className: 'bg-destructive' },
+  { key: 'withdrawn', className: 'bg-muted-foreground/50' },
 ]
 
 export function ApplicationStatusChart({

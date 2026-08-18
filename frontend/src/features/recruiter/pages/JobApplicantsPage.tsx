@@ -18,8 +18,15 @@ import { Badge } from '@/components/ui/badge'
 import { ApplicantList } from '@/features/recruiter/components/ApplicantList'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { JOB_STATUS_LABELS, JOB_TYPE_LABELS } from '@/types/job'
+import type { Job, JobStatus } from '@/types/job'
 import type { Application } from '@/types/application'
-import type { Job } from '@/types/job'
+
+const JOB_STATUS_VARIANT: Record<JobStatus, 'neutral' | 'success' | 'warning' | 'destructive'> = {
+  draft: 'neutral',
+  published: 'success',
+  closed: 'warning',
+  expired: 'destructive',
+}
 
 type PageState =
   | { kind: 'loading' }
@@ -135,7 +142,7 @@ export function JobApplicantsPage() {
         <CardHeader>
           <CardTitle className="text-xl">{job.title}</CardTitle>
           <CardDescription className="flex flex-wrap items-center gap-2">
-            <Badge variant="ai-gradient">
+            <Badge variant={JOB_STATUS_VARIANT[job.status]}>
               {JOB_STATUS_LABELS[job.status]}
             </Badge>
             <span className="text-xs uppercase text-muted-foreground">

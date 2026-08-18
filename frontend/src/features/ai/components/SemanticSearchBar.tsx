@@ -2,8 +2,10 @@ import { useState, type FormEvent } from 'react'
 import { Search, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { getFriendlyErrorMessage } from '@/utils/errors'
+import { cn } from '@/utils/cn'
 import type { SemanticSearchResult } from '@/types/ai'
 
 export interface SemanticSearchBarProps {
@@ -16,6 +18,12 @@ export function formatSearchScore(score: number): string {
     return '0%'
   }
   return `${Math.round(score * 100)}%`
+}
+
+function scoreVariant(score: number): 'success' | 'warning' | 'neutral' {
+  if (score >= 0.75) return 'success'
+  if (score >= 0.5) return 'warning'
+  return 'neutral'
 }
 
 export function SemanticSearchBar({
@@ -52,14 +60,14 @@ export function SemanticSearchBar({
   return (
     <div className="space-y-4">
       <form onSubmit={handleSubmit} className="flex gap-2">
-        <input
+        <Input
           type="search"
           name="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={placeholder}
           aria-label="Từ khóa tìm kiếm ngữ nghĩa"
-          className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="h-10"
         />
         <Button
           type="submit"
@@ -100,12 +108,12 @@ export function SemanticSearchBar({
             {results.map((result) => (
               <li
                 key={result.id}
-                className="flex items-start justify-between gap-3 rounded-lg border bg-card p-3"
+                className="flex items-start justify-between gap-3 rounded-lg border bg-card p-3.5 transition-shadow hover:shadow-soft"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{result.id}</p>
                   {result.skills.length > 0 ? (
-                    <div className="mt-1 flex flex-wrap gap-1">
+                    <div className="mt-1.5 flex flex-wrap gap-1">
                       {result.skills.map((skill) => (
                         <Badge key={skill} variant="neutral">
                           {skill}
@@ -115,8 +123,12 @@ export function SemanticSearchBar({
                   ) : null}
                 </div>
                 <Badge
-                  variant="neutral"
-                  className="shrink-0 text-sm font-bold"
+                  variant={scoreVariant(result.score)}
+                  className={cn(
+                    'shrink-0 text-sm font-bold',
+                    result.score >= 0.75 && 'text-success',
+                    result.score >= 0.5 && result.score < 0.75 && 'text-warning',
+                  )}
                   aria-label={`Độ phù hợp ${formatSearchScore(result.score)}`}
                 >
                   {formatSearchScore(result.score)}
@@ -125,7 +137,7 @@ export function SemanticSearchBar({
             ))}
           </ul>
         ) : (
-          <p className="text-sm text-muted-foreground">
+          <p className="rounded-lg border border-dashed bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
             Không tìm thấy kết quả phù hợp.
           </p>
         )

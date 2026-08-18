@@ -1,6 +1,16 @@
 import { useState } from 'react'
 import { NavLink, Link } from 'react-router-dom'
-import { LogOut, Menu, X } from 'lucide-react'
+import {
+  Bot,
+  LayoutDashboard,
+  LogOut,
+  Menu,
+  Search,
+  Sparkles,
+  User,
+  X,
+  type LucideIcon,
+} from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { NAV_LINKS } from '@/routes'
 import { useAuth } from '@/contexts/AuthContext'
@@ -13,31 +23,33 @@ import type { UserRole } from '@/types/auth'
 interface NavItem {
   to: string
   label: string
+  icon?: LucideIcon
 }
 
+const AI_LINK: NavItem = { to: '/ai/chat', label: 'Trợ lý AI', icon: Bot }
+
 function roleNavLinks(role?: UserRole): NavItem[] {
-  const links: NavItem[] = [{ to: '/ai/chat', label: 'Trợ lý AI' }]
   if (role === 'candidate') {
     return [
-      ...links,
-      { to: '/candidate/portal', label: 'Tổng quan' },
-      { to: '/jobs/search', label: 'Tìm việc AI' },
-      { to: '/candidate/recommendations', label: 'Gợi ý việc làm' },
+      { to: '/candidate/portal', label: 'Tổng quan', icon: LayoutDashboard },
+      { to: '/jobs/search', label: 'Tìm việc AI', icon: Search },
+      { to: '/candidate/recommendations', label: 'Gợi ý việc làm', icon: Sparkles },
+      AI_LINK,
     ]
   }
   if (role === 'admin') {
     return [
-      ...links,
-      { to: '/admin/dashboard', label: 'Bảng điều khiển' },
-      { to: '/recruiter/portal', label: 'Quản lý tuyển dụng' },
-      { to: '/recruiter/search/candidates', label: 'Tìm ứng viên AI' },
+      { to: '/admin/dashboard', label: 'Bảng điều khiển', icon: LayoutDashboard },
+      { to: '/recruiter/portal', label: 'Quản lý tuyển dụng', icon: User },
+      { to: '/recruiter/search/candidates', label: 'Tìm ứng viên AI', icon: Search },
+      AI_LINK,
     ]
   }
   return [
-    ...links,
-    { to: '/recruiter/portal', label: 'Quản lý tuyển dụng' },
-    { to: '/recruiter/jobs/new', label: 'Đăng tin' },
-    { to: '/recruiter/search/candidates', label: 'Tìm ứng viên AI' },
+    { to: '/recruiter/portal', label: 'Quản lý tuyển dụng', icon: LayoutDashboard },
+    { to: '/recruiter/jobs/new', label: 'Đăng tin', icon: Sparkles },
+    { to: '/recruiter/search/candidates', label: 'Tìm ứng viên AI', icon: Search },
+    AI_LINK,
   ]
 }
 
@@ -50,13 +62,16 @@ function NavLinks({ links }: { links: NavItem[] }) {
           to={link.to}
           className={({ isActive }) =>
             cn(
-              'rounded-md px-3 py-2 text-sm font-medium transition-colors',
+              'flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
               isActive
-                ? 'bg-secondary text-secondary-foreground'
+                ? 'bg-primary/10 text-primary'
                 : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
             )
           }
         >
+          {link.icon ? (
+            <link.icon className="h-4 w-4" aria-hidden="true" />
+          ) : null}
           {link.label}
         </NavLink>
       ))}
@@ -83,7 +98,7 @@ export function Navbar() {
   }
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+    <header className="sticky top-0 z-40 w-full border-b bg-background/90 backdrop-blur supports-[backdrop-filter]:bg-background/70">
       <nav
         className="container flex h-16 items-center justify-between gap-4"
         aria-label="Điều hướng chính"
@@ -110,7 +125,7 @@ export function Navbar() {
         <div className="flex items-center gap-2">
           {isLoading ? null : isAuthenticated && currentUser ? (
             <>
-              <Badge variant="ai-gradient" className="hidden sm:inline-flex">
+              <Badge variant="outline-ai" className="hidden sm:inline-flex">
                 {USER_ROLE_LABELS[currentUser.role]}
               </Badge>
               <span className="hidden max-w-[14rem] truncate text-sm text-muted-foreground xl:inline">
@@ -171,7 +186,7 @@ export function Navbar() {
               {isAuthenticated && currentUser ? (
                 <>
                   <div className="flex items-center gap-2">
-                    <Badge variant="ai-gradient">
+                    <Badge variant="outline-ai">
                       {USER_ROLE_LABELS[currentUser.role]}
                     </Badge>
                     <span className="truncate text-sm text-muted-foreground">

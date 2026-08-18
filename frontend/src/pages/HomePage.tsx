@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   ArrowRight,
   BrainCircuit,
@@ -12,9 +12,10 @@ import {
   Upload,
   Users,
 } from 'lucide-react'
-import { useAuth } from '@/contexts/AuthContext'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { cn } from '@/utils/cn'
 import { Progress } from '@/components/ui/progress'
 import { ScoreRing } from '@/components/ui/score-ring'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -87,10 +88,10 @@ function HeroMatchPreview() {
   return (
     <div className="relative">
       <div
-        className="ai-gradient absolute -inset-10 rounded-full opacity-15 blur-3xl"
+        className="ai-gradient absolute -inset-8 rounded-full opacity-10 blur-3xl"
         aria-hidden="true"
       />
-      <Card className="relative mx-auto w-full max-w-sm border-border/70 shadow-soft-lg">
+      <Card className="card-hover relative mx-auto w-full max-w-sm border-border/70 shadow-soft-lg">
         <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
           <div className="flex items-center gap-3">
             <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/10 font-display text-lg font-bold text-primary">
@@ -147,12 +148,16 @@ function HeroMatchPreview() {
             trùng khớp gần như hoàn toàn.
           </p>
 
-          <Button variant="outline" className="w-full">
-            <Link to="/candidate/recommendations" className="flex w-full items-center justify-center gap-2">
-              Xem chi tiết đối sánh
-              <ArrowRight className="h-4 w-4" aria-hidden="true" />
-            </Link>
-          </Button>
+          <Link
+            to="/candidate/recommendations"
+            className={cn(
+              buttonVariants({ variant: 'outline', size: 'lg' }),
+              'w-full',
+            )}
+          >
+            Xem chi tiết đối sánh
+            <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </Link>
         </CardContent>
       </Card>
       <p className="mt-3 text-center text-xs text-muted-foreground">
@@ -214,17 +219,43 @@ function LatestJobsSection() {
   )
 }
 
-export function HomePage() {
-  const { isAuthenticated } = useAuth()
+function HeroSearchBar() {
+  const navigate = useNavigate()
+  return (
+    <form
+      className="mt-8 flex w-full max-w-xl flex-col gap-2 sm:flex-row"
+      onSubmit={(event) => {
+        event.preventDefault()
+        navigate('/jobs')
+      }}
+    >
+      <div className="relative flex-1">
+        <Search
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+          aria-hidden="true"
+        />
+        <Input
+          name="q"
+          type="search"
+          aria-label="Tìm kiếm việc làm"
+          placeholder="Nhập tên công việc, kỹ năng..."
+          className="h-11 pl-9"
+        />
+      </div>
+      <Button type="submit" size="lg" className="h-11 w-full sm:w-auto">
+        Tìm việc ngay
+        <ArrowRight className="h-4 w-4" aria-hidden="true" />
+      </Button>
+    </form>
+  )
+}
 
+export function HomePage() {
   return (
     <div className="relative">
-      <div
-        className="bg-grid pointer-events-none absolute inset-x-0 top-0 h-[520px] [mask-image:linear-gradient(to_bottom,transparent,black,transparent)]"
-        aria-hidden="true"
-      />
+      <div className="bg-grid-fade pointer-events-none absolute inset-x-0 top-0 h-[560px]" aria-hidden="true" />
 
-      <section className="container relative py-16 sm:py-24">
+      <section className="container relative pb-16 pt-14 sm:pt-20">
         <div className="grid items-center gap-12 lg:grid-cols-2 lg:gap-16">
           <div className="max-w-2xl">
             <p className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-xs font-semibold text-primary">
@@ -243,19 +274,7 @@ export function HomePage() {
               tạo — đối sánh CV theo ngữ nghĩa, gợi ý việc làm và tìm ứng viên
               phù hợp chỉ trong vài giây.
             </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              <Link to={isAuthenticated ? '/candidate/portal' : '/jobs'}>
-                <Button size="lg">
-                  Tìm việc ngay
-                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                </Button>
-              </Link>
-              <Link to="/register">
-                <Button size="lg" variant="outline">
-                  Tạo tài khoản miễn phí
-                </Button>
-              </Link>
-            </div>
+            <HeroSearchBar />
             <ul className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-muted-foreground">
               {HERO_HIGHLIGHTS.map((item) => (
                 <li key={item} className="flex items-center gap-1.5">
@@ -273,7 +292,7 @@ export function HomePage() {
         </div>
       </section>
 
-      <section className="border-y bg-muted/30">
+      <section className="border-y bg-muted/40">
         <div className="container py-16">
           <div className="mx-auto max-w-2xl text-center">
             <p className="text-xs font-semibold uppercase tracking-wider text-primary">
@@ -286,7 +305,7 @@ export function HomePage() {
           <div className="mt-12 grid gap-8 md:grid-cols-3">
             {STEPS.map((step, index) => (
               <div key={step.title} className="relative text-center">
-                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl ai-gradient text-white shadow-ai">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary ring-1 ring-primary/15">
                   <step.icon className="h-6 w-6" aria-hidden="true" />
                 </div>
                 <p className="mt-4 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -321,7 +340,7 @@ export function HomePage() {
           {AI_FEATURES.map((feature) => (
             <Card
               key={feature.title}
-              className="border-border/70 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-soft"
+              className="card-hover border-border/70 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-soft"
             >
               <CardHeader>
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -345,7 +364,7 @@ export function HomePage() {
 
       <section className="container pb-16 sm:pb-20">
         <div className="grid gap-6 lg:grid-cols-2">
-          <Card className="border-border/70 p-8">
+          <Card className="card-hover border-border/70 p-8 hover:border-primary/30 hover:shadow-soft">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
               <Users className="h-5 w-5" aria-hidden="true" />
             </div>
@@ -364,7 +383,7 @@ export function HomePage() {
               </Link>
             </div>
           </Card>
-          <Card className="border-border/70 p-8">
+          <Card className="card-hover border-border/70 p-8 hover:border-primary/30 hover:shadow-soft">
             <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
               <Briefcase className="h-5 w-5" aria-hidden="true" />
             </div>
@@ -387,7 +406,7 @@ export function HomePage() {
 
       <section className="container pb-16 sm:pb-24">
         <div className="ai-gradient relative overflow-hidden rounded-3xl px-6 py-14 text-center text-white sm:px-12">
-          <div className="absolute inset-0 bg-grid opacity-20" aria-hidden="true" />
+          <div className="absolute inset-0 bg-grid opacity-15" aria-hidden="true" />
           <div className="relative mx-auto max-w-2xl">
             <h2 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">
               Bắt đầu hành trình tuyển dụng thông minh ngay hôm nay

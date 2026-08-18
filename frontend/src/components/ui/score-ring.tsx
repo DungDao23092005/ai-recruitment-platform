@@ -39,8 +39,8 @@ export function ScoreRing({
             x2="100%"
             y2="100%"
           >
-            <stop offset="0%" stopColor="hsl(243 75% 59%)" />
-            <stop offset="100%" stopColor="hsl(262 83% 58%)" />
+            <stop offset="0%" stopColor="hsl(236 72% 47%)" />
+            <stop offset="100%" stopColor="hsl(252 83% 54%)" />
           </linearGradient>
         </defs>
         <circle
