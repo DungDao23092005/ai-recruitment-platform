@@ -47,7 +47,7 @@ function useAppNav(role?: UserRole): NavSection[] {
       {
         title: 'Tìm việc',
         items: [
-          { to: '/jobs', label: 'Việc làm', icon: Briefcase, end: true },
+          { to: '/candidate/jobs', label: 'Việc làm', icon: Briefcase, end: true },
           { to: '/jobs/search', label: 'Tìm việc AI', icon: Search },
           { to: '/candidate/recommendations', label: 'Gợi ý việc làm', icon: Sparkles },
         ],

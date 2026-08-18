@@ -75,6 +75,21 @@ describe('JobRecommendationCard', () => {
     expect(link).toHaveAttribute('href', '/jobs/job-1')
   })
 
+  it('uses the provided detailPath for the job detail link', () => {
+    render(
+      <MemoryRouter>
+        <JobRecommendationCard
+          recommendation={mockRecommendation}
+          detailPath="/candidate/jobs"
+        />
+      </MemoryRouter>,
+    )
+    const link = screen.getByRole('link', {
+      name: /Xem chi tiết & Nộp đơn/i,
+    })
+    expect(link).toHaveAttribute('href', '/candidate/jobs/job-1')
+  })
+
   it('falls back to an untitled role when parsed job is null', () => {
     render(
       <MemoryRouter>

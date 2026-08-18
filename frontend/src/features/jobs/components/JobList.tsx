@@ -18,6 +18,7 @@ export interface JobListProps {
   page: number
   totalPages: number
   onPageChange: (page: number) => void
+  detailPath?: string
 }
 
 export function JobList({
@@ -27,6 +28,7 @@ export function JobList({
   page,
   totalPages,
   onPageChange,
+  detailPath = '/jobs',
 }: JobListProps) {
   if (isLoading) {
     return (
@@ -69,7 +71,7 @@ export function JobList({
     <div className="space-y-6">
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
         {jobs.map((job) => (
-          <JobCard key={job.id} job={job} />
+          <JobCard key={job.id} job={job} detailPath={detailPath} />
         ))}
       </div>
 

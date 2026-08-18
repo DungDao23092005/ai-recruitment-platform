@@ -60,7 +60,11 @@ function companyMonogram(companyName: string): string {
   )
 }
 
-export function JobDetailPage() {
+export interface JobDetailPageProps {
+  backPath?: string
+}
+
+export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { currentUser } = useAuth()
@@ -101,7 +105,7 @@ export function JobDetailPage() {
 
   const handleApply = () => {
     if (!currentUser) {
-      navigate('/login', { state: { from: `/jobs/${id}` } })
+      navigate('/login', { state: { from: `${backPath}/${id}` } })
       return
     }
     if (currentUser.role !== 'candidate') {
@@ -143,7 +147,7 @@ export function JobDetailPage() {
             ? 'Công việc bạn đang tìm không tồn tại hoặc đã bị gỡ.'
             : 'Đã xảy ra lỗi khi tải công việc này.'}
         </p>
-        <Link to="/jobs" className="mt-6">
+        <Link to={backPath} className="mt-6">
           <Button variant="outline">Quay lại danh sách việc làm</Button>
         </Link>
       </div>
@@ -164,7 +168,7 @@ export function JobDetailPage() {
   return (
     <div className="container mx-auto max-w-5xl py-10">
       <div className="mb-6">
-        <Link to="/jobs">
+        <Link to={backPath}>
           <Button variant="ghost" size="sm" className="text-muted-foreground">
             <ArrowLeft className="mr-1.5 h-4 w-4" aria-hidden="true" />
             Quay lại danh sách

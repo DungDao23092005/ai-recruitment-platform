@@ -3,7 +3,12 @@ import { JobList } from '@/features/jobs/components/JobList'
 import { useJobs } from '@/features/jobs/hooks/useJobs'
 import { PageHeader } from '@/components/common/PageHeader'
 
-export function JobsPage() {
+export interface JobsPageProps {
+  detailPath?: string
+  contained?: boolean
+}
+
+export function JobsPage({ detailPath = '/jobs', contained = true }: JobsPageProps) {
   const {
     jobs,
     isLoading,
@@ -20,7 +25,7 @@ export function JobsPage() {
   } = useJobs()
 
   return (
-    <div className="container py-10 sm:py-12">
+    <div className={contained ? 'container py-10 sm:py-12' : 'space-y-6'}>
       <PageHeader
         title="Việc làm"
         description="Khám phá cơ hội nghề nghiệp được tuyển chọn dành riêng cho bạn."
@@ -42,6 +47,7 @@ export function JobsPage() {
           page={page}
           totalPages={totalPages}
           onPageChange={goToPage}
+          detailPath={detailPath}
         />
       </div>
     </div>

@@ -20,7 +20,7 @@ import {
 
 const PORTAL_CARDS = [
   {
-    to: '/jobs',
+    to: '/candidate/jobs',
     icon: Briefcase,
     title: 'Tìm việc làm',
     description: 'Duyệt và lọc danh sách việc làm mới nhất từ các công ty.',

@@ -78,6 +78,32 @@ describe('JobCard', () => {
     expect(link).toHaveAttribute('href', '/jobs/job-1')
   })
 
+  it('uses the provided detailPath for the job detail link', () => {
+    render(
+      <MemoryRouter>
+        <JobCard job={mockJob} detailPath="/candidate/jobs" />
+      </MemoryRouter>,
+    )
+    const link = screen.getByRole('link', { name: /Xem chi tiết/i })
+    expect(link).toHaveAttribute('href', '/candidate/jobs/job-1')
+  })
+
+  it('builds detail links from detailPath per job id', () => {
+    const jobA: Job = { ...mockJob, id: 'job-a', title: 'Job A' }
+    const jobB: Job = { ...mockJob, id: 'job-b', title: 'Job B' }
+
+    render(
+      <MemoryRouter>
+        <JobCard job={jobA} detailPath="/candidate/jobs" />
+        <JobCard job={jobB} detailPath="/candidate/jobs" />
+      </MemoryRouter>,
+    )
+
+    const links = screen.getAllByRole('link', { name: /Xem chi tiết/i })
+    expect(links[0]).toHaveAttribute('href', '/candidate/jobs/job-a')
+    expect(links[1]).toHaveAttribute('href', '/candidate/jobs/job-b')
+  })
+
   it('creates the correct href per job.id for two different jobs', () => {
     const jobA: Job = { ...mockJob, id: 'job-a', title: 'Job A' }
     const jobB: Job = { ...mockJob, id: 'job-b', title: 'Job B' }

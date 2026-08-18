@@ -18,10 +18,12 @@ import type { JobMatchRecommendation } from '@/types/ai'
 
 export interface JobRecommendationCardProps {
   recommendation: JobMatchRecommendation
+  detailPath?: string
 }
 
 export function JobRecommendationCard({
   recommendation,
+  detailPath = '/jobs',
 }: JobRecommendationCardProps) {
   const { job_id, parsed_job, match_result } = recommendation
   const overall = Math.round(match_result.overall_score)
@@ -94,7 +96,7 @@ export function JobRecommendationCard({
         </details>
       </CardContent>
       <CardFooter>
-        <Link to={`/jobs/${job_id}`} className="w-full">
+        <Link to={`${detailPath}/${job_id}`} className="w-full">
           <Button className="w-full">
             Xem chi tiết &amp; Nộp đơn
           </Button>

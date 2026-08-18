@@ -15,6 +15,7 @@ import { cn } from '@/utils/cn'
 
 export interface JobCardProps {
   job: Job
+  detailPath?: string
 }
 
 function formatPostedDate(dateString: string): string {
@@ -47,7 +48,7 @@ function companyMonogram(companyName: string): string {
   )
 }
 
-export function JobCard({ job }: JobCardProps) {
+export function JobCard({ job, detailPath = '/jobs' }: JobCardProps) {
   const postedDate = formatPostedDate(job.created_at)
   const rawCompanyName = job.company_name ?? `Công ty ${job.company_id.slice(0, 8)}`
   const companyLabel = job.company_name
@@ -99,7 +100,7 @@ export function JobCard({ job }: JobCardProps) {
       </CardContent>
       <CardFooter>
         <Link
-          to={`/jobs/${job.id}`}
+          to={`${detailPath}/${job.id}`}
           className={cn(
             buttonVariants({ variant: 'outline' }),
             'w-full group-hover:border-primary/40 group-hover:text-primary',

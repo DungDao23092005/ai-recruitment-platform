@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
@@ -15,6 +15,7 @@ import type { User, UserRole } from '@/types/auth'
 import type { Job } from '@/types/job'
 import type { AdminStats } from '@/types/admin'
 import type { HealthStatus } from '@/api/endpoints'
+import type { JobMatchRecommendation } from '@/types/ai'
 
 const mockUser: User = {
   id: 'user-1',
@@ -372,7 +373,7 @@ describe('AppRouter AI routes', () => {
 })
 
 describe('AppRouter Navbar integration', () => {
-  it('renders auth-specific nav links for a candidate', async () => {
+  it('keeps private role navigation out of the public navbar for a candidate', async () => {
     setUser('candidate')
 
     renderAt('/')
@@ -382,17 +383,23 @@ describe('AppRouter Navbar integration', () => {
         screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
-    const candidateNav = screen.getByRole('navigation', {
+    const publicNav = screen.getByRole('navigation', {
       name: 'Điều hướng chính',
     })
-    expect(within(candidateNav).getByText('Trợ lý AI')).toBeInTheDocument()
-    expect(within(candidateNav).getByText('Tìm việc AI')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Trang chủ')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Việc làm')).toBeInTheDocument()
+    expect(within(publicNav).queryByText('Trợ lý AI')).not.toBeInTheDocument()
+    expect(within(publicNav).queryByText('Tìm việc AI')).not.toBeInTheDocument()
     expect(
-      within(candidateNav).getByText('Gợi ý việc làm'),
-    ).toBeInTheDocument()
+      within(publicNav).queryByText('Gợi ý việc làm'),
+    ).not.toBeInTheDocument()
+    const dashboardCta = within(publicNav).getByRole('link', {
+      name: 'Vào bảng điều khiển',
+    })
+    expect(dashboardCta).toHaveAttribute('href', '/candidate/portal')
   })
 
-  it('renders recruiter nav links for a recruiter', async () => {
+  it('points the dashboard CTA at the recruiter portal for a recruiter', async () => {
     setUser('recruiter')
 
     renderAt('/')
@@ -402,19 +409,22 @@ describe('AppRouter Navbar integration', () => {
         screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
-    const recruiterNav = screen.getByRole('navigation', {
+    const publicNav = screen.getByRole('navigation', {
       name: 'Điều hướng chính',
     })
-    expect(within(recruiterNav).getByText('Trợ lý AI')).toBeInTheDocument()
     expect(
-      within(recruiterNav).getByText('Quản lý tuyển dụng'),
-    ).toBeInTheDocument()
+      within(publicNav).queryByText('Quản lý tuyển dụng'),
+    ).not.toBeInTheDocument()
     expect(
-      within(recruiterNav).getByText('Tìm ứng viên AI'),
-    ).toBeInTheDocument()
+      within(publicNav).queryByText('Tìm ứng viên AI'),
+    ).not.toBeInTheDocument()
+    const dashboardCta = within(publicNav).getByRole('link', {
+      name: 'Vào bảng điều khiển',
+    })
+    expect(dashboardCta).toHaveAttribute('href', '/recruiter/portal')
   })
 
-  it('renders admin dashboard link for an admin', async () => {
+  it('points the dashboard CTA at the admin dashboard for an admin', async () => {
     setUser('admin')
 
     renderAt('/')
@@ -424,12 +434,254 @@ describe('AppRouter Navbar integration', () => {
         screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
-    const adminNav = screen.getByRole('navigation', {
+    const publicNav = screen.getByRole('navigation', {
       name: 'Điều hướng chính',
     })
-    expect(within(adminNav).getByText('Bảng điều khiển')).toBeInTheDocument()
     expect(
-      within(adminNav).getByText('Quản lý tuyển dụng'),
+      within(publicNav).queryByText('Quản lý tuyển dụng'),
+    ).not.toBeInTheDocument()
+    const dashboardCta = within(publicNav).getByRole('link', {
+      name: 'Vào bảng điều khiển',
+    })
+    expect(dashboardCta).toHaveAttribute('href', '/admin/dashboard')
+  })
+})
+
+describe('AppRouter layout integration', () => {
+  it('renders the public MainLayout (top navbar) on public routes', async () => {
+    renderAt('/')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('navigation', { name: 'Điều hướng chính' }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('navigation', { name: 'Điều hướng ứng dụng' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('renders the private AppShell (sidebar) on /candidate/portal', async () => {
+    setUser('candidate')
+
+    renderAt('/candidate/portal')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('navigation', { name: 'Điều hướng ứng dụng' }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('navigation', { name: 'Điều hướng chính' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('renders the private AppShell (sidebar) on /jobs/search', async () => {
+    setUser('candidate')
+
+    renderAt('/jobs/search')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('navigation', { name: 'Điều hướng ứng dụng' }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('renders the private AppShell (sidebar) on /candidate/recommendations', async () => {
+    setUser('candidate')
+
+    renderAt('/candidate/recommendations')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('navigation', { name: 'Điều hướng ứng dụng' }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('renders the private AppShell (sidebar) on /ai/chat', async () => {
+    setUser('candidate')
+
+    renderAt('/ai/chat')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('navigation', { name: 'Điều hướng ứng dụng' }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('renders the public MainLayout (top navbar) on /jobs/:id', async () => {
+    renderAt('/jobs/job-1')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Backend Engineer' }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.getByRole('navigation', { name: 'Điều hướng chính' }),
     ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('navigation', { name: 'Điều hướng ứng dụng' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('renders the private AppShell (sidebar) on /candidate/jobs', async () => {
+    setUser('candidate')
+
+    renderAt('/candidate/jobs')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('navigation', { name: 'Điều hướng ứng dụng' }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('navigation', { name: 'Điều hướng chính' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('renders the private AppShell (sidebar) on /candidate/jobs/:id', async () => {
+    setUser('candidate')
+
+    renderAt('/candidate/jobs/job-1')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Backend Engineer' }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.getByRole('navigation', { name: 'Điều hướng ứng dụng' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('navigation', { name: 'Điều hướng chính' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('opens /candidate/jobs/:id from a recommendation card inside AppShell', async () => {
+    setUser('candidate')
+    const recommendation: JobMatchRecommendation = {
+      job_id: 'job-1',
+      parsed_job: {
+        title: 'Recommended Role',
+        summary: 'Recommended by AI.',
+        required_skills: ['Python'],
+        preferred_skills: [],
+        minimum_years_experience: 2,
+        education_level: null,
+      },
+      match_result: {
+        overall_score: 85,
+        cosine_similarity: 0.9,
+        skill_coverage_score: 0.85,
+        experience_match_score: 0.8,
+        matching_skills: ['Python'],
+        skill_gap: ['Docker'],
+        match_reasons: ['Good fit'],
+      },
+    }
+    mockedGetJobRecommendations.mockResolvedValue([recommendation])
+
+    renderAt('/candidate/recommendations')
+
+    await waitFor(() => {
+      expect(screen.getByText('Recommended Role')).toBeInTheDocument()
+    })
+
+    fireEvent.click(
+      screen.getByRole('link', { name: /Xem chi tiết & Nộp đơn/i }),
+    )
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole('heading', { name: 'Backend Engineer' }),
+        ).toBeInTheDocument()
+      },
+      { timeout: 3000 },
+    )
+    expect(
+      screen.getByRole('navigation', { name: 'Điều hướng ứng dụng' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('navigation', { name: 'Điều hướng chính' }),
+    ).not.toBeInTheDocument()
+  })
+})
+
+describe('AppRouter candidate private jobs', () => {
+  it('redirects anonymous users from /candidate/jobs to login', async () => {
+    mockedGetCurrentUser.mockRejectedValue(new Error('401'))
+    localStorage.removeItem('ai_recruitment_token')
+
+    renderAt('/candidate/jobs')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Đăng nhập' }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('blocks a recruiter from /candidate/jobs', async () => {
+    setUser('recruiter')
+
+    renderAt('/candidate/jobs')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Việc làm' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('lets a candidate browse jobs at /candidate/jobs', async () => {
+    setUser('candidate')
+
+    renderAt('/candidate/jobs')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Việc làm' }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('navigates a candidate from /candidate/jobs to /candidate/jobs/:id', async () => {
+    setUser('candidate')
+
+    renderAt('/candidate/jobs')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Việc làm' }),
+      ).toBeInTheDocument()
+    })
+
+    const detailLink = await waitFor(() =>
+      screen.getByRole('link', { name: /Xem chi tiết/i }),
+    )
+    fireEvent.click(detailLink)
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole('heading', { name: 'Backend Engineer' }),
+        ).toBeInTheDocument()
+      },
+      { timeout: 3000 },
+    )
+    expect(
+      screen.getByRole('navigation', { name: 'Điều hướng ứng dụng' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('navigation', { name: 'Điều hướng chính' }),
+    ).not.toBeInTheDocument()
   })
 })

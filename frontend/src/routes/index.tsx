@@ -115,6 +115,22 @@ export function AppRouter() {
             }
           />
           <Route
+            path="/candidate/jobs"
+            element={
+              <ProtectedByRole allowedRoles={['candidate']}>
+                <JobsPage detailPath="/candidate/jobs" contained={false} />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/candidate/jobs/:id"
+            element={
+              <ProtectedByRole allowedRoles={['candidate']}>
+                <JobDetailPage backPath="/candidate/jobs" />
+              </ProtectedByRole>
+            }
+          />
+          <Route
             path="/recruiter/profile"
             element={
               <ProtectedByRole allowedRoles={['recruiter']}>

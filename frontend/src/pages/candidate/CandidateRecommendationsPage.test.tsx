@@ -130,6 +130,24 @@ describe('CandidateRecommendationsPage', () => {
     })
   })
 
+  it('links recommendation cards to the candidate job detail route', async () => {
+    mockedGetJobRecommendations.mockResolvedValue(mockRecommendations)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Senior Frontend Engineer'),
+      ).toBeInTheDocument()
+    })
+
+    const detailLinks = screen.getAllByRole('link', {
+      name: /Xem chi tiết & Nộp đơn/i,
+    })
+    expect(detailLinks[0]).toHaveAttribute('href', '/candidate/jobs/job-2')
+    expect(detailLinks[1]).toHaveAttribute('href', '/candidate/jobs/job-1')
+  })
+
   it('shows the empty state with a CV upload CTA', async () => {
     mockedGetJobRecommendations.mockResolvedValue([])
 

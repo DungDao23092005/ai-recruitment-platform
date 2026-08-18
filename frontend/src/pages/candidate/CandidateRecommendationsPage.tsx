@@ -83,6 +83,7 @@ export function CandidateRecommendationsPage() {
               <JobRecommendationCard
                 key={recommendation.job_id}
                 recommendation={recommendation}
+                detailPath="/candidate/jobs"
               />
             ))}
           </div>
