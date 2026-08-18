@@ -11,17 +11,36 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidTransitionException,
 )
-from app.models import User
+from app.models import Application, User
 from app.schemas.application import (
     ApplicationCreate,
     ApplicationRead,
     ApplicationStatusUpdate,
+    ApplicationWithJobRead,
 )
 from app.services.application_service import ApplicationService
 from app.services.job_service import JobService
 from app.services.user_service import UserService
 
 router = APIRouter()
+
+
+def to_application_with_job_read(
+    application: Application,
+) -> ApplicationWithJobRead:
+    return ApplicationWithJobRead(
+        id=application.id,
+        job_id=application.job_id,
+        job_title=application.job.title,
+        company_name=(
+            application.job.company.name
+            if application.job.company is not None
+            else None
+        ),
+        status=application.status,
+        created_at=application.created_at,
+        updated_at=application.updated_at,
+    )
 
 
 @router.post(
@@ -68,6 +87,27 @@ async def apply_job(
 
 
 @router.get(
+    "/mine",
+    response_model=list[ApplicationWithJobRead],
+)
+async def list_my_applications(
+    skip: int = 0,
+    limit: int = 20,
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+) -> list[ApplicationWithJobRead]:
+    applications = await ApplicationService(db).list_my_applications(
+        current_user=current_user,
+        skip=skip,
+        limit=limit,
+    )
+    return [
+        to_application_with_job_read(application)
+        for application in applications
+    ]
+
+
+@router.get(
     "",
     response_model=list[ApplicationRead],
 )
@@ -111,6 +151,34 @@ async def update_application_status(
             current_user=current_user,
             application_id=id,
             new_status=data.status,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except InvalidTransitionException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+    return ApplicationRead.model_validate(application)
+
+
+@router.patch(
+    "/mine/{application_id}/withdraw",
+    response_model=ApplicationRead,
+)
+async def withdraw_application(
+    application_id: uuid.UUID,
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+) -> ApplicationRead:
+    try:
+        application = await ApplicationService(db).withdraw_application(
+            current_user=current_user,
+            application_id=application_id,
         )
     except EntityNotFoundException as exc:
         raise HTTPException(

@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 from app.domain.enums import (
     ApplicationStatus,
@@ -176,3 +177,60 @@ def test_application_repository_get_by_candidate_and_job(session, run_async):
     assert missing is None
     assert len(by_candidate) == 1
     assert len(by_job) == 1
+
+
+def test_application_repository_list_by_candidate_paginated(session, run_async):
+    def make_app(candidate_id, job_id, created_at):
+        return Application(
+            candidate_id=candidate_id,
+            job_id=job_id,
+            created_at=created_at,
+        )
+
+    async def _run():
+        user = UserRepository(session, User)
+        created_user = await user.create(make_user("pag@example.com"))
+        candidate = CandidateProfile(user_id=created_user.id, full_name="Cand")
+        session.add(candidate)
+        await session.flush()
+        company = CompanyRepository(session, Company)
+        created_company = await company.create(
+            make_company(slug="co5", tax_code="t5")
+        )
+        job_repo = JobRepository(session, Job)
+        job_a = await job_repo.create(make_job(created_company.id, title="A"))
+        job_b = await job_repo.create(make_job(created_company.id, title="B"))
+        job_c = await job_repo.create(make_job(created_company.id, title="C"))
+        repo = ApplicationRepository(session, Application)
+        session.add_all(
+            [
+                make_app(
+                    candidate.id,
+                    job_a.id,
+                    datetime(2026, 1, 1, tzinfo=timezone.utc),
+                ),
+                make_app(
+                    candidate.id,
+                    job_b.id,
+                    datetime(2026, 1, 2, tzinfo=timezone.utc),
+                ),
+                make_app(
+                    candidate.id,
+                    job_c.id,
+                    datetime(2026, 1, 3, tzinfo=timezone.utc),
+                ),
+            ]
+        )
+        await session.commit()
+        first_page = await repo.list_by_candidate_paginated(
+            candidate.id, skip=0, limit=2
+        )
+        second_page = await repo.list_by_candidate_paginated(
+            candidate.id, skip=2, limit=2
+        )
+        return first_page, second_page
+
+    first_page, second_page = run_async(_run())
+    assert [app.job.title for app in first_page] == ["C", "B"]
+    assert [app.job.title for app in second_page] == ["A"]
+    assert first_page[0].job.company.name == "Acme"

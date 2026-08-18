@@ -22,3 +22,13 @@ export interface Application {
   updated_at: string
   candidate: CandidateProfileMinimal | null
 }
+
+export interface ApplicationWithJob {
+  id: string
+  job_id: string
+  job_title: string
+  company_name: string | null
+  status: ApplicationStatus
+  created_at: string
+  updated_at: string
+}

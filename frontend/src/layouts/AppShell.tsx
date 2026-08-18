@@ -4,6 +4,7 @@ import {
   Bot,
   Briefcase,
   Building,
+  ClipboardList,
   FileText,
   LayoutDashboard,
   LogOut,
@@ -48,6 +49,7 @@ function useAppNav(role?: UserRole): NavSection[] {
         title: 'Tìm việc',
         items: [
           { to: '/candidate/jobs', label: 'Việc làm', icon: Briefcase, end: true },
+          { to: '/candidate/applications', label: 'Đơn ứng tuyển', icon: ClipboardList },
           { to: '/jobs/search', label: 'Tìm việc AI', icon: Search },
           { to: '/candidate/recommendations', label: 'Gợi ý việc làm', icon: Sparkles },
         ],

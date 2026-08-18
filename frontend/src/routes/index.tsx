@@ -13,6 +13,7 @@ import { JobDetailPage } from '@/pages/jobs/JobDetailPage'
 import { SemanticJobSearchPage } from '@/pages/jobs/SemanticJobSearchPage'
 import { ResumeUploadPage } from '@/features/candidate/pages/ResumeUploadPage'
 import { CandidatePortalPage } from '@/features/candidate/pages/CandidatePortalPage'
+import { CandidateApplicationsPage } from '@/features/candidate/pages/CandidateApplicationsPage'
 import { CandidateRecommendationsPage } from '@/pages/candidate/CandidateRecommendationsPage'
 import { AdminDashboardPage } from '@/features/admin/pages/AdminDashboardPage'
 import { RecruiterPortalPage } from '@/features/recruiter/pages/RecruiterPortalPage'
@@ -111,6 +112,14 @@ export function AppRouter() {
             element={
               <ProtectedByRole allowedRoles={['candidate']}>
                 <CandidateRecommendationsPage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/candidate/applications"
+            element={
+              <ProtectedByRole allowedRoles={['candidate']}>
+                <CandidateApplicationsPage />
               </ProtectedByRole>
             }
           />

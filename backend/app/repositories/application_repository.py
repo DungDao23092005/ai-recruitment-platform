@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.models import Application
+from app.models import Application, Job
 from app.repositories.base import BaseRepository
 
 
@@ -27,6 +27,26 @@ class ApplicationRepository(BaseRepository[Application]):
         stmt = select(Application).where(
             Application.candidate_id == candidate_id,
             Application.is_deleted == False,  # noqa: E712
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_by_candidate_paginated(
+        self,
+        candidate_id: Any,
+        skip: int = 0,
+        limit: int = 20,
+    ) -> list[Application]:
+        stmt = (
+            select(Application)
+            .options(selectinload(Application.job).selectinload(Job.company))
+            .where(
+                Application.candidate_id == candidate_id,
+                Application.is_deleted == False,  # noqa: E712
+            )
+            .order_by(Application.created_at.desc(), Application.id.desc())
+            .offset(skip)
+            .limit(limit)
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())

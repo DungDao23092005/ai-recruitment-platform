@@ -94,7 +94,9 @@ vi.mock('@/api/ai', () => ({
 
 vi.mock('@/api/applications', () => ({
   applyJob: vi.fn(),
+  withdrawApplication: vi.fn(),
   getApplicationsByJob: vi.fn(),
+  getMyApplications: vi.fn(),
 }))
 
 vi.mock('@/api/companies', () => ({
@@ -137,6 +139,9 @@ const mockedGetSystemHealth = vi.mocked(adminApi.getSystemHealth)
 const mockedGetApplicationsByJob = vi.mocked(
   applicationsApi.getApplicationsByJob,
 )
+const mockedGetMyApplications = vi.mocked(
+  applicationsApi.getMyApplications,
+)
 const mockedGetCompanyById = vi.mocked(companiesApi.getCompanyById)
 const healthGet = vi.mocked(endpointsApi.default.health.get)
 
@@ -171,6 +176,7 @@ beforeEach(() => {
   mockedGetAdminStats.mockResolvedValue(mockStats)
   mockedGetSystemHealth.mockResolvedValue(mockHealth)
   mockedGetApplicationsByJob.mockResolvedValue([])
+  mockedGetMyApplications.mockResolvedValue([])
   mockedGetCompanyById.mockResolvedValue({
     id: 'company-1',
     name: 'Acme Corp',
@@ -677,6 +683,55 @@ describe('AppRouter candidate private jobs', () => {
       },
       { timeout: 3000 },
     )
+    expect(
+      screen.getByRole('navigation', { name: 'Điều hướng ứng dụng' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('navigation', { name: 'Điều hướng chính' }),
+    ).not.toBeInTheDocument()
+  })
+})
+
+describe('AppRouter candidate applications', () => {
+  it('redirects anonymous users from /candidate/applications to login', async () => {
+    mockedGetCurrentUser.mockRejectedValue(new Error('401'))
+    localStorage.removeItem('ai_recruitment_token')
+
+    renderAt('/candidate/applications')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Đăng nhập' }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('blocks a recruiter from /candidate/applications', async () => {
+    setUser('recruiter')
+
+    renderAt('/candidate/applications')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Đơn ứng tuyển của tôi' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('renders the candidate applications page inside AppShell', async () => {
+    setUser('candidate')
+    mockedGetMyApplications.mockResolvedValue([])
+
+    renderAt('/candidate/applications')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Đơn ứng tuyển của tôi' }),
+      ).toBeInTheDocument()
+    })
     expect(
       screen.getByRole('navigation', { name: 'Điều hướng ứng dụng' }),
     ).toBeInTheDocument()

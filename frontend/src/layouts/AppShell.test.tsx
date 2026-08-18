@@ -126,6 +126,18 @@ describe('AppShell sidebar', () => {
     )
   })
 
+  it('points candidate "Đơn ứng tuyển" at /candidate/applications', async () => {
+    renderShell('candidate', '/candidate/portal')
+
+    await waitFor(() => {
+      expect(screen.getByText('Tổng quan')).toBeInTheDocument()
+    })
+
+    expect(
+      screen.getByRole('link', { name: 'Đơn ứng tuyển' }),
+    ).toHaveAttribute('href', '/candidate/applications')
+  })
+
   it('keeps "Việc làm công khai" pointing at the public /jobs route', async () => {
     renderShell('candidate', '/candidate/portal')
 

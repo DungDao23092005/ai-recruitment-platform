@@ -222,6 +222,403 @@ class TestApplicationStatusUpdate:
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"]
 
+    def test_recruiter_cannot_set_withdrawn_returns_400(
+        self,
+        candidate_client,
+        recruiter_client,
+        run_async,
+        published_job,
+    ):
+        create_candidate_profile(candidate_client, run_async)
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications",
+                json={"job_id": published_job["id"]},
+            )
+        ).json()
+
+        resp = run_async(
+            recruiter_client.patch(
+                f"{API_V1}/applications/{application['id']}/status",
+                json={"status": "withdrawn"},
+            )
+        )
+
+        assert resp.status_code == 400
+        assert "not recruiter-managed" in resp.json()["detail"]
+
+    def test_recruiter_cannot_set_applied_returns_400(
+        self,
+        candidate_client,
+        recruiter_client,
+        run_async,
+        published_job,
+    ):
+        create_candidate_profile(candidate_client, run_async)
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications",
+                json={"job_id": published_job["id"]},
+            )
+        ).json()
+
+        resp = run_async(
+            recruiter_client.patch(
+                f"{API_V1}/applications/{application['id']}/status",
+                json={"status": "applied"},
+            )
+        )
+
+        assert resp.status_code == 400
+        assert "not recruiter-managed" in resp.json()["detail"]
+
+    def test_recruiter_full_chain_success(
+        self,
+        candidate_client,
+        recruiter_client,
+        run_async,
+        published_job,
+    ):
+        create_candidate_profile(candidate_client, run_async)
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications",
+                json={"job_id": published_job["id"]},
+            )
+        ).json()
+
+        chain = [
+            "under_review",
+            "shortlisted",
+            "interviewing",
+            "accepted",
+        ]
+        for target in chain:
+            resp = run_async(
+                recruiter_client.patch(
+                    f"{API_V1}/applications/{application['id']}/status",
+                    json={"status": target},
+                )
+            )
+            assert resp.status_code == 200, target
+            assert resp.json()["status"] == target
+
+
+class TestAdminStatusAuthorization:
+    """Admin may drive recruiter-managed transitions but never WITHDRAWN/APPLIED."""
+
+    @staticmethod
+    def create_application(recruiter_client, candidate_client, run_async):
+        company = run_async(
+            recruiter_client.post(f"{API_V1}/companies", json=COMPANY_BODY)
+        ).json()
+        job = run_async(
+            recruiter_client.post(
+                f"{API_V1}/jobs",
+                json={**JOB_BODY, "company_id": company["id"]},
+            )
+        ).json()
+        create_candidate_profile(candidate_client, run_async)
+        return run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job["id"]}
+            )
+        ).json()
+
+    def test_admin_cannot_set_withdrawn_returns_400(
+        self,
+        admin_client,
+        recruiter_client,
+        candidate_client,
+        run_async,
+    ):
+        application = self.create_application(
+            recruiter_client, candidate_client, run_async
+        )
+
+        resp = run_async(
+            admin_client.patch(
+                f"{API_V1}/applications/{application['id']}/status",
+                json={"status": "withdrawn"},
+            )
+        )
+
+        assert resp.status_code == 400
+        assert "not recruiter-managed" in resp.json()["detail"]
+
+    def test_admin_cannot_set_applied_returns_400(
+        self,
+        admin_client,
+        recruiter_client,
+        candidate_client,
+        run_async,
+    ):
+        application = self.create_application(
+            recruiter_client, candidate_client, run_async
+        )
+
+        resp = run_async(
+            admin_client.patch(
+                f"{API_V1}/applications/{application['id']}/status",
+                json={"status": "applied"},
+            )
+        )
+
+        assert resp.status_code == 400
+        assert "not recruiter-managed" in resp.json()["detail"]
+
+
+class TestCandidateWithdraw:
+    """PATCH /applications/mine/{id}/withdraw — candidate-owned withdrawal only."""
+
+    @staticmethod
+    def create_application(recruiter_client, candidate_client, run_async):
+        company = run_async(
+            recruiter_client.post(f"{API_V1}/companies", json=COMPANY_BODY)
+        ).json()
+        job = run_async(
+            recruiter_client.post(
+                f"{API_V1}/jobs",
+                json={**JOB_BODY, "company_id": company["id"]},
+            )
+        ).json()
+        create_candidate_profile(candidate_client, run_async)
+        return run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job["id"]}
+            )
+        ).json()
+
+    @staticmethod
+    def advance_to(recruiter_client, run_async, application_id, target):
+        chain = {
+            "under_review": ["under_review"],
+            "shortlisted": ["under_review", "shortlisted"],
+            "interviewing": ["under_review", "shortlisted", "interviewing"],
+            "accepted": [
+                "under_review",
+                "shortlisted",
+                "interviewing",
+                "accepted",
+            ],
+            "rejected": [
+                "under_review",
+                "shortlisted",
+                "interviewing",
+                "rejected",
+            ],
+        }[target]
+        for step in chain:
+            resp = run_async(
+                recruiter_client.patch(
+                    f"{API_V1}/applications/{application_id}/status",
+                    json={"status": step},
+                )
+            )
+            assert resp.status_code == 200, step
+
+    def test_candidate_withdraws_own_application(
+        self,
+        candidate_client,
+        recruiter_client,
+        run_async,
+    ):
+        application = self.create_application(
+            recruiter_client, candidate_client, run_async
+        )
+
+        resp = run_async(
+            candidate_client.patch(
+                f"{API_V1}/applications/mine/{application['id']}/withdraw"
+            )
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "withdrawn"
+
+    def test_candidate_withdraw_other_candidate_application_returns_404(
+        self,
+        candidate_client,
+        candidate_b_client,
+        recruiter_client,
+        run_async,
+    ):
+        application = self.create_application(
+            recruiter_client, candidate_client, run_async
+        )
+
+        resp = run_async(
+            candidate_b_client.patch(
+                f"{API_V1}/applications/mine/{application['id']}/withdraw"
+            )
+        )
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == (
+            f"Application {application['id']} not found"
+        )
+
+    def test_withdraw_nonexistent_application_returns_404(
+        self, candidate_client, run_async
+    ):
+        create_candidate_profile(candidate_client, run_async)
+
+        resp = run_async(
+            candidate_client.patch(
+                f"{API_V1}/applications/mine/{uuid.uuid4()}/withdraw"
+            )
+        )
+
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"]
+
+    def test_candidate_without_profile_withdraw_returns_404(
+        self, candidate_client, run_async
+    ):
+        resp = run_async(
+            candidate_client.patch(
+                f"{API_V1}/applications/mine/{uuid.uuid4()}/withdraw"
+            )
+        )
+
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"]
+
+    def test_recruiter_cannot_withdraw_returns_403(
+        self,
+        recruiter_client,
+        candidate_client,
+        run_async,
+    ):
+        application = self.create_application(
+            recruiter_client, candidate_client, run_async
+        )
+
+        resp = run_async(
+            recruiter_client.patch(
+                f"{API_V1}/applications/mine/{application['id']}/withdraw"
+            )
+        )
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Not enough permissions"
+
+    def test_anonymous_withdraw_returns_401(self, client, run_async):
+        resp = run_async(
+            client.patch(
+                f"{API_V1}/applications/mine/{uuid.uuid4()}/withdraw"
+            )
+        )
+
+        assert resp.status_code == 401
+
+    def test_withdraw_accepted_application_returns_400(
+        self,
+        candidate_client,
+        recruiter_client,
+        run_async,
+    ):
+        application = self.create_application(
+            recruiter_client, candidate_client, run_async
+        )
+        self.advance_to(
+            recruiter_client, run_async, application["id"], "accepted"
+        )
+
+        resp = run_async(
+            candidate_client.patch(
+                f"{API_V1}/applications/mine/{application['id']}/withdraw"
+            )
+        )
+
+        assert resp.status_code == 400
+        assert "Invalid Application status transition" in resp.json()["detail"]
+
+    def test_withdraw_rejected_application_returns_400(
+        self,
+        candidate_client,
+        recruiter_client,
+        run_async,
+    ):
+        application = self.create_application(
+            recruiter_client, candidate_client, run_async
+        )
+        self.advance_to(
+            recruiter_client, run_async, application["id"], "rejected"
+        )
+
+        resp = run_async(
+            candidate_client.patch(
+                f"{API_V1}/applications/mine/{application['id']}/withdraw"
+            )
+        )
+
+        assert resp.status_code == 400
+        assert "Invalid Application status transition" in resp.json()["detail"]
+
+    def test_withdraw_already_withdrawn_returns_400(
+        self,
+        candidate_client,
+        recruiter_client,
+        run_async,
+    ):
+        application = self.create_application(
+            recruiter_client, candidate_client, run_async
+        )
+        first = run_async(
+            candidate_client.patch(
+                f"{API_V1}/applications/mine/{application['id']}/withdraw"
+            )
+        )
+        assert first.status_code == 200
+
+        second = run_async(
+            candidate_client.patch(
+                f"{API_V1}/applications/mine/{application['id']}/withdraw"
+            )
+        )
+
+        assert second.status_code == 400
+        assert "Invalid Application status transition" in second.json()["detail"]
+
+    def test_withdrawn_application_reflected_in_recruiter_listing(
+        self,
+        candidate_client,
+        recruiter_client,
+        run_async,
+    ):
+        company = run_async(
+            recruiter_client.post(f"{API_V1}/companies", json=COMPANY_BODY)
+        ).json()
+        job = run_async(
+            recruiter_client.post(
+                f"{API_V1}/jobs",
+                json={**JOB_BODY, "company_id": company["id"]},
+            )
+        ).json()
+        create_candidate_profile(candidate_client, run_async)
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job["id"]}
+            )
+        ).json()
+
+        withdraw = run_async(
+            candidate_client.patch(
+                f"{API_V1}/applications/mine/{application['id']}/withdraw"
+            )
+        )
+        assert withdraw.status_code == 200
+
+        resp = run_async(
+            recruiter_client.get(
+                f"{API_V1}/applications", params={"job_id": job["id"]}
+            )
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()[0]["status"] == "withdrawn"
+
 
 class TestApplicationStatusOwnership:
     """PATCH /applications/{id}/status — recruiter must own the application's job.
@@ -649,3 +1046,169 @@ class TestApplicationCandidateEnrichment:
         candidate = resp.json()[0]["candidate"]
         assert candidate["full_name"] is None
         assert candidate["title"] is None
+
+
+class TestGetMyApplications:
+    """GET /applications/mine — candidate-owned application history."""
+
+    @staticmethod
+    def create_job(recruiter_client, run_async, title, suffix=""):
+        company = run_async(
+            recruiter_client.post(
+                f"{API_V1}/companies",
+                json={
+                    **COMPANY_BODY,
+                    "slug": f"acme-corp-{suffix or uuid.uuid4().hex[:8]}",
+                    "tax_code": f"12{suffix or uuid.uuid4().hex[:8]}",
+                },
+            )
+        ).json()
+        job = run_async(
+            recruiter_client.post(
+                f"{API_V1}/jobs",
+                json={**JOB_BODY, "company_id": company["id"], "title": title},
+            )
+        ).json()
+        return job
+
+    def test_anonymous_returns_401(self, client, run_async):
+        resp = run_async(client.get(f"{API_V1}/applications/mine"))
+
+        assert resp.status_code == 401
+
+    def test_recruiter_returns_403(self, recruiter_client, run_async):
+        resp = run_async(recruiter_client.get(f"{API_V1}/applications/mine"))
+
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == "Not enough permissions"
+
+    def test_admin_allowed_by_existing_architecture(
+        self, admin_client, run_async
+    ):
+        resp = run_async(admin_client.get(f"{API_V1}/applications/mine"))
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_empty_list_when_no_applications(self, candidate_client, run_async):
+        create_candidate_profile(candidate_client, run_async)
+
+        resp = run_async(candidate_client.get(f"{API_V1}/applications/mine"))
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_candidate_without_profile_gets_empty_list(
+        self, candidate_client, run_async
+    ):
+        resp = run_async(candidate_client.get(f"{API_V1}/applications/mine"))
+
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_candidate_sees_only_own_applications(
+        self,
+        candidate_client,
+        candidate_b_client,
+        recruiter_client,
+        run_async,
+    ):
+        create_candidate_profile(candidate_client, run_async)
+        create_candidate_profile(candidate_b_client, run_async)
+        job = self.create_job(recruiter_client, run_async, "Owned Job")
+        run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job["id"]}
+            )
+        )
+
+        mine = run_async(candidate_client.get(f"{API_V1}/applications/mine"))
+        theirs = run_async(
+            candidate_b_client.get(f"{API_V1}/applications/mine")
+        )
+
+        assert mine.status_code == 200
+        assert len(mine.json()) == 1
+        assert theirs.status_code == 200
+        assert theirs.json() == []
+
+    def test_response_contains_job_and_company_details(
+        self, candidate_client, recruiter_client, run_async
+    ):
+        create_candidate_profile(candidate_client, run_async)
+        job = self.create_job(recruiter_client, run_async, "Backend Engineer")
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job["id"]}
+            )
+        ).json()
+
+        resp = run_async(candidate_client.get(f"{API_V1}/applications/mine"))
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body) == 1
+        app = body[0]
+        assert app["id"] == application["id"]
+        assert app["job_id"] == job["id"]
+        assert app["job_title"] == "Backend Engineer"
+        assert app["company_name"] == COMPANY_BODY["name"]
+        assert app["status"] == "applied"
+        assert app["created_at"]
+        assert app["updated_at"]
+
+    def test_newest_first_ordering(
+        self, candidate_client, recruiter_client, run_async
+    ):
+        create_candidate_profile(candidate_client, run_async)
+        job_a = self.create_job(recruiter_client, run_async, "Job A")
+        job_b = self.create_job(recruiter_client, run_async, "Job B")
+        run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job_a["id"]}
+            )
+        )
+        run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job_b["id"]}
+            )
+        )
+
+        resp = run_async(candidate_client.get(f"{API_V1}/applications/mine"))
+
+        assert resp.status_code == 200
+        titles = [app["job_title"] for app in resp.json()]
+        assert titles == ["Job B", "Job A"]
+
+    def test_pagination_skip_limit(
+        self, candidate_client, recruiter_client, run_async
+    ):
+        create_candidate_profile(candidate_client, run_async)
+        jobs = [
+            self.create_job(recruiter_client, run_async, f"Job {i}")
+            for i in range(3)
+        ]
+        for job in jobs:
+            run_async(
+                candidate_client.post(
+                    f"{API_V1}/applications", json={"job_id": job["id"]}
+                )
+            )
+
+        first = run_async(
+            candidate_client.get(
+                f"{API_V1}/applications/mine", params={"skip": 0, "limit": 2}
+            )
+        )
+        second = run_async(
+            candidate_client.get(
+                f"{API_V1}/applications/mine", params={"skip": 2, "limit": 2}
+            )
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert len(first.json()) == 2
+        assert len(second.json()) == 1
+        titles = [app["job_title"] for app in first.json() + second.json()]
+        assert titles == ["Job 2", "Job 1", "Job 0"]

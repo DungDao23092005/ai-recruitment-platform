@@ -1,5 +1,5 @@
 import apiClient from '@/api/client'
-import type { Application } from '@/types/application'
+import type { Application, ApplicationWithJob } from '@/types/application'
 
 export async function applyJob(jobId: string): Promise<Application> {
   return apiClient.post<Application, Application>('/applications', {
@@ -21,4 +21,18 @@ export async function getApplicationsByJob(
   return apiClient.get<Application[], Application[]>('/applications', {
     params: { job_id: jobId },
   })
+}
+
+export interface MyApplicationsParams {
+  skip?: number
+  limit?: number
+}
+
+export async function getMyApplications(
+  params: MyApplicationsParams = {},
+): Promise<ApplicationWithJob[]> {
+  return apiClient.get<ApplicationWithJob[], ApplicationWithJob[]>(
+    '/applications/mine',
+    { params },
+  )
 }

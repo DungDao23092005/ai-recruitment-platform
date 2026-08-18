@@ -32,3 +32,15 @@ class ApplicationRead(BaseModel):
 
 class ApplicationStatusUpdate(BaseModel):
     status: ApplicationStatus
+
+
+class ApplicationWithJobRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    job_id: uuid.UUID
+    job_title: str
+    company_name: str | None = None
+    status: ApplicationStatus
+    created_at: datetime
+    updated_at: datetime
