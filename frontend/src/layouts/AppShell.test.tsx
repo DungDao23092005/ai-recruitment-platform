@@ -67,6 +67,7 @@ describe('AppShell sidebar', () => {
     expect(within(nav).getByText('Trợ lý AI')).toBeInTheDocument()
     expect(within(nav).getByText('Upload CV')).toBeInTheDocument()
     expect(within(nav).getByText('Hồ sơ cá nhân')).toBeInTheDocument()
+    expect(within(nav).queryByText('Quản lý người dùng')).not.toBeInTheDocument()
     expect(screen.getByText('App Content')).toBeInTheDocument()
   })
 
@@ -108,9 +109,22 @@ describe('AppShell sidebar', () => {
 
     const nav = getAppNav()
     expect(within(nav).getByText('Tổng quan')).toBeInTheDocument()
+    expect(within(nav).getByText('Quản lý người dùng')).toBeInTheDocument()
     expect(within(nav).getByText('Quản lý tuyển dụng')).toBeInTheDocument()
     expect(within(nav).getByText('Tin tuyển dụng')).toBeInTheDocument()
     expect(within(nav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
+  })
+
+  it('points admin "Quản lý người dùng" at /admin/users', async () => {
+    renderShell('admin', '/admin/dashboard')
+
+    await waitFor(() => {
+      expect(screen.getByText('Tổng quan')).toBeInTheDocument()
+    })
+
+    expect(
+      screen.getByRole('link', { name: 'Quản lý người dùng' }),
+    ).toHaveAttribute('href', '/admin/users')
   })
 
   it('points candidate "Việc làm" at the private candidate jobs route', async () => {

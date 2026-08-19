@@ -91,7 +91,12 @@ function useAppNav(role?: UserRole): NavSection[] {
     ]
   }
   return [
-    { items: [{ to: '/admin/dashboard', label: 'Tổng quan', icon: LayoutDashboard }] },
+    {
+      items: [
+        { to: '/admin/dashboard', label: 'Tổng quan', icon: LayoutDashboard },
+        { to: '/admin/users', label: 'Quản lý người dùng', icon: Users },
+      ],
+    },
     {
       title: 'Tuyển dụng',
       items: [

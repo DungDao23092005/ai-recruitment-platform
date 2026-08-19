@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import uuid
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import EntityNotFoundException
 from app.domain.enums import ApplicationStatus, UserRole
 from app.models import Application, Company, Job, User
 from app.repositories import (
@@ -67,3 +70,42 @@ class AdminService:
                 withdrawn=status_counts[ApplicationStatus.WITHDRAWN],
             ),
         )
+
+    async def list_users(
+        self,
+        skip: int,
+        limit: int,
+        search: str | None = None,
+        role: UserRole | None = None,
+    ) -> tuple[list[User], int]:
+        """Return a page of users (including deactivated ones) and the total."""
+        return await self.users.list_admin_users(
+            skip=skip,
+            limit=limit,
+            search=search,
+            role=role,
+        )
+
+    async def get_user(self, user_id: uuid.UUID) -> User:
+        """Return a user for admin views, including deactivated users."""
+        user = await self.users.get_admin_user(user_id)
+        if user is None:
+            raise EntityNotFoundException(f"User {user_id} not found")
+        return user
+
+    async def deactivate_user(self, user_id: uuid.UUID) -> User:
+        """Soft-delete a user account.
+
+        Deactivated users are immediately rejected by the existing auth flow
+        (``get_current_user`` resolves them through ``get_by_id``, which
+        filters ``is_deleted == False``), and their data is preserved. Users
+        that are already deactivated or unknown resolve to ``None`` here and
+        raise a not-found error, consistent with repository semantics.
+        """
+        user = await self.users.get_by_id(user_id)
+        if user is None:
+            raise EntityNotFoundException(f"User {user_id} not found")
+        await self.users.soft_delete(user)
+        await self.session.commit()
+        await self.session.refresh(user)
+        return user

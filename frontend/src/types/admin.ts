@@ -18,3 +18,27 @@ export interface AdminStats {
   total_applications: number
   applications_by_status: ApplicationStatusCounts
 }
+
+export interface AdminUser {
+  id: string
+  email: string
+  role: 'admin' | 'candidate' | 'recruiter'
+  is_active: boolean
+  is_deleted: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface AdminUserList {
+  items: AdminUser[]
+  total: number
+  skip: number
+  limit: number
+}
+
+export interface AdminUserListParams {
+  skip: number
+  limit: number
+  search?: string
+  role?: 'admin' | 'candidate' | 'recruiter'
+}

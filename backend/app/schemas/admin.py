@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+import uuid
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, EmailStr
+
+from app.domain.enums import UserRole
 
 
 class ApplicationStatusCounts(BaseModel):
@@ -22,3 +27,29 @@ class AdminStatsResponse(BaseModel):
     total_jobs: int
     total_applications: int
     applications_by_status: ApplicationStatusCounts
+
+
+class AdminUserRead(BaseModel):
+    """Admin-facing view of a user.
+
+    Deliberately excludes ``password_hash`` and any other secret fields.
+    ``is_deleted`` is exposed so admins can distinguish active users from
+    deactivated (soft-deleted) ones.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    email: EmailStr
+    role: UserRole
+    is_active: bool
+    is_deleted: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminUserListResponse(BaseModel):
+    items: list[AdminUserRead]
+    total: int
+    skip: int
+    limit: int

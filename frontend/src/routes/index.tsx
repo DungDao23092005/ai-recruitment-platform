@@ -16,6 +16,7 @@ import { CandidatePortalPage } from '@/features/candidate/pages/CandidatePortalP
 import { CandidateApplicationsPage } from '@/features/candidate/pages/CandidateApplicationsPage'
 import { CandidateRecommendationsPage } from '@/pages/candidate/CandidateRecommendationsPage'
 import { AdminDashboardPage } from '@/features/admin/pages/AdminDashboardPage'
+import { AdminUsersPage } from '@/features/admin/pages/AdminUsersPage'
 import { RecruiterPortalPage } from '@/features/recruiter/pages/RecruiterPortalPage'
 import { RecruiterCompanyPage } from '@/features/recruiter/pages/RecruiterCompanyPage'
 import { RecruiterJobsPage } from '@/features/recruiter/pages/RecruiterJobsPage'
@@ -225,6 +226,14 @@ export function AppRouter() {
             element={
               <RoleGuard allowedRoles={['admin']}>
                 <AdminDashboardPage />
+              </RoleGuard>
+            }
+          />
+          <Route
+            path="/admin/users"
+            element={
+              <RoleGuard allowedRoles={['admin']}>
+                <AdminUsersPage />
               </RoleGuard>
             }
           />
