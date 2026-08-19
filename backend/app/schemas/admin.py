@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr
 
-from app.domain.enums import UserRole
+from app.domain.enums import CompanySize, UserRole
 
 
 class ApplicationStatusCounts(BaseModel):
@@ -50,6 +50,33 @@ class AdminUserRead(BaseModel):
 
 class AdminUserListResponse(BaseModel):
     items: list[AdminUserRead]
+    total: int
+    skip: int
+    limit: int
+
+
+class AdminCompanyRead(BaseModel):
+    """Admin-facing view of a company.
+
+    ``is_deleted`` is exposed so admins can distinguish active companies
+    from locked (soft-deleted) ones. No company status field exists by
+    design; the active/locked state is derived from ``is_deleted``.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    slug: str
+    tax_code: str
+    size: CompanySize
+    is_deleted: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminCompanyListResponse(BaseModel):
+    items: list[AdminCompanyRead]
     total: int
     skip: int
     limit: int

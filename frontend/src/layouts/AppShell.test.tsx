@@ -110,6 +110,7 @@ describe('AppShell sidebar', () => {
     const nav = getAppNav()
     expect(within(nav).getByText('Tổng quan')).toBeInTheDocument()
     expect(within(nav).getByText('Quản lý người dùng')).toBeInTheDocument()
+    expect(within(nav).getByText('Quản lý công ty')).toBeInTheDocument()
     expect(within(nav).getByText('Quản lý tuyển dụng')).toBeInTheDocument()
     expect(within(nav).getByText('Tin tuyển dụng')).toBeInTheDocument()
     expect(within(nav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
@@ -125,6 +126,18 @@ describe('AppShell sidebar', () => {
     expect(
       screen.getByRole('link', { name: 'Quản lý người dùng' }),
     ).toHaveAttribute('href', '/admin/users')
+  })
+
+  it('points admin "Quản lý công ty" at /admin/companies', async () => {
+    renderShell('admin', '/admin/dashboard')
+
+    await waitFor(() => {
+      expect(screen.getByText('Tổng quan')).toBeInTheDocument()
+    })
+
+    expect(
+      screen.getByRole('link', { name: 'Quản lý công ty' }),
+    ).toHaveAttribute('href', '/admin/companies')
   })
 
   it('points candidate "Việc làm" at the private candidate jobs route', async () => {

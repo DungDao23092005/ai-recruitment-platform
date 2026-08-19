@@ -110,6 +110,8 @@ vi.mock('@/api/admin', () => ({
   getAdminUsers: vi.fn(),
   getAdminUserById: vi.fn(),
   deactivateAdminUser: vi.fn(),
+  getAdminCompanies: vi.fn(),
+  deleteAdminCompany: vi.fn(),
 }))
 
 vi.mock('@/api/endpoints', () => {
@@ -140,6 +142,7 @@ const mockedGenerateInterviewQuestions = vi.mocked(
 const mockedGetAdminStats = vi.mocked(adminApi.getAdminStats)
 const mockedGetSystemHealth = vi.mocked(adminApi.getSystemHealth)
 const mockedGetAdminUsers = vi.mocked(adminApi.getAdminUsers)
+const mockedGetAdminCompanies = vi.mocked(adminApi.getAdminCompanies)
 const mockedGetApplicationsByJob = vi.mocked(
   applicationsApi.getApplicationsByJob,
 )
@@ -180,6 +183,12 @@ beforeEach(() => {
   mockedGetAdminStats.mockResolvedValue(mockStats)
   mockedGetSystemHealth.mockResolvedValue(mockHealth)
   mockedGetAdminUsers.mockResolvedValue({
+    items: [],
+    total: 0,
+    skip: 0,
+    limit: 10,
+  })
+  mockedGetAdminCompanies.mockResolvedValue({
     items: [],
     total: 0,
     skip: 0,
@@ -370,6 +379,60 @@ describe('AppRouter role guards', () => {
         screen.getByRole('heading', { name: 'Quản lý người dùng', level: 1 }),
       ).toBeInTheDocument()
     })
+  })
+
+  it('redirects anonymous users from /admin/companies to login', async () => {
+    mockedGetCurrentUser.mockRejectedValue(new Error('401'))
+    localStorage.removeItem('ai_recruitment_token')
+
+    renderAt('/admin/companies')
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Đăng nhập' })).toBeInTheDocument()
+    })
+  })
+
+  it('blocks a candidate from /admin/companies', async () => {
+    setUser('candidate')
+
+    renderAt('/admin/companies')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Quản lý công ty' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('blocks a recruiter from /admin/companies', async () => {
+    setUser('recruiter')
+
+    renderAt('/admin/companies')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Quản lý công ty' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('lets an admin open the company management page', async () => {
+    setUser('admin')
+
+    renderAt('/admin/companies')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Quản lý công ty', level: 1 }),
+      ).toBeInTheDocument()
+    })
+    expect(mockedGetAdminCompanies).toHaveBeenCalled()
   })
 })
 

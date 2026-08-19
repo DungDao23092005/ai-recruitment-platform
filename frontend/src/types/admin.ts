@@ -42,3 +42,29 @@ export interface AdminUserListParams {
   search?: string
   role?: 'admin' | 'candidate' | 'recruiter'
 }
+
+export type AdminCompanySize = 'seed' | 'startup' | 'sme' | 'enterprise'
+
+export interface AdminCompany {
+  id: string
+  name: string
+  slug: string
+  tax_code: string
+  size: AdminCompanySize
+  is_deleted: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface AdminCompanyList {
+  items: AdminCompany[]
+  total: number
+  skip: number
+  limit: number
+}
+
+export interface AdminCompanyListParams {
+  skip: number
+  limit: number
+  search?: string
+}

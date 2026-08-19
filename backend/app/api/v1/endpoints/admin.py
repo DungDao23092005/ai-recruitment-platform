@@ -10,6 +10,8 @@ from app.core.exceptions import EntityNotFoundException
 from app.domain.enums import UserRole
 from app.models import User
 from app.schemas.admin import (
+    AdminCompanyListResponse,
+    AdminCompanyRead,
     AdminStatsResponse,
     AdminUserListResponse,
     AdminUserRead,
@@ -48,6 +50,27 @@ async def list_admin_users(
     )
     return AdminUserListResponse(
         items=[AdminUserRead.model_validate(user) for user in items],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
+
+
+@router.get("/companies", response_model=AdminCompanyListResponse)
+async def list_admin_companies(
+    current_user: User = Depends(require_admin),
+    service: AdminService = Depends(_get_admin_service),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=10, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=100),
+) -> AdminCompanyListResponse:
+    items, total = await service.list_companies(
+        skip=skip,
+        limit=limit,
+        search=search,
+    )
+    return AdminCompanyListResponse(
+        items=[AdminCompanyRead.model_validate(company) for company in items],
         total=total,
         skip=skip,
         limit=limit,

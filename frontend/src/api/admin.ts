@@ -1,6 +1,8 @@
 import apiClient from '@/api/client'
 import endpoints, { type HealthStatus } from '@/api/endpoints'
 import type {
+  AdminCompanyList,
+  AdminCompanyListParams,
   AdminStats,
   AdminUser,
   AdminUserList,
@@ -27,4 +29,16 @@ export async function getAdminUserById(id: string): Promise<AdminUser> {
 
 export async function deactivateAdminUser(id: string): Promise<AdminUser> {
   return apiClient.patch<AdminUser, AdminUser>(`/admin/users/${id}/deactivate`)
+}
+
+export async function getAdminCompanies(
+  params: AdminCompanyListParams,
+): Promise<AdminCompanyList> {
+  return apiClient.get<AdminCompanyList, AdminCompanyList>('/admin/companies', {
+    params,
+  })
+}
+
+export async function deleteAdminCompany(id: string): Promise<void> {
+  await apiClient.delete(`/companies/${id}`)
 }

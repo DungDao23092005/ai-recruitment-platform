@@ -109,3 +109,23 @@ class AdminService:
         await self.session.commit()
         await self.session.refresh(user)
         return user
+
+    async def list_companies(
+        self,
+        skip: int,
+        limit: int,
+        search: str | None = None,
+    ) -> tuple[list[Company], int]:
+        """Return a page of companies (including locked ones) and the total."""
+        return await self.companies.list_admin_companies(
+            skip=skip,
+            limit=limit,
+            search=search,
+        )
+
+    async def get_company(self, company_id: uuid.UUID) -> Company:
+        """Return a company for admin views, including locked companies."""
+        company = await self.companies.get_admin_company(company_id)
+        if company is None:
+            raise EntityNotFoundException(f"Company {company_id} not found")
+        return company

@@ -5,8 +5,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, require_recruiter
-from app.core.exceptions import ConflictException
+from app.api.deps import get_db, require_admin, require_recruiter
+from app.core.exceptions import AIError, ConflictException, EntityNotFoundException
 from app.domain.enums import UserRole
 from app.models import User
 from app.schemas.company import CompanyCreate, CompanyRead
@@ -14,6 +14,10 @@ from app.services.company_service import CompanyService
 from app.services.user_service import UserService
 
 router = APIRouter()
+
+
+def _get_company_service(db: AsyncSession = Depends(get_db)) -> CompanyService:
+    return CompanyService(db)
 
 
 @router.post(
@@ -81,3 +85,29 @@ async def get_company(
             detail=f"Company {id} not found",
         )
     return CompanyRead.model_validate(company)
+
+
+@router.delete(
+    "/{company_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_company(
+    company_id: uuid.UUID,
+    current_user: User = Depends(require_admin),
+    service: CompanyService = Depends(_get_company_service),
+) -> None:
+    """Admin-only company lock: soft-delete the company and cascade-delete
+    its active jobs (soft delete + Qdrant vector removal). Applications are
+    preserved."""
+    try:
+        await service.delete_company(current_user, company_id)
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except AIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
