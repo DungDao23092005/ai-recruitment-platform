@@ -175,4 +175,65 @@ describe('JobForm', () => {
 
     expect(options).toEqual(['draft', 'published'])
   })
+
+  it('hides the status select and shows save button in edit mode', () => {
+    render(<JobForm companyId="company-1" job={mockJob} />)
+
+    expect(
+      screen.queryByLabelText('Trạng thái'),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /Lưu thay đổi/i }),
+    ).toBeInTheDocument()
+  })
+
+  it('submits an update via PATCH to the recruiter job endpoint', async () => {
+    const updated: Job = { ...mockJob, title: 'Staff Frontend Engineer' }
+    const mockedPatch = vi.mocked(apiClient.patch)
+    mockedPatch.mockResolvedValue(updated as never)
+
+    render(<JobForm companyId="company-1" job={mockJob} />)
+
+    fireEvent.change(screen.getByLabelText('Tiêu đề công việc'), {
+      target: { value: 'Staff Frontend Engineer' },
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Lưu thay đổi/i }),
+    )
+
+    await waitFor(() => {
+      expect(mockedPatch).toHaveBeenCalledWith('/jobs/mine/job-1', {
+        title: 'Staff Frontend Engineer',
+        description: 'Build modern web applications with React.',
+        job_type: 'full_time',
+        workplace_type: 'remote',
+        location: 'Ho Chi Minh City',
+      })
+      expect(
+        screen.getByText('Cập nhật tin tuyển dụng thành công.'),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('calls onSaved with the updated job', async () => {
+    const updated: Job = { ...mockJob, title: 'Staff Frontend Engineer' }
+    const mockedPatch = vi.mocked(apiClient.patch)
+    mockedPatch.mockResolvedValue(updated as never)
+    const onSaved = vi.fn()
+
+    render(<JobForm companyId="company-1" job={mockJob} onSaved={onSaved} />)
+
+    fireEvent.change(screen.getByLabelText('Tiêu đề công việc'), {
+      target: { value: 'Staff Frontend Engineer' },
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Lưu thay đổi/i }),
+    )
+
+    await waitFor(() => {
+      expect(onSaved).toHaveBeenCalledWith(updated)
+    })
+  })
 })

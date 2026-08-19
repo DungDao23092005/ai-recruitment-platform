@@ -39,3 +39,7 @@ class JobUpdate(BaseModel):
     job_type: JobType | None = None
     workplace_type: WorkplaceType | None = None
     location: str | None = None
+
+
+class JobStatusUpdate(BaseModel):
+    status: JobStatus

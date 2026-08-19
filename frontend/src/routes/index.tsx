@@ -20,6 +20,7 @@ import { RecruiterPortalPage } from '@/features/recruiter/pages/RecruiterPortalP
 import { RecruiterCompanyPage } from '@/features/recruiter/pages/RecruiterCompanyPage'
 import { RecruiterJobsPage } from '@/features/recruiter/pages/RecruiterJobsPage'
 import { JobCreatePage } from '@/features/recruiter/pages/JobCreatePage'
+import { RecruiterJobEditPage } from '@/features/recruiter/pages/RecruiterJobEditPage'
 import { JobApplicantsPage } from '@/features/recruiter/pages/JobApplicantsPage'
 import { JobRecommendationsPage } from '@/features/recruiter/pages/JobRecommendationsPage'
 import { InterviewGeneratorPage } from '@/features/recruiter/pages/InterviewGeneratorPage'
@@ -176,6 +177,14 @@ export function AppRouter() {
             element={
               <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
                 <JobCreatePage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/recruiter/jobs/:id/edit"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                <RecruiterJobEditPage />
               </ProtectedByRole>
             }
           />

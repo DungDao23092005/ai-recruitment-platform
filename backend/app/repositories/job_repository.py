@@ -81,3 +81,15 @@ class JobRepository(BaseRepository[Job]):
         )
         result = await self.session.execute(stmt)
         return result.scalars().unique().first()
+
+    async def get_job_with_company_and_skills(self, job_id: Any) -> Job | None:
+        stmt = (
+            select(Job)
+            .options(joinedload(Job.company), joinedload(Job.skills))
+            .where(
+                Job.id == job_id,
+                Job.is_deleted == False,  # noqa: E712
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalars().unique().first()

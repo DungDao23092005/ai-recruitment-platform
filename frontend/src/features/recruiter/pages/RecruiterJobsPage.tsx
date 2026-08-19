@@ -93,7 +93,7 @@ export function RecruiterJobsPage() {
         ) : (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {state.jobs.map((job) => (
-              <RecruiterJobCard key={job.id} job={job} />
+              <RecruiterJobCard key={job.id} job={job} onMutated={load} />
             ))}
           </div>
         )

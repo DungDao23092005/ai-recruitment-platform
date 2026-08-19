@@ -8,15 +8,37 @@ from app.core.exceptions import EntityNotFoundException, InvalidTransitionExcept
 from app.domain.enums import JobStatus, UserRole
 from app.models import Company, Job, User
 from app.repositories import CompanyRepository, JobRepository
-from app.schemas.job import JobCreate
+from app.schemas.job import JobCreate, JobUpdate
 from app.services.user_service import UserService
+
+JOB_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
+    JobStatus.DRAFT: {JobStatus.PUBLISHED},
+    JobStatus.PUBLISHED: {JobStatus.CLOSED},
+    JobStatus.CLOSED: {JobStatus.PUBLISHED},
+    JobStatus.EXPIRED: set(),
+}
 
 
 class JobService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        embedding_service=None,
+        vector_repository=None,
+    ) -> None:
+        from app.ai.embeddings.embedding_service import (
+            EmbeddingService,
+            SentenceTransformerEmbeddingProvider,
+        )
+        from app.ai.vector_db.qdrant_client import QdrantVectorRepository
+
         self.session = session
         self.jobs = JobRepository(session, Job)
         self.companies = CompanyRepository(session, Company)
+        self.embedding_service = embedding_service or EmbeddingService(
+            SentenceTransformerEmbeddingProvider()
+        )
+        self.vector_repository = vector_repository or QdrantVectorRepository()
 
     async def create_job(self, data: JobCreate) -> Job:
         company = await self.companies.get_by_id(data.company_id)
@@ -42,30 +64,109 @@ class JobService:
         return job
 
     async def publish_job(self, job_id: uuid.UUID) -> Job:
-        job = await self.jobs.get_by_id(job_id)
+        return await self.update_job_status(job_id, JobStatus.PUBLISHED)
+
+    async def close_job(self, job_id: uuid.UUID) -> Job:
+        return await self.update_job_status(job_id, JobStatus.CLOSED)
+
+    async def update_job_status(
+        self,
+        job_id: uuid.UUID,
+        new_status: JobStatus,
+    ) -> Job:
+        job = await self.jobs.get_job_with_company_and_skills(job_id)
         if job is None:
             raise EntityNotFoundException(f"Job {job_id} not found")
-        if job.status != JobStatus.DRAFT:
+        allowed = JOB_TRANSITIONS.get(job.status, set())
+        if new_status not in allowed:
             raise InvalidTransitionException(
-                f"Cannot publish job in status {job.status.value!r}; "
-                "expected 'draft'"
+                f"Cannot change job status from {job.status.value!r} "
+                f"to {new_status.value!r}"
             )
-        job.status = JobStatus.PUBLISHED
+        job.status = new_status
         await self._commit_and_refresh(job)
         return job
 
-    async def close_job(self, job_id: uuid.UUID) -> Job:
-        job = await self.jobs.get_by_id(job_id)
-        if job is None:
-            raise EntityNotFoundException(f"Job {job_id} not found")
-        if job.status != JobStatus.PUBLISHED:
-            raise InvalidTransitionException(
-                f"Cannot close job in status {job.status.value!r}; "
-                "expected 'published'"
-            )
-        job.status = JobStatus.CLOSED
-        await self._commit_and_refresh(job)
+    async def update_job(
+        self,
+        user: User,
+        job_id: uuid.UUID,
+        data: JobUpdate,
+    ) -> Job:
+        """Update editable job fields with ownership enforced.
+
+        Ownership is resolved through ``get_recruiter_job_by_id`` (admin may
+        manage any job; a recruiter only their own company's jobs). The
+        ``status`` field is intentionally ignored here so status can only
+        change through ``update_job_status`` and the domain state machine.
+        Searchable content is re-embedded and the Qdrant job vector is
+        upserted before the SQL commit; any failure rolls back SQL so the
+        caller is never silently reported success.
+        """
+        job = await self.get_recruiter_job_by_id(user, job_id)
+        has_changes = False
+        if data.title is not None and data.title.strip() != job.title:
+            job.title = data.title.strip()
+            has_changes = True
+        if data.description is not None and data.description.strip() != job.description:
+            job.description = data.description.strip()
+            has_changes = True
+        if data.job_type is not None and data.job_type != job.job_type:
+            job.job_type = data.job_type
+            has_changes = True
+        if data.workplace_type is not None and data.workplace_type != job.workplace_type:
+            job.workplace_type = data.workplace_type
+            has_changes = True
+        if data.location is not None and data.location.strip() != job.location:
+            job.location = data.location.strip()
+            has_changes = True
+        if not has_changes:
+            return job
+        try:
+            await self._reindex_job(job)
+            await self._commit_and_refresh(job)
+        except Exception:
+            await self.session.rollback()
+            raise
         return job
+
+    async def delete_job(
+        self,
+        user: User,
+        job_id: uuid.UUID,
+    ) -> None:
+        """Soft delete a job with ownership enforced.
+
+        The SQL row is flagged ``is_deleted`` and never hard deleted; the
+        matching Qdrant job vector is removed. Applications are preserved.
+        """
+        job = await self.get_recruiter_job_by_id(user, job_id)
+        job.is_deleted = True
+        try:
+            await self.vector_repository.delete_vector("jobs", job.id)
+            await self._commit_and_refresh(job)
+        except Exception:
+            await self.session.rollback()
+            raise
+
+    @staticmethod
+    def _canonical_job_text(job: Job) -> str:
+        return (
+            f"Job Title: {job.title}\n"
+            f"Description: {job.description}\n"
+            f"Location: {job.location}"
+        )
+
+    async def _reindex_job(self, job: Job) -> None:
+        text = self._canonical_job_text(job)
+        vector = self.embedding_service.embed_text(text)
+        skills = [skill.name for skill in job.skills] if job.skills else []
+        await self.vector_repository.upsert_job_vector(
+            job_id=job.id,
+            vector=vector,
+            skills=skills,
+            created_at=job.created_at,
+        )
 
     async def list_jobs(
         self,

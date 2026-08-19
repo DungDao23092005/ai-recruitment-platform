@@ -338,6 +338,34 @@ describe('AppRouter recruiter job routes', () => {
       10,
     )
   })
+
+  it('renders the job edit page for a recruiter', async () => {
+    setUser('recruiter')
+
+    renderAt('/recruiter/jobs/job-1/edit')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Sửa tin tuyển dụng' }),
+      ).toBeInTheDocument()
+    })
+    expect(mockedGetMyJobById).toHaveBeenCalledWith('job-1')
+  })
+
+  it('blocks a candidate from the recruiter job edit page', async () => {
+    setUser('candidate')
+
+    renderAt('/recruiter/jobs/job-1/edit')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Sửa tin tuyển dụng' }),
+    ).not.toBeInTheDocument()
+  })
 })
 
 describe('AppRouter AI routes', () => {

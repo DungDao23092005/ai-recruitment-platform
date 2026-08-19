@@ -20,7 +20,9 @@ import type {
 export interface JobFormProps {
   companyId: string
   onCreated?: (job: Job) => void
+  onSaved?: (job: Job) => void
   initialValues?: Partial<FormValues>
+  job?: Job
 }
 
 interface FormValues {
@@ -67,15 +69,19 @@ function getJobCreateErrorMessage(error: unknown): string {
 export function JobForm({
   companyId,
   onCreated,
+  onSaved,
   initialValues,
+  job,
 }: JobFormProps) {
+  const isEditing = job != null
   const [values, setValues] = useState<FormValues>({
-    title: initialValues?.title ?? '',
-    description: initialValues?.description ?? '',
-    job_type: initialValues?.job_type ?? 'full_time',
-    workplace_type: initialValues?.workplace_type ?? 'on_site',
-    location: initialValues?.location ?? '',
-    status: initialValues?.status ?? 'draft',
+    title: job?.title ?? initialValues?.title ?? '',
+    description: job?.description ?? initialValues?.description ?? '',
+    job_type: job?.job_type ?? initialValues?.job_type ?? 'full_time',
+    workplace_type:
+      job?.workplace_type ?? initialValues?.workplace_type ?? 'on_site',
+    location: job?.location ?? initialValues?.location ?? '',
+    status: initialValues?.status ?? job?.status ?? 'draft',
   })
   const [errors, setErrors] = useState<FormErrors>({})
   const [apiError, setApiError] = useState<string | null>(null)
@@ -95,7 +101,20 @@ export function JobForm({
 
     setSubmitting(true)
     try {
-      const job = await apiClient.post<Job, Job>('/jobs', {
+      if (isEditing && job) {
+        const updated = await apiClient.patch<Job, Job>(`/jobs/mine/${job.id}`, {
+          title: values.title.trim(),
+          description: values.description.trim(),
+          job_type: values.job_type,
+          workplace_type: values.workplace_type,
+          location: values.location.trim() || null,
+        })
+        setSuccess(true)
+        onSaved?.(updated)
+        return
+      }
+
+      const created = await apiClient.post<Job, Job>('/jobs', {
         company_id: companyId,
         title: values.title.trim(),
         description: values.description.trim(),
@@ -105,7 +124,7 @@ export function JobForm({
         status: values.status,
       })
       setSuccess(true)
-      onCreated?.(job)
+      onCreated?.(created)
     } catch (error) {
       setApiError(getJobCreateErrorMessage(error))
     } finally {
@@ -186,18 +205,26 @@ export function JobForm({
           onChange={(e) => updateField('location', e.target.value)}
         />
 
-        <Select
-          name="status"
-          label="Trạng thái"
-          value={values.status}
-          onChange={(e) =>
-            updateField('status', e.target.value as JobStatus)
-          }
-        >
-          <option value="draft">{JOB_STATUS_LABELS.draft}</option>
-          <option value="published">{JOB_STATUS_LABELS.published}</option>
-        </Select>
+        {!isEditing ? (
+          <Select
+            name="status"
+            label="Trạng thái"
+            value={values.status}
+            onChange={(e) =>
+              updateField('status', e.target.value as JobStatus)
+            }
+          >
+            <option value="draft">{JOB_STATUS_LABELS.draft}</option>
+            <option value="published">{JOB_STATUS_LABELS.published}</option>
+          </Select>
+        ) : null}
       </div>
+
+      {isEditing ? (
+        <p className="rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+          Trạng thái được quản lý từ danh sách tin tuyển dụng.
+        </p>
+      ) : null}
 
       {apiError ? (
         <p role="alert" className="text-sm font-medium text-destructive">
@@ -207,12 +234,14 @@ export function JobForm({
 
       {success ? (
         <p role="status" className="text-sm font-medium text-success">
-          Tạo tin tuyển dụng thành công.
+          {isEditing
+            ? 'Cập nhật tin tuyển dụng thành công.'
+            : 'Tạo tin tuyển dụng thành công.'}
         </p>
       ) : null}
 
       <Button type="submit" className="w-full" isLoading={submitting}>
-        Tạo tin tuyển dụng
+        {isEditing ? 'Lưu thay đổi' : 'Tạo tin tuyển dụng'}
       </Button>
     </form>
   )

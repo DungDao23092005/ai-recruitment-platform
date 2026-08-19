@@ -15,7 +15,7 @@ from app.schemas.application import (
     ApplicationStatusUpdate,
 )
 from app.schemas.company import CompanyCreate, CompanyRead, CompanyUpdate
-from app.schemas.job import JobCreate, JobRead, JobUpdate
+from app.schemas.job import JobCreate, JobRead, JobStatusUpdate, JobUpdate
 from app.schemas.skill import SkillCreate, SkillRead
 from app.schemas.token import Token, TokenPayload
 from app.schemas.user import (
@@ -38,6 +38,7 @@ __all__ = [
     "JobCreate",
     "JobRead",
     "JobUpdate",
+    "JobStatusUpdate",
     "ApplicationCreate",
     "ApplicationRead",
     "ApplicationStatusUpdate",

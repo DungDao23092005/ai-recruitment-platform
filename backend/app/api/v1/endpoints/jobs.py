@@ -6,10 +6,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_recruiter
-from app.core.exceptions import EntityNotFoundException
+from app.core.exceptions import (
+    AIError,
+    EmptyDocumentError,
+    EntityNotFoundException,
+    InvalidDocumentError,
+    InvalidTransitionException,
+)
 from app.domain.enums import JobStatus, UserRole
 from app.models import Job, User
-from app.schemas.job import JobCreate, JobRead
+from app.schemas.job import JobCreate, JobRead, JobStatusUpdate, JobUpdate
 from app.services.company_service import CompanyService
 from app.services.job_service import JobService
 from app.services.user_service import UserService
@@ -23,6 +29,10 @@ def to_job_read(job: Job) -> JobRead:
     return read
 
 
+def _get_job_service(db: AsyncSession = Depends(get_db)) -> JobService:
+    return JobService(db)
+
+
 @router.post(
     "",
     response_model=JobRead,
@@ -31,9 +41,11 @@ def to_job_read(job: Job) -> JobRead:
 async def create_job(
     data: JobCreate,
     current_user: User = Depends(require_recruiter),
-    db: AsyncSession = Depends(get_db),
+    service: JobService = Depends(_get_job_service),
 ) -> JobRead:
-    company = await CompanyService(db).get_company_by_id(data.company_id)
+    company = await CompanyService(service.session).get_company_by_id(
+        data.company_id
+    )
     if company is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -41,7 +53,9 @@ async def create_job(
         )
 
     if current_user.role != UserRole.ADMIN:
-        user = await UserService(db).get_user_with_profile(current_user.id)
+        user = await UserService(service.session).get_user_with_profile(
+            current_user.id
+        )
         profile = user.recruiter_profile if user is not None else None
         owned_company_id = profile.company_id if profile is not None else None
         if owned_company_id is None or owned_company_id != data.company_id:
@@ -54,7 +68,7 @@ async def create_job(
             )
 
     try:
-        job = await JobService(db).create_job(data)
+        job = await service.create_job(data)
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -70,9 +84,9 @@ async def create_job(
 async def list_jobs(
     skip: int = 0,
     limit: int = 10,
-    db: AsyncSession = Depends(get_db),
+    service: JobService = Depends(_get_job_service),
 ) -> list[JobRead]:
-    jobs = await JobService(db).list_jobs(skip=skip, limit=limit)
+    jobs = await service.list_jobs(skip=skip, limit=limit)
     return [to_job_read(j) for j in jobs]
 
 
@@ -84,9 +98,8 @@ async def list_my_jobs(
     current_user: User = Depends(require_recruiter),
     skip: int = 0,
     limit: int = 10,
-    db: AsyncSession = Depends(get_db),
+    service: JobService = Depends(_get_job_service),
 ) -> list[JobRead]:
-    service = JobService(db)
     if current_user.role == UserRole.ADMIN:
         jobs = await service.list_all_jobs(skip=skip, limit=limit)
     else:
@@ -105,9 +118,8 @@ async def list_my_jobs(
 async def get_my_job(
     job_id: uuid.UUID,
     current_user: User = Depends(require_recruiter),
-    db: AsyncSession = Depends(get_db),
+    service: JobService = Depends(_get_job_service),
 ) -> JobRead:
-    service = JobService(db)
     try:
         job = await service.get_recruiter_job_by_id(current_user, job_id)
     except EntityNotFoundException as exc:
@@ -118,15 +130,88 @@ async def get_my_job(
     return to_job_read(job)
 
 
+@router.patch(
+    "/mine/{job_id}",
+    response_model=JobRead,
+)
+async def update_my_job(
+    job_id: uuid.UUID,
+    data: JobUpdate,
+    current_user: User = Depends(require_recruiter),
+    service: JobService = Depends(_get_job_service),
+) -> JobRead:
+    try:
+        job = await service.update_job(current_user, job_id, data)
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except (AIError, EmptyDocumentError, InvalidDocumentError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    return to_job_read(job)
+
+
+@router.patch(
+    "/mine/{job_id}/status",
+    response_model=JobRead,
+)
+async def update_my_job_status(
+    job_id: uuid.UUID,
+    data: JobStatusUpdate,
+    current_user: User = Depends(require_recruiter),
+    service: JobService = Depends(_get_job_service),
+) -> JobRead:
+    try:
+        await service.get_recruiter_job_by_id(current_user, job_id)
+        job = await service.update_job_status(job_id, data.status)
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except InvalidTransitionException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return to_job_read(job)
+
+
+@router.delete(
+    "/mine/{job_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_my_job(
+    job_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    service: JobService = Depends(_get_job_service),
+) -> None:
+    try:
+        await service.delete_job(current_user, job_id)
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except (AIError, EmptyDocumentError, InvalidDocumentError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+
 @router.get(
     "/{id}",
     response_model=JobRead,
 )
 async def get_job(
     id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
+    service: JobService = Depends(_get_job_service),
 ) -> JobRead:
-    service = JobService(db)
     job = await service.jobs.get_job_with_company(id)
     if job is None or job.is_deleted or job.status != JobStatus.PUBLISHED:
         raise HTTPException(
