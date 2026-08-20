@@ -6,10 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_admin, require_recruiter
-from app.core.exceptions import AIError, ConflictException, EntityNotFoundException
+from app.core.exceptions import (
+    AIError,
+    ConflictException,
+    EntityNotFoundException,
+    ForbiddenException,
+)
 from app.domain.enums import UserRole
 from app.models import User
-from app.schemas.company import CompanyCreate, CompanyRead
+from app.schemas.company import CompanyCreate, CompanyRead, CompanyUpdate
 from app.services.company_service import CompanyService
 from app.services.user_service import UserService
 
@@ -68,6 +73,46 @@ async def list_companies(
     if company is None:
         return []
     return [CompanyRead.model_validate(company)]
+
+
+@router.patch(
+    "/{company_id}",
+    response_model=CompanyRead,
+)
+async def update_company(
+    company_id: uuid.UUID,
+    data: CompanyUpdate,
+    current_user: User = Depends(require_recruiter),
+    service: CompanyService = Depends(_get_company_service),
+) -> CompanyRead:
+    """Update the company owned by the caller (name/slug/tax_code/size).
+
+    Ownership is resolved server-side through the caller's recruiter
+    profile; a foreign company yields 403. Admin, allowed by the shared
+    ``require_recruiter`` guard and the job-ownership convention, may update
+    any company. All validation/uniqueness/commit logic is reused from
+    ``CompanyService.update_company`` (via ``update_owned_company``).
+    """
+    try:
+        company = await service.update_owned_company(
+            current_user, company_id, data
+        )
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ConflictException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return CompanyRead.model_validate(company)
 
 
 @router.get(

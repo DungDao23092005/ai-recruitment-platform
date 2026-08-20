@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { createCompany } from '@/api/companies'
+import { createCompany, updateCompany } from '@/api/companies'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -9,6 +9,10 @@ import type { Company, CompanySize } from '@/types/company'
 
 export interface CompanyFormProps {
   onCreated?: (company: Company) => void
+  mode?: 'create' | 'edit'
+  company?: Company
+  onUpdated?: (company: Company) => void
+  onCancelEdit?: () => void
 }
 
 interface FormValues {
@@ -41,12 +45,19 @@ function validate(values: FormValues): FormErrors {
   return errors
 }
 
-export function CompanyForm({ onCreated }: CompanyFormProps) {
+export function CompanyForm({
+  onCreated,
+  mode = 'create',
+  company,
+  onUpdated,
+  onCancelEdit,
+}: CompanyFormProps) {
+  const isEdit = mode === 'edit'
   const [values, setValues] = useState<FormValues>({
-    name: '',
-    slug: '',
-    tax_code: '',
-    size: 'startup',
+    name: company?.name ?? '',
+    slug: company?.slug ?? '',
+    tax_code: company?.tax_code ?? '',
+    size: company?.size ?? 'startup',
   })
   const [errors, setErrors] = useState<FormErrors>({})
   const [apiError, setApiError] = useState<string | null>(null)
@@ -66,14 +77,21 @@ export function CompanyForm({ onCreated }: CompanyFormProps) {
 
     setSubmitting(true)
     try {
-      const company = await createCompany({
+      const payload = {
         name: values.name.trim(),
         slug: values.slug.trim(),
         tax_code: values.tax_code.trim(),
         size: values.size,
-      })
-      setSuccess(true)
-      onCreated?.(company)
+      }
+      if (isEdit && company) {
+        const updated = await updateCompany(company.id, payload)
+        setSuccess(true)
+        onUpdated?.(updated)
+      } else {
+        const created = await createCompany(payload)
+        setSuccess(true)
+        onCreated?.(created)
+      }
     } catch (error) {
       const message = getFriendlyErrorMessage(error)
       if (
@@ -141,13 +159,27 @@ export function CompanyForm({ onCreated }: CompanyFormProps) {
 
       {success ? (
         <p role="status" className="text-sm font-medium text-success">
-          Tạo công ty thành công.
+          {isEdit
+            ? 'Cập nhật công ty thành công.'
+            : 'Tạo công ty thành công.'}
         </p>
       ) : null}
 
-      <Button type="submit" className="w-full" isLoading={submitting}>
-        Tạo công ty
-      </Button>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Button type="submit" className="w-full" isLoading={submitting}>
+          {isEdit ? 'Lưu thay đổi' : 'Tạo công ty'}
+        </Button>
+        {isEdit ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            onClick={onCancelEdit}
+          >
+            Hủy chỉnh sửa
+          </Button>
+        ) : null}
+      </div>
     </form>
   )
 }

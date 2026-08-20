@@ -4,11 +4,17 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictException, EntityNotFoundException
+from app.core.exceptions import (
+    ConflictException,
+    EntityNotFoundException,
+    ForbiddenException,
+)
+from app.domain.enums import UserRole
 from app.models import Company, User
 from app.repositories import CompanyRepository
 from app.schemas.company import CompanyCreate, CompanyUpdate
 from app.services.job_service import JobService
+from app.services.user_service import UserService
 
 
 class CompanyService:
@@ -51,6 +57,35 @@ class CompanyService:
 
     async def list_companies(self) -> list[Company]:
         return await self.companies.list_all()
+
+    async def update_owned_company(
+        self,
+        user: User,
+        company_id: uuid.UUID,
+        data: CompanyUpdate,
+    ) -> Company:
+        """Update a company with recruiter ownership enforced.
+
+        Mirrors ``JobService`` ownership: an admin may update any company; a
+        recruiter may only update the company their profile points to. All
+        validation, uniqueness checks and the commit are delegated to
+        ``update_company`` so no logic is duplicated.
+        """
+        if user.role != UserRole.ADMIN:
+            owned_company_id = await self._get_owned_company_id(user.id)
+            if owned_company_id is None or owned_company_id != company_id:
+                raise ForbiddenException(
+                    f"Not allowed to update company {company_id}"
+                )
+        return await self.update_company(company_id, data)
+
+    async def _get_owned_company_id(
+        self,
+        user_id: uuid.UUID,
+    ) -> uuid.UUID | None:
+        user = await UserService(self.session).get_user_with_profile(user_id)
+        profile = user.recruiter_profile if user is not None else None
+        return profile.company_id if profile is not None else None
 
     async def update_company(
         self,

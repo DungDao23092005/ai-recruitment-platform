@@ -26,6 +26,7 @@ vi.mock('@/api/client', () => ({
 
 const mockedGet = vi.mocked(apiClient.get)
 const mockedPost = vi.mocked(apiClient.post)
+const mockedPatch = vi.mocked(apiClient.patch)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -208,5 +209,181 @@ describe('RecruiterCompanyPage', () => {
       ).toBeInTheDocument()
     })
     expect(mockedGet).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the edit button when a company exists', async () => {
+    mockedGet.mockResolvedValue([mockCompany] as never)
+
+    render(
+      <MemoryRouter>
+        <RecruiterCompanyPage />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('TechNova AI')).toBeInTheDocument()
+    })
+    expect(
+      screen.getByRole('button', { name: /Chỉnh sửa/i }),
+    ).toBeInTheDocument()
+  })
+
+  it('does not show the edit button when there is no company', async () => {
+    mockedGet.mockResolvedValue([] as never)
+
+    render(
+      <MemoryRouter>
+        <RecruiterCompanyPage />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Chưa có công ty')).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('button', { name: /Chỉnh sửa/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('opens the prefilled edit form when edit is clicked', async () => {
+    mockedGet.mockResolvedValue([mockCompany] as never)
+
+    render(
+      <MemoryRouter>
+        <RecruiterCompanyPage />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('TechNova AI')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Chỉnh sửa/i }))
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Chỉnh sửa công ty/i }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      (screen.getByLabelText('Tên công ty') as HTMLInputElement).value,
+    ).toBe('TechNova AI')
+    expect(
+      (screen.getByLabelText('Slug') as HTMLInputElement).value,
+    ).toBe('technova-ai')
+  })
+
+  it('saves changes through patch and updates the display', async () => {
+    mockedGet.mockResolvedValue([mockCompany] as never)
+    const updated = {
+      ...mockCompany,
+      name: 'TechNova Renamed',
+    }
+    mockedPatch.mockResolvedValue(updated as never)
+
+    render(
+      <MemoryRouter>
+        <RecruiterCompanyPage />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('TechNova AI')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Chỉnh sửa/i }))
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Chỉnh sửa công ty/i }),
+      ).toBeInTheDocument()
+    })
+
+    fireEvent.change(screen.getByLabelText('Tên công ty'), {
+      target: { value: 'TechNova Renamed' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Lưu thay đổi/i }))
+
+    await waitFor(() => {
+      expect(mockedPatch).toHaveBeenCalledWith('/companies/company-1', {
+        name: 'TechNova Renamed',
+        slug: 'technova-ai',
+        tax_code: '0317654321',
+        size: 'enterprise',
+      })
+      expect(screen.getByText('TechNova Renamed')).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: /Chỉnh sửa công ty/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('returns to the display when edit is cancelled', async () => {
+    mockedGet.mockResolvedValue([mockCompany] as never)
+
+    render(
+      <MemoryRouter>
+        <RecruiterCompanyPage />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('TechNova AI')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Chỉnh sửa/i }))
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Chỉnh sửa công ty/i }),
+      ).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Hủy chỉnh sửa/i }))
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('heading', { name: /Chỉnh sửa công ty/i }),
+      ).not.toBeInTheDocument()
+      expect(screen.getByText('TechNova AI')).toBeInTheDocument()
+    })
+  })
+
+  it('shows a friendly error when the update fails', async () => {
+    mockedGet.mockResolvedValue([mockCompany] as never)
+    const error = new Error('Bad Request')
+    Object.assign(error, {
+      response: {
+        status: 400,
+        data: { detail: 'Company with this tax code already exists' },
+      },
+    })
+    mockedPatch.mockRejectedValue(error)
+
+    render(
+      <MemoryRouter>
+        <RecruiterCompanyPage />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('TechNova AI')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Chỉnh sửa/i }))
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Chỉnh sửa công ty/i }),
+      ).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Lưu thay đổi/i }))
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Mã số thuế đã được đăng ký. Vui lòng kiểm tra lại.'),
+      ).toBeInTheDocument()
+    })
   })
 })

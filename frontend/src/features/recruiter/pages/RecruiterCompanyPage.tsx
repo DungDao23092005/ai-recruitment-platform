@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Building, PlusCircle } from 'lucide-react'
+import { Building, Pencil, PlusCircle } from 'lucide-react'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -23,6 +23,7 @@ export function RecruiterCompanyPage() {
   const [company, setCompany] = useState<Company | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [isEditing, setIsEditing] = useState(false)
 
   const loadCompanies = useCallback(async () => {
     setIsLoading(true)
@@ -53,15 +54,34 @@ export function RecruiterCompanyPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <PlusCircle className="h-5 w-5 text-primary" aria-hidden="true" />
-              Tạo công ty
+              {isEditing ? (
+                <Pencil className="h-5 w-5 text-primary" aria-hidden="true" />
+              ) : (
+                <PlusCircle className="h-5 w-5 text-primary" aria-hidden="true" />
+              )}
+              {isEditing ? 'Chỉnh sửa công ty' : 'Tạo công ty'}
             </CardTitle>
             <CardDescription>
-              Đăng ký công ty của bạn trước khi đăng tin tuyển dụng.
+              {isEditing
+                ? 'Cập nhật thông tin công ty của bạn.'
+                : 'Đăng ký công ty của bạn trước khi đăng tin tuyển dụng.'}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <CompanyForm onCreated={setCompany} />
+            {isEditing && company ? (
+              <CompanyForm
+                key="company-edit"
+                mode="edit"
+                company={company}
+                onUpdated={(updated) => {
+                  setCompany(updated)
+                  setIsEditing(false)
+                }}
+                onCancelEdit={() => setIsEditing(false)}
+              />
+            ) : (
+              <CompanyForm key="company-create" onCreated={setCompany} />
+            )}
           </CardContent>
         </Card>
 
@@ -95,9 +115,19 @@ export function RecruiterCompanyPage() {
           {!isLoading && error == null ? (
             company ? (
               <div className="space-y-4">
-                <h2 className="font-display text-lg font-semibold">
-                  Công ty của bạn
-                </h2>
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="font-display text-lg font-semibold">
+                    Công ty của bạn
+                  </h2>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsEditing(true)}
+                  >
+                    <Pencil className="h-4 w-4" aria-hidden="true" />
+                    Chỉnh sửa
+                  </Button>
+                </div>
                 <CompanyCard company={company} />
                 <Link to="/recruiter/jobs/new">
                   <Button className="w-full sm:w-auto">

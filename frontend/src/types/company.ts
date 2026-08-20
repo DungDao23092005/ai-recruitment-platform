@@ -17,6 +17,13 @@ export interface CompanyCreateData {
   size: CompanySize
 }
 
+export interface CompanyUpdateData {
+  name?: string
+  slug?: string
+  tax_code?: string
+  size?: CompanySize
+}
+
 export const COMPANY_SIZE_LABELS: Record<CompanySize, string> = {
   seed: 'Seed',
   startup: 'Startup',

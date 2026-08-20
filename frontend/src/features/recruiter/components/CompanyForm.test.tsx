@@ -17,10 +17,12 @@ const mockCompany: Company = {
 
 vi.mock('@/api/companies', () => ({
   createCompany: vi.fn(),
+  updateCompany: vi.fn(),
   getCompanyById: vi.fn(),
 }))
 
 const mockedCreateCompany = vi.mocked(companiesApi.createCompany)
+const mockedUpdateCompany = vi.mocked(companiesApi.updateCompany)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -147,6 +149,90 @@ describe('CompanyForm', () => {
 
     await waitFor(() => {
       expect(onCreated).toHaveBeenCalledWith(mockCompany)
+    })
+  })
+})
+
+describe('CompanyForm edit mode', () => {
+  it('prefills fields from the company', () => {
+    render(<CompanyForm mode="edit" company={mockCompany} />)
+
+    expect(
+      (screen.getByLabelText('Tên công ty') as HTMLInputElement).value,
+    ).toBe('Acme Corporation')
+    expect(
+      (screen.getByLabelText('Slug') as HTMLInputElement).value,
+    ).toBe('acme-corporation')
+    expect(
+      (screen.getByLabelText('Mã số thuế') as HTMLInputElement).value,
+    ).toBe('0312345678')
+    expect(
+      (screen.getByLabelText('Quy mô công ty') as HTMLSelectElement).value,
+    ).toBe('startup')
+  })
+
+  it('updates the company on submit', async () => {
+    mockedUpdateCompany.mockResolvedValue({
+      ...mockCompany,
+      name: 'Renamed Corp',
+    })
+    const onUpdated = vi.fn()
+
+    render(<CompanyForm mode="edit" company={mockCompany} onUpdated={onUpdated} />)
+
+    fireEvent.change(screen.getByLabelText('Tên công ty'), {
+      target: { value: 'Renamed Corp' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Lưu thay đổi/i }))
+
+    await waitFor(() => {
+      expect(mockedUpdateCompany).toHaveBeenCalledWith('company-1', {
+        name: 'Renamed Corp',
+        slug: 'acme-corporation',
+        tax_code: '0312345678',
+        size: 'startup',
+      })
+      expect(
+        screen.getByText('Cập nhật công ty thành công.'),
+      ).toBeInTheDocument()
+      expect(onUpdated).toHaveBeenCalledWith({
+        ...mockCompany,
+        name: 'Renamed Corp',
+      })
+    })
+  })
+
+  it('shows the cancel button in edit mode', () => {
+    const onCancelEdit = vi.fn()
+    render(
+      <CompanyForm
+        mode="edit"
+        company={mockCompany}
+        onCancelEdit={onCancelEdit}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Hủy chỉnh sửa/i }))
+    expect(onCancelEdit).toHaveBeenCalled()
+  })
+
+  it('does not show a cancel button in create mode', () => {
+    render(<CompanyForm />)
+    expect(
+      screen.queryByRole('button', { name: /Hủy chỉnh sửa/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('does not call createCompany in edit mode', async () => {
+    mockedUpdateCompany.mockResolvedValue(mockCompany)
+
+    render(<CompanyForm mode="edit" company={mockCompany} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Lưu thay đổi/i }))
+
+    await waitFor(() => {
+      expect(mockedCreateCompany).not.toHaveBeenCalled()
     })
   })
 })

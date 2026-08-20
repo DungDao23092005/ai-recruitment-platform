@@ -1,8 +1,19 @@
 import apiClient from '@/api/client'
-import type { Company, CompanyCreateData } from '@/types/company'
+import type {
+  Company,
+  CompanyCreateData,
+  CompanyUpdateData,
+} from '@/types/company'
 
 export async function createCompany(data: CompanyCreateData): Promise<Company> {
   return apiClient.post<Company, Company>('/companies', data)
+}
+
+export async function updateCompany(
+  companyId: string,
+  data: CompanyUpdateData,
+): Promise<Company> {
+  return apiClient.patch<Company, Company>(`/companies/${companyId}`, data)
 }
 
 export async function getCompanyById(id: string): Promise<Company> {
