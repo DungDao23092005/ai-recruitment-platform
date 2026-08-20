@@ -12,8 +12,12 @@ from app.core.exceptions import (
 from app.domain.enums import ApplicationStatus
 from app.domain.models import Application as DomainApplication
 from app.domain.models.base import DomainException
-from app.models import Application, Job, User
-from app.repositories import ApplicationRepository, JobRepository
+from app.models import Application, Job, Resume, User
+from app.repositories import (
+    ApplicationRepository,
+    JobRepository,
+    ResumeRepository,
+)
 from app.services.job_service import JobService
 from app.services.user_service import UserService
 
@@ -171,6 +175,43 @@ class ApplicationService:
         job_id: uuid.UUID,
     ) -> list[Application]:
         return await self.applications.list_by_job(job_id)
+
+    async def get_application_detail(
+        self,
+        current_user: User,
+        application_id: uuid.UUID,
+    ) -> tuple[Application, Resume | None]:
+        """Resolve an application for a recruiter/admin with ownership enforced.
+
+        Admin may access any application; a recruiter may only access
+        applications on their own company's jobs. Missing, soft-deleted, or
+        unowned applications all surface as 404 so existence is never leaked.
+        Returns the application together with the candidate's primary resume
+        (``None`` when the candidate has no resume), so the digital CV can be
+        rendered from ``Resume.parsed_data``.
+        """
+        application = await self.applications.get_by_id_with_candidate(
+            application_id
+        )
+        if application is None:
+            raise EntityNotFoundException(
+                f"Application {application_id} not found"
+            )
+
+        try:
+            await JobService(self.session).get_recruiter_job_by_id(
+                current_user,
+                application.job_id,
+            )
+        except EntityNotFoundException:
+            raise EntityNotFoundException(
+                f"Application {application_id} not found"
+            ) from None
+
+        resume = await ResumeRepository(self.session, Resume).get_primary_by_candidate(
+            application.candidate_id
+        )
+        return application, resume
 
     async def list_my_applications(
         self,

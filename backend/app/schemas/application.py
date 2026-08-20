@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.domain.enums import ApplicationStatus
+from app.schemas.resume import ResumeRead
 
 
 class ApplicationCreate(BaseModel):
@@ -28,6 +29,21 @@ class ApplicationRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     candidate: CandidateProfileReadMinimal | None = None
+
+
+class ApplicationDetailRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    candidate_id: uuid.UUID
+    job_id: uuid.UUID
+    job_title: str
+    company_name: str | None = None
+    status: ApplicationStatus
+    created_at: datetime
+    updated_at: datetime
+    candidate: CandidateProfileReadMinimal | None = None
+    resume: ResumeRead | None = None
 
 
 class ApplicationStatusUpdate(BaseModel):

@@ -14,10 +14,13 @@ from app.core.exceptions import (
 from app.models import Application, User
 from app.schemas.application import (
     ApplicationCreate,
+    ApplicationDetailRead,
     ApplicationRead,
     ApplicationStatusUpdate,
     ApplicationWithJobRead,
+    CandidateProfileReadMinimal,
 )
+from app.schemas.resume import ResumeRead
 from app.services.application_service import ApplicationService
 from app.services.job_service import JobService
 from app.services.user_service import UserService
@@ -134,6 +137,57 @@ async def list_applications(
         ApplicationRead.model_validate(a)
         for a in applications[skip : skip + limit]
     ]
+
+
+@router.get(
+    "/{application_id}",
+    response_model=ApplicationDetailRead,
+)
+async def get_application_detail(
+    application_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> ApplicationDetailRead:
+    """Return a single application detail for a recruiter/admin.
+
+    Includes the candidate's primary resume (``parsed_data``) so the
+    recruiter can view the digital CV. Ownership is enforced server-side:
+    admin may access any application; a recruiter only their own company's.
+    """
+    try:
+        application, resume = await ApplicationService(
+            db
+        ).get_application_detail(
+            current_user=current_user,
+            application_id=application_id,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    company_name = (
+        application.job.company.name
+        if application.job is not None and application.job.company is not None
+        else None
+    )
+    return ApplicationDetailRead(
+        id=application.id,
+        candidate_id=application.candidate_id,
+        job_id=application.job_id,
+        job_title=application.job.title if application.job is not None else "",
+        company_name=company_name,
+        status=application.status,
+        created_at=application.created_at,
+        updated_at=application.updated_at,
+        candidate=(
+            CandidateProfileReadMinimal.model_validate(application.candidate)
+            if application.candidate is not None
+            else None
+        ),
+        resume=ResumeRead.model_validate(resume) if resume is not None else None,
+    )
 
 
 @router.patch(

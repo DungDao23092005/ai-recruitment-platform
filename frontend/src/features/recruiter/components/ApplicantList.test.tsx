@@ -2,8 +2,9 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { ApplicantList } from './ApplicantList'
+import * as applicationsApi from '@/api/applications'
 import apiClient from '@/api/client'
-import type { Application } from '@/types/application'
+import type { Application, ApplicationDetail } from '@/types/application'
 
 const mockApplications: Application[] = [
   {
@@ -34,7 +35,69 @@ vi.mock('@/api/client', () => ({
   },
 }))
 
+vi.mock('@/api/applications', () => ({
+  getApplicationDetail: vi.fn(),
+}))
+
 const mockedPatch = vi.mocked(apiClient.patch)
+const mockedGetApplicationDetail = vi.mocked(
+  applicationsApi.getApplicationDetail,
+)
+
+const mockDetail: ApplicationDetail = {
+  id: 'app-1',
+  candidate_id: '11111111-1111-1111-1111-111111111111',
+  job_id: 'job-1',
+  job_title: 'Backend Engineer',
+  company_name: 'Acme Corp',
+  status: 'applied',
+  created_at: '2026-01-20T00:00:00Z',
+  updated_at: '2026-01-20T00:00:00Z',
+  candidate: {
+    id: '11111111-1111-1111-1111-111111111111',
+    full_name: 'Nguyễn Văn A',
+    title: 'Backend Engineer',
+  },
+  resume: {
+    id: 'res-1',
+    candidate_id: '11111111-1111-1111-1111-111111111111',
+    title: 'cv.pdf',
+    is_primary: true,
+    parsed_data: {
+      full_name: 'Nguyễn Văn A',
+      email: 'a@example.com',
+      phone: '0901234567',
+      title: 'Backend Engineer',
+      summary: 'Xây dựng API.',
+      total_years_experience: 5,
+      skills: ['Python', 'FastAPI'],
+      experiences: [
+        {
+          company: 'Acme',
+          position: 'Senior Engineer',
+          start_date: '2020/01',
+          end_date: 'Present',
+          is_current: true,
+          description: 'Led platform team.',
+          skills_used: ['Python'],
+        },
+      ],
+      education: [
+        {
+          institution: 'HUST',
+          degree: 'Bachelor',
+          field_of_study: 'CS',
+          start_year: 2010,
+          end_year: 2014,
+        },
+      ],
+      certifications: ['AWS SAA'],
+      languages: ['English'],
+    },
+    created_at: '2026-01-20T00:00:00Z',
+    updated_at: '2026-01-20T00:00:00Z',
+  },
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -124,6 +187,49 @@ describe('ApplicantList', () => {
     expect(
       screen.getByRole('dialog', { name: 'Cập nhật trạng thái đơn ứng tuyển' }),
     ).toBeInTheDocument()
+  })
+
+  it('opens the application detail modal with the digital CV', async () => {
+    mockedGetApplicationDetail.mockResolvedValue(mockDetail)
+
+    render(<ApplicantList applications={mockApplications} />)
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /Xem hồ sơ ứng viên 11111111/i,
+      }),
+    )
+
+    expect(
+      screen.getByRole('dialog', { name: 'Chi tiết đơn ứng tuyển' }),
+    ).toBeInTheDocument()
+
+    await waitFor(() => {
+      expect(mockedGetApplicationDetail).toHaveBeenCalledWith('app-1')
+      expect(screen.getAllByText('Nguyễn Văn A').length).toBeGreaterThan(0)
+      expect(screen.getByText('Backend Engineer · Acme Corp')).toBeInTheDocument()
+      expect(screen.getByText('Xây dựng API.')).toBeInTheDocument()
+      expect(screen.getAllByText('Python').length).toBeGreaterThan(0)
+    })
+  })
+
+  it('shows no CV message when resume is null', async () => {
+    mockedGetApplicationDetail.mockResolvedValue({
+      ...mockDetail,
+      resume: null,
+    })
+
+    render(<ApplicantList applications={mockApplications} />)
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /Xem hồ sơ ứng viên 11111111/i,
+      }),
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Chưa có hồ sơ CV')).toBeInTheDocument()
+    })
   })
 
   it('calls onStatusChange when an application status is updated', async () => {

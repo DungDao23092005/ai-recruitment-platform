@@ -62,3 +62,18 @@ class ApplicationRepository(BaseRepository[Application]):
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def get_by_id_with_candidate(self, application_id: Any) -> Application | None:
+        stmt = (
+            select(Application)
+            .options(
+                selectinload(Application.candidate),
+                selectinload(Application.job).selectinload(Job.company),
+            )
+            .where(
+                Application.id == application_id,
+                Application.is_deleted == False,  # noqa: E712
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()

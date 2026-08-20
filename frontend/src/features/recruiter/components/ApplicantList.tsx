@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { CalendarDays, User } from 'lucide-react'
+import { CalendarDays, Eye, User } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { StatusUpdateModal } from './StatusUpdateModal'
+import { ApplicationDetailModal } from './ApplicationDetailModal'
 import { ApplicationStatusBadge } from '@/components/common/ApplicationStatusBadge'
 import type { Application } from '@/types/application'
 
@@ -40,6 +41,7 @@ export function ApplicantList({
   onStatusChange,
 }: ApplicantListProps) {
   const [selected, setSelected] = useState<Application | null>(null)
+  const [detail, setDetail] = useState<Application | null>(null)
 
   if (applications.length === 0) {
     return (
@@ -85,6 +87,15 @@ export function ApplicantList({
               <Button
                 variant="outline"
                 size="sm"
+                onClick={() => setDetail(application)}
+                aria-label={`Xem hồ sơ ứng viên ${application.candidate_id.slice(0, 8)}`}
+              >
+                <Eye className="h-4 w-4" aria-hidden="true" />
+                Xem hồ sơ
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => setSelected(application)}
                 aria-label={`Cập nhật trạng thái cho đơn ứng tuyển ${application.id.slice(0, 8)}`}
               >
@@ -101,6 +112,16 @@ export function ApplicantList({
           onClose={() => setSelected(null)}
           onSuccess={(updated) => {
             setSelected(null)
+            onStatusChange?.(updated)
+          }}
+        />
+      ) : null}
+
+      {detail ? (
+        <ApplicationDetailModal
+          application={detail}
+          onClose={() => setDetail(null)}
+          onStatusChange={(updated) => {
             onStatusChange?.(updated)
           }}
         />
