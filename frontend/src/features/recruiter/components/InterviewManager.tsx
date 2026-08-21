@@ -1,16 +1,19 @@
 import { useState } from 'react'
-import { Trash2, Edit2, Plus, Clock, MapPin, Link as LinkIcon } from 'lucide-react'
+import { Trash2, Edit2, Plus, Clock, MapPin, Link as LinkIcon, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { scheduleInterview, updateInterview, cancelInterview } from '@/api/interviews'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { Interview } from '@/types/application'
+import { Link } from 'react-router-dom'
 
 export function InterviewManager({ 
   applicationId, 
+  jobId,
   initialInterviews = [],
   onInterviewUpdated
 }: { 
   applicationId: string
+  jobId: string
   initialInterviews?: Interview[]
   onInterviewUpdated?: (interviews: Interview[]) => void
 }) {
@@ -123,11 +126,21 @@ export function InterviewManager({
     <div className="space-y-4 rounded-xl border bg-card px-4 py-4">
       <div className="flex items-center justify-between">
         <p className="font-semibold text-foreground">Lịch phỏng vấn</p>
-        {!isEditing && (
-          <Button variant="outline" size="sm" onClick={handleOpenNew}>
-            <Plus className="mr-1 h-4 w-4" /> Lên lịch
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {!isEditing && (
+            <Button variant="outline" size="sm" onClick={handleOpenNew}>
+              <Plus className="mr-1 h-4 w-4" /> Lên lịch
+            </Button>
+          )}
+          <Link
+            to={`/recruiter/jobs/${jobId}/interview?applicationId=${applicationId}`}
+            className="flex items-center gap-1.5"
+          >
+            <Button variant="outline" size="sm">
+              <Sparkles className="mr-1 h-4 w-4" /> Tạo câu hỏi AI
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {error && (

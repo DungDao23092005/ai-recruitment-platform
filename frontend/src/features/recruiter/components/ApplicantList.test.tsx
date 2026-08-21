@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 
 import { ApplicantList } from './ApplicantList'
 import * as applicationsApi from '@/api/applications'
@@ -113,6 +114,14 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
+function renderApplicantList(props: { applications: Application[]; onStatusChange?: (updated: Application) => void }) {
+  return render(
+    <MemoryRouter>
+      <ApplicantList {...props} />
+    </MemoryRouter>,
+  )
+}
+
 describe('ApplicantList', () => {
   it('renders applicant information', () => {
     render(<ApplicantList applications={mockApplications} />)
@@ -199,10 +208,10 @@ describe('ApplicantList', () => {
     ).toBeInTheDocument()
   })
 
-  it('opens the application detail modal with the digital CV', async () => {
+it('opens the application detail modal with the digital CV', async () => {
     mockedGetApplicationDetail.mockResolvedValue(mockDetail)
 
-    render(<ApplicantList applications={mockApplications} />)
+    renderApplicantList({ applications: mockApplications })
 
     fireEvent.click(
       screen.getByRole('button', {
@@ -229,7 +238,26 @@ describe('ApplicantList', () => {
       resume: null,
     })
 
-    render(<ApplicantList applications={mockApplications} />)
+    renderApplicantList({ applications: mockApplications })
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /Xem hồ sơ ứng viên 11111111/i,
+      }),
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Chưa có hồ sơ CV')).toBeInTheDocument()
+})
+})
+
+  it('shows no CV message when resume is null', async () => {
+    mockedGetApplicationDetail.mockResolvedValue({
+      ...mockDetail,
+      resume: null,
+    })
+
+    renderApplicantList({ applications: mockApplications })
 
     fireEvent.click(
       screen.getByRole('button', {
@@ -250,12 +278,10 @@ describe('ApplicantList', () => {
     }
     mockedPatch.mockResolvedValue(updated as never)
 
-    render(
-      <ApplicantList
-        applications={mockApplications}
-        onStatusChange={onStatusChange}
-      />,
-    )
+    renderApplicantList({
+      applications: mockApplications,
+      onStatusChange,
+    })
 
     fireEvent.click(
       screen.getByRole('button', {

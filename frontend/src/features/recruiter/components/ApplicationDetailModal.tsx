@@ -463,6 +463,7 @@ export function ApplicationDetailModal({
             <div className="mt-4">
               <InterviewManager 
                 applicationId={application.id} 
+                jobId={detail.job_id}
                 initialInterviews={detail.interviews || []}
                 onInterviewUpdated={(newInterviews) => {
                   setState(prev => prev.kind === 'success' && prev.detail ? {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import {
   ChevronLeft,
   ClipboardCopy,
@@ -7,21 +7,30 @@ import {
   RefreshCw,
   Sparkles,
   X,
+  AlertCircle,
+  UserCheck,
 } from 'lucide-react'
 import { getMyJobById } from '@/api/jobs'
+import { getApplicationDetail } from '@/api/applications'
+import { getApplicationMatch } from '@/api/applications'
 import { generateInterviewQuestions } from '@/api/ai'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
+import { ErrorBanner } from '@/components/ui/error-banner'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { InterviewQuestionCard } from '@/features/recruiter/components/InterviewQuestionCard'
 import type {
   GenerateInterviewQuestionsResponse,
   QuestionGenerationDifficulty,
+  MatchResult,
+  ParsedResume,
 } from '@/types/ai'
 import type { Job } from '@/types/job'
 import type { ParsedJob } from '@/types/ai'
+import type { ApplicationDetail } from '@/types/application'
 
 const NUM_QUESTIONS_OPTIONS = [3, 5, 10, 15]
 
@@ -35,7 +44,7 @@ const DIFFICULTY_OPTIONS: { value: QuestionGenerationDifficulty; label: string }
 type PageState =
   | { kind: 'loading' }
   | { kind: 'error'; message: string; notFound: boolean }
-  | { kind: 'success'; job: Job }
+  | { kind: 'success'; job: Job; application?: ApplicationDetail | null; match?: MatchResult | null; personalizedError?: string }
 
 type GenerateState =
   | { kind: 'idle' }
@@ -81,6 +90,9 @@ function formatQuestionsForCopy(
 
 export function InterviewGeneratorPage() {
   const { id } = useParams<{ id: string }>()
+  const [searchParams] = useSearchParams()
+  const applicationId = searchParams.get('applicationId')
+
   const [pageState, setPageState] = useState<PageState>({ kind: 'loading' })
   const [numQuestions, setNumQuestions] = useState(5)
   const [difficulty, setDifficulty] =
@@ -91,7 +103,7 @@ export function InterviewGeneratorPage() {
     kind: 'idle',
   })
 
-  const load = useCallback(() => {
+  const load = useCallback(async () => {
     if (!id) {
       setPageState({
         kind: 'error',
@@ -101,24 +113,76 @@ export function InterviewGeneratorPage() {
       return
     }
     setPageState({ kind: 'loading' })
-    getMyJobById(id)
-      .then((job) => setPageState({ kind: 'success', job }))
-      .catch((err) => {
-        const status = (err as Error & { response?: { status?: number } })
-          .response?.status
-        const notFound = status === 404
-        setPageState({
-          kind: 'error',
-          message: notFound
-            ? 'Không tìm thấy tin tuyển dụng'
-            : getFriendlyErrorMessage(err),
-          notFound,
-        })
-      })
-  }, [id])
 
+    try {
+      // 1. Always fetch job first (required context)
+      const job = await getMyJobById(id)
+      if (!active) return
+
+      if (!applicationId) {
+        // Generic mode: only job
+        if (!active) return
+        setPageState({ kind: 'success', job })
+        return
+      }
+
+      // 2. Personalized mode: fetch application and match
+      // Fetch application first
+      let application: ApplicationDetail | null = null
+      try {
+        application = await getApplicationDetail(applicationId)
+      } catch (err) {
+        const status = (err as Error & { response?: { status?: number } }).response?.status
+        if (status === 403 || status === 404) {
+          // Application not found or unauthorized -> fallback to generic mode with warning
+          if (!active) return
+          setPageState({
+            kind: 'success',
+            job,
+            application: null,
+            match: null,
+            personalizedError: 'Không thể tải hồ sơ ứng viên. Đang chuyển sang chế độ chung.',
+          })
+          return
+        }
+        throw err // Re-throw unexpected errors
+      }
+
+      if (!active) return
+
+      // 3. Fetch match (optional, non-blocking)
+      let match: MatchResult | null = null
+      try {
+        match = await getApplicationMatch(applicationId)
+      } catch {
+        match = null // Match fetch failed, continue without it
+      }
+
+      if (!active) return
+
+      setPageState({ kind: 'success', job, application, match })
+    } catch (err) {
+      if (!active) return
+      const status = (err as Error & { response?: { status?: number } }).response?.status
+      const notFound = status === 404
+      setPageState({
+        kind: 'error',
+        message: notFound
+          ? 'Không tìm thấy tin tuyển dụng'
+          : getFriendlyErrorMessage(err),
+        notFound,
+      })
+    }
+  }, [id, applicationId])
+
+  // Track active state for async operations
+  let active = true
   useEffect(() => {
+    active = true
     load()
+    return () => {
+      active = false
+    }
   }, [load])
 
   const addFocusArea = () => {
@@ -149,11 +213,25 @@ export function InterviewGeneratorPage() {
     if (pageState.kind !== 'success') {
       return
     }
+    if (generateState.kind === 'loading') {
+      return
+    }
     setGenerateState({ kind: 'loading' })
 
     try {
+      const job = pageState.job
+      const application = pageState.application
+      const match = pageState.match
+
+      let candidate: ParsedResume | null = null
+      if (application?.resume?.parsed_data) {
+        candidate = application.resume.parsed_data
+      }
+
       const response = await generateInterviewQuestions({
-        job: toParsedJob(pageState.job),
+        job: toParsedJob(job),
+        candidate: candidate ?? null,
+        match_result: match ?? null,
         num_questions: config.numQuestions,
         difficulty: config.difficulty,
         focus_areas: config.focusAreas,
@@ -231,7 +309,13 @@ export function InterviewGeneratorPage() {
     )
   }
 
-  const { job } = pageState
+  const { job, application, match, personalizedError } = pageState
+
+  const isPersonalized = !!applicationId && !personalizedError
+  const candidateName = application?.candidate?.full_name || 'ứng viên này'
+  const hasResume = !!application?.resume?.parsed_data
+  const hasMatch = !!match
+  const applicationError = personalizedError
 
   return (
     <div className="container py-10">
@@ -246,8 +330,59 @@ export function InterviewGeneratorPage() {
 
       <PageHeader
         title="Bộ câu hỏi phỏng vấn AI"
-        description={`Tạo câu hỏi phỏng vấn cho tin tuyển dụng "${job.title}" dựa trên yêu cầu công việc.`}
+        description={
+          isPersonalized
+            ? `Tạo câu hỏi phỏng vấn cá nhân hóa cho "${job.title}" dựa trên hồ sơ của ${candidateName}.`
+            : `Tạo câu hỏi phỏng vấn cho tin tuyển dụng "${job.title}" dựa trên yêu cầu công việc.`
+        }
       />
+
+      {isPersonalized && (
+        <div className="mb-6">
+          <Card className="border-primary/30 bg-primary/5">
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <UserCheck className="h-4 w-4" aria-hidden="true" />
+                </div>
+                <div>
+                  <CardTitle className="text-base font-semibold">
+                    Chế độ cá nhân hóa đang hoạt động
+                  </CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    Đang tạo câu hỏi cho <span className="font-medium">{candidateName}</span>
+                    {' '}
+                    {hasResume && hasMatch ? (
+                      <>
+                        (có CV và điểm khớp)
+                      </>
+                    ) : hasResume ? (
+                      <>
+                        (có CV, chưa có điểm khớp)
+                      </>
+                    ) : hasMatch ? (
+                      <>
+                        (có điểm khớp, chưa có CV)
+                      </>
+                    ) : (
+                      <>
+                        (chưa có CV và điểm khớp)
+                      </>
+                    )}
+                  </p>
+                </div>
+              </div>
+            </CardHeader>
+          </Card>
+        </div>
+      )}
+
+      {applicationError && (
+        <ErrorBanner
+          message={applicationError}
+          onRetry={load}
+        />
+      )}
 
       <form
         onSubmit={handleSubmit}
@@ -354,6 +489,7 @@ export function InterviewGeneratorPage() {
 
       {generateState.kind === 'error' ? (
         <div className="mb-8 flex items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
+          <AlertCircle className="h-4 w-4 text-destructive shrink-0" aria-hidden="true" />
           <p role="alert" className="flex-1 text-sm text-destructive">
             {generateState.message}
           </p>
@@ -372,6 +508,11 @@ export function InterviewGeneratorPage() {
               <span className="font-medium text-foreground">
                 {generateState.response.job_title}
               </span>
+              {isPersonalized && (
+                <span className="ml-2 text-sm text-primary">
+                  (cá nhân hóa cho {candidateName})
+                </span>
+              )}
             </p>
             <div className="flex items-center gap-2">
               <Button variant="outline" size="sm" onClick={copyQuestions}>
@@ -396,6 +537,47 @@ export function InterviewGeneratorPage() {
           </div>
         </div>
       ) : null}
+
+      {/* Personalized mode info when no questions generated yet */}
+      {isPersonalized && generateState.kind === 'idle' && (
+        <Card className="border-info/30 bg-info/5">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-info" aria-hidden="true" />
+              Tạo câu hỏi cá nhân hóa
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <p>
+              AI sẽ tạo câu hỏi dựa trên:
+              <ul className="mt-1 list-disc list-inside space-y-1 text-muted-foreground">
+                <li>Yêu cầu công việc: <span className="font-medium">{job.title}</span></li>
+                <li>Hồ sơ ứng viên: <span className="font-medium">{candidateName}</span></li>
+                {hasResume && <li>CV đã phân tích: <span className="font-medium">Có</span></li>}
+                {hasMatch && <li>Điểm khớp AI: <span className="font-medium">Có</span></li>}
+                {!hasResume && <li className="text-warning">Chưa có CV được phân tích</li>}
+                {!hasMatch && <li className="text-warning">Chưa có điểm khớp AI</li>}
+              </ul>
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Câu hỏi sẽ được tạo khi bạn nhấn nút "Tạo bộ câu hỏi" ở trên.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Missing resume/match warning in personalized mode */}
+      {isPersonalized && generateState.kind === 'idle' && (!hasResume || !hasMatch) && (
+        <ErrorBanner
+          message={
+            !hasResume && !hasMatch
+              ? 'Ứng viên này chưa có CV được phân tích và chưa có điểm khớp AI. Câu hỏi sẽ chỉ dựa trên mô tả công việc.'
+              : !hasResume
+              ? 'Ứng viên này chưa có CV được phân tích. Câu hỏi sẽ chỉ dựa trên mô tả công việc và điểm khớp (nếu có).'
+              : 'Ứng viên này chưa có điểm khớp AI. Câu hỏi sẽ chỉ dựa trên mô tả công việc và CV (nếu có).'
+          }
+        />
+      )}
     </div>
   )
 }

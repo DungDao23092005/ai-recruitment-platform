@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 
 import { ApplicationDetailModal } from './ApplicationDetailModal'
 import * as applicationsApi from '@/api/applications'
@@ -122,11 +123,13 @@ beforeEach(() => {
 
 function renderModal(props = {}) {
   return render(
-    <ApplicationDetailModal
-      application={mockApplication}
-      onClose={vi.fn()}
-      {...props}
-    />,
+    <MemoryRouter>
+      <ApplicationDetailModal
+        application={mockApplication}
+        onClose={vi.fn()}
+        {...props}
+      />
+    </MemoryRouter>
   )
 }
 
