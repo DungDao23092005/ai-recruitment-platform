@@ -106,6 +106,7 @@ const mockDetail: ApplicationDetail = {
     minimum_years_experience: 3,
     education_level: null,
   },
+  interviews: [],
 }
 
 beforeEach(() => {

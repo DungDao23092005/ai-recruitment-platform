@@ -125,6 +125,10 @@ vi.mock('@/api/endpoints', () => {
   }
 })
 
+vi.mock('@/api/metrics', () => ({
+  getRecruiterMetrics: vi.fn(),
+}))
+
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
 const mockedGetJobs = vi.mocked(jobsApi.getJobs)
 const mockedGetJobById = vi.mocked(jobsApi.getJobById)
@@ -151,6 +155,9 @@ const mockedGetMyApplications = vi.mocked(
 )
 const mockedGetCompanyById = vi.mocked(companiesApi.getCompanyById)
 const healthGet = vi.mocked(endpointsApi.default.health.get)
+const mockedGetRecruiterMetrics = vi.mocked(
+  (await import('@/api/metrics')).getRecruiterMetrics
+)
 
 function setUser(role: UserRole) {
   const user: User = { ...mockUser, role }
@@ -202,6 +209,12 @@ beforeEach(() => {
     recruiter_id: 'user-1',
   } as never)
   healthGet.mockResolvedValue(mockHealth)
+  mockedGetRecruiterMetrics.mockResolvedValue({
+    total_jobs: 0,
+    total_applications: 0,
+    jobs_by_status: [],
+    applications_by_status: [],
+  })
 })
 
 describe('AppRouter public routes', () => {

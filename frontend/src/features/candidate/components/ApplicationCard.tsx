@@ -115,6 +115,31 @@ export function ApplicationCard({
             Ứng tuyển: {appliedDate}
           </p>
         ) : null}
+        {application.interviews && application.interviews.length > 0 ? (
+          <div className="mt-2 rounded-md border border-primary/20 bg-primary/5 p-3">
+            <p className="mb-1 font-semibold text-primary">Lịch phỏng vấn sắp tới</p>
+            {application.interviews.filter(i => i.status === 'scheduled').map(interview => (
+              <div key={interview.id} className="text-sm text-muted-foreground">
+                <p><strong>Thời gian:</strong> {new Date(interview.scheduled_at).toLocaleString('vi-VN')}</p>
+                <p><strong>Hình thức:</strong> {
+                  interview.interview_type === 'technical' ? 'Chuyên môn' :
+                  interview.interview_type === 'behavioral' ? 'Hành vi' :
+                  interview.interview_type === 'hr' ? 'Nhân sự' :
+                  'Case Study'
+                }</p>
+                {(interview.meeting_url || interview.location) && (
+                  <p className="mt-1">
+                    {interview.meeting_url ? (
+                      <a href={interview.meeting_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Tham gia Meeting</a>
+                    ) : (
+                      <span><strong>Địa điểm:</strong> {interview.location}</span>
+                    )}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : null}
         {withdrawError ? (
           <p
             role="alert"

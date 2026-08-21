@@ -49,3 +49,16 @@ class CompanySize(str, Enum):
     STARTUP = "startup"
     SME = "sme"
     ENTERPRISE = "enterprise"
+
+
+class InterviewType(str, Enum):
+    TECHNICAL = "technical"
+    BEHAVIORAL = "behavioral"
+    HR = "hr"
+    CASE_STUDY = "case_study"
+
+
+class InterviewStatus(str, Enum):
+    SCHEDULED = "scheduled"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"

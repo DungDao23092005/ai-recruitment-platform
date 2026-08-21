@@ -25,6 +25,7 @@ import { getFriendlyErrorMessage } from '@/utils/errors'
 import { StatusUpdateModal } from './StatusUpdateModal'
 import type { MatchResult } from '@/types/ai'
 import type { Application, ApplicationDetail } from '@/types/application'
+import { InterviewManager } from './InterviewManager'
 
 export interface ApplicationDetailModalProps {
   application: Application
@@ -457,6 +458,22 @@ export function ApplicationDetailModal({
                   job={detail.parsed_job}
                 />
               ) : null}
+            </div>
+
+            <div className="mt-4">
+              <InterviewManager 
+                applicationId={application.id} 
+                initialInterviews={detail.interviews || []}
+                onInterviewUpdated={(newInterviews) => {
+                  setState(prev => prev.kind === 'success' && prev.detail ? {
+                    ...prev,
+                    detail: { ...prev.detail, interviews: newInterviews }
+                  } : prev)
+                  // Also refresh the modal status if scheduling auto-transitioned it
+                  // We can reload the detail completely to get the updated status
+                  load()
+                }}
+              />
             </div>
           </>
         ) : null}

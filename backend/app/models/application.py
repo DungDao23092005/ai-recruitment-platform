@@ -33,3 +33,7 @@ class Application(Base, TimestampMixin, SoftDeleteMixin):
 
     candidate: Mapped[CandidateProfile] = relationship(back_populates="applications")
     job: Mapped[Job] = relationship(back_populates="applications")
+    interviews: Mapped[list["Interview"]] = relationship(
+        back_populates="application",
+        primaryjoin="and_(Application.id==Interview.application_id, Interview.is_deleted==False)",
+    )

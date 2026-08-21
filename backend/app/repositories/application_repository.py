@@ -39,7 +39,10 @@ class ApplicationRepository(BaseRepository[Application]):
     ) -> list[Application]:
         stmt = (
             select(Application)
-            .options(selectinload(Application.job).selectinload(Job.company))
+            .options(
+                selectinload(Application.job).selectinload(Job.company),
+                selectinload(Application.interviews)
+            )
             .where(
                 Application.candidate_id == candidate_id,
                 Application.is_deleted == False,  # noqa: E712
@@ -70,6 +73,7 @@ class ApplicationRepository(BaseRepository[Application]):
                 selectinload(Application.candidate),
                 selectinload(Application.job).selectinload(Job.company),
                 selectinload(Application.job).selectinload(Job.skills),
+                selectinload(Application.interviews),
             )
             .where(
                 Application.id == application_id,

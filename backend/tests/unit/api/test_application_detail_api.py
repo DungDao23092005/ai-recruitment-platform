@@ -42,6 +42,7 @@ def _fake_application() -> SimpleNamespace:
         updated_at=_now(),
         job=job,
         candidate=candidate,
+        interviews=[],
     )
 
 

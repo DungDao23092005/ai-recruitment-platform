@@ -33,6 +33,7 @@ export interface ApplicationWithJob {
   status: ApplicationStatus
   created_at: string
   updated_at: string
+  interviews?: Interview[]
 }
 
 export interface WorkExperience {
@@ -77,6 +78,42 @@ export interface Resume {
   updated_at: string
 }
 
+export type InterviewType = 'technical' | 'behavioral' | 'hr' | 'case_study'
+export type InterviewStatus = 'scheduled' | 'completed' | 'cancelled'
+
+export interface InterviewCreate {
+  scheduled_at: string
+  duration_minutes: number
+  interview_type: InterviewType
+  meeting_url?: string | null
+  location?: string | null
+  notes?: string | null
+}
+
+export interface InterviewUpdate {
+  scheduled_at?: string
+  duration_minutes?: number
+  interview_type?: InterviewType
+  meeting_url?: string | null
+  location?: string | null
+  notes?: string | null
+  status?: InterviewStatus
+}
+
+export interface Interview {
+  id: string
+  application_id: string
+  scheduled_at: string
+  duration_minutes: number
+  interview_type: InterviewType
+  meeting_url: string | null
+  location: string | null
+  notes: string | null
+  status: InterviewStatus
+  created_at: string
+  updated_at: string
+}
+
 export interface ApplicationDetail {
   id: string
   candidate_id: string
@@ -89,4 +126,5 @@ export interface ApplicationDetail {
   candidate: CandidateProfileMinimal | null
   resume: Resume | null
   parsed_job: ParsedJob | null
+  interviews: Interview[]
 }

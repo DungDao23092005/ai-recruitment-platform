@@ -29,9 +29,11 @@ from app.schemas.application import (
     ApplicationWithJobRead,
     CandidateProfileReadMinimal,
 )
+from app.schemas.interview import InterviewCreate, InterviewRead, InterviewUpdate
 from app.schemas.resume import ResumeRead
 from app.services.ai_matching_service import AIMatchingService
 from app.services.application_service import ApplicationService
+from app.services.interview_service import InterviewService
 from app.services.job_service import JobService
 from app.services.user_service import UserService
 
@@ -66,6 +68,7 @@ def to_application_with_job_read(
         status=application.status,
         created_at=application.created_at,
         updated_at=application.updated_at,
+        interviews=[InterviewRead.model_validate(i) for i in application.interviews if not i.is_deleted],
     )
 
 
@@ -206,6 +209,11 @@ async def get_application_detail(
         if application.job is not None
         else None
     )
+    interviews = [
+        InterviewRead.model_validate(i)
+        for i in application.interviews
+        if not i.is_deleted
+    ]
     return ApplicationDetailRead(
         id=application.id,
         candidate_id=application.candidate_id,
@@ -222,6 +230,7 @@ async def get_application_detail(
         ),
         resume=ResumeRead.model_validate(resume) if resume is not None else None,
         parsed_job=parsed_job,
+        interviews=interviews,
     )
 
 
@@ -315,3 +324,145 @@ async def withdraw_application(
         ) from exc
 
     return ApplicationRead.model_validate(application)
+
+
+@router.post(
+    "/{application_id}/interviews",
+    response_model=InterviewRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def schedule_interview(
+    application_id: uuid.UUID,
+    data: InterviewCreate,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> InterviewRead:
+    """Schedule a new interview for an application.
+
+    Recruiter/admin only. Ownership enforced via job ownership.
+    Transitions application to INTERVIEWING if not already.
+    """
+    try:
+        return await InterviewService(db).schedule_interview(
+            current_user=current_user,
+            application_id=application_id,
+            data=data,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except InvalidTransitionException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/{application_id}/interviews",
+    response_model=list[InterviewRead],
+)
+async def list_interviews(
+    application_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> list[InterviewRead]:
+    """List all interviews for an application.
+
+    Recruiter/admin only. Ownership enforced.
+    """
+    try:
+        return await InterviewService(db).list_interviews(
+            current_user=current_user,
+            application_id=application_id,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/interviews/{interview_id}",
+    response_model=InterviewRead,
+)
+async def get_interview(
+    interview_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> InterviewRead:
+    """Get a single interview by ID.
+
+    Recruiter/admin only. Ownership enforced.
+    """
+    try:
+        return await InterviewService(db).get_interview(
+            current_user=current_user,
+            interview_id=interview_id,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.patch(
+    "/interviews/{interview_id}",
+    response_model=InterviewRead,
+)
+async def update_interview(
+    interview_id: uuid.UUID,
+    data: InterviewUpdate,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> InterviewRead:
+    """Update an interview (reschedule, change type, etc.).
+
+    Recruiter/admin only. Ownership enforced.
+    """
+    try:
+        return await InterviewService(db).update_interview(
+            current_user=current_user,
+            interview_id=interview_id,
+            data=data,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except InvalidTransitionException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+@router.delete(
+    "/interviews/{interview_id}",
+    response_model=InterviewRead,
+)
+async def cancel_interview(
+    interview_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> InterviewRead:
+    """Cancel an interview.
+
+    Recruiter/admin only. Ownership enforced.
+    Sets status to CANCELLED and soft-deletes.
+    """
+    try:
+        return await InterviewService(db).cancel_interview(
+            current_user=current_user,
+            interview_id=interview_id,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
