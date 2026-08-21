@@ -75,3 +75,5 @@ docker-compose.override.yml
 
 docs/
 .agents/
+.opencode/
+design-system/
