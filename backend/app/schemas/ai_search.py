@@ -19,3 +19,9 @@ class SemanticSearchResult(BaseModel):
     created_at: str | None = Field(
         default=None, description="Creation timestamp stored in payload"
     )
+    full_name: str | None = Field(
+        default=None, description="Candidate full name (enriched from profile)"
+    )
+    title: str | None = Field(
+        default=None, description="Candidate professional title (enriched from profile)"
+    )

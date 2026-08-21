@@ -11,6 +11,8 @@ const mockResults: SemanticSearchResult[] = [
     score: 0.92,
     skills: ['React', 'TypeScript'],
     created_at: '2026-01-01T00:00:00+00:00',
+    full_name: 'Nguyễn Văn A',
+    title: 'Backend Engineer',
   },
 ]
 
@@ -58,7 +60,7 @@ describe('SemanticCandidateSearchPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('cand-1')).toBeInTheDocument()
+      expect(screen.getByText('Nguyễn Văn A')).toBeInTheDocument()
       expect(screen.getByText('React')).toBeInTheDocument()
     })
   })

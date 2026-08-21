@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Search, RefreshCw } from 'lucide-react'
+import { Search, RefreshCw, Briefcase } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -24,6 +24,13 @@ function scoreVariant(score: number): 'success' | 'warning' | 'neutral' {
   if (score >= 0.75) return 'success'
   if (score >= 0.5) return 'warning'
   return 'neutral'
+}
+
+function getDisplayName(result: SemanticSearchResult): string {
+  if (result.full_name) {
+    return result.full_name
+  }
+  return result.id
 }
 
 export function SemanticSearchBar({
@@ -111,7 +118,13 @@ export function SemanticSearchBar({
                 className="flex items-start justify-between gap-3 rounded-lg border bg-card p-3.5 transition-shadow hover:shadow-soft"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{result.id}</p>
+                  <p className="truncate text-sm font-medium">{getDisplayName(result)}</p>
+                  {result.title ? (
+                    <p className="truncate text-xs text-muted-foreground mt-0.5">
+                      <Briefcase className="h-3 w-3 inline-block align-middle mr-1" aria-hidden="true" />
+                      {result.title}
+                    </p>
+                  ) : null}
                   {result.skills.length > 0 ? (
                     <div className="mt-1.5 flex flex-wrap gap-1">
                       {result.skills.map((skill) => (

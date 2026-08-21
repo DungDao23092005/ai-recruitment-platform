@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from app.ai.embeddings.embedding_service import EmbeddingService
@@ -9,6 +10,8 @@ from app.core.exceptions import (
     EmptyDocumentError,
     InvalidDocumentError,
 )
+from app.models import CandidateProfile
+from app.repositories import BaseRepository
 from app.schemas.ai_search import SemanticSearchResult
 
 
@@ -53,14 +56,74 @@ class SemanticSearchService:
         query: str,
         limit: int = 10,
         score_threshold: float | None = None,
+        candidate_repository: BaseRepository[CandidateProfile] | None = None,
     ) -> list[SemanticSearchResult]:
-        return await self._search(
+        """Search candidates and enrich with profile data.
+
+        When ``candidate_repository`` is provided, results are enriched with
+        ``full_name`` and ``title`` from ``CandidateProfile`` using a single
+        batch query. Ghost/deleted candidates are filtered out. Qdrant ranking
+        order is preserved.
+        """
+        raw_results = await self._search(
             collection_name="resumes",
             id_field="candidate_id",
             query=query,
             limit=limit,
             score_threshold=score_threshold,
         )
+
+        if candidate_repository is None or not raw_results:
+            return raw_results
+
+        # Extract candidate IDs from Qdrant results (preserving order)
+        candidate_ids = [uuid.UUID(r.id) for r in raw_results]
+
+        # Batch query for candidate profiles
+        profiles = await self._fetch_candidate_profiles(
+            candidate_repository, candidate_ids
+        )
+
+        # Build lookup map
+        profile_map = {p.id: p for p in profiles}
+
+        # Enrich results preserving Qdrant order, filter out missing/deleted
+        enriched: list[SemanticSearchResult] = []
+        for r in raw_results:
+            cand_id = uuid.UUID(r.id)
+            profile = profile_map.get(cand_id)
+            if profile is None:
+                continue  # Ghost or deleted candidate - filter out
+            enriched.append(
+                SemanticSearchResult(
+                    id=r.id,
+                    score=r.score,
+                    skills=r.skills,
+                    created_at=r.created_at,
+                    full_name=profile.full_name,
+                    title=profile.title,
+                )
+            )
+        return enriched
+
+    async def _fetch_candidate_profiles(
+        self,
+        repository: BaseRepository[CandidateProfile],
+        candidate_ids: list[uuid.UUID],
+    ) -> list[CandidateProfile]:
+        """Batch fetch non-deleted candidate profiles by IDs."""
+        if not candidate_ids:
+            return []
+        from sqlalchemy import select
+        stmt = (
+            select(CandidateProfile)
+            .where(
+                CandidateProfile.id.in_(candidate_ids),
+                CandidateProfile.is_deleted == False,  # noqa: E712
+            )
+        )
+        result = await repository.session.execute(stmt)
+        return list(result.scalars().all())
 
     async def _search(
         self,

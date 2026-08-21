@@ -11,6 +11,8 @@ const mockResults: SemanticSearchResult[] = [
     score: 0.87,
     skills: ['Python', 'FastAPI'],
     created_at: '2026-01-01T00:00:00+00:00',
+    full_name: null,
+    title: null,
   },
 ]
 

@@ -9,10 +9,23 @@ import type { SemanticSearchResult } from '@/types/ai'
 
 const mockResults: SemanticSearchResult[] = [
   {
-    id: 'job-1',
+    id: 'candidate-1',
     score: 0.87,
     skills: ['Python', 'FastAPI'],
     created_at: '2026-01-01T00:00:00+00:00',
+    full_name: 'Nguyễn Văn A',
+    title: 'Backend Engineer',
+  },
+]
+
+const mockResultsWithoutName: SemanticSearchResult[] = [
+  {
+    id: 'candidate-2',
+    score: 0.75,
+    skills: ['React', 'TypeScript'],
+    created_at: '2026-01-01T00:00:00+00:00',
+    full_name: null,
+    title: 'Frontend Developer',
   },
 ]
 
@@ -86,7 +99,7 @@ describe('SemanticSearchBar', () => {
     })
   })
 
-  it('renders results with score', async () => {
+  it('renders results with candidate full_name and title', async () => {
     render(<SemanticSearchBar searchFn={mockSearchFn} />)
 
     fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
@@ -95,11 +108,28 @@ describe('SemanticSearchBar', () => {
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('job-1')).toBeInTheDocument()
+      expect(screen.getByText('Nguyễn Văn A')).toBeInTheDocument()
+      expect(screen.getByText('Backend Engineer')).toBeInTheDocument()
       expect(screen.getByText('Python')).toBeInTheDocument()
       expect(
         screen.getByLabelText('Độ phù hợp 87%'),
       ).toBeInTheDocument()
+    })
+  })
+
+  it('falls back to UUID when full_name is missing', async () => {
+    mockSearchFn.mockResolvedValue(mockResultsWithoutName)
+
+    render(<SemanticSearchBar searchFn={mockSearchFn} />)
+
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
+      target: { value: 'react' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('candidate-2')).toBeInTheDocument()
+      expect(screen.getByText('Frontend Developer')).toBeInTheDocument()
     })
   })
 
@@ -165,7 +195,7 @@ describe('SemanticSearchBar', () => {
     fireEvent.click(screen.getByRole('button', { name: /Thử lại/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('job-1')).toBeInTheDocument()
+      expect(screen.getByText('Nguyễn Văn A')).toBeInTheDocument()
     })
     expect(mockSearchFn).toHaveBeenCalledTimes(2)
   })

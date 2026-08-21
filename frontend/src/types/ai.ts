@@ -95,6 +95,8 @@ export interface SemanticSearchResult {
   score: number
   skills: string[]
   created_at: string | null
+  full_name: string | null
+  title: string | null
 }
 
 export interface SemanticSearchParams {
