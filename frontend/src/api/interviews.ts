@@ -36,3 +36,19 @@ export async function cancelInterview(
     `/applications/interviews/${interviewId}`,
   )
 }
+
+export async function candidateActionInterview(
+  applicationId: string,
+  interviewId: string,
+  action: 'confirm' | 'decline',
+  candidateNotes?: string,
+): Promise<Interview> {
+  const response = await apiClient.patch<Interview>(
+    `/applications/${applicationId}/interviews/${interviewId}/action`,
+    {
+      action,
+      candidate_notes: candidateNotes,
+    }
+  )
+  return response.data
+}

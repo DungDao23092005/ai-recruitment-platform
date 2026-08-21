@@ -79,7 +79,7 @@ export interface Resume {
 }
 
 export type InterviewType = 'technical' | 'behavioral' | 'hr' | 'case_study'
-export type InterviewStatus = 'scheduled' | 'completed' | 'cancelled'
+export type InterviewStatus = 'scheduled' | 'completed' | 'cancelled' | 'candidate_confirmed' | 'candidate_declined'
 
 export interface InterviewCreate {
   scheduled_at: string
@@ -109,6 +109,7 @@ export interface Interview {
   meeting_url: string | null
   location: string | null
   notes: string | null
+  candidate_notes: string | null
   status: InterviewStatus
   created_at: string
   updated_at: string

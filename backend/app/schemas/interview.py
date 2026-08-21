@@ -17,6 +17,8 @@ class InterviewStatus(str):
     SCHEDULED = "scheduled"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+    CANDIDATE_CONFIRMED = "candidate_confirmed"
+    CANDIDATE_DECLINED = "candidate_declined"
 
 
 class InterviewBase(BaseModel):
@@ -28,6 +30,7 @@ class InterviewBase(BaseModel):
     meeting_url: HttpUrl | None = None
     location: str | None = None
     notes: str | None = None
+    candidate_notes: str | None = None
     status: str = Field(default="scheduled")
 
 
@@ -51,6 +54,7 @@ class InterviewUpdate(BaseModel):
     meeting_url: HttpUrl | None = None
     location: str | None = None
     notes: str | None = None
+    candidate_notes: str | None = None
     status: str | None = None
 
 
@@ -65,6 +69,14 @@ class InterviewRead(BaseModel):
     meeting_url: str | None = None
     location: str | None = None
     notes: str | None = None
+    candidate_notes: str | None = None
     status: str
     created_at: datetime
     updated_at: datetime
+
+
+class InterviewActionRequest(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    action: str  # "confirm" | "decline"
+    candidate_notes: str | None = None

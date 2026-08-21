@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Trash2, Edit2, Plus, Clock, MapPin, Link as LinkIcon, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Badge as BadgeComponent } from '@/components/ui/badge'
 import { scheduleInterview, updateInterview, cancelInterview } from '@/api/interviews'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { Interview } from '@/types/application'
@@ -32,6 +33,9 @@ export function InterviewManager({
   const [notes, setNotes] = useState('')
 
   const activeInterviews = interviews.filter(i => i.status === 'scheduled')
+
+  const confirmedInterviews = interviews.filter(i => i.status === 'candidate_confirmed')
+  const declinedInterviews = interviews.filter(i => i.status === 'candidate_declined')
 
   const resetForm = () => {
     setScheduledAt('')
@@ -203,6 +207,40 @@ export function InterviewManager({
                 {i.meeting_url && <p className="flex items-center gap-2"><LinkIcon className="h-3.5 w-3.5" /> <a href={i.meeting_url} target="_blank" rel="noopener noreferrer" className="hover:underline">{i.meeting_url}</a></p>}
                 {i.location && <p className="flex items-center gap-2"><MapPin className="h-3.5 w-3.5" /> {i.location}</p>}
                 {i.notes && <p className="mt-2 text-xs italic bg-background p-2 rounded">{i.notes}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : confirmedInterviews.length > 0 ? (
+        <div className="space-y-3">
+          {confirmedInterviews.map(i => (
+            <div key={i.id} className="rounded-lg border border-success/20 bg-success/5 p-3 text-sm">
+              <div className="flex justify-between items-start mb-2">
+                <p className="font-semibold text-success">Phỏng vấn {i.interview_type}</p>
+                <BadgeComponent variant="success" className="mr-1">Đã xác nhận</BadgeComponent>
+              </div>
+              <div className="space-y-1 text-muted-foreground">
+                <p className="flex items-center gap-2"><Clock className="h-3.5 w-3.5" /> {new Date(i.scheduled_at).toLocaleString('vi-VN')} ({i.duration_minutes} phút)</p>
+                {i.meeting_url && <p className="flex items-center gap-2"><LinkIcon className="h-3.5 w-3.5" /> <a href={i.meeting_url} target="_blank" rel="noopener noreferrer" className="hover:underline">{i.meeting_url}</a></p>}
+                {i.location && <p className="flex items-center gap-2"><MapPin className="h-3.5 w-3.5" /> {i.location}</p>}
+                {i.candidate_notes && <p className="mt-2 text-xs italic bg-success/5 border border-success/20 p-2 rounded text-success">Phản hồi: {i.candidate_notes}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : declinedInterviews.length > 0 ? (
+        <div className="space-y-3">
+          {declinedInterviews.map(i => (
+            <div key={i.id} className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm">
+              <div className="flex justify-between items-start mb-2">
+                <p className="font-semibold text-destructive">Phỏng vấn {i.interview_type}</p>
+                <BadgeComponent variant="destructive">Đã từ chối</BadgeComponent>
+              </div>
+              <div className="space-y-1 text-muted-foreground">
+                <p className="flex items-center gap-2"><Clock className="h-3.5 w-3.5" /> {new Date(i.scheduled_at).toLocaleString('vi-VN')} ({i.duration_minutes} phút)</p>
+                {i.meeting_url && <p className="flex items-center gap-2"><LinkIcon className="h-3.5 w-3.5" /> <a href={i.meeting_url} target="_blank" rel="noopener noreferrer" className="hover:underline">{i.meeting_url}</a></p>}
+                {i.location && <p className="flex items-center gap-2"><MapPin className="h-3.5 w-3.5" /> {i.location}</p>}
+                {i.candidate_notes && <p className="mt-2 text-xs italic bg-destructive/5 border border-destructive/20 p-2 rounded text-destructive">Lý do: {i.candidate_notes}</p>}
               </div>
             </div>
           ))}

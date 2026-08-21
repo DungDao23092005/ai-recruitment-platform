@@ -32,6 +32,7 @@ class Interview(Base, TimestampMixin, SoftDeleteMixin):
     meeting_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     location: Mapped[str | None] = mapped_column(String(500), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    candidate_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[InterviewStatus] = mapped_column(
         StringEnum(InterviewStatus),
         default=InterviewStatus.SCHEDULED,

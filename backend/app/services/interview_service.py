@@ -14,8 +14,9 @@ from app.domain.models import Application as DomainApplication
 from app.domain.models.base import DomainException
 from app.models import Application, Interview, Job, User
 from app.repositories import ApplicationRepository, InterviewRepository
-from app.schemas.interview import InterviewCreate, InterviewRead, InterviewUpdate
+from app.schemas.interview import InterviewCreate, InterviewRead, InterviewUpdate, InterviewActionRequest
 from app.services.job_service import JobService
+from app.services.user_service import UserService
 
 
 class InterviewService:
@@ -260,5 +261,69 @@ class InterviewService:
             raise EntityNotFoundException(
                 f"Interview {interview_id} not found"
             ) from None
+
+        return InterviewRead.model_validate(interview)
+
+    async def candidate_action_interview(
+        self,
+        current_user: User,
+        application_id: uuid.UUID,
+        interview_id: uuid.UUID,
+        action: str,
+        candidate_notes: str | None = None,
+    ) -> InterviewRead:
+        """Candidate confirms or declines a scheduled interview.
+
+        Candidate only. Ownership enforced via application -> candidate profile.
+        Interview must be in SCHEDULED status.
+        """
+        # Get candidate profile for the current user
+        user_with_profile = await UserService(self.session).get_user_with_profile(current_user.id)
+        if user_with_profile is None or user_with_profile.candidate_profile is None:
+            raise EntityNotFoundException("Candidate profile not found")
+
+        candidate_id = user_with_profile.candidate_profile.id
+
+        # Get application and verify ownership
+        application = await self.applications.get_by_id(application_id)
+        if application is None:
+            raise EntityNotFoundException(f"Application {application_id} not found")
+
+        if application.candidate_id != candidate_id:
+            raise EntityNotFoundException(f"Application {application_id} not found")
+
+        # Get interview and verify it belongs to the application
+        interview = await self.interviews.get_by_id_with_application(interview_id)
+        if interview is None:
+            raise EntityNotFoundException(f"Interview {interview_id} not found")
+
+        if interview.application_id != application_id:
+            raise EntityNotFoundException(f"Interview {interview_id} not found")
+
+        # Only allow action when status is SCHEDULED
+        if interview.status != InterviewStatus.SCHEDULED:
+            raise InvalidTransitionException(
+                f"Cannot perform action on interview with status {interview.status.value}"
+            )
+
+        # Validate action
+        if action == "confirm":
+            interview.status = InterviewStatus.CANDIDATE_CONFIRMED
+            interview.candidate_notes = candidate_notes
+        elif action == "decline":
+            # candidate_notes is required for decline
+            if not candidate_notes or not candidate_notes.strip():
+                raise InvalidTransitionException("Candidate notes are required when declining an interview")
+            interview.status = InterviewStatus.CANDIDATE_DECLINED
+            interview.candidate_notes = candidate_notes.strip()
+        else:
+            raise InvalidTransitionException(f"Invalid action: {action}. Must be 'confirm' or 'decline'")
+
+        try:
+            await self.session.commit()
+            await self.session.refresh(interview)
+        except Exception:
+            await self.session.rollback()
+            raise
 
         return InterviewRead.model_validate(interview)

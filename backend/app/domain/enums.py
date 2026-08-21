@@ -62,3 +62,5 @@ class InterviewStatus(str, Enum):
     SCHEDULED = "scheduled"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+    CANDIDATE_CONFIRMED = "candidate_confirmed"
+    CANDIDATE_DECLINED = "candidate_declined"

@@ -29,7 +29,7 @@ from app.schemas.application import (
     ApplicationWithJobRead,
     CandidateProfileReadMinimal,
 )
-from app.schemas.interview import InterviewCreate, InterviewRead, InterviewUpdate
+from app.schemas.interview import InterviewCreate, InterviewRead, InterviewUpdate, InterviewActionRequest
 from app.schemas.resume import ResumeRead
 from app.services.ai_matching_service import AIMatchingService
 from app.services.application_service import ApplicationService
@@ -464,5 +464,41 @@ async def cancel_interview(
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.patch(
+    "/{application_id}/interviews/{interview_id}/action",
+    response_model=InterviewRead,
+)
+async def candidate_action_interview(
+    application_id: uuid.UUID,
+    interview_id: uuid.UUID,
+    data: InterviewActionRequest,
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+) -> InterviewRead:
+    """Candidate confirms or declines a scheduled interview.
+
+    Candidate only. Ownership enforced via application -> candidate.
+    Interview must be in SCHEDULED status.
+    """
+    try:
+        return await InterviewService(db).candidate_action_interview(
+            current_user=current_user,
+            application_id=application_id,
+            interview_id=interview_id,
+            action=data.action,
+            candidate_notes=data.candidate_notes,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except InvalidTransitionException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
