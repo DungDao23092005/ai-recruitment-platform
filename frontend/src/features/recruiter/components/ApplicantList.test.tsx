@@ -37,6 +37,7 @@ vi.mock('@/api/client', () => ({
 
 vi.mock('@/api/applications', () => ({
   getApplicationDetail: vi.fn(),
+  getApplicationMatch: vi.fn(),
 }))
 
 const mockedPatch = vi.mocked(apiClient.patch)
@@ -96,6 +97,14 @@ const mockDetail: ApplicationDetail = {
     },
     created_at: '2026-01-20T00:00:00Z',
     updated_at: '2026-01-20T00:00:00Z',
+  },
+  parsed_job: {
+    title: 'Backend Engineer',
+    summary: 'Build robust APIs',
+    required_skills: ['Python', 'FastAPI'],
+    preferred_skills: [],
+    minimum_years_experience: 3,
+    education_level: null,
   },
 }
 

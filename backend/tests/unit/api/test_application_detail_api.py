@@ -21,7 +21,13 @@ def _now() -> datetime:
 
 def _fake_application() -> SimpleNamespace:
     company = SimpleNamespace(name="Acme Corp")
-    job = SimpleNamespace(id=uuid.uuid4(), title="Backend Engineer", company=company)
+    job = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="Backend Engineer",
+        description="Build robust APIs",
+        company=company,
+        skills=[SimpleNamespace(name="Python")],
+    )
     candidate = SimpleNamespace(
         id=uuid.uuid4(),
         full_name="Jane Doe",
@@ -138,6 +144,9 @@ def test_get_detail_returns_application_with_resume(
     assert body["candidate"]["full_name"] == "Jane Doe"
     assert body["resume"] is not None
     assert body["resume"]["parsed_data"]["skills"] == ["Python"]
+    assert body["parsed_job"] is not None
+    assert body["parsed_job"]["title"] == "Backend Engineer"
+    assert body["parsed_job"]["required_skills"] == ["Python"]
     mock_service.get_application_detail.assert_awaited_once()
 
 

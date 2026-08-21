@@ -5,13 +5,22 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.embeddings.embedding_service import (
+    EmbeddingService,
+    SentenceTransformerEmbeddingProvider,
+)
+from app.ai.interfaces.base_provider import BaseVectorRepository
+from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 from app.api.deps import get_db, require_candidate, require_recruiter
 from app.core.exceptions import (
+    AIError,
     ConflictException,
     EntityNotFoundException,
     InvalidTransitionException,
 )
 from app.models import Application, User
+from app.schemas.ai_job import ParsedJobSchema
+from app.schemas.ai_match import MatchResultSchema
 from app.schemas.application import (
     ApplicationCreate,
     ApplicationDetailRead,
@@ -21,11 +30,25 @@ from app.schemas.application import (
     CandidateProfileReadMinimal,
 )
 from app.schemas.resume import ResumeRead
+from app.services.ai_matching_service import AIMatchingService
 from app.services.application_service import ApplicationService
 from app.services.job_service import JobService
 from app.services.user_service import UserService
 
 router = APIRouter()
+
+
+def _get_ai_matching_service(
+    vector_repository: BaseVectorRepository = Depends(
+        lambda: QdrantVectorRepository()
+    ),
+) -> AIMatchingService:
+    return AIMatchingService(
+        vector_repository=vector_repository,
+        embedding_service=EmbeddingService(
+            SentenceTransformerEmbeddingProvider()
+        ),
+    )
 
 
 def to_application_with_job_read(
@@ -172,6 +195,17 @@ async def get_application_detail(
         if application.job is not None and application.job.company is not None
         else None
     )
+    parsed_job = (
+        ParsedJobSchema(
+            title=application.job.title,
+            summary=application.job.description,
+            required_skills=[
+                skill.name for skill in application.job.skills
+            ],
+        )
+        if application.job is not None
+        else None
+    )
     return ApplicationDetailRead(
         id=application.id,
         candidate_id=application.candidate_id,
@@ -187,7 +221,42 @@ async def get_application_detail(
             else None
         ),
         resume=ResumeRead.model_validate(resume) if resume is not None else None,
+        parsed_job=parsed_job,
     )
+
+
+@router.get(
+    "/{application_id}/match",
+    response_model=MatchResultSchema,
+)
+async def get_application_match(
+    application_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+    service: AIMatchingService = Depends(_get_ai_matching_service),
+) -> MatchResultSchema:
+    """Return the deterministic AI match score for an application.
+
+    Recruiter/admin only. The candidate resume and job are resolved
+    server-side from the application (client-supplied IDs are never trusted)
+    and ownership is enforced exactly like the application detail endpoint.
+    """
+    try:
+        return await ApplicationService(db).get_application_match(
+            current_user=current_user,
+            application_id=application_id,
+            matching_service=service,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except AIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI Match unavailable. Please try again later.",
+        ) from exc
 
 
 @router.patch(

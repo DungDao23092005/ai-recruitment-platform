@@ -9,17 +9,21 @@ import {
   Languages,
   Mail,
   Phone,
+  RefreshCw,
+  Sparkles,
   User,
   Wrench,
 } from 'lucide-react'
-import { getApplicationDetail } from '@/api/applications'
+import { getApplicationDetail, getApplicationMatch } from '@/api/applications'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
 import { Spinner } from '@/components/ui/spinner'
 import { Badge } from '@/components/ui/badge'
 import { ApplicationStatusBadge } from '@/components/common/ApplicationStatusBadge'
+import { MatchScoreCard } from '@/features/ai/components/MatchScoreCard'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { StatusUpdateModal } from './StatusUpdateModal'
+import type { MatchResult } from '@/types/ai'
 import type { Application, ApplicationDetail } from '@/types/application'
 
 export interface ApplicationDetailModalProps {
@@ -271,6 +275,24 @@ export function ApplicationDetailModal({
     message?: string
   }>({ kind: 'loading' })
   const [showStatusUpdate, setShowStatusUpdate] = useState(false)
+  const [matchState, setMatchState] = useState<
+    | { kind: 'idle' }
+    | { kind: 'loading' }
+    | { kind: 'error'; message: string }
+    | { kind: 'success'; result: MatchResult }
+  >({ kind: 'idle' })
+
+  const runMatch = useCallback(() => {
+    setMatchState({ kind: 'loading' })
+    getApplicationMatch(application.id)
+      .then((result) => setMatchState({ kind: 'success', result }))
+      .catch((err) => {
+        setMatchState({
+          kind: 'error',
+          message: getFriendlyErrorMessage(err),
+        })
+      })
+  }, [application.id])
 
   const load = useCallback(() => {
     let active = true
@@ -381,6 +403,60 @@ export function ApplicationDetailModal({
                 Hồ sơ CV
               </SectionTitle>
               <DigitalCV parsedData={detail.resume} />
+            </div>
+
+            <div className="space-y-3">
+              <SectionTitle icon={<Sparkles className="h-3.5 w-3.5" aria-hidden="true" />}>
+                AI Match
+              </SectionTitle>
+              {!detail.resume?.parsed_data ? (
+                <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/30 px-6 py-8 text-center">
+                  <Sparkles className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+                  <p className="text-sm font-medium text-foreground">
+                    Chưa có dữ liệu CV để phân tích
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Ứng viên chưa có CV được trích xuất, chưa thể tính điểm đối sánh.
+                  </p>
+                </div>
+              ) : matchState.kind === 'idle' ? (
+                <div className="rounded-xl border bg-muted/20 px-4 py-4">
+                  <p className="text-sm text-muted-foreground">
+                    Phân tích mức độ phù hợp của ứng viên với công việc bằng AI.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-3"
+                    onClick={runMatch}
+                  >
+                    <Sparkles className="h-4 w-4" aria-hidden="true" />
+                    Phân tích AI
+                  </Button>
+                </div>
+              ) : matchState.kind === 'loading' ? (
+                <div className="flex items-center gap-3 rounded-xl border bg-muted/30 px-4 py-6 text-sm text-muted-foreground">
+                  <Spinner size="md" />
+                  <span>Đang phân tích mức độ phù hợp...</span>
+                </div>
+              ) : matchState.kind === 'error' ? (
+                <div className="space-y-3 rounded-xl border border-destructive/30 bg-muted/20 px-4 py-4">
+                  <p role="alert" className="text-sm font-medium text-destructive">
+                    {matchState.message}
+                  </p>
+                  <Button variant="outline" size="sm" onClick={runMatch}>
+                    <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                    Thử lại
+                  </Button>
+                </div>
+              ) : matchState.kind === 'success' && matchState.result ? (
+                <MatchScoreCard
+                  matchResult={matchState.result}
+                  candidate={detail.resume.parsed_data}
+                  job={detail.parsed_job}
+                />
+              ) : null}
             </div>
           </>
         ) : null}

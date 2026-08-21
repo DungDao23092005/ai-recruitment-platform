@@ -1,4 +1,5 @@
 import apiClient from '@/api/client'
+import type { MatchResult } from '@/types/ai'
 import type {
   Application,
   ApplicationDetail,
@@ -32,6 +33,14 @@ export async function getApplicationDetail(
 ): Promise<ApplicationDetail> {
   return apiClient.get<ApplicationDetail, ApplicationDetail>(
     `/applications/${applicationId}`,
+  )
+}
+
+export async function getApplicationMatch(
+  applicationId: string,
+): Promise<MatchResult> {
+  return apiClient.get<MatchResult, MatchResult>(
+    `/applications/${applicationId}/match`,
   )
 }
 

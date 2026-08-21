@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import uuid
 
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
+    AIError,
     ConflictException,
     EntityNotFoundException,
     InvalidTransitionException,
@@ -18,6 +20,10 @@ from app.repositories import (
     JobRepository,
     ResumeRepository,
 )
+from app.schemas.ai_job import ParsedJobSchema
+from app.schemas.ai_match import MatchResultSchema
+from app.schemas.ai_resume import ParsedResumeSchema
+from app.services.ai_matching_service import AIMatchingService
 from app.services.job_service import JobService
 from app.services.user_service import UserService
 
@@ -212,6 +218,104 @@ class ApplicationService:
             application.candidate_id
         )
         return application, resume
+
+    async def get_application_match(
+        self,
+        current_user: User,
+        application_id: uuid.UUID,
+        matching_service: AIMatchingService,
+    ) -> MatchResultSchema:
+        """Compute the deterministic AI match score for an application.
+
+        Recruiter/admin only, with ownership enforced exactly like
+        ``get_application_detail`` (foreign/missing applications surface as
+        404). The candidate resume and job are resolved server-side from the
+        application; vectors come from the vector repository and fall back to
+        on-demand embedding when a point is missing. Scoring is delegated to
+        the existing ``MatchingEngine`` (no duplicated logic here). Missing
+        or unparseable resume data degrades gracefully instead of crashing.
+        """
+        application = await self.applications.get_by_id_with_candidate(
+            application_id
+        )
+        if application is None:
+            raise EntityNotFoundException(
+                f"Application {application_id} not found"
+            )
+
+        try:
+            job = await JobService(self.session).get_recruiter_job_by_id(
+                current_user,
+                application.job_id,
+            )
+        except EntityNotFoundException:
+            raise EntityNotFoundException(
+                f"Application {application_id} not found"
+            ) from None
+
+        resume = await ResumeRepository(self.session, Resume).get_primary_by_candidate(
+            application.candidate_id
+        )
+
+        parsed_resume = None
+        resume_vector = None
+        if resume is not None and resume.parsed_data:
+            try:
+                parsed_resume = ParsedResumeSchema.model_validate(
+                    resume.parsed_data
+                )
+            except ValidationError:
+                parsed_resume = None
+            if parsed_resume is not None:
+                resume_vector = await self._resolve_vector(
+                    matching_service, "resumes", application.candidate_id
+                )
+                if resume_vector is None:
+                    resume_vector = (
+                        matching_service.embedding_service.embed_resume(
+                            parsed_resume
+                        )
+                    )
+
+        parsed_job = ParsedJobSchema(
+            title=job.title,
+            summary=job.description,
+            required_skills=[skill.name for skill in job.skills],
+        )
+        job_vector = await self._resolve_vector(
+            matching_service, "jobs", application.job_id
+        )
+        if job_vector is None:
+            job_vector = matching_service.embedding_service.embed_job(
+                parsed_job
+            )
+
+        return matching_service.matching_engine.match_resume_to_job(
+            resume=parsed_resume,
+            job=parsed_job,
+            resume_vector=resume_vector,
+            job_vector=job_vector,
+        )
+
+    @staticmethod
+    async def _resolve_vector(
+        matching_service: AIMatchingService,
+        collection_name: str,
+        point_id: uuid.UUID,
+    ) -> list[float] | None:
+        """Return the stored vector for a point or ``None`` when missing.
+
+        Qdrant connectivity failures raise ``AIError`` (surfaced by the API
+        layer as a controlled error); only a missing point is treated as
+        ``None`` so the caller can embed on demand.
+        """
+        retrieved = await matching_service.vector_repository.retrieve_vector(
+            collection_name=collection_name,
+            point_id=point_id,
+        )
+        if retrieved is None:
+            return None
+        return retrieved["vector"]
 
     async def list_my_applications(
         self,

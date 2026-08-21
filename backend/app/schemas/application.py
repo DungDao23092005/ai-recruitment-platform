@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.domain.enums import ApplicationStatus
+from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.resume import ResumeRead
 
 
@@ -44,6 +45,7 @@ class ApplicationDetailRead(BaseModel):
     updated_at: datetime
     candidate: CandidateProfileReadMinimal | None = None
     resume: ResumeRead | None = None
+    parsed_job: ParsedJobSchema | None = None
 
 
 class ApplicationStatusUpdate(BaseModel):

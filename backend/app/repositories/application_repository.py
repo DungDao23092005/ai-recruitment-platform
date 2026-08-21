@@ -69,6 +69,7 @@ class ApplicationRepository(BaseRepository[Application]):
             .options(
                 selectinload(Application.candidate),
                 selectinload(Application.job).selectinload(Job.company),
+                selectinload(Application.job).selectinload(Job.skills),
             )
             .where(
                 Application.id == application_id,

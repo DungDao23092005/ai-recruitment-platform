@@ -1,3 +1,5 @@
+import type { ParsedJob } from '@/types/ai'
+
 export type ApplicationStatus =
   | 'applied'
   | 'under_review'
@@ -86,4 +88,5 @@ export interface ApplicationDetail {
   updated_at: string
   candidate: CandidateProfileMinimal | null
   resume: Resume | null
+  parsed_job: ParsedJob | null
 }
