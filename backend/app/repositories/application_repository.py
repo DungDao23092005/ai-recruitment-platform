@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from app.models import Application, Job
@@ -78,3 +78,19 @@ class ApplicationRepository(BaseRepository[Application]):
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def get_application_counts_by_status(
+        self, company_id: Any
+    ) -> list[dict[str, Any]]:
+        stmt = (
+            select(Application.status, func.count(Application.id))
+            .join(Job, Application.job_id == Job.id)
+            .where(
+                Job.company_id == company_id,
+                Job.is_deleted == False,  # noqa: E712
+                Application.is_deleted == False,  # noqa: E712
+            )
+            .group_by(Application.status)
+        )
+        result = await self.session.execute(stmt)
+        return [{"status": row[0].value, "count": row[1]} for row in result.all()]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload
 
 from app.domain.enums import JobStatus
@@ -93,3 +93,15 @@ class JobRepository(BaseRepository[Job]):
         )
         result = await self.session.execute(stmt)
         return result.scalars().unique().first()
+
+    async def get_job_counts_by_status(self, company_id: Any) -> list[dict[str, Any]]:
+        stmt = (
+            select(Job.status, func.count(Job.id))
+            .where(
+                Job.company_id == company_id,
+                Job.is_deleted == False,  # noqa: E712
+            )
+            .group_by(Job.status)
+        )
+        result = await self.session.execute(stmt)
+        return [{"status": row[0].value, "count": row[1]} for row in result.all()]

@@ -11,8 +11,9 @@ from app.core.exceptions import (
     EntityNotFoundException,
     ForbiddenException,
 )
-from app.models import Resume, User
-from app.repositories import ResumeRepository
+from app.models import Application, Job, Resume, User
+from app.repositories import ApplicationRepository, JobRepository, ResumeRepository
+from app.schemas.metrics import RecruiterMetricsResponse
 from app.schemas.resume import ResumeRead
 from app.schemas.user import (
     CandidateProfileCreate,
@@ -223,3 +224,55 @@ async def get_my_resume(
             detail="Resume not found",
         )
     return ResumeRead.model_validate(resume)
+
+
+@router.get(
+    "/me/recruiter-metrics",
+    response_model=RecruiterMetricsResponse,
+)
+async def get_recruiter_metrics(
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> RecruiterMetricsResponse:
+    """Return aggregated recruiter metrics for the authenticated recruiter's company.
+
+    Returns zero metrics if the recruiter has no associated company.
+    """
+    user = await UserService(db).get_user_with_profile(current_user.id)
+    if user is None or user.recruiter_profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recruiter profile not found",
+        )
+
+    company_id = user.recruiter_profile.company_id
+    if company_id is None:
+        return RecruiterMetricsResponse(
+            total_jobs=0,
+            total_applications=0,
+            jobs_by_status=[],
+            applications_by_status=[],
+        )
+
+    job_counts = await JobRepository(db, Job).get_job_counts_by_status(company_id)
+    application_counts = (
+        await ApplicationRepository(db, Application).get_application_counts_by_status(
+            company_id
+        )
+    )
+
+    total_jobs = sum(item["count"] for item in job_counts)
+    total_applications = sum(item["count"] for item in application_counts)
+
+    return RecruiterMetricsResponse(
+        total_jobs=total_jobs,
+        total_applications=total_applications,
+        jobs_by_status=[
+            {"status": item["status"], "count": item["count"]}
+            for item in job_counts
+        ],
+        applications_by_status=[
+            {"status": item["status"], "count": item["count"]}
+            for item in application_counts
+        ],
+    )
