@@ -4,6 +4,7 @@ from app.models.company import Company
 from app.models.interview import Interview
 from app.models.job import Job
 from app.models.junctions import CandidateSkill, JobSkill
+from app.models.notification import Notification
 from app.models.recruiter import RecruiterProfile
 from app.models.resume import Resume
 from app.models.skill import Skill
@@ -17,6 +18,7 @@ __all__ = [
     "Interview",
     "Job",
     "JobSkill",
+    "Notification",
     "RecruiterProfile",
     "Resume",
     "Skill",

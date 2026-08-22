@@ -25,6 +25,7 @@ from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.ai_matching_service import AIMatchingService
 from app.services.job_service import JobService
+from app.services.notification_service import NotificationService
 from app.services.user_service import UserService
 
 RECRUITER_MANAGED_STATUSES = frozenset(
@@ -68,10 +69,25 @@ class ApplicationService:
         )
         self.session.add(application)
         try:
+            # Notify recruiter(s) about new application BEFORE commit
+            notification_service = NotificationService(self.session)
+            if job.company and job.company.recruiters:
+                for recruiter in job.company.recruiters:
+                    if recruiter.user_id:
+                        await notification_service.create_notification(
+                            user_id=recruiter.user_id,
+                            title="Đơn ứng tuyển mới",
+                            content=f"Ứng viên đã nộp đơn cho vị trí {job.title}",
+                            notification_type="new_application",
+                            entity_type="application",
+                            entity_id=application.id,
+                        )
+
             await self.session.commit()
             await self.session.refresh(
                 application, attribute_names=["candidate"]
             )
+
         except Exception:
             await self.session.rollback()
             raise
@@ -105,6 +121,7 @@ class ApplicationService:
                 f"status {new_status.value!r} is not recruiter-managed."
             )
 
+        old_status = application.status
         domain = DomainApplication(
             candidate_id=application.candidate_id,
             job_id=application.job_id,
@@ -117,10 +134,22 @@ class ApplicationService:
 
         application.status = domain.status
         try:
+            # Notify candidate about status change BEFORE commit
+            notification_service = NotificationService(self.session)
+            await notification_service.create_notification(
+                user_id=application.candidate_id,
+                title="Cập nhật trạng thái đơn ứng tuyển",
+                content=f"Đơn ứng tuyển của bạn cho vị trí {application.job.title if application.job else 'N/A'} đã thay đổi từ {old_status.value} sang {new_status.value}",
+                notification_type="application_status_changed",
+                entity_type="application",
+                entity_id=application.id,
+            )
+
             await self.session.commit()
             await self.session.refresh(
                 application, attribute_names=["candidate"]
             )
+
         except Exception:
             await self.session.rollback()
             raise
@@ -167,10 +196,25 @@ class ApplicationService:
 
         application.status = domain.status
         try:
+            # Notify recruiter(s) about application withdrawal BEFORE commit
+            notification_service = NotificationService(self.session)
+            if application.job and application.job.company and application.job.company.recruiters:
+                for recruiter in application.job.company.recruiters:
+                    if recruiter.user_id:
+                        await notification_service.create_notification(
+                            user_id=recruiter.user_id,
+                            title="Ứng viên rút đơn",
+                            content=f"Ứng viên đã rút đơn ứng tuyển cho vị trí {application.job.title}",
+                            notification_type="application_withdrawn",
+                            entity_type="application",
+                            entity_id=application.id,
+                        )
+
             await self.session.commit()
             await self.session.refresh(
                 application, attribute_names=["candidate"]
             )
+
         except Exception:
             await self.session.rollback()
             raise

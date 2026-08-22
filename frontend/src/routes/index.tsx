@@ -28,6 +28,7 @@ import { JobRecommendationsPage } from '@/features/recruiter/pages/JobRecommenda
 import { InterviewGeneratorPage } from '@/features/recruiter/pages/InterviewGeneratorPage'
 import { SemanticCandidateSearchPage } from '@/features/recruiter/pages/SemanticCandidateSearchPage'
 import { AIChatPage } from '@/pages/ai/AIChatPage'
+import { NotificationsPage } from '@/pages/notifications/NotificationsPage'
 import { ProtectedRoute } from '@/components/common/ProtectedRoute'
 import { RoleGuard } from '@/components/common/RoleGuard'
 import type { UserRole } from '@/types/auth'
@@ -243,6 +244,14 @@ export function AppRouter() {
             element={
               <RoleGuard allowedRoles={['admin']}>
                 <AdminCompaniesPage />
+              </RoleGuard>
+            }
+          />
+          <Route
+            path="/notifications"
+            element={
+              <RoleGuard allowedRoles={['candidate', 'recruiter', 'admin']}>
+                <NotificationsPage />
               </RoleGuard>
             }
           />

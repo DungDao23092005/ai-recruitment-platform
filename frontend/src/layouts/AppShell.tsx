@@ -24,6 +24,7 @@ import { Badge } from '@/components/ui/badge'
 import { Logo } from '@/components/common/Logo'
 import { USER_ROLE_LABELS } from '@/types/auth'
 import type { UserRole } from '@/types/auth'
+import { NotificationBell } from '@/components/common/NotificationBell'
 
 interface NavItem {
   to: string
@@ -288,6 +289,7 @@ export function AppShell() {
           <Badge variant="outline-ai" className="hidden sm:inline-flex">
             {USER_ROLE_LABELS[role ?? 'candidate']}
           </Badge>
+          <NotificationBell />
           <Button variant="ghost" size="sm" type="button" onClick={logout}>
             Đăng xuất
           </Button>

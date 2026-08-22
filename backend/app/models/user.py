@@ -9,6 +9,10 @@ from sqlalchemy.types import TypeDecorator
 
 from app.database.base_class import Base, SoftDeleteMixin, TimestampMixin
 from app.domain.enums import UserRole
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.models.notification import Notification
 
 
 class StringEnum(TypeDecorator):
@@ -55,5 +59,9 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     recruiter_profile: Mapped[RecruiterProfile | None] = relationship(
         back_populates="user",
         uselist=False,
+        cascade="all, delete-orphan",
+    )
+    notifications: Mapped[list["Notification"]] = relationship(
+        back_populates="user",
         cascade="all, delete-orphan",
     )

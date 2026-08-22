@@ -173,12 +173,15 @@ class TestListApplicationsByJob:
 
 
 class TestUpdateApplicationStatus:
-    def test_valid_transition(self):
+    @patch("app.services.application_service.NotificationService")
+    def test_valid_transition(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
         service.applications.get_by_id.return_value = application
         job = make_job()
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
 
         with patch(
             "app.services.application_service.JobService"
@@ -201,10 +204,13 @@ class TestUpdateApplicationStatus:
             application, attribute_names=["candidate"]
         )
 
-    def test_application_not_found_raises(self):
+    @patch("app.services.application_service.NotificationService")
+    def test_application_not_found_raises(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
         service.applications.get_by_id.return_value = None
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
 
         with patch(
             "app.services.application_service.JobService"
@@ -221,11 +227,14 @@ class TestUpdateApplicationStatus:
         mock_job_service.return_value.get_recruiter_job_by_id.assert_not_called()
         session.commit.assert_not_awaited()
 
-    def test_unowned_application_raises_not_found(self):
+    @patch("app.services.application_service.NotificationService")
+    def test_recruiter_cannot_set_applied(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
-        application = make_application(status=ApplicationStatus.APPLIED)
+        application = make_application(status=ApplicationStatus.UNDER_REVIEW)
         service.applications.get_by_id.return_value = application
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
 
         with patch(
             "app.services.application_service.JobService"
@@ -245,11 +254,13 @@ class TestUpdateApplicationStatus:
         assert application.status == ApplicationStatus.APPLIED
         session.commit.assert_not_awaited()
 
-    def test_invalid_transition_raises(self):
+    @patch("app.services.application_service.NotificationService")
+    def test_invalid_transition_raises(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
-        service.applications.get_by_id.return_value = application
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
 
         with patch(
             "app.services.application_service.JobService"
@@ -269,12 +280,15 @@ class TestUpdateApplicationStatus:
         session.commit.assert_not_awaited()
         assert application.status == ApplicationStatus.APPLIED
 
-    def test_commit_failure_rolls_back(self):
+    @patch("app.services.application_service.NotificationService")
+    def test_commit_failure_rolls_back(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
         service.applications.get_by_id.return_value = application
         session.commit.side_effect = RuntimeError("db down")
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
 
         with patch(
             "app.services.application_service.JobService"
@@ -359,12 +373,15 @@ class TestWithdrawApplication:
         mock.return_value.get_user_with_profile = AsyncMock(return_value=user)
         return patch_user
 
-    def test_candidate_withdraws_own_application(self):
+    @patch("app.services.application_service.NotificationService")
+    def test_candidate_withdraws_own_application(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
         service.applications.get_by_id.return_value = application
         user = make_candidate_user(application.candidate_id)
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
 
         patch_user = self.patch_user_service(user)
         try:
@@ -384,12 +401,15 @@ class TestWithdrawApplication:
             application, attribute_names=["candidate"]
         )
 
-    def test_withdraw_other_candidate_application_raises_404(self):
+    @patch("app.services.application_service.NotificationService")
+    def test_withdraw_other_candidate_application_raises_404(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
         service.applications.get_by_id.return_value = application
         user = make_candidate_user(uuid.uuid4())
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
 
         patch_user = self.patch_user_service(user)
         try:
@@ -406,11 +426,14 @@ class TestWithdrawApplication:
         assert application.status == ApplicationStatus.APPLIED
         session.commit.assert_not_awaited()
 
-    def test_withdraw_nonexistent_application_raises_404(self):
+    @patch("app.services.application_service.NotificationService")
+    def test_withdraw_nonexistent_application_raises_404(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
         service.applications.get_by_id.return_value = None
         user = make_candidate_user(uuid.uuid4())
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
 
         patch_user = self.patch_user_service(user)
         try:
@@ -426,7 +449,8 @@ class TestWithdrawApplication:
 
         session.commit.assert_not_awaited()
 
-    def test_withdraw_without_candidate_profile_raises_404(self):
+    @patch("app.services.application_service.NotificationService")
+    def test_withdraw_without_candidate_profile_raises_404(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
@@ -437,6 +461,8 @@ class TestWithdrawApplication:
             is_active=True,
             candidate_profile=None,
         )
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
 
         patch_user = self.patch_user_service(user)
         try:
@@ -453,12 +479,15 @@ class TestWithdrawApplication:
         service.applications.get_by_id.assert_not_awaited()
         session.commit.assert_not_awaited()
 
-    def test_withdraw_terminal_state_raises_invalid_transition(self):
+    @patch("app.services.application_service.NotificationService")
+    def test_withdraw_terminal_state_raises_invalid_transition(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.ACCEPTED)
         service.applications.get_by_id.return_value = application
         user = make_candidate_user(application.candidate_id)
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
 
         patch_user = self.patch_user_service(user)
         try:

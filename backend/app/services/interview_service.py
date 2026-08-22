@@ -16,6 +16,7 @@ from app.models import Application, Interview, Job, User
 from app.repositories import ApplicationRepository, InterviewRepository
 from app.schemas.interview import InterviewCreate, InterviewRead, InterviewUpdate, InterviewActionRequest
 from app.services.job_service import JobService
+from app.services.notification_service import NotificationService
 from app.services.user_service import UserService
 
 
@@ -90,8 +91,20 @@ class InterviewService:
             application.status = domain.status
 
         try:
+            # Notify candidate about scheduled interview BEFORE commit
+            notification_service = NotificationService(self.session)
+            await notification_service.create_notification(
+                user_id=application.candidate_id,
+                title="Lịch phỏng vấn mới",
+                content=f"Bạn đã được mời phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'} vào lúc {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}",
+                notification_type="interview_scheduled",
+                entity_type="interview",
+                entity_id=interview.id,
+            )
+
             await self.session.commit()
             await self.session.refresh(interview)
+
         except Exception:
             await self.session.rollback()
             raise
@@ -155,8 +168,20 @@ class InterviewService:
             interview.status = InterviewStatus(data.status)
 
         try:
+            # Notify candidate about interview update BEFORE commit
+            notification_service = NotificationService(self.session)
+            await notification_service.create_notification(
+                user_id=application.candidate_id,
+                title="Cập nhật lịch phỏng vấn",
+                content=f"Lịch phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'} đã được cập nhật. Thời gian mới: {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}",
+                notification_type="interview_updated",
+                entity_type="interview",
+                entity_id=interview.id,
+            )
+
             await self.session.commit()
             await self.session.refresh(interview)
+
         except Exception:
             await self.session.rollback()
             raise
@@ -198,13 +223,111 @@ class InterviewService:
         await self.interviews.soft_delete(interview)
 
         try:
+            # Notify candidate about interview cancellation BEFORE commit
+            notification_service = NotificationService(self.session)
+            await notification_service.create_notification(
+                user_id=application.candidate_id,
+                title="Phỏng vấn bị hủy",
+                content=f"Phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'} đã bị hủy",
+                notification_type="interview_cancelled",
+                entity_type="interview",
+                entity_id=interview.id,
+            )
+
             await self.session.commit()
             await self.session.refresh(interview)
+
         except Exception:
             await self.session.rollback()
             raise
 
         return InterviewRead.model_validate(interview)
+
+    async def candidate_action_interview(
+        self,
+        current_user: User,
+        application_id: uuid.UUID,
+        interview_id: uuid.UUID,
+        action: str,
+        candidate_notes: str | None = None,
+    ) -> InterviewRead:
+        """Candidate confirms or declines a scheduled interview.
+
+        Candidate only. Ownership enforced via application -> candidate profile.
+        Interview must be in SCHEDULED status.
+        """
+        # Get candidate profile for the current user
+        user_with_profile = await UserService(self.session).get_user_with_profile(current_user.id)
+        if user_with_profile is None or user_with_profile.candidate_profile is None:
+            raise EntityNotFoundException("Candidate profile not found")
+
+        candidate_id = user_with_profile.candidate_profile.id
+
+        # Get application and verify ownership
+        application = await self.applications.get_by_id(application_id)
+        if application is None:
+            raise EntityNotFoundException(f"Application {application_id} not found")
+
+        if application.candidate_id != candidate_id:
+            raise EntityNotFoundException(f"Application {application_id} not found")
+
+        # Get interview and verify it belongs to the application
+        interview = await self.interviews.get_by_id_with_application(interview_id)
+        if interview is None:
+            raise EntityNotFoundException(f"Interview {interview_id} not found")
+
+        if interview.application_id != application_id:
+            raise EntityNotFoundException(f"Interview {interview_id} not found")
+
+        # Only allow action when status is SCHEDULED
+        if interview.status != InterviewStatus.SCHEDULED:
+            raise InvalidTransitionException(
+                f"Cannot perform action on interview with status {interview.status.value}"
+            )
+
+        # Validate action
+        if action == "confirm":
+            interview.status = InterviewStatus.CANDIDATE_CONFIRMED
+            interview.candidate_notes = candidate_notes
+            notification_type = "interview_confirmed"
+            notification_title = "Ứng viên xác nhận phỏng vấn"
+            notification_content = f"Ứng viên đã xác nhận phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'}"
+        elif action == "decline":
+            # candidate_notes is required for decline
+            if not candidate_notes or not candidate_notes.strip():
+                raise InvalidTransitionException("Candidate notes are required when declining an interview")
+            interview.status = InterviewStatus.CANDIDATE_DECLINED
+            interview.candidate_notes = candidate_notes.strip()
+            notification_type = "interview_declined"
+            notification_title = "Ứng viên từ chối phỏng vấn"
+            notification_content = f"Ứng viên đã từ chối phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'}"
+        else:
+            raise InvalidTransitionException(f"Invalid action: {action}. Must be 'confirm' or 'decline'")
+
+        try:
+            # Notify recruiter(s) about candidate confirm/decline BEFORE commit
+            notification_service = NotificationService(self.session)
+            if application.job and application.job.company and application.job.company.recruiters:
+                for recruiter in application.job.company.recruiters:
+                    if recruiter.user_id:
+                        await notification_service.create_notification(
+                            user_id=recruiter.user_id,
+                            title=notification_title,
+                            content=notification_content,
+                            notification_type=notification_type,
+                            entity_type="interview",
+                            entity_id=interview.id,
+                        )
+
+            await self.session.commit()
+            await self.session.refresh(interview)
+
+        except Exception:
+            await self.session.rollback()
+            raise
+
+        return InterviewRead.model_validate(interview)
+
 
     async def list_interviews(
         self,
