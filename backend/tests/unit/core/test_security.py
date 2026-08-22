@@ -74,7 +74,7 @@ def test_decode_valid_token_returns_payload():
     payload = decode_access_token(token)
 
     assert payload is not None
-    assert set(payload.keys()) == {"sub", "exp"}
+    assert set(payload.keys()) == {"sub", "exp", "iat"}
     assert payload["sub"] == "user-123"
 
 

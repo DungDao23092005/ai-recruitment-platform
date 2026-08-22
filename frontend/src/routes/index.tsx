@@ -7,6 +7,9 @@ import { NotFoundPage } from '@/pages/NotFoundPage'
 import { HealthCheckPage } from '@/pages/HealthCheckPage'
 import { LoginPage } from '@/pages/auth/LoginPage'
 import { RegisterPage } from '@/pages/auth/RegisterPage'
+import { ForgotPasswordPage } from '@/pages/auth/ForgotPasswordPage'
+import { VerifyResetOtpPage } from '@/pages/auth/VerifyResetOtpPage'
+import { ResetPasswordPage } from '@/pages/auth/ResetPasswordPage'
 import { ProfilePage } from '@/pages/profile/ProfilePage'
 import { JobsPage } from '@/pages/jobs/JobsPage'
 import { JobDetailPage } from '@/pages/jobs/JobDetailPage'
@@ -67,6 +70,9 @@ export function AppRouter() {
       <Route element={<AuthLayout />}>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/verify-reset-otp" element={<VerifyResetOtpPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
       </Route>
 
       <Route element={<ProtectedRoute />}>

@@ -26,6 +26,18 @@ export async function getCurrentUser(): Promise<User> {
   return apiClient.get<User, User>('/auth/me')
 }
 
+export async function forgotPassword(email: string): Promise<{ message: string }> {
+  return apiClient.post<{ message: string }, { message: string }>('/auth/forgot-password', { email })
+}
+
+export async function verifyResetOtp(email: string, otp: string): Promise<{ reset_token: string }> {
+  return apiClient.post<{ reset_token: string }, { reset_token: string }>('/auth/verify-reset-otp', { email, otp })
+}
+
+export async function resetPassword(email: string, reset_token: string, new_password: string): Promise<{ message: string }> {
+  return apiClient.post<{ message: string }, { message: string }>('/auth/reset-password', { email, reset_token, new_password, confirm_password: new_password })
+}
+
 export async function createCandidateProfile(
   data: CandidateProfileData,
 ): Promise<CandidateProfile> {

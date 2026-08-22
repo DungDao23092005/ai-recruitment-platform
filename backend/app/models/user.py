@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from enum import Enum
 
 from sqlalchemy import Boolean, Index, String, Uuid, text
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.models.notification import Notification
+    from app.models.password_reset_otp import PasswordResetOTP
 
 
 class StringEnum(TypeDecorator):
@@ -50,6 +52,7 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(StringEnum(UserRole), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_password_reset: Mapped[datetime | None] = mapped_column(nullable=True)
 
     candidate_profile: Mapped[CandidateProfile | None] = relationship(
         back_populates="user",
@@ -62,6 +65,10 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
         cascade="all, delete-orphan",
     )
     notifications: Mapped[list["Notification"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    password_reset_otps: Mapped[list["PasswordResetOTP"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )

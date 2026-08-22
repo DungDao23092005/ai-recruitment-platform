@@ -27,13 +27,14 @@ def create_access_token(
     subject: str | Any,
     expires_delta: timedelta | None = None,
 ) -> str:
-    """Create a signed JWT access token (HS256) containing `sub` and `exp`."""
-    expire = datetime.now(timezone.utc) + (
+    """Create a signed JWT access token (HS256) containing `sub`, `exp`, and `iat`."""
+    now = datetime.now(timezone.utc)
+    expire = now + (
         expires_delta
         if expires_delta is not None
         else timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    payload = {"sub": str(subject), "exp": expire}
+    payload = {"sub": str(subject), "exp": expire, "iat": int(now.timestamp())}
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -51,3 +52,19 @@ def decode_access_token(token: str) -> dict | None:
     except JWTError:
         return None
     return payload
+
+
+def is_token_valid_after_password_reset(payload: dict, last_password_reset: datetime | None) -> bool:
+    """Check if a JWT token is still valid after a password reset.
+    
+    A token is invalid if it was issued before the last password reset.
+    """
+    if last_password_reset is None:
+        return True
+    
+    iat = payload.get("iat")
+    if iat is None:
+        return False
+    
+    token_issued_at = datetime.fromtimestamp(iat, tz=timezone.utc)
+    return token_issued_at >= last_password_reset

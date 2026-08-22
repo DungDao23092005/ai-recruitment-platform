@@ -16,6 +16,14 @@ from app.schemas.application import (
 )
 from app.schemas.company import CompanyCreate, CompanyRead, CompanyUpdate
 from app.schemas.job import JobCreate, JobRead, JobStatusUpdate, JobUpdate
+from app.schemas.password_reset import (
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
+    VerifyResetOtpRequest,
+    VerifyResetOtpResponse,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
+)
 from app.schemas.skill import SkillCreate, SkillRead
 from app.schemas.token import Token, TokenPayload
 from app.schemas.user import (
@@ -51,4 +59,10 @@ __all__ = [
     "MatchResultSchema",
     "JobMatchRecommendation",
     "CandidateMatchRecommendation",
+    "ForgotPasswordRequest",
+    "ForgotPasswordResponse",
+    "VerifyResetOtpRequest",
+    "VerifyResetOtpResponse",
+    "ResetPasswordRequest",
+    "ResetPasswordResponse",
 ]

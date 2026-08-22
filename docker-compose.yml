@@ -110,6 +110,16 @@ services:
     networks:
       - recruitment-net
 
+  mailpit:
+    image: axllent/mailpit
+    container_name: recruitment_mailpit
+    restart: unless-stopped
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    networks:
+      - recruitment-net
+
 volumes:
   mssql_data:
   redis_data:

@@ -20,7 +20,8 @@
     "paths": {
       "@/*": ["./src/*"]
     },
-    "types": ["vitest/globals", "@testing-library/jest-dom"]
+    "types": ["vitest/globals", "@testing-library/jest-dom"],
+    "incremental": false
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.tsx", "src/**/*.test.ts"]

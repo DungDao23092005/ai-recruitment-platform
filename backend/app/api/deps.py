@@ -8,7 +8,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, is_token_valid_after_password_reset
 from app.database.session import get_db_session
 from app.domain.enums import UserRole
 from app.models import User
@@ -66,6 +66,14 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=_UNAUTHORIZED_DETAIL,
+            headers=_UNAUTHORIZED_HEADERS,
+        )
+    
+    # Check if token is still valid after password reset
+    if not is_token_valid_after_password_reset(payload, user.last_password_reset):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Phiên đăng nhập đã hết hạn do mật khẩu đã được thay đổi",
             headers=_UNAUTHORIZED_HEADERS,
         )
     return user

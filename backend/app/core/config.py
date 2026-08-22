@@ -39,6 +39,16 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
     VECTOR_DIMENSION: int = 384
 
+    EMAIL_PROVIDER: str = "mailpit"
+    EMAIL_FROM: str = "AI Recruitment Platform <noreply@example.com>"
+    RESEND_API_KEY: str = ""
+    MAILPIT_HOST: str = "mailpit"
+    MAILPIT_PORT: int = 1025
+    GMAIL_USERNAME: str = ""
+    GMAIL_APP_PASSWORD: str = ""
+    GMAIL_HOST: str = "smtp.gmail.com"
+    GMAIL_PORT: int = 587
+
 
     model_config = SettingsConfigDict(
         env_file=".env",

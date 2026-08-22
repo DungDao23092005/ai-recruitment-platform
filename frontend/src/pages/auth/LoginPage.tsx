@@ -135,15 +135,25 @@ export function LoginPage() {
           </Button>
         </form>
 
-        <p className="mt-4 text-center text-sm text-muted-foreground">
-          Chưa có tài khoản?{' '}
-          <Link
-            to="/register"
-            className="font-medium text-primary underline underline-offset-4"
-          >
-            Đăng ký ngay
-          </Link>
-        </p>
+        <div className="mt-4 space-y-2 text-center text-sm text-muted-foreground">
+          <p>
+            Chưa có tài khoản?{' '}
+            <Link
+              to="/register"
+              className="font-medium text-primary underline underline-offset-4"
+            >
+              Đăng ký ngay
+            </Link>
+          </p>
+          <p>
+            <Link
+              to="/forgot-password"
+              className="font-medium text-primary underline underline-offset-4"
+            >
+              Quên mật khẩu?
+            </Link>
+          </p>
+        </div>
       </CardContent>
     </Card>
   )
