@@ -21,6 +21,9 @@ import { CandidateRecommendationsPage } from '@/pages/candidate/CandidateRecomme
 import { AdminDashboardPage } from '@/features/admin/pages/AdminDashboardPage'
 import { AdminUsersPage } from '@/features/admin/pages/AdminUsersPage'
 import { AdminCompaniesPage } from '@/features/admin/pages/AdminCompaniesPage'
+import { AdminJobsPage } from '@/features/admin/pages/AdminJobsPage'
+import { AdminJobEditPage } from '@/features/admin/pages/AdminJobEditPage'
+import { AdminJobApplicantsPage } from '@/features/admin/pages/AdminJobApplicantsPage'
 import { RecruiterPortalPage } from '@/features/recruiter/pages/RecruiterPortalPage'
 import { RecruiterCompanyPage } from '@/features/recruiter/pages/RecruiterCompanyPage'
 import { RecruiterJobsPage } from '@/features/recruiter/pages/RecruiterJobsPage'
@@ -250,6 +253,30 @@ export function AppRouter() {
             element={
               <RoleGuard allowedRoles={['admin']}>
                 <AdminCompaniesPage />
+              </RoleGuard>
+            }
+          />
+          <Route
+            path="/admin/jobs"
+            element={
+              <RoleGuard allowedRoles={['admin']}>
+                <AdminJobsPage />
+              </RoleGuard>
+            }
+          />
+          <Route
+            path="/admin/jobs/:id/edit"
+            element={
+              <RoleGuard allowedRoles={['admin']}>
+                <AdminJobEditPage />
+              </RoleGuard>
+            }
+          />
+          <Route
+            path="/admin/jobs/:id/applicants"
+            element={
+              <RoleGuard allowedRoles={['admin']}>
+                <AdminJobApplicantsPage />
               </RoleGuard>
             }
           />

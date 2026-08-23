@@ -3,6 +3,8 @@ import endpoints, { type HealthStatus } from '@/api/endpoints'
 import type {
   AdminCompanyList,
   AdminCompanyListParams,
+  AdminJobList,
+  AdminJobListParams,
   AdminStats,
   AdminUser,
   AdminUserList,
@@ -41,4 +43,12 @@ export async function getAdminCompanies(
 
 export async function deleteAdminCompany(id: string): Promise<void> {
   await apiClient.delete(`/companies/${id}`)
+}
+
+export async function getAdminJobs(
+  params: AdminJobListParams,
+): Promise<AdminJobList> {
+  return apiClient.get<AdminJobList, AdminJobList>('/admin/jobs', {
+    params,
+  })
 }

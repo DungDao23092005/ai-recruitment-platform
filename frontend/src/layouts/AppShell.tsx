@@ -97,19 +97,7 @@ function useAppNav(role?: UserRole): NavSection[] {
         { to: '/admin/dashboard', label: 'Tổng quan', icon: LayoutDashboard },
         { to: '/admin/users', label: 'Quản lý người dùng', icon: Users },
         { to: '/admin/companies', label: 'Quản lý công ty', icon: Building },
-      ],
-    },
-    {
-      title: 'Tuyển dụng',
-      items: [
-        { to: '/recruiter/portal', label: 'Quản lý tuyển dụng', icon: Users },
-        { to: '/recruiter/jobs', label: 'Tin tuyển dụng', icon: Briefcase, end: true },
-      ],
-    },
-    {
-      title: 'AI hỗ trợ',
-      items: [
-        { to: '/recruiter/search/candidates', label: 'Tìm ứng viên AI', icon: Search },
+        { to: '/admin/jobs', label: 'Tin tuyển dụng', icon: Briefcase },
       ],
     },
   ]

@@ -33,7 +33,11 @@ type PageState =
   | { kind: 'error'; message: string; notFound: boolean }
   | { kind: 'success'; job: Job; applications: Application[] }
 
-export function JobApplicantsPage() {
+interface JobApplicantsPageProps {
+  backPath?: string
+}
+
+export function JobApplicantsPage({ backPath = '/recruiter/jobs' }: JobApplicantsPageProps) {
   const { id } = useParams<{ id: string }>()
   const [state, setState] = useState<PageState>({ kind: 'loading' })
 
@@ -108,7 +112,7 @@ export function JobApplicantsPage() {
           </p>
         </div>
         {state.notFound ? (
-          <Link to="/recruiter/jobs">
+          <Link to={backPath}>
             <Button variant="outline">Quay lại tin tuyển dụng</Button>
           </Link>
         ) : (
@@ -125,7 +129,7 @@ export function JobApplicantsPage() {
 
   return (
     <div className="space-y-6">
-      <Link to="/recruiter/jobs">
+      <Link to={backPath}>
         <Button variant="ghost" size="sm">
           <ChevronLeft className="h-4 w-4" aria-hidden="true" />
           Quay lại tin tuyển dụng

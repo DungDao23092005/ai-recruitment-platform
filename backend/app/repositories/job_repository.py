@@ -117,3 +117,30 @@ class JobRepository(BaseRepository[Job]):
         )
         result = await self.session.execute(stmt)
         return [{"status": row[0].value, "count": row[1]} for row in result.all()]
+
+    async def list_admin_jobs(
+        self,
+        skip: int = 0,
+        limit: int = 10,
+        search: str | None = None,
+    ) -> tuple[list[Job], int]:
+        """Return a page of jobs for admin (all jobs, not deleted) and the total count."""
+        # Build the base query with filters
+        base_stmt = select(Job).options(joinedload(Job.company)).where(Job.is_deleted == False)  # noqa: E712
+        count_stmt = select(func.count(Job.id)).where(Job.is_deleted == False)  # noqa: E712
+
+        if search:
+            search_filter = Job.title.ilike(f"%{search}%")
+            base_stmt = base_stmt.where(search_filter)
+            count_stmt = count_stmt.where(search_filter)
+
+        # Get total count
+        total_result = await self.session.execute(count_stmt)
+        total = total_result.scalar_one()
+
+        # Get paginated items
+        base_stmt = base_stmt.order_by(Job.created_at.desc()).offset(skip).limit(limit)
+        result = await self.session.execute(base_stmt)
+        items = list(result.scalars().unique().all())
+
+        return items, total

@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr
 
-from app.domain.enums import CompanySize, UserRole
+from app.domain.enums import CompanySize, JobStatus, JobType, UserRole, WorkplaceType
 
 
 class ApplicationStatusCounts(BaseModel):
@@ -77,6 +77,37 @@ class AdminCompanyRead(BaseModel):
 
 class AdminCompanyListResponse(BaseModel):
     items: list[AdminCompanyRead]
+    total: int
+    skip: int
+    limit: int
+
+
+class AdminJobRead(BaseModel):
+    """Admin-facing view of a job."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    company_id: uuid.UUID
+    company_name: str | None = None
+    title: str
+    description: str
+    status: JobStatus
+    job_type: JobType
+    workplace_type: WorkplaceType
+    location: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminJobListParams(BaseModel):
+    skip: int = 0
+    limit: int = 10
+    search: str | None = None
+
+
+class AdminJobListResponse(BaseModel):
+    items: list[AdminJobRead]
     total: int
     skip: int
     limit: int

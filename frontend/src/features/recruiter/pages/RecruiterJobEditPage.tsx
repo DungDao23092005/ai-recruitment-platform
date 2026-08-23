@@ -34,7 +34,11 @@ type PageState =
   | { kind: 'error'; message: string; notFound: boolean }
   | { kind: 'success'; job: Job }
 
-export function RecruiterJobEditPage() {
+interface RecruiterJobEditPageProps {
+  backPath?: string
+}
+
+export function RecruiterJobEditPage({ backPath = '/recruiter/jobs' }: RecruiterJobEditPageProps) {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [state, setState] = useState<PageState>({ kind: 'loading' })
@@ -80,7 +84,7 @@ export function RecruiterJobEditPage() {
         title="Sửa tin tuyển dụng"
         description="Cập nhật thông tin tin tuyển dụng của bạn."
         actions={
-          <Link to="/recruiter/jobs">
+          <Link to={backPath}>
             <Button variant="ghost">
               <ChevronLeft className="h-4 w-4" aria-hidden="true" />
               Quay lại danh sách
@@ -144,7 +148,7 @@ export function RecruiterJobEditPage() {
             <JobForm
               companyId={state.job.company_id}
               job={state.job}
-              onSaved={() => navigate('/recruiter/jobs')}
+              onSaved={() => navigate(backPath)}
             />
           </CardContent>
         </Card>

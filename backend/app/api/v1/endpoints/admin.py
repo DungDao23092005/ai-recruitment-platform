@@ -12,6 +12,9 @@ from app.models import User
 from app.schemas.admin import (
     AdminCompanyListResponse,
     AdminCompanyRead,
+    AdminJobListParams,
+    AdminJobListResponse,
+    AdminJobRead,
     AdminStatsResponse,
     AdminUserListResponse,
     AdminUserRead,
@@ -74,6 +77,21 @@ async def list_admin_companies(
         total=total,
         skip=skip,
         limit=limit,
+    )
+
+
+@router.get("/jobs", response_model=AdminJobListResponse)
+async def list_admin_jobs(
+    current_user: User = Depends(require_admin),
+    service: AdminService = Depends(_get_admin_service),
+    params: AdminJobListParams = Depends(),
+) -> AdminJobListResponse:
+    items, total = await service.list_jobs(params)
+    return AdminJobListResponse(
+        items=[AdminJobRead.model_validate(job) for job in items],
+        total=total,
+        skip=params.skip,
+        limit=params.limit,
     )
 
 

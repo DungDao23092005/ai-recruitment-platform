@@ -13,7 +13,13 @@ from app.repositories import (
     JobRepository,
     UserRepository,
 )
-from app.schemas.admin import AdminStatsResponse, ApplicationStatusCounts
+from app.schemas.admin import (
+    AdminJobListParams,
+    AdminJobListResponse,
+    AdminJobRead,
+    AdminStatsResponse,
+    ApplicationStatusCounts,
+)
 
 
 class AdminService:
@@ -129,3 +135,25 @@ class AdminService:
         if company is None:
             raise EntityNotFoundException(f"Company {company_id} not found")
         return company
+
+    async def list_jobs(
+        self,
+        params: AdminJobListParams,
+    ) -> tuple[list[Job], int]:
+        """Return a page of jobs for admin (all non-deleted jobs) and the total count."""
+        return await self.jobs.list_admin_jobs(
+            skip=params.skip,
+            limit=params.limit,
+            search=params.search,
+        )
+
+    async def list_jobs(
+        self,
+        params: AdminJobListParams,
+    ) -> tuple[list[Job], int]:
+        """Return a page of jobs for admin (all non-deleted jobs) and the total count."""
+        return await self.jobs.list_admin_jobs(
+            skip=params.skip,
+            limit=params.limit,
+            search=params.search,
+        )

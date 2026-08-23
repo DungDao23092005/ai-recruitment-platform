@@ -68,3 +68,30 @@ export interface AdminCompanyListParams {
   limit: number
   search?: string
 }
+
+export interface AdminJob {
+  id: string
+  company_id: string
+  company_name: string | null
+  title: string
+  description: string
+  status: 'draft' | 'published' | 'closed' | 'expired'
+  job_type: 'full_time' | 'part_time' | 'contract' | 'internship'
+  workplace_type: 'on_site' | 'hybrid' | 'remote'
+  location: string
+  created_at: string
+  updated_at: string
+}
+
+export interface AdminJobList {
+  items: AdminJob[]
+  total: number
+  skip: number
+  limit: number
+}
+
+export interface AdminJobListParams {
+  skip: number
+  limit: number
+  search?: string
+}
