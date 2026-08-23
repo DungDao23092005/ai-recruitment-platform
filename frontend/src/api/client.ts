@@ -42,6 +42,11 @@ apiClient.interceptors.request.use(
       config.headers = AxiosHeaders.from(config.headers)
       config.headers.set('Authorization', `Bearer ${token}`)
     }
+    // If the request body is FormData, remove Content-Type header
+    // so Axios can generate the correct multipart/form-data boundary
+    if (config.data instanceof FormData) {
+      config.headers.delete('Content-Type')
+    }
     return config
   },
   (error: AxiosError) => Promise.reject(error),
