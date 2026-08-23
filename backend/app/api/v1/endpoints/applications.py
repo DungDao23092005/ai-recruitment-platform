@@ -120,6 +120,7 @@ async def apply_job(
     response_model=list[ApplicationWithJobRead],
 )
 async def list_my_applications(
+    job_id: uuid.UUID | None = None,
     skip: int = 0,
     limit: int = 20,
     current_user: User = Depends(require_candidate),
@@ -129,6 +130,7 @@ async def list_my_applications(
         current_user=current_user,
         skip=skip,
         limit=limit,
+        job_id=job_id,
     )
     return [
         to_application_with_job_read(application)

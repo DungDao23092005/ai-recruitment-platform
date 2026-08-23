@@ -368,18 +368,29 @@ class ApplicationService:
         current_user: User,
         skip: int = 0,
         limit: int = 20,
+        job_id: uuid.UUID | None = None,
     ) -> list[Application]:
         """Return the authenticated candidate's applications, newest first.
 
         Ownership is always resolved from the DB (current_user ->
         candidate_profile.id). A user without a candidate profile has no
         applications, so it is treated as an empty history.
+
+        If job_id is provided, filters to only return the application for that job.
         """
         user = await UserService(self.session).get_user_with_profile(
             current_user.id
         )
         if user is None or user.candidate_profile is None:
             return []
+
+        if job_id is not None:
+            application = await self.applications.get_by_candidate_and_job(
+                user.candidate_profile.id,
+                job_id,
+            )
+            return [application] if application else []
+
         return await self.applications.list_by_candidate_paginated(
             user.candidate_profile.id,
             skip=skip,

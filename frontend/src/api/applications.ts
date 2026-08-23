@@ -47,6 +47,7 @@ export async function getApplicationMatch(
 export interface MyApplicationsParams {
   skip?: number
   limit?: number
+  job_id?: string
 }
 
 export async function getMyApplications(
@@ -56,4 +57,14 @@ export async function getMyApplications(
     '/applications/mine',
     { params },
   )
+}
+
+export async function getMyApplicationForJob(
+  jobId: string,
+): Promise<ApplicationWithJob | null> {
+  const result = await apiClient.get<ApplicationWithJob[], ApplicationWithJob[]>(
+    '/applications/mine',
+    { params: { job_id: jobId } },
+  )
+  return result[0] ?? null
 }

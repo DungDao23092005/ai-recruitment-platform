@@ -97,6 +97,7 @@ vi.mock('@/api/applications', () => ({
   withdrawApplication: vi.fn(),
   getApplicationsByJob: vi.fn(),
   getMyApplications: vi.fn(),
+  getMyApplicationForJob: vi.fn(),
 }))
 
 vi.mock('@/api/companies', () => ({
@@ -153,6 +154,9 @@ const mockedGetApplicationsByJob = vi.mocked(
 const mockedGetMyApplications = vi.mocked(
   applicationsApi.getMyApplications,
 )
+const mockedGetMyApplicationForJob = vi.mocked(
+  applicationsApi.getMyApplicationForJob,
+)
 const mockedGetCompanyById = vi.mocked(companiesApi.getCompanyById)
 const healthGet = vi.mocked(endpointsApi.default.health.get)
 const mockedGetRecruiterMetrics = vi.mocked(
@@ -203,6 +207,7 @@ beforeEach(() => {
   })
   mockedGetApplicationsByJob.mockResolvedValue([])
   mockedGetMyApplications.mockResolvedValue([])
+  mockedGetMyApplicationForJob.mockResolvedValue(null)
   mockedGetCompanyById.mockResolvedValue({
     id: 'company-1',
     name: 'Acme Corp',
