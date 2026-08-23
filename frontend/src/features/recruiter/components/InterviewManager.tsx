@@ -7,16 +7,26 @@ import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { Interview } from '@/types/application'
 import { Link } from 'react-router-dom'
 
+// Terminal application statuses that should disable interview actions
+const TERMINAL_STATUSES = ['accepted', 'rejected', 'withdrawn'] as const
+type TerminalStatus = (typeof TERMINAL_STATUSES)[number]
+
+function isTerminalStatus(status: string): status is TerminalStatus {
+  return TERMINAL_STATUSES.includes(status as TerminalStatus)
+}
+
 export function InterviewManager({ 
   applicationId, 
   jobId,
   initialInterviews = [],
-  onInterviewUpdated
+  onInterviewUpdated,
+  applicationStatus = ''
 }: { 
   applicationId: string
   jobId: string
   initialInterviews?: Interview[]
   onInterviewUpdated?: (interviews: Interview[]) => void
+  applicationStatus?: string
 }) {
   const [interviews, setInterviews] = useState<Interview[]>(initialInterviews)
   const [isEditing, setIsEditing] = useState(false)
@@ -126,26 +136,44 @@ export function InterviewManager({
     }
   }
 
+  // Check if application is in terminal status
+  const isTerminal = isTerminalStatus(applicationStatus)
+  const terminalMessage = 'Không thể tạo lịch phỏng vấn hoặc tạo câu hỏi AI vì hồ sơ ứng viên đang ở trạng thái đã đóng.'
+
   return (
     <div className="space-y-4 rounded-xl border bg-card px-4 py-4">
       <div className="flex items-center justify-between">
         <p className="font-semibold text-foreground">Lịch phỏng vấn</p>
         <div className="flex items-center gap-2">
-          {!isEditing && (
+          {isTerminal ? (
+            <BadgeComponent variant="destructive" className="mr-2">Đã đóng</BadgeComponent>
+          ) : !isEditing && (
             <Button variant="outline" size="sm" onClick={handleOpenNew}>
               <Plus className="mr-1 h-4 w-4" /> Lên lịch
             </Button>
           )}
-          <Link
-            to={`/recruiter/jobs/${jobId}/interview?applicationId=${applicationId}`}
-            className="flex items-center gap-1.5"
-          >
-            <Button variant="outline" size="sm">
+          {isTerminal ? (
+            <Button variant="outline" size="sm" disabled>
               <Sparkles className="mr-1 h-4 w-4" /> Tạo câu hỏi AI
             </Button>
-          </Link>
+          ) : (
+            <Link
+              to={`/recruiter/jobs/${jobId}/interview?applicationId=${applicationId}`}
+              className="flex items-center gap-1.5"
+            >
+              <Button variant="outline" size="sm">
+                <Sparkles className="mr-1 h-4 w-4" /> Tạo câu hỏi AI
+              </Button>
+            </Link>
+          )}
         </div>
       </div>
+
+      {isTerminal && (
+        <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {terminalMessage}
+        </p>
+      )}
 
       {error && (
         <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -155,6 +183,11 @@ export function InterviewManager({
 
       {isEditing ? (
         <form onSubmit={handleSubmit} className="space-y-3 rounded-lg border bg-muted/20 p-3 text-sm">
+          {isTerminal && (
+            <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {terminalMessage}
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1 block font-medium">Thời gian</label>

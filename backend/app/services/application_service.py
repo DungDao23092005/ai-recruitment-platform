@@ -50,7 +50,7 @@ class ApplicationService:
         candidate_id: uuid.UUID,
         job_id: uuid.UUID,
     ) -> Application:
-        job = await self.jobs.get_by_id(job_id)
+        job = await self.jobs.get_job_with_company_and_recruiters(job_id)
         if job is None:
             raise EntityNotFoundException(f"Job {job_id} not found")
 
@@ -99,7 +99,7 @@ class ApplicationService:
         application_id: uuid.UUID,
         new_status: ApplicationStatus,
     ) -> Application:
-        application = await self.applications.get_by_id(application_id)
+        application = await self.applications.get_by_id_with_candidate(application_id)
         if application is None:
             raise EntityNotFoundException(
                 f"Application {application_id} not found"
@@ -136,14 +136,16 @@ class ApplicationService:
         try:
             # Notify candidate about status change BEFORE commit
             notification_service = NotificationService(self.session)
-            await notification_service.create_notification(
-                user_id=application.candidate_id,
-                title="Cập nhật trạng thái đơn ứng tuyển",
-                content=f"Đơn ứng tuyển của bạn cho vị trí {application.job.title if application.job else 'N/A'} đã thay đổi từ {old_status.value} sang {new_status.value}",
-                notification_type="application_status_changed",
-                entity_type="application",
-                entity_id=application.id,
-            )
+            candidate_user_id = application.candidate.user_id if application.candidate else None
+            if candidate_user_id:
+                await notification_service.create_notification(
+                    user_id=candidate_user_id,
+                    title="Cập nhật trạng thái đơn ứng tuyển",
+                    content=f"Đơn ứng tuyển của bạn cho vị trí {application.job.title if application.job else 'N/A'} đã thay đổi từ {old_status.value} sang {new_status.value}",
+                    notification_type="application_status_changed",
+                    entity_type="application",
+                    entity_id=application.id,
+                )
 
             await self.session.commit()
             await self.session.refresh(
@@ -174,7 +176,7 @@ class ApplicationService:
                 f"Application {application_id} not found"
             )
 
-        application = await self.applications.get_by_id(application_id)
+        application = await self.applications.get_by_id_with_job_company_and_recruiters(application_id)
         if application is None:
             raise EntityNotFoundException(
                 f"Application {application_id} not found"

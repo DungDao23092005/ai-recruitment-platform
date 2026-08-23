@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
-from app.models import Application, Job
+from app.models import Application, Company, Job
 from app.repositories.base import BaseRepository
 
 
@@ -74,6 +74,35 @@ class ApplicationRepository(BaseRepository[Application]):
                 selectinload(Application.job).selectinload(Job.company),
                 selectinload(Application.job).selectinload(Job.skills),
                 selectinload(Application.interviews),
+            )
+            .where(
+                Application.id == application_id,
+                Application.is_deleted == False,  # noqa: E712
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_by_id_with_job_company_and_recruiters(self, application_id: Any) -> Application | None:
+        stmt = (
+            select(Application)
+            .options(
+                selectinload(Application.job).selectinload(Job.company).selectinload(Company.recruiters)
+            )
+            .where(
+                Application.id == application_id,
+                Application.is_deleted == False,  # noqa: E712
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_by_id_with_candidate_job_company_and_recruiters(self, application_id: Any) -> Application | None:
+        stmt = (
+            select(Application)
+            .options(
+                selectinload(Application.candidate),
+                selectinload(Application.job).selectinload(Job.company).selectinload(Company.recruiters)
             )
             .where(
                 Application.id == application_id,

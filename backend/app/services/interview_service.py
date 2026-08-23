@@ -41,10 +41,10 @@ class InterviewService:
         # Validate scheduled_at is not in the past
         if data.scheduled_at < datetime.now(timezone.utc):
             raise InvalidTransitionException(
-                "Interview cannot be scheduled in the past"
+                "Không thể lên lịch phỏng vấn trong quá khứ. Vui lòng chọn thời gian trong tương lai."
             )
 
-        application = await self.applications.get_by_id(application_id)
+        application = await self.applications.get_by_id_with_candidate_job_company_and_recruiters(application_id)
         if application is None:
             raise EntityNotFoundException(f"Application {application_id} not found")
 
@@ -93,14 +93,16 @@ class InterviewService:
         try:
             # Notify candidate about scheduled interview BEFORE commit
             notification_service = NotificationService(self.session)
-            await notification_service.create_notification(
-                user_id=application.candidate_id,
-                title="Lịch phỏng vấn mới",
-                content=f"Bạn đã được mời phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'} vào lúc {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}",
-                notification_type="interview_scheduled",
-                entity_type="interview",
-                entity_id=interview.id,
-            )
+            candidate_user_id = application.candidate.user_id if application.candidate else None
+            if candidate_user_id:
+                await notification_service.create_notification(
+                    user_id=candidate_user_id,
+                    title="Lịch phỏng vấn mới",
+                    content=f"Bạn đã được mời phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'} vào lúc {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}",
+                    notification_type="interview_scheduled",
+                    entity_type="interview",
+                    entity_id=interview.id,
+                )
 
             await self.session.commit()
             await self.session.refresh(interview)
@@ -127,7 +129,7 @@ class InterviewService:
             raise EntityNotFoundException(f"Interview {interview_id} not found")
 
         # Verify ownership through application -> job
-        application = await self.applications.get_by_id(interview.application_id)
+        application = await self.applications.get_by_id_with_candidate_job_company_and_recruiters(interview.application_id)
         if application is None:
             raise EntityNotFoundException(
                 f"Application {interview.application_id} not found"
@@ -148,7 +150,7 @@ class InterviewService:
             timezone.utc
         ):
             raise InvalidTransitionException(
-                "Interview cannot be scheduled in the past"
+                "Không thể lên lịch phỏng vấn trong quá khứ. Vui lòng chọn thời gian trong tương lai."
             )
 
         # Update fields
@@ -170,14 +172,16 @@ class InterviewService:
         try:
             # Notify candidate about interview update BEFORE commit
             notification_service = NotificationService(self.session)
-            await notification_service.create_notification(
-                user_id=application.candidate_id,
-                title="Cập nhật lịch phỏng vấn",
-                content=f"Lịch phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'} đã được cập nhật. Thời gian mới: {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}",
-                notification_type="interview_updated",
-                entity_type="interview",
-                entity_id=interview.id,
-            )
+            candidate_user_id = application.candidate.user_id if application.candidate else None
+            if candidate_user_id:
+                await notification_service.create_notification(
+                    user_id=candidate_user_id,
+                    title="Cập nhật lịch phỏng vấn",
+                    content=f"Lịch phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'} đã được cập nhật. Thời gian mới: {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}",
+                    notification_type="interview_updated",
+                    entity_type="interview",
+                    entity_id=interview.id,
+                )
 
             await self.session.commit()
             await self.session.refresh(interview)
@@ -202,7 +206,7 @@ class InterviewService:
             raise EntityNotFoundException(f"Interview {interview_id} not found")
 
         # Verify ownership through application -> job
-        application = await self.applications.get_by_id(interview.application_id)
+        application = await self.applications.get_by_id_with_candidate_job_company_and_recruiters(interview.application_id)
         if application is None:
             raise EntityNotFoundException(
                 f"Application {interview.application_id} not found"
@@ -225,14 +229,16 @@ class InterviewService:
         try:
             # Notify candidate about interview cancellation BEFORE commit
             notification_service = NotificationService(self.session)
-            await notification_service.create_notification(
-                user_id=application.candidate_id,
-                title="Phỏng vấn bị hủy",
-                content=f"Phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'} đã bị hủy",
-                notification_type="interview_cancelled",
-                entity_type="interview",
-                entity_id=interview.id,
-            )
+            candidate_user_id = application.candidate.user_id if application.candidate else None
+            if candidate_user_id:
+                await notification_service.create_notification(
+                    user_id=candidate_user_id,
+                    title="Phỏng vấn bị hủy",
+                    content=f"Phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'} đã bị hủy",
+                    notification_type="interview_cancelled",
+                    entity_type="interview",
+                    entity_id=interview.id,
+                )
 
             await self.session.commit()
             await self.session.refresh(interview)
@@ -264,7 +270,7 @@ class InterviewService:
         candidate_id = user_with_profile.candidate_profile.id
 
         # Get application and verify ownership
-        application = await self.applications.get_by_id(application_id)
+        application = await self.applications.get_by_id_with_candidate_job_company_and_recruiters(application_id)
         if application is None:
             raise EntityNotFoundException(f"Application {application_id} not found")
 
@@ -338,7 +344,7 @@ class InterviewService:
 
         Recruiter/admin only. Ownership enforced.
         """
-        application = await self.applications.get_by_id(application_id)
+        application = await self.applications.get_by_id_with_candidate_job_company_and_recruiters(application_id)
         if application is None:
             raise EntityNotFoundException(f"Application {application_id} not found")
 
@@ -369,7 +375,7 @@ class InterviewService:
             raise EntityNotFoundException(f"Interview {interview_id} not found")
 
         # Verify ownership through application -> job
-        application = await self.applications.get_by_id(interview.application_id)
+        application = await self.applications.get_by_id_with_candidate_job_company_and_recruiters(interview.application_id)
         if application is None:
             raise EntityNotFoundException(
                 f"Application {interview.application_id} not found"
@@ -408,7 +414,7 @@ class InterviewService:
         candidate_id = user_with_profile.candidate_profile.id
 
         # Get application and verify ownership
-        application = await self.applications.get_by_id(application_id)
+        application = await self.applications.get_by_id_with_candidate_job_company_and_recruiters(application_id)
         if application is None:
             raise EntityNotFoundException(f"Application {application_id} not found")
 

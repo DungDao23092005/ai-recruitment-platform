@@ -35,12 +35,19 @@ def make_application(
     application_id: uuid.UUID | None = None,
     status: ApplicationStatus = ApplicationStatus.APPLIED,
 ) -> Application:
-    return Application(
+    app = Application(
         id=application_id or uuid.uuid4(),
         candidate_id=uuid.uuid4(),
         job_id=uuid.uuid4(),
         status=status,
     )
+    app.candidate = MagicMock()
+    app.candidate.user_id = uuid.uuid4()
+    app.job = MagicMock()
+    app.job.title = "Backend Engineer"
+    app.job.company = MagicMock()
+    app.job.company.recruiters = [MagicMock(user_id=uuid.uuid4())]
+    return app
 
 
 def make_job() -> Job:
@@ -68,7 +75,7 @@ class TestApplyJob:
         session = make_session()
         service = make_service(session)
         job = make_job()
-        service.jobs.get_by_id.return_value = job
+        service.jobs.get_job_with_company_and_recruiters.return_value = job
         service.applications.get_by_candidate_and_job.return_value = None
         candidate_id = uuid.uuid4()
 
@@ -87,7 +94,7 @@ class TestApplyJob:
     def test_job_not_found_raises(self):
         session = make_session()
         service = make_service(session)
-        service.jobs.get_by_id.return_value = None
+        service.jobs.get_job_with_company_and_recruiters.return_value = None
 
         with pytest.raises(EntityNotFoundException):
             asyncio.run(
@@ -103,7 +110,7 @@ class TestApplyJob:
     def test_duplicate_application_raises_conflict(self):
         session = make_session()
         service = make_service(session)
-        service.jobs.get_by_id.return_value = make_job()
+        service.jobs.get_job_with_company_and_recruiters.return_value = make_job()
         service.applications.get_by_candidate_and_job.return_value = (
             make_application()
         )
@@ -122,7 +129,7 @@ class TestApplyJob:
     def test_commit_failure_rolls_back(self):
         session = make_session()
         service = make_service(session)
-        service.jobs.get_by_id.return_value = make_job()
+        service.jobs.get_job_with_company_and_recruiters.return_value = make_job()
         service.applications.get_by_candidate_and_job.return_value = None
         session.commit.side_effect = RuntimeError("db down")
 
@@ -178,7 +185,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
-        service.applications.get_by_id.return_value = application
+        service.applications.get_by_id_with_candidate.return_value = application
         job = make_job()
 
         mock_notification_service.return_value.create_notification = AsyncMock()
@@ -208,7 +215,7 @@ class TestUpdateApplicationStatus:
     def test_application_not_found_raises(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
-        service.applications.get_by_id.return_value = None
+        service.applications.get_by_id_with_candidate.return_value = None
 
         mock_notification_service.return_value.create_notification = AsyncMock()
 
@@ -232,7 +239,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.UNDER_REVIEW)
-        service.applications.get_by_id.return_value = application
+        service.applications.get_by_id_with_candidate.return_value = application
 
         mock_notification_service.return_value.create_notification = AsyncMock()
 
@@ -259,6 +266,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
+        service.applications.get_by_id_with_candidate.return_value = application
 
         mock_notification_service.return_value.create_notification = AsyncMock()
 
@@ -285,7 +293,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
-        service.applications.get_by_id.return_value = application
+        service.applications.get_by_id_with_candidate.return_value = application
         session.commit.side_effect = RuntimeError("db down")
 
         mock_notification_service.return_value.create_notification = AsyncMock()
@@ -311,7 +319,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
-        service.applications.get_by_id.return_value = application
+        service.applications.get_by_id_with_candidate.return_value = application
 
         with patch(
             "app.services.application_service.JobService"
@@ -335,7 +343,31 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.UNDER_REVIEW)
-        service.applications.get_by_id.return_value = application
+        service.applications.get_by_id_with_candidate.return_value = application
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=make_job()
+            )
+            with pytest.raises(InvalidTransitionException):
+                asyncio.run(
+                    service.update_application_status(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        new_status=ApplicationStatus.APPLIED,
+                    )
+                )
+
+        assert application.status == ApplicationStatus.UNDER_REVIEW
+        session.commit.assert_not_awaited()
+
+    def test_recruiter_cannot_set_applied(self):
+        session = make_session()
+        service = make_service(session)
+        application = make_application(status=ApplicationStatus.UNDER_REVIEW)
+        service.applications.get_by_id_with_candidate.return_value = application
 
         with patch(
             "app.services.application_service.JobService"
@@ -378,7 +410,7 @@ class TestWithdrawApplication:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
-        service.applications.get_by_id.return_value = application
+        service.applications.get_by_id_with_job_company_and_recruiters.return_value = application
         user = make_candidate_user(application.candidate_id)
 
         mock_notification_service.return_value.create_notification = AsyncMock()
@@ -406,7 +438,7 @@ class TestWithdrawApplication:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
-        service.applications.get_by_id.return_value = application
+        service.applications.get_by_id_with_job_company_and_recruiters.return_value = application
         user = make_candidate_user(uuid.uuid4())
 
         mock_notification_service.return_value.create_notification = AsyncMock()
@@ -430,7 +462,7 @@ class TestWithdrawApplication:
     def test_withdraw_nonexistent_application_raises_404(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
-        service.applications.get_by_id.return_value = None
+        service.applications.get_by_id_with_job_company_and_recruiters.return_value = None
         user = make_candidate_user(uuid.uuid4())
 
         mock_notification_service.return_value.create_notification = AsyncMock()
@@ -454,7 +486,7 @@ class TestWithdrawApplication:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
-        service.applications.get_by_id.return_value = application
+        service.applications.get_by_id_with_job_company_and_recruiters.return_value = application
         user = SimpleNamespace(
             id=uuid.uuid4(),
             role=UserRole.CANDIDATE,
@@ -476,7 +508,7 @@ class TestWithdrawApplication:
         finally:
             patch_user.stop()
 
-        service.applications.get_by_id.assert_not_awaited()
+        service.applications.get_by_id_with_job_company_and_recruiters.assert_not_awaited()
         session.commit.assert_not_awaited()
 
     @patch("app.services.application_service.NotificationService")
@@ -484,7 +516,7 @@ class TestWithdrawApplication:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.ACCEPTED)
-        service.applications.get_by_id.return_value = application
+        service.applications.get_by_id_with_job_company_and_recruiters.return_value = application
         user = make_candidate_user(application.candidate_id)
 
         mock_notification_service.return_value.create_notification = AsyncMock()

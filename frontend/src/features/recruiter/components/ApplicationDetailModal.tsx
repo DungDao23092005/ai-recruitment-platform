@@ -465,6 +465,7 @@ export function ApplicationDetailModal({
                 applicationId={application.id} 
                 jobId={detail.job_id}
                 initialInterviews={detail.interviews || []}
+                applicationStatus={detail.status}
                 onInterviewUpdated={(newInterviews) => {
                   setState(prev => prev.kind === 'success' && prev.detail ? {
                     ...prev,

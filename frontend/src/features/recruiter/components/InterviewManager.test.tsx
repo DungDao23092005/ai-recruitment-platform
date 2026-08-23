@@ -120,4 +120,79 @@ describe('InterviewManager', () => {
 
     expect(screen.getByRole('button', { name: /Lên lịch/i })).toBeInTheDocument()
   })
+
+  describe('Terminal status behavior', () => {
+    const terminalStatuses = ['accepted', 'rejected', 'withdrawn'] as const
+    const validStatuses = ['applied', 'under_review', 'shortlisted', 'interviewing'] as const
+
+    terminalStatuses.forEach(status => {
+      it(`hides "Lên lịch" button when status is ${status}`, () => {
+        renderManager({ initialInterviews: [] }, { applicationStatus: status })
+
+        expect(screen.queryByRole('button', { name: /Lên lịch/i })).not.toBeInTheDocument()
+      })
+
+      it(`shows disabled "Tạo câu hỏi AI" button when status is ${status}`, () => {
+        renderManager({ initialInterviews: [] }, { applicationStatus: status })
+
+        const aiButton = screen.getByRole('button', { name: /Tạo câu hỏi AI/i })
+        expect(aiButton).toBeInTheDocument()
+        expect(aiButton).toBeDisabled()
+      })
+
+      it(`shows warning message when status is ${status}`, () => {
+        renderManager({ initialInterviews: [] }, { applicationStatus: status })
+
+        expect(screen.getByText('Không thể tạo lịch phỏng vấn hoặc tạo câu hỏi AI vì hồ sơ ứng viên đang ở trạng thái đã đóng.')).toBeInTheDocument()
+      })
+    })
+
+    validStatuses.forEach(status => {
+      it(`shows "Lên lịch" button when status is ${status}`, () => {
+        renderManager({ initialInterviews: [] }, { applicationStatus: status })
+
+        expect(screen.getByRole('button', { name: /Lên lịch/i })).toBeInTheDocument()
+      })
+
+      it(`shows enabled "Tạo câu hỏi AI" button when status is ${status}`, () => {
+        renderManager({ initialInterviews: [] }, { applicationStatus: status })
+
+        const aiButton = screen.getByRole('button', { name: /Tạo câu hỏi AI/i })
+        expect(aiButton).toBeInTheDocument()
+        expect(aiButton).not.toBeDisabled()
+      })
+
+      it(`does not show warning message when status is ${status}`, () => {
+        renderManager({ initialInterviews: [] }, { applicationStatus: status })
+
+        expect(screen.queryByText('Không thể tạo lịch phỏng vấn hoặc tạo câu hỏi AI vì hồ sơ ứng viên đang ở trạng thái đã đóng.')).not.toBeInTheDocument()
+      })
+    })
+
+    it('shows "Đã đóng" badge when status is terminal', () => {
+      renderManager({ initialInterviews: [] }, { applicationStatus: 'withdrawn' })
+      expect(screen.getByText('Đã đóng')).toBeInTheDocument()
+    })
+
+    it('shows warning message when in terminal status and editing form', () => {
+      renderManager({ initialInterviews: [] }, { applicationStatus: 'withdrawn' })
+
+      const button = screen.getByRole('button', { name: /Tạo câu hỏi AI/i })
+      expect(button).toBeDisabled()
+    })
+  })
+
+  function renderManager(overrides: { initialInterviews?: Interview[] } = {}, options: { applicationStatus?: string } = {}) {
+    return render(
+      <MemoryRouter>
+        <InterviewManager
+          applicationId="app-1"
+          jobId="job-1"
+          initialInterviews={overrides.initialInterviews || []}
+          onInterviewUpdated={vi.fn()}
+          applicationStatus={options.applicationStatus}
+        />
+      </MemoryRouter>,
+    )
+  }
 })
