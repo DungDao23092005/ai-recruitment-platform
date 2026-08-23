@@ -250,6 +250,30 @@ class TestParseResume:
         assert resp.status_code == status.HTTP_401_UNAUTHORIZED
         mock_service.process_and_index_resume.assert_not_called()
 
+    def test_parse_resume_ai_error_maps_to_502(self, candidate_client, mock_service):
+        """Test that AIError from process_and_index_resume maps to HTTP 502."""
+        mock_service.process_and_index_resume.side_effect = AIError(
+            "Failed to upsert vector into collection 'resumes'"
+        )
+
+        resp = candidate_client.post(
+            "/api/v1/ai/parse-resume",
+            files={"file": ("resume.pdf", b"%PDF-1.7 fake", "application/pdf")},
+        )
+
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+        assert "Failed to upsert vector" in resp.json()["detail"]
+        mock_service.process_and_index_resume.assert_called_once()
+
+    def test_parse_resume_unauthorized(self, unauthorized_client, mock_service):
+        resp = unauthorized_client.post(
+            "/api/v1/ai/parse-resume",
+            files={"file": ("resume.pdf", b"%PDF fake", "application/pdf")},
+        )
+
+        assert resp.status_code == status.HTTP_401_UNAUTHORIZED
+        mock_service.process_and_index_resume.assert_not_called()
+
 
 class TestParseJD:
     def test_parse_jd_success(self, recruiter_client, mock_service):

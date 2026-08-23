@@ -4,6 +4,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { ResumeUpload } from './ResumeUpload'
 import * as aiApi from '@/api/ai'
 import type { ParsedResume } from '@/types/ai'
+import apiClient from '@/api/client'
 
 const mockParsedResume: ParsedResume = {
   full_name: 'John Doe',
@@ -143,6 +144,27 @@ describe('ResumeUpload', () => {
 
     await waitFor(() => {
       expect(onParsed).toHaveBeenCalledWith(mockParsedResume, 'resume.pdf')
+    })
+  })
+
+  it('passes File to parseResume without manual Content-Type header', async () => {
+    mockedParseResume.mockResolvedValue(mockParsedResume)
+
+    render(<ResumeUpload />)
+
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    const pdfFile = makePdfFile('resume.pdf')
+    fireEvent.change(fileInput, { target: { files: [pdfFile] } })
+
+    await waitFor(() => {
+      expect(mockedParseResume).toHaveBeenCalled()
+      // Verify parseResume was called with a File object (not a config with Content-Type)
+      const callArgs = mockedParseResume.mock.calls[0]
+      expect(callArgs[0]).toBeInstanceOf(File)
+      expect(callArgs[0].name).toBe('resume.pdf')
+      expect(callArgs[0].type).toBe('application/pdf')
+      // Verify it's only called with the file (no config object with Content-Type)
+      expect(callArgs).toHaveLength(1)
     })
   })
 })

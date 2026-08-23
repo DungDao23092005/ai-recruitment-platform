@@ -23,11 +23,6 @@ export async function parseResume(file: File): Promise<ParsedResume> {
   return apiClient.post<ParsedResume, ParsedResume>(
     '/ai/parse-resume',
     formData,
-    {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    },
   )
 }
 
