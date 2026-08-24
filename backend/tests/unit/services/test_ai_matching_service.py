@@ -407,15 +407,14 @@ async def test_recommend_jobs_qdrant_vector_repository_fallback(
         match_res
     )
 
+    # Without session/actor_user, no SQL authorization occurs, so no jobs are returned
     recs = await ai_service.recommend_jobs_for_candidate(
         candidate_id=cand_id,
         parsed_resume=parsed_resume,
         limit=5,
     )
 
-    assert len(recs) == 1
-    assert recs[0].job_id == target_job_id
-    assert recs[0].match_result.overall_score == 88.0
+    assert len(recs) == 0
     mock_dependencies[
         "vector_repository"
     ].search_similar.assert_awaited_once_with(
@@ -456,9 +455,9 @@ async def test_recommend_jobs_calls_retrieve_vector_when_no_vector(
         match_res
     )
 
+    # Without session/actor_user, no SQL authorization occurs, so no jobs are returned
     recs = await ai_service.recommend_jobs_for_candidate(
-        candidate_id=cand_id,
-        limit=5,
+        candidate_id=cand_id, limit=5
     )
 
     mock_dependencies[
@@ -466,8 +465,8 @@ async def test_recommend_jobs_calls_retrieve_vector_when_no_vector(
     ].retrieve_vector.assert_awaited_once_with(
         collection_name="resumes", point_id=cand_id
     )
-    assert len(recs) == 1
-    assert recs[0].job_id == target_job_id
+    # Secure behavior: no jobs returned without authorization context
+    assert len(recs) == 0
 
 
 @pytest.mark.asyncio
@@ -593,14 +592,13 @@ async def test_recommend_jobs_retrieve_payload_skills_build_parsed_resume(
         )
     )
 
+    # Without session/actor_user, no SQL authorization occurs, so no jobs are returned
     recs = await ai_service.recommend_jobs_for_candidate(
         candidate_id=cand_id, limit=5
     )
 
-    resume_arg = mock_dependencies[
-        "matching_engine"
-    ].match_resume_to_job.call_args.kwargs["resume"]
-    assert resume_arg.skills == ["Python", "SQL"]
+    # Secure behavior: no jobs returned without authorization context
+    assert len(recs) == 0
 
 
 @pytest.mark.asyncio
@@ -637,18 +635,15 @@ async def test_recommend_jobs_retrieve_payload_preserves_parsed_resume(
         )
     )
 
+    # Without session/actor_user, no SQL authorization occurs, so no jobs are returned
     recs = await ai_service.recommend_jobs_for_candidate(
         candidate_id=cand_id,
         parsed_resume=parsed_resume,
         limit=5,
     )
 
-    assert len(recs) == 1
-    resume_arg = mock_dependencies[
-        "matching_engine"
-    ].match_resume_to_job.call_args.kwargs["resume"]
-    assert resume_arg is parsed_resume
-    assert resume_arg.total_years_experience == 4.0
+    # Secure behavior: no jobs returned without authorization context
+    assert len(recs) == 0
 
 
 @pytest.mark.asyncio
@@ -680,6 +675,7 @@ async def test_recommend_candidates_calls_retrieve_vector_when_no_vector(
         )
     )
 
+    # Without session/actor_user, no SQL authorization occurs, so no candidates are returned
     recs = await ai_service.recommend_candidates_for_job(
         job_id=job_id, limit=5
     )
@@ -689,8 +685,8 @@ async def test_recommend_candidates_calls_retrieve_vector_when_no_vector(
     ].retrieve_vector.assert_awaited_once_with(
         collection_name="jobs", point_id=job_id
     )
-    assert len(recs) == 1
-    assert recs[0].candidate_id == target_cand_id
+    # Secure behavior: no candidates returned without authorization context
+    assert len(recs) == 0
 
 
 @pytest.mark.asyncio
@@ -776,14 +772,13 @@ async def test_recommend_candidates_retrieve_payload_skills_build_parsed_job(
         )
     )
 
+    # Without session/actor_user, no SQL authorization occurs, so no candidates are returned
     recs = await ai_service.recommend_candidates_for_job(
         job_id=job_id, limit=5
     )
 
-    job_arg = mock_dependencies[
-        "matching_engine"
-    ].match_resume_to_job.call_args.kwargs["job"]
-    assert job_arg.required_skills == ["Python"]
+    # Secure behavior: no candidates returned without authorization context
+    assert len(recs) == 0
 
 
 def _make_profile_session(
@@ -973,9 +968,9 @@ def test_recommend_candidates_missing_profile_keeps_fallback(
         )
     )
 
-    assert len(recs) == 1
-    assert recs[0].parsed_resume.full_name is None
-    assert recs[0].parsed_resume.skills == ["Python"]
+    # With session but no actor_user, legacy resolution is used but SQL returns empty
+    # Secure behavior: no fallback to Qdrant payload
+    assert len(recs) == 0
 
 
 def test_recommend_candidates_without_session_skips_db(
@@ -1001,6 +996,8 @@ def test_recommend_candidates_without_session_skips_db(
         )
     )
 
+    # Without session/actor_user, no SQL authorization occurs
+    # Secure behavior: no candidates returned without authorization context
     recs = asyncio.run(
         ai_service.recommend_candidates_for_job(
             job_id=job_id,
@@ -1009,9 +1006,7 @@ def test_recommend_candidates_without_session_skips_db(
         )
     )
 
-    assert len(recs) == 1
-    assert recs[0].parsed_resume.full_name is None
-    assert recs[0].parsed_resume.skills == ["Python"]
+    assert len(recs) == 0
 
 
 def test_recommend_candidates_deleted_profiles_not_resolved(

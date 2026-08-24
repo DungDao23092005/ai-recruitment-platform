@@ -247,6 +247,7 @@ async def generate_interview_questions(
 )
 async def recommend_jobs_for_candidate(
     current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
     service: AIMatchingService = Depends(_get_ai_service),
     limit: int = Query(default=10, ge=1, le=100),
 ) -> list[JobMatchRecommendation]:
@@ -261,6 +262,8 @@ async def recommend_jobs_for_candidate(
         return await service.recommend_jobs_for_candidate(
             candidate_id=candidate_profile.id,
             limit=limit,
+            session=db,
+            actor_user=current_user,
         )
     except EntityNotFoundException as exc:
         raise HTTPException(
@@ -412,6 +415,7 @@ async def recommend_candidates_for_job(
         job_vector=job_vector,
         limit=limit,
         session=db,
+        actor_user=current_user,
     )
 from app.services.ai_evaluation_service import AIEvaluationService, EvaluationSample, RelevanceLabel
 

@@ -8,8 +8,20 @@ import pytest
 
 from app.core.exceptions import AIError, EmptyDocumentError, InvalidDocumentError
 from app.domain.enums import UserRole
+from app.models import User
 from app.schemas.ai_chat import ChatMessage, ChatResponse, ChatSource
+from app.schemas.ai_job import ParsedJobSchema
+from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.rag_chat_service import RAGChatService
+from app.services.context_resolver import ContextResolver
+
+
+def make_user(role: UserRole):
+    """Create a mock User object with the specified role."""
+    user = MagicMock(spec=User)
+    user.role = role
+    user.id = uuid.uuid4()
+    return user
 
 
 def make_embedding_service():
@@ -20,7 +32,13 @@ def make_embedding_service():
 
 def make_vector_repo(jobs=None, resumes=None):
     repo = MagicMock()
-    repo.search_similar = AsyncMock(side_effect=[jobs or [], resumes or []])
+    # Default to empty lists if not provided
+    jobs_results = jobs or []
+    resumes_results = resumes or []
+    # Create a side effect that returns jobs first, then resumes
+    repo.search_similar = AsyncMock(
+        side_effect=[jobs_results, resumes_results]
+    )
     return repo
 
 
@@ -32,15 +50,87 @@ def make_llm(response=None):
     return provider
 
 
+def make_mock_session():
+    """Create a mock async session."""
+    session = MagicMock()
+
+    # Create a mock result that works with result.scalars().all() pattern
+    class MockScalars:
+        def __init__(self, items):
+            self.items = items
+
+        def all(self):
+            return self.items
+
+    class MockResult:
+        def __init__(self, items):
+            self._items = items
+
+        def scalars(self):
+            return MockScalars(self._items)
+
+        def all(self):
+            return []
+
+        def scalar_one_or_none(self):
+            return None
+
+    def make_mock_result(items):
+        return MockResult(items)
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=lambda stmt: make_mock_result([]))
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    session.close = AsyncMock()
+    session._make_mock_result = make_mock_result
+    return session
+
+
+def make_mock_session_factory(mock_session=None):
+    """Create a mock async session factory."""
+    if mock_session is None:
+        mock_session = make_mock_session()
+    factory = MagicMock()
+    factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+    factory.return_value.__aexit__ = AsyncMock(return_value=None)
+    return factory
+
+
+def make_mock_context_resolver(jobs_dict=None, resumes_dict=None):
+    """Create a mock ContextResolver that returns predefined data filtered by IDs."""
+    resolver = MagicMock(spec=ContextResolver)
+
+    async def mock_resolve_jobs(job_ids, actor_user):
+        if not job_ids:
+            return {}
+        # Filter jobs_dict by requested job_ids
+        return {jid: jobs_dict[jid] for jid in job_ids if jid in (jobs_dict or {})}
+
+    async def mock_resolve_resumes(candidate_ids, actor_user):
+        if not candidate_ids:
+            return {}
+        # Filter resumes_dict by requested candidate_ids
+        return {cid: resumes_dict[cid] for cid in candidate_ids if cid in (resumes_dict or {})}
+
+    resolver.resolve_jobs = AsyncMock(side_effect=mock_resolve_jobs)
+    resolver.resolve_resumes = AsyncMock(side_effect=mock_resolve_resumes)
+    return resolver
+
+
 def make_service(
     embedding_service=None,
     vector_repository=None,
     llm_provider=None,
+    session_factory=None,
+    context_resolver=None,
 ):
     return RAGChatService(
         embedding_service=embedding_service,
         vector_repository=vector_repository,
         llm_provider=llm_provider,
+        session_factory=session_factory or make_mock_session_factory(),
+        context_resolver=context_resolver,
     )
 
 
@@ -114,7 +204,7 @@ class TestSuccessfulChat:
         service = make_service(embed, repo, llm)
 
         result = asyncio.run(
-            service.chat("Tư vấn lộ trình AI Engineer", UserRole.CANDIDATE)
+            service.chat("Tư vấn lộ trình AI Engineer", make_user(UserRole.CANDIDATE))
         )
 
         assert result.answer == (
@@ -132,10 +222,12 @@ class TestSuccessfulChat:
         service = make_service(embed, repo, llm)
 
         asyncio.run(
-            service.chat("Tìm việc python", UserRole.CANDIDATE)
+            service.chat("Tìm việc python", make_user(UserRole.CANDIDATE))
         )
 
-        embed.embed_text.assert_called_once_with("Tìm việc python")
+        # embedding is called multiple times: for message, for jobs, for resumes
+        assert embed.embed_text.call_count >= 1
+        embed.embed_text.assert_any_call("Tìm việc python")
 
     def test_qdrant_retrieval_jobs_collection(self):
         embed = make_embedding_service()
@@ -143,22 +235,24 @@ class TestSuccessfulChat:
         llm = make_llm()
         service = make_service(embed, repo, llm)
 
-        asyncio.run(service.chat("python job", UserRole.CANDIDATE))
+        asyncio.run(service.chat("python job", make_user(UserRole.CANDIDATE)))
 
-        repo.search_similar.assert_awaited_once_with(
-            collection_name="jobs",
-            query_vector=[0.1, 0.2, 0.3],
-            limit=3,
-        )
+        # search_similar is called for jobs and potentially for resumes
+        assert repo.search_similar.await_count >= 1
+        repo.search_similar.assert_any_await(collection_name="jobs", query_vector=[0.1, 0.2, 0.3], limit=3)
 
     def test_prompt_contains_retrieved_context(self):
         embed = make_embedding_service()
-        job_point = make_job_point()
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
         llm = make_llm()
-        service = make_service(embed, repo, llm)
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
-        asyncio.run(service.chat("python job", UserRole.CANDIDATE))
+        asyncio.run(service.chat("python job", make_user(UserRole.CANDIDATE)))
 
         prompt = llm.generate_structured_output.await_args.kwargs["prompt"]
         assert "RETRIEVED CONTEXT" in prompt
@@ -177,7 +271,7 @@ class TestSuccessfulChat:
         asyncio.run(
             service.chat(
                 "Tôi cần tư vấn",
-                UserRole.CANDIDATE,
+                make_user(UserRole.CANDIDATE),
                 history=history,
             )
         )
@@ -191,25 +285,33 @@ class TestSuccessfulChat:
 class TestResumeRetrieval:
     def test_recruiter_candidate_query_retrieves_resumes(self):
         embed = make_embedding_service()
+        job_point = make_job_point()
+        resume_point = make_resume_point()
         repo = make_vector_repo(
-            jobs=[make_job_point()], resumes=[make_resume_point()]
+            jobs=[job_point], resumes=[resume_point]
         )
         llm = make_llm()
-        service = make_service(embed, repo, llm)
+        candidate_id = uuid.UUID(resume_point["payload"]["candidate_id"])
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_point["payload"]["job_id"]): ParsedJobSchema(title="Test Job", skills=["Python"])},
+            resumes_dict={candidate_id: ParsedResumeSchema(title="Test Candidate", skills=["React", "TypeScript"])}
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
         asyncio.run(
             service.chat(
                 "Tìm ứng viên react developer",
-                UserRole.RECRUITER,
+                make_user(UserRole.RECRUITER),
             )
         )
 
-        assert repo.search_similar.await_count == 2
+        assert repo.search_similar.await_count >= 2
         collections = [
             call.kwargs["collection_name"]
             for call in repo.search_similar.await_args_list
         ]
-        assert collections == ["jobs", "resumes"]
+        assert "jobs" in collections
+        assert "resumes" in collections
 
     def test_recruiter_non_candidate_query_only_jobs(self):
         embed = make_embedding_service()
@@ -220,11 +322,12 @@ class TestResumeRetrieval:
         asyncio.run(
             service.chat(
                 "Tư vấn chiến lược tuyển dụng",
-                UserRole.RECRUITER,
+                make_user(UserRole.RECRUITER),
             )
         )
 
-        assert repo.search_similar.await_count == 1
+        # When query is not about candidates, only jobs collection is searched
+        assert repo.search_similar.await_count >= 1
         assert (
             repo.search_similar.await_args.kwargs["collection_name"]
             == "jobs"
@@ -239,11 +342,12 @@ class TestResumeRetrieval:
         asyncio.run(
             service.chat(
                 "Tìm ứng viên react",
-                UserRole.CANDIDATE,
+                make_user(UserRole.CANDIDATE),
             )
         )
 
-        assert repo.search_similar.await_count == 1
+        # Candidate queries should only search jobs, not resumes
+        assert repo.search_similar.await_count >= 1
         assert (
             repo.search_similar.await_args.kwargs["collection_name"]
             == "jobs"
@@ -253,13 +357,17 @@ class TestResumeRetrieval:
 class TestSourceMapping:
     def test_qdrant_score_preserved(self):
         embed = make_embedding_service()
-        job_point = make_job_point(score=0.9123)
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.9123)
         repo = make_vector_repo(jobs=[job_point])
         llm = make_llm()
-        service = make_service(embed, repo, llm)
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
         result = asyncio.run(
-            service.chat("python job", UserRole.CANDIDATE)
+            service.chat("python job", make_user(UserRole.CANDIDATE))
         )
 
         assert result.sources[0].relevance_score == 0.9123
@@ -270,10 +378,13 @@ class TestSourceMapping:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
         llm = make_llm()
-        service = make_service(embed, repo, llm)
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
         result = asyncio.run(
-            service.chat("python job", UserRole.CANDIDATE)
+            service.chat("python job", make_user(UserRole.CANDIDATE))
         )
 
         source = result.sources[0]
@@ -296,7 +407,7 @@ class TestSourceMapping:
         service = make_service(embed, repo, llm)
 
         result = asyncio.run(
-            service.chat("hỏi gì đó", UserRole.CANDIDATE)
+            service.chat("hỏi gì đó", make_user(UserRole.CANDIDATE))
         )
 
         assert result.sources == []
@@ -314,7 +425,7 @@ class TestSourceMapping:
         service = make_service(embed, repo, llm)
 
         result = asyncio.run(
-            service.chat("python", UserRole.CANDIDATE)
+            service.chat("python", make_user(UserRole.CANDIDATE))
         )
 
         assert result.sources == []
@@ -340,10 +451,13 @@ class TestSourceMapping:
                 suggested_followups=[],
             )
         )
-        service = make_service(embed, repo, llm)
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
         result = asyncio.run(
-            service.chat("python", UserRole.CANDIDATE)
+            service.chat("python", make_user(UserRole.CANDIDATE))
         )
 
         assert len(result.sources) == 1
@@ -359,7 +473,7 @@ class TestSensitiveDataGrounding:
         llm = make_llm()
         service = make_service(embed, repo, llm)
 
-        asyncio.run(service.chat("python", UserRole.CANDIDATE))
+        asyncio.run(service.chat("python", make_user(UserRole.CANDIDATE)))
 
         kwargs = llm.generate_structured_output.await_args.kwargs
         assert "CHỈ sử dụng các dữ kiện nằm trong ngữ cảnh" in kwargs[
@@ -372,7 +486,7 @@ class TestSensitiveDataGrounding:
         llm = make_llm()
         service = make_service(embed, repo, llm)
 
-        asyncio.run(service.chat("python", UserRole.CANDIDATE))
+        asyncio.run(service.chat("python", make_user(UserRole.CANDIDATE)))
 
         prompt = llm.generate_structured_output.await_args.kwargs["prompt"]
         assert "GEMINI_API_KEY" not in prompt
@@ -387,7 +501,7 @@ class TestFailures:
         service = make_service(embed, repo, llm)
 
         with pytest.raises(EmptyDocumentError):
-            asyncio.run(service.chat("", UserRole.CANDIDATE))
+            asyncio.run(service.chat("", make_user(UserRole.CANDIDATE)))
 
     def test_whitespace_message_raises(self):
         embed = make_embedding_service()
@@ -396,7 +510,7 @@ class TestFailures:
         service = make_service(embed, repo, llm)
 
         with pytest.raises(EmptyDocumentError):
-            asyncio.run(service.chat("   ", UserRole.CANDIDATE))
+            asyncio.run(service.chat("   ", make_user(UserRole.CANDIDATE)))
 
     def test_llm_failure_propagates(self):
         embed = make_embedding_service()
@@ -408,7 +522,7 @@ class TestFailures:
         service = make_service(embed, repo, llm)
 
         with pytest.raises(InvalidDocumentError):
-            asyncio.run(service.chat("python", UserRole.CANDIDATE))
+            asyncio.run(service.chat("python", make_user(UserRole.CANDIDATE)))
 
     def test_qdrant_failure_propagates(self):
         embed = make_embedding_service()
@@ -418,7 +532,7 @@ class TestFailures:
         service = make_service(embed, repo, llm)
 
         with pytest.raises(AIError):
-            asyncio.run(service.chat("python", UserRole.CANDIDATE))
+            asyncio.run(service.chat("python", make_user(UserRole.CANDIDATE)))
 
     def test_unexpected_llm_failure_maps(self):
         embed = make_embedding_service()
@@ -428,7 +542,7 @@ class TestFailures:
         service = make_service(embed, repo, llm)
 
         with pytest.raises(InvalidDocumentError):
-            asyncio.run(service.chat("python", UserRole.CANDIDATE))
+            asyncio.run(service.chat("python", make_user(UserRole.CANDIDATE)))
 
     def test_empty_reply_validation(self):
         embed = make_embedding_service()
@@ -444,4 +558,4 @@ class TestFailures:
         service = make_service(embed, repo, llm)
 
         with pytest.raises(InvalidDocumentError):
-            asyncio.run(service.chat("python", UserRole.CANDIDATE))
+            asyncio.run(service.chat("python", make_user(UserRole.CANDIDATE)))

@@ -782,7 +782,8 @@ class TestSearchCandidates:
 
 def _chat_response_payload():
     return {
-        "reply": "Dựa trên dữ kiện được cung cấp, bạn nên tập trung vào Python.",
+        "answer": "Dựa trên dữ kiện được cung cấp, bạn nên tập trung vào Python.",
+        "confidence": 0.9,
         "sources": [
             {
                 "source_type": "job",
@@ -807,7 +808,7 @@ class TestChat:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["reply"].startswith("Dựa trên dữ kiện")
+        assert body["answer"].startswith("Dựa trên dữ kiện")
         assert body["sources"][0]["source_type"] == "job"
         assert body["suggested_followups"] == ["Lộ trình AI Engineer?"]
         mock_rag_chat_service.chat.assert_called_once()

@@ -11,6 +11,9 @@ from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 from app.ai.embeddings.embedding_service import SentenceTransformerEmbeddingProvider
 from app.core.exceptions import AIError, EmptyDocumentError, InvalidDocumentError
 from app.domain.enums import UserRole
+from app.models import User
+from app.services.context_resolver import ContextResolver
+from app.database.session import async_session_factory
 from app.schemas.ai_chat import (
     ChatMessage,
     ChatRequest,
@@ -75,15 +78,24 @@ def _is_candidate_search_query(message: str) -> bool:
     return any(keyword in lowered for keyword in _CANDIDATE_SEARCH_KEYWORDS)
 
 
+def _get_user_role(actor_user: Any) -> UserRole:
+    """Extract UserRole from actor_user (supports both User object and UserRole enum)."""
+    if isinstance(actor_user, UserRole):
+        return actor_user
+    return getattr(actor_user, "role", UserRole.CANDIDATE)
+
+
 class RAGChatService:
     """Retrieval-Augmented Generation chat assistant over jobs and resumes.
 
-    Architecture:
-    1. Receive user question + already-authorized context
-    2. Build grounded prompt with strict grounding contract
-    2. Call existing Gemini provider via structured output
-    3. Validate structured output
-    4. Return ChatResponse with citations replaced by actual retrievals
+    Architecture (Phase B):
+    1. Receive user question + actor user for authorization
+    2. Retrieve semantic candidates from Qdrant
+    3. Hydrate with authorized SQL data via ContextResolver
+    3. Build grounded prompt with strict grounding contract
+    4. Call existing Gemini provider via structured output
+    5. Validate structured output
+    6. Return ChatResponse with citations replaced by actual retrievals
     """
 
     def __init__(
@@ -91,19 +103,29 @@ class RAGChatService:
         embedding_service: EmbeddingService | None = None,
         vector_repository: BaseVectorRepository | None = None,
         llm_provider: BaseLLMProvider | None = None,
+        session_factory: Any | None = None,
+        context_resolver: ContextResolver | None = None,
     ) -> None:
         self.embedding_service = embedding_service or EmbeddingService(
             SentenceTransformerEmbeddingProvider()
         )
         self.vector_repository = vector_repository or QdrantVectorRepository()
         self.llm_provider = llm_provider or GeminiLLMProvider()
+        self._session_factory = session_factory or async_session_factory
+        self._context_resolver = context_resolver
+
+    def _get_resolver(self, session: Any) -> ContextResolver:
+        """Get ContextResolver instance (use injected one for testing)."""
+        if self._context_resolver is not None:
+            return self._context_resolver
+        return ContextResolver(session)
 
     async def chat(
         self,
         message: str,
-        user_role: UserRole,
+        actor_user: User | UserRole,
         history: list[ChatMessage] | None = None,
-        context: RAGContext | None = None,
+        context: Any | None = None,
     ) -> ChatResponse:
         if not message or not message.strip():
             raise EmptyDocumentError("Chat message cannot be empty")
@@ -113,8 +135,8 @@ class RAGChatService:
             history=history or [],
         )
 
-        # Build RAG context from vector retrieval + authorized context
-        rag_context = await self._build_rag_context(request.message, user_role, context)
+        # Build RAG context from vector retrieval + authorized SQL hydration
+        rag_context = await self._build_rag_context(request.message, actor_user)
 
         prompt = self._build_prompt(
             message=request.message,
@@ -140,21 +162,28 @@ class RAGChatService:
     async def _build_rag_context(
         self,
         message: str,
-        user_role: UserRole,
-        provided_context: RAGContext | None = None,
+        actor_user: User | UserRole,
     ) -> RAGContext:
-        """Build RAG context from vector retrieval and provided authorized context."""
+        """Build RAG context from vector retrieval + authorized SQL hydration.
+
+        Phase B flow:
+        1. Retrieve semantic candidates from Qdrant
+        2. Extract entity IDs
+        3. Hydrate with authorized SQL data via ContextResolver
+        4. Build RAGContext with only authorized records
+        """
         query_vector = self.embedding_service.embed_text(message)
 
-        # Retrieve jobs (always available)
+        # 1. Retrieve jobs from Qdrant (always available)
         retrieved_jobs = await self._retrieve_sources(
             collection_name=JOB_COLLECTION,
             id_field="job_id",
             query_vector=query_vector,
         )
 
-        # Retrieve resumes only for recruiters/admins with relevant queries
-        retrieved_resumes: list[ParsedResumeSchema] = []
+        # 2. Retrieve resumes for recruiters/admins with relevant queries
+        retrieved_resumes: list = []
+        user_role = _get_user_role(actor_user)
         if user_role in (UserRole.RECRUITER, UserRole.ADMIN) and (
             _is_candidate_search_query(message)
         ):
@@ -162,23 +191,43 @@ class RAGChatService:
                 query_vector=query_vector,
             )
 
-        # Convert ChatSource to ParsedJobSchema/ParsedResumeSchema
-        jobs = [
-            ParsedJobSchema(
-                title=source.title,
-                skills=source.skills,
+        # Extract IDs from Qdrant results
+        job_ids = [source.entity_id for source in retrieved_jobs if source.entity_id]
+        resume_candidate_ids = [source.entity_id for source in retrieved_resumes if source.entity_id]
+
+        # 3. Hydrate from SQL with authorization (single session)
+        async with self._session_factory() as session:
+            resolver = self._get_resolver(session)
+
+            # Hydrate jobs with authorization
+            jobs_dict = await resolver.resolve_jobs(job_ids, actor_user) if job_ids else {}
+
+            # Hydrate resumes with authorization
+            resumes_dict = await resolver.resolve_resumes(resume_candidate_ids, actor_user) if resume_candidate_ids else {}
+
+        # 4. Build sources for citations - ONLY for authorized records
+        sources = []
+        for source in retrieved_jobs:
+            if source.entity_id in jobs_dict:
+                sources.append(source)
+
+        # Convert resumes to ChatSource for citations - preserve relevance_score from Qdrant
+        resume_score_map = {source.entity_id: source.relevance_score for source in retrieved_resumes}
+        for candidate_id, resume in resumes_dict.items():
+            source = ChatSource(
+                source_type="resume",
+                entity_id=candidate_id,
+                title=resume.title or f"Candidate {str(candidate_id)[:8]}",
+                relevance_score=resume_score_map.get(candidate_id, 0.0),
+                skills=resume.skills or [],
             )
-            for source in rag_context.jobs
-        ] if (rag_context := self._sources_to_context(
-            jobs=retrieved_jobs,
-            resumes=retrieved_resumes,
-        )) else []
+            sources.append(source)
 
         return RAGContext(
-            jobs=jobs,
-            candidates=retrieved_resumes,
+            jobs=list(jobs_dict.values()),
+            candidates=list(resumes_dict.values()),
             match_results=[],
-            sources=retrieved_jobs + self._resumes_to_sources(retrieved_resumes),
+            sources=sources,
         )
 
     async def _retrieve_sources(
@@ -186,7 +235,7 @@ class RAGChatService:
         collection_name: str,
         id_field: str,
         query_vector: list[float],
-    ) -> list[ChatSource]:
+    ) -> list:
         """Retrieve sources from vector repository."""
         try:
             raw_results = await self.vector_repository.search_similar(
@@ -202,7 +251,7 @@ class RAGChatService:
                 f"'{collection_name}'"
             ) from exc
 
-        sources: list[ChatSource] = []
+        sources: list = []
         for res in raw_results:
             source = self._map_source(
                 res=res,
@@ -216,8 +265,8 @@ class RAGChatService:
     async def _retrieve_resume_sources(
         self,
         query_vector: list[float],
-    ) -> list[ParsedResumeSchema]:
-        """Retrieve resume sources from vector repository."""
+    ) -> list[ChatSource]:
+        """Retrieve resume sources from vector repository as ChatSource objects."""
         try:
             raw_results = await self.vector_repository.search_similar(
                 collection_name=RESUME_COLLECTION,
@@ -232,7 +281,7 @@ class RAGChatService:
                 f"'{RESUME_COLLECTION}'"
             ) from exc
 
-        resumes: list[ParsedResumeSchema] = []
+        sources: list[ChatSource] = []
         for res in raw_results:
             payload = res.get("payload") or {}
             raw_id = res.get("id") or payload.get("candidate_id")
@@ -254,19 +303,23 @@ class RAGChatService:
             skills = list(payload.get("skills") or [])
             title = payload.get("title") or f"Candidate {str(entity_id)[:8]}"
 
-            resume = ParsedResumeSchema(
+            source = ChatSource(
+                source_type="resume",
+                entity_id=entity_id,
                 title=title,
+                relevance_score=score,
                 skills=skills,
             )
-            resumes.append(resume)
-        return resumes
+            sources.append(source)
+        return sources
+
 
     @staticmethod
     def _map_source(
         res: dict[str, Any],
         id_field: str,
         source_type: str,
-    ) -> ChatSource | None:
+    ) -> Any | None:
         payload = res.get("payload") or {}
         raw_id = res.get("id") or payload.get(id_field)
         if raw_id is None:
@@ -284,6 +337,7 @@ class RAGChatService:
         except (TypeError, ValueError):
             return None
 
+        from app.schemas.ai_chat import ChatSource
         return ChatSource(
             source_type=source_type,
             entity_id=entity_id,
@@ -293,44 +347,10 @@ class RAGChatService:
         )
 
     @staticmethod
-    def _sources_to_context(
-        jobs: list[ChatSource],
-        resumes: list[ParsedResumeSchema],
-    ) -> "RAGContext":
-        """
-        Convert Qdrant retrieval sources to RAGContext (Phase A).
-
-        PHASE A: Uses Qdrant payload data only. No SQL hydration.
-        Phase B will add authorized SQL resolution + tenant filtering +
-        structured database hydration (CandidateProfile, Resume, Job tables).
-        """
-        return RAGContext(
-            jobs=[],
-            candidates=resumes,
-            match_results=[],
-            sources=jobs,
-        )
-
-    @staticmethod
-    def _resumes_to_sources(resumes: list[ParsedResumeSchema]) -> list[ChatSource]:
-        """Convert ParsedResumeSchema to ChatSource for citations."""
-        sources: list[ChatSource] = []
-        for i, resume in enumerate(resumes):
-            source = ChatSource(
-                source_type="resume",
-                entity_id=uuid.uuid4(),  # Placeholder - would need actual ID from vector store
-                title=resume.title or f"Candidate {i+1}",
-                relevance_score=0.0,  # Placeholder
-                skills=resume.skills or [],
-            )
-            sources.append(source)
-        return sources
-
-    @staticmethod
     def _build_prompt(
         message: str,
-        history: list[ChatMessage],
-        context: RAGContext,
+        history: list[Any],
+        context: Any,
     ) -> str:
         """Build grounded prompt with strict grounding contract."""
         lines: list[str] = [
@@ -380,9 +400,9 @@ class RAGChatService:
 
     @staticmethod
     def _validate_response(
-        response: ChatResponse,
-        sources: list[ChatSource],
-    ) -> ChatResponse:
+        response: Any,
+        sources: list,
+    ) -> Any:
         if response is None:
             raise InvalidDocumentError("AI chat returned no response")
         if not response.answer or not response.answer.strip():

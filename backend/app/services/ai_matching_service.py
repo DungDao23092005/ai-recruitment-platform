@@ -15,7 +15,7 @@ from app.ai.parsers.job_parser import JobParser
 from app.ai.parsers.resume_parser import ResumeParser
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 from app.core.exceptions import EmptyDocumentError, EntityNotFoundException
-from app.models import CandidateProfile, Resume
+from app.models import CandidateProfile, Job, Resume, User
 from app.repositories import ResumeRepository
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
@@ -24,6 +24,7 @@ from app.schemas.ai_matching import (
     JobMatchRecommendation,
 )
 from app.schemas.ai_resume import ParsedResumeSchema
+from app.services.context_resolver import ContextResolver
 
 
 class AIMatchingService:
@@ -36,12 +37,20 @@ class AIMatchingService:
         embedding_service: EmbeddingService | None = None,
         vector_repository: BaseVectorRepository | None = None,
         matching_engine: MatchingEngine | None = None,
+        context_resolver: ContextResolver | None = None,
     ) -> None:
         self.resume_parser = resume_parser or ResumeParser()
         self.job_parser = job_parser or JobParser()
         self.embedding_service = embedding_service or EmbeddingService()
         self.vector_repository = vector_repository or QdrantVectorRepository()
         self.matching_engine = matching_engine or MatchingEngine()
+        self._context_resolver = context_resolver
+
+    def _get_resolver(self, session: AsyncSession) -> ContextResolver:
+        """Get ContextResolver instance (use injected one for testing)."""
+        if self._context_resolver is not None:
+            return self._context_resolver
+        return ContextResolver(session)
 
     async def process_and_index_resume(
         self,
@@ -166,6 +175,7 @@ class AIMatchingService:
         | None = None,
         limit: int = 10,
         session: AsyncSession | None = None,
+        actor_user: User | None = None,
     ) -> list[JobMatchRecommendation]:
         """Recommend Top-K jobs for a Candidate ranked by Match Score."""
         effective_limit = max(1, min(100, limit))
@@ -228,20 +238,24 @@ class AIMatchingService:
             for res in qdrant_results
             if res.get("id") or res.get("payload", {}).get("job_id")
         ]
-        full_jobs = await self._resolve_jobs(session, job_ids)
+
+        # Hydrate jobs from SQL with authorization (Phase B)
+        full_jobs: dict[uuid.UUID, ParsedJobSchema] = {}
+        if session is not None and actor_user is not None and job_ids:
+            resolver = self._get_resolver(session)
+            full_jobs = await resolver.resolve_jobs(job_ids, actor_user)
+        elif session is not None and job_ids:
+            # Backward compatibility: use legacy resolution without authorization
+            full_jobs = await self._resolve_jobs_legacy(session, job_ids)
 
         for res in qdrant_results:
             j_id_raw = res.get("id") or res.get("payload", {}).get("job_id")
             if not j_id_raw:
                 continue
             j_id = uuid.UUID(str(j_id_raw))
-            skills_in_payload = res.get("payload", {}).get("skills", [])
-            if j_id in full_jobs:
-                fallback_parsed_job = full_jobs[j_id]
-            else:
-                fallback_parsed_job = ParsedJobSchema(
-                    required_skills=skills_in_payload
-                )
+            if j_id not in full_jobs:
+                continue
+            fallback_parsed_job = full_jobs[j_id]
             match_result = self.matching_engine.match_resume_to_job(
                 resume=parsed_resume,
                 job=fallback_parsed_job,
@@ -262,7 +276,7 @@ class AIMatchingService:
         return recommendations[:effective_limit]
 
 
-    async def _resolve_primary_resumes(
+    async def _resolve_primary_resumes_legacy(
         self,
         session: AsyncSession | None,
         candidate_ids: list[uuid.UUID],
@@ -285,7 +299,7 @@ class AIMatchingService:
                     pass
         return resumes
 
-    async def _resolve_jobs(
+    async def _resolve_jobs_legacy(
         self,
         session: AsyncSession | None,
         job_ids: list[uuid.UUID],
@@ -307,7 +321,7 @@ class AIMatchingService:
                     pass
         return jobs
 
-    async def _resolve_candidate_profiles(
+    async def _resolve_candidate_profiles_legacy(
         self,
         session: AsyncSession | None,
         candidate_ids: list[uuid.UUID],
@@ -339,6 +353,7 @@ class AIMatchingService:
         | None = None,
         limit: int = 10,
         session: AsyncSession | None = None,
+        actor_user: User | None = None,
     ) -> list[CandidateMatchRecommendation]:
         """Recommend Top-K candidates for a Recruiter Job ranked by Match Score."""
         effective_limit = max(1, min(100, limit))
@@ -404,10 +419,18 @@ class AIMatchingService:
             for res in qdrant_results
             if res.get("id") or res.get("payload", {}).get("candidate_id")
         ]
-        profiles = await self._resolve_candidate_profiles(
-            session, candidate_ids
-        )
-        full_resumes = await self._resolve_primary_resumes(session, candidate_ids)
+
+        # Hydrate candidate profiles and resumes from SQL with authorization (Phase B)
+        profiles: dict[uuid.UUID, CandidateProfile] = {}
+        full_resumes: dict[uuid.UUID, ParsedResumeSchema] = {}
+        if session is not None and actor_user is not None and candidate_ids:
+            resolver = self._get_resolver(session)
+            profiles = await resolver.resolve_candidate_profiles(candidate_ids, actor_user)
+            full_resumes = await resolver.resolve_resumes(candidate_ids, actor_user)
+        elif session is not None and candidate_ids:
+            # Backward compatibility: use legacy resolution without authorization
+            profiles = await self._resolve_candidate_profiles_legacy(session, candidate_ids)
+            full_resumes = await self._resolve_primary_resumes_legacy(session, candidate_ids)
 
         for res in qdrant_results:
             c_id_raw = res.get("id") or res.get("payload", {}).get(
@@ -416,16 +439,9 @@ class AIMatchingService:
             if not c_id_raw:
                 continue
             c_id = uuid.UUID(str(c_id_raw))
-            skills_in_payload = res.get("payload", {}).get("skills", [])
-            profile = profiles.get(c_id)
-            if c_id in full_resumes:
-                fallback_parsed_resume = full_resumes[c_id]
-            else:
-                fallback_parsed_resume = ParsedResumeSchema(
-                    skills=skills_in_payload,
-                    full_name=profile.full_name if profile else None,
-                    title=profile.title if profile else None,
-                )
+            if c_id not in full_resumes:
+                continue
+            fallback_parsed_resume = full_resumes[c_id]
             match_result = self.matching_engine.match_resume_to_job(
                 resume=fallback_parsed_resume,
                 job=parsed_job,

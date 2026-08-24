@@ -336,6 +336,37 @@ def _make_db_user(role: UserRole = UserRole.RECRUITER) -> MagicMock:
     return user
 
 
+def _make_db_candidate_profile() -> MagicMock:
+    profile = MagicMock()
+    profile.id = KNOWN_CANDIDATE_ID
+    profile.user_id = uuid.uuid4()
+    profile.full_name = "Test Candidate"
+    profile.title = "Software Engineer"
+    profile.is_deleted = False
+    return profile
+
+
+def _make_db_recruiter_profile() -> MagicMock:
+    profile = MagicMock()
+    profile.id = uuid.uuid4()
+    profile.user_id = uuid.uuid4()
+    profile.company_id = KNOWN_COMPANY_ID
+    profile.is_deleted = False
+    return profile
+
+
+def _make_db_resume() -> MagicMock:
+    resume = MagicMock()
+    resume.candidate_id = KNOWN_CANDIDATE_ID
+    resume.is_primary = True
+    resume.is_deleted = False
+    resume.parsed_data = {
+        "full_name": "Test Candidate",
+        "skills": ["Python", "FastAPI", "SQL Server"],
+    }
+    return resume
+
+
 def _fake_db_session() -> MagicMock:
     session = MagicMock()
     session.add = MagicMock()
@@ -344,11 +375,49 @@ def _fake_db_session() -> MagicMock:
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
         result.scalars().unique().first.return_value = None
+        result.scalars().all.return_value = []
+        result.all.return_value = []
         compiled = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+
         if "from jobs" in compiled:
-            result.scalars().unique().first.return_value = _make_db_job()
+            # Check for JobService query first (has company join and is_deleted filter)
+            if "company" in compiled and "is_deleted" in compiled and "job_skills" in compiled:
+                # JobService.get_job_with_company_and_skills - join with company and skills, filter by id and is_deleted
+
+                result.scalars().unique().first.return_value = _make_db_job()
+            elif "is_deleted" in compiled and "status" in compiled:
+                # ContextResolver job query - return published job (has status filter)
+                result.scalars().all.return_value = [_make_db_job()]
+            elif "company" in compiled and "is_deleted" in compiled:
+                # JobService.get_job_with_company_and_skills - join with company, filter by id and is_deleted
+
+                result.scalars().unique().first.return_value = _make_db_job()
+            else:
+                result.scalars().unique().first.return_value = _make_db_job()
+        elif "from candidate_profiles" in compiled or "from candidateprofile" in compiled:
+            if "is_deleted" in compiled:
+                # ContextResolver candidate profile query
+
+                result.scalars().all.return_value = [_make_db_candidate_profile()]
+        elif "from resumes" in compiled or "from resume" in compiled:
+            if "is_primary" in compiled and "is_deleted" in compiled:
+                # ContextResolver resume query for recruiter
+
+                result.scalars().all.return_value = [_make_db_resume()]
+        elif "from applications" in compiled or "from application" in compiled:
+            if "company_id" in compiled and "candidate_id" in compiled:
+                # ContextResolver recruiter authorization query
+
+                result.all.return_value = [(KNOWN_CANDIDATE_ID,)]
         elif "from users" in compiled:
-            result.scalar_one_or_none.return_value = _make_db_user()
+            if "recruiter_profile" in compiled or "candidate_profile" in compiled:
+                # UserService.get_user_with_profile with joinedload
+
+                result.scalars().unique().first.return_value = _make_db_user()
+            else:
+                result.scalar_one_or_none.return_value = _make_db_user()
+        elif "from recruiter_profiles" in compiled or "from recruiterprofile" in compiled:
+            result.scalar_one_or_none.return_value = _make_db_recruiter_profile()
         return result
 
     session.execute = AsyncMock(side_effect=_execute)
