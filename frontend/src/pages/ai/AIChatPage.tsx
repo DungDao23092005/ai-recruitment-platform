@@ -75,7 +75,7 @@ export function AIChatPage() {
       })
       setState((prev) => {
         const assistantMessage: DisplayMessage = {
-          message: { role: 'assistant', content: response.reply },
+          message: { role: 'assistant', content: response.answer },
           sources: response.sources,
           suggestedFollowups: response.suggested_followups,
         }

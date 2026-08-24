@@ -257,7 +257,8 @@ def _mock_rag_chat_service():
     service = MagicMock()
     service.chat = AsyncMock(
         return_value={
-            "reply": "Dựa trên dữ kiện, hãy học Python.",
+            "answer": "Dựa trên dữ kiện, hãy học Python.",
+            "confidence": 0.9,
             "sources": [],
             "suggested_followups": [],
         }
@@ -678,7 +679,7 @@ class TestCandidateFlow:
         )
 
         assert resp.status_code == 200
-        assert resp.json()["reply"].startswith("Dựa trên dữ kiện")
+        assert resp.json()["answer"].startswith("Dựa trên dữ kiện")
 
     def test_candidate_search_jobs(self, candidate_client):
         resp = candidate_client.get("/api/v1/ai/search/jobs", params={"q": "python"})

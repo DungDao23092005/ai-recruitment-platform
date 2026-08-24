@@ -141,7 +141,8 @@ export interface ChatRequest {
 }
 
 export interface ChatResponse {
-  reply: string
+  answer: string
+  confidence?: number
   sources: ChatSource[]
   suggested_followups: string[]
 }

@@ -78,7 +78,8 @@ def make_resume_point(
 
 def make_response():
     return ChatResponse(
-        reply="Dựa trên các tin tuyển dụng phù hợp, bạn nên tập trung phát triển kỹ năng Python và FastAPI.",
+        answer="Dựa trên các tin tuyển dụng phù hợp, bạn nên tập trung phát triển kỹ năng Python và FastAPI.",
+        confidence=0.9,
         sources=[
             ChatSource(
                 source_type="job",
@@ -116,12 +117,13 @@ class TestSuccessfulChat:
             service.chat("Tư vấn lộ trình AI Engineer", UserRole.CANDIDATE)
         )
 
-        assert result.reply == (
+        assert result.answer == (
             "Dựa trên các tin tuyển dụng phù hợp, bạn nên tập trung "
             "phát triển kỹ năng Python và FastAPI."
         )
         assert isinstance(result.sources, list)
         assert isinstance(result.suggested_followups, list)
+        assert 0.0 <= result.confidence <= 1.0
 
     def test_embedding_called_with_message(self):
         embed = make_embedding_service()
@@ -285,7 +287,8 @@ class TestSourceMapping:
         repo = make_vector_repo(jobs=[])
         llm = make_llm(
             ChatResponse(
-                reply="Không đủ dữ liệu để trả lời.",
+                answer="Không đủ dữ liệu để trả lời.",
+                confidence=0.0,
                 sources=[],
                 suggested_followups=[],
             )
@@ -323,7 +326,8 @@ class TestSourceMapping:
         repo = make_vector_repo(jobs=[job_point])
         llm = make_llm(
             ChatResponse(
-                reply="có citation",
+                answer="có citation",
+                confidence=0.5,
                 sources=[
                     ChatSource(
                         source_type="job",
@@ -358,7 +362,7 @@ class TestSensitiveDataGrounding:
         asyncio.run(service.chat("python", UserRole.CANDIDATE))
 
         kwargs = llm.generate_structured_output.await_args.kwargs
-        assert "Chỉ sử dụng các dữ kiện nằm trong ngữ cảnh" in kwargs[
+        assert "CHỈ sử dụng các dữ kiện nằm trong ngữ cảnh" in kwargs[
             "system_instruction"
         ]
 
@@ -431,7 +435,8 @@ class TestFailures:
         repo = make_vector_repo(jobs=[make_job_point()])
         llm = make_llm(
             ChatResponse(
-                reply=" ",
+                answer=" ",
+                confidence=0.5,
                 sources=[],
                 suggested_followups=[],
             )

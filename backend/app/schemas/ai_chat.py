@@ -13,7 +13,7 @@ class ChatMessage(BaseModel):
         ..., description="Message author role"
     )
     content: str = Field(
-        ..., min_length=1, description="Message text content"
+        ..., min_length=1, max_length=4000, description="Message text content"
     )
 
 
@@ -56,8 +56,11 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    reply: str = Field(
-        ..., description="Assistant reply in natural Vietnamese"
+    answer: str = Field(
+        ..., min_length=1, description="Assistant reply in natural Vietnamese"
+    )
+    confidence: float = Field(
+        ..., ge=0.0, le=1.0, description="Confidence score in the answer (0.0 to 1.0)"
     )
     sources: list[ChatSource] = Field(
         default_factory=list,
@@ -65,5 +68,6 @@ class ChatResponse(BaseModel):
     )
     suggested_followups: list[str] = Field(
         default_factory=list,
+        max_length=5,
         description="Suggested follow-up questions",
     )

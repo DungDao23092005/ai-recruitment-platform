@@ -6,7 +6,8 @@ import { sendChatMessage } from '@/api/ai'
 import type { ChatResponse } from '@/types/ai'
 
 const mockResponse: ChatResponse = {
-  reply: 'Dựa trên dữ kiện, bạn nên học **Python**.',
+  answer: 'Dựa trên dữ kiện, bạn nên học **Python**.',
+  confidence: 0.9,
   sources: [
     {
       source_type: 'job',
