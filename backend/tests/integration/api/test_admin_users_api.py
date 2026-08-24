@@ -3,10 +3,16 @@ from __future__ import annotations
 import uuid
 
 import httpx
+import pytest
+from sqlalchemy import select
 from tests.integration.api.conftest import API_V1, PASSWORD
 from tests.integration.conftest import run
 
+from app.database.session import async_session_factory
 from app.main import app
+from app.models import User
+from app.domain.enums import UserRole
+from app.core.security import get_password_hash
 
 
 def _register(
@@ -275,3 +281,106 @@ class TestAdminUsersDeactivate:
         me = run(user_client.get(f"{API_V1}/auth/me"))
         assert me.status_code == 401
         run(user_client.aclose())
+
+
+class TestAdminUsersPoisonPill:
+    """Regression test for legacy email addresses in database (poison-pill fix).
+
+    Ensures that GET /admin/users returns HTTP 200 even when the database
+    contains User records with legacy/invalid email addresses (e.g. .local TLD)
+    that would be rejected by EmailStr validation.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ensure_legacy_admin(self):
+        """Create a legacy admin user with .local email directly in DB."""
+        async def _create():
+            async with async_session_factory() as session:
+                # Check if already exists
+                result = await session.execute(
+                    select(User).where(User.email == "legacy@test.local")
+                )
+                existing = result.scalars().first()
+                if existing:
+                    return existing
+
+                legacy_user = User(
+                    email="legacy@test.local",
+                    password_hash=get_password_hash("Password123!"),
+                    role=UserRole.ADMIN,
+                    is_active=True,
+                )
+                session.add(legacy_user)
+                await session.commit()
+                await session.refresh(legacy_user)
+                return legacy_user
+
+        run(_create())
+        yield
+        # Cleanup - remove the test legacy user
+        async def _cleanup():
+            async with async_session_factory() as session:
+                result = await session.execute(
+                    select(User).where(User.email == "legacy@test.local")
+                )
+                user = result.scalars().first()
+                if user:
+                    await session.delete(user)
+                    await session.commit()
+
+        run(_cleanup())
+
+    def test_legacy_email_in_db_does_not_crash_admin_users_list(
+        self, admin_client
+    ):
+        """GET /admin/users must return 200 with legacy email present."""
+        resp = run(admin_client.get(f"{API_V1}/admin/users"))
+        assert resp.status_code == 200, resp.text
+
+        data = resp.json()
+        assert "items" in data
+        assert "total" in data
+        assert "skip" in data
+        assert "limit" in data
+
+        # Verify the legacy email is returned in the response
+        legacy_emails = [item["email"] for item in data["items"]]
+        assert "legacy@test.local" in legacy_emails, (
+            f"Legacy email not found in response. Emails: {legacy_emails}"
+        )
+
+        # Verify the legacy admin has correct role and fields
+        legacy_user = next(
+            item for item in data["items"] if item["email"] == "legacy@test.local"
+        )
+        assert legacy_user["role"] == "admin"
+        assert legacy_user["is_active"] is True
+        assert "is_deleted" in legacy_user
+        assert "id" in legacy_user
+        assert "created_at" in legacy_user
+        assert "updated_at" in legacy_user
+
+        # Verify pagination metadata is correct
+        assert data["total"] >= 1
+        assert data["skip"] == 0
+        assert data["limit"] == 10
+
+    def test_legacy_email_user_detail_endpoint(self, admin_client):
+        """GET /admin/users/{id} must work for legacy email users."""
+        # First find the legacy user ID
+        list_resp = run(admin_client.get(f"{API_V1}/admin/users"))
+        legacy_user = next(
+            item for item in list_resp.json()["items"]
+            if item["email"] == "legacy@test.local"
+        )
+        legacy_id = legacy_user["id"]
+
+        # Now call the detail endpoint
+        resp = run(admin_client.get(f"{API_V1}/admin/users/{legacy_id}"))
+        assert resp.status_code == 200, resp.text
+
+        data = resp.json()
+        assert data["id"] == legacy_id
+        assert data["email"] == "legacy@test.local"
+        assert data["role"] == "admin"
+        assert "password_hash" not in data

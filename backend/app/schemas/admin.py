@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict
 
 from app.domain.enums import CompanySize, JobStatus, JobType, UserRole, WorkplaceType
 
@@ -40,7 +40,7 @@ class AdminUserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    email: EmailStr
+    email: str
     role: UserRole
     is_active: bool
     is_deleted: bool

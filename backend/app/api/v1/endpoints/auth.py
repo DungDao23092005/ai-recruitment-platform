@@ -5,7 +5,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_active_user, get_db
-from app.core.exceptions import ConflictException
+from app.core.exceptions import ConflictException, ForbiddenException
 from app.core.security import create_access_token
 from app.models import User
 from app.schemas.password_reset import (
@@ -37,6 +37,11 @@ async def register(
     except ConflictException as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
             detail=str(exc),
         ) from exc
     return UserRead.model_validate(user)

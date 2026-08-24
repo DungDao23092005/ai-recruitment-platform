@@ -28,6 +28,49 @@ class TestRegister:
         assert body["id"]
         assert body["created_at"]
 
+    def test_register_recruiter_creates_user(self, client, run_async):
+        email, resp = register(client, run_async, role="recruiter")
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["email"] == email
+        assert body["role"] == "recruiter"
+        assert body["is_active"] is True
+        assert body["id"]
+        assert body["created_at"]
+
+    def test_admin_registration_rejected(self, client, run_async):
+        """Public registration with role=admin must fail (mass-assignment protection)."""
+        resp = run_async(
+            client.post(
+                f"{API_V1}/auth/register",
+                json={
+                    "email": "attacker@example.com",
+                    "password": "Password123!",
+                    "role": "admin",
+                },
+            )
+        )
+
+        assert resp.status_code == 403
+        assert "Admin role cannot be assigned" in resp.json()["detail"]
+
+        # Verify no admin user was created
+        from app.database.session import async_session_factory
+        from app.domain.enums import UserRole
+        from app.models import User
+        from sqlalchemy import select
+
+        async def check_no_admin():
+            async with async_session_factory() as session:
+                result = await session.execute(
+                    select(User).where(User.email == "attacker@example.com")
+                )
+                return result.scalars().first()
+
+        attacker = run_async(check_no_admin())
+        assert attacker is None, "Admin user should not have been created"
+
     def test_duplicate_email_returns_conflict(self, client, run_async):
         email, _ = register(client, run_async)
         _, resp = register(client, run_async, email=email)

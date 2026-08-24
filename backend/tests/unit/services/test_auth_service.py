@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.core.exceptions import ConflictException
+from app.core.exceptions import ConflictException, ForbiddenException
 from app.domain.enums import UserRole
 from app.models import User
 from app.repositories import UserRepository
@@ -81,6 +81,23 @@ class TestRegisterUser:
             asyncio.run(service.register_user(data))
 
         session.rollback.assert_awaited_once()
+
+    def test_admin_role_rejected(self):
+        session = make_session()
+        service = make_service(session)
+        service.users.get_by_email.return_value = None
+        data = UserCreate(
+            email="attacker@example.com",
+            password="password123",
+            role=UserRole.ADMIN,
+        )
+
+        with pytest.raises(ForbiddenException) as exc_info:
+            asyncio.run(service.register_user(data))
+
+        assert "Admin role cannot be assigned" in str(exc_info.value)
+        session.commit.assert_not_awaited()
+        session.rollback.assert_not_awaited()
 
 
 class TestAuthenticateUser:

@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictException
+from app.core.exceptions import ConflictException, ForbiddenException
 from app.core.password_reset import (
     generate_otp,
     generate_reset_token,
@@ -16,6 +16,7 @@ from app.core.password_reset import (
     verify_reset_token,
 )
 from app.core.security import get_password_hash, verify_password
+from app.domain.enums import UserRole
 from app.models import PasswordResetOTP, User
 from app.repositories import UserRepository
 from app.schemas.user import UserCreate
@@ -34,6 +35,10 @@ class AuthService:
             raise ConflictException(
                 f"User with email {data.email!r} already exists"
             )
+
+        # Prevent mass-assignment: public registration cannot create admin accounts
+        if data.role == UserRole.ADMIN:
+            raise ForbiddenException("Admin role cannot be assigned via public registration")
 
         user = User(
             email=data.email,
