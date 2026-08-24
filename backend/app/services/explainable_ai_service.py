@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from app.ai.interfaces.base_provider import BaseLLMProvider
 from app.ai.providers.gemini_provider import GeminiLLMProvider
@@ -9,18 +9,20 @@ from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 
 _SYSTEM_INSTRUCTION = (
-    "Bạn là trợ lý tuyển dụng AI giải thích kết quả đối sánh giữa ứng viên "
-    "và tin tuyển dụng. Chỉ sử dụng dữ kiện được cung cấp. Không tự suy đoán, "
-    "không bịa đặt kỹ năng, kinh nghiệm hoặc thông tin không có trong dữ kiện. "
-    "Nếu thông tin không được cung cấp, hãy nói rõ thông tin đó không được "
-    "cung cấp thay vì đoán. Tuyệt đối không tính lại hoặc thay đổi điểm số."
+    "Bn lA tr lA tuyn dng AI gii thA-ch kt qu `i sAnh gi_a cng viAn "
+    "vA tin tuyn dng. Ch% s- dng d_ kin c cung cp. KhA'ng t suy oAn, "
+    "khA'ng b<a 	 k1 nng, kinh nghim hoc thA'ng tin khA'ng cA3 trong d_ kin. "
+    "Nu thA'ng tin khA'ng c cung cp, hAy nA3i rA thA'ng tin A3 khA'ng c "
+    "cung cp thay vA oAn. Tuyt `i khA'ng tA-nh li hoc thay  i im s.\n"
+    "Cung cp cAc bng ch>ng (evidence) rA rAng t H s cng viAn (candidate_cv) "
+    "hoc MA' t cA'ng vic (job_description)."
 )
 
 
 class ExplainableAIService:
     """Explain an existing match result using an LLM without recalculating scores.
 
-    ``MatchResultSchema`` is the source of truth: this service only builds a
+    `MatchResultSchema` is the source of truth: this service only builds a
     grounded prompt from the provided facts and asks the LLM to explain them.
     """
 
@@ -33,7 +35,7 @@ class ExplainableAIService:
     @staticmethod
     def _format_optional_list(label: str, values: list[str]) -> str:
         if not values:
-            return f"{label}: (không có thông tin)\n"
+            return f"{label}: (khA'ng cA3 thA'ng tin)\n"
         return f"{label}: {', '.join(values)}\n"
 
     def build_prompt(
@@ -44,13 +46,15 @@ class ExplainableAIService:
     ) -> str:
         """Build a grounded prompt embedding only the provided facts."""
         lines: list[str] = [
-            "Dưới đây là kết quả đối sánh và thông tin đã cung cấp.",
+            "D>i Ay lA kt qu `i sAnh vA thA'ng tin A cung cp.",
             "",
             "--- MATCH RESULT ---",
             f"overall_score: {match_result.overall_score}",
-            f"cosine_similarity: {match_result.cosine_similarity}",
-            f"skill_coverage_score: {match_result.skill_coverage_score}",
-            f"experience_match_score: {match_result.experience_match_score}",
+            f"semantic_score: {match_result.cosine_similarity}",
+            f"skill_score: {match_result.skill_coverage_score}",
+            f"experience_score: {match_result.experience_match_score}",
+            f"education_score: {getattr(match_result, 'education_score', 0.0)}",
+            f"project_score: {getattr(match_result, 'project_score', 0.0)}",
             self._format_optional_list(
                 "matching_skills", match_result.matching_skills
             ).rstrip(),
@@ -61,49 +65,57 @@ class ExplainableAIService:
                 "match_reasons: " + "; ".join(match_result.match_reasons)
             )
         else:
-            lines.append("match_reasons: (không có thông tin)")
+            lines.append("match_reasons: (khA'ng cA3 thA'ng tin)")
 
         lines.append("")
         lines.append("--- CANDIDATE ---")
         if candidate is None:
-            lines.append("(thông tin ứng viên không được cung cấp)")
+            lines.append("(thA'ng tin cng viAn khA'ng c cung cp)")
         else:
             lines.append(
-                "full_name: " + (candidate.full_name or "(không cung cấp)")
+                "full_name: " + (candidate.full_name or "(khA'ng cung cp)")
             )
             lines.append(
-                "title: " + (candidate.title or "(không cung cấp)")
+                "title: " + (candidate.title or "(khA'ng cung cp)")
             )
             lines.append(
                 "total_years_experience: "
                 + (
                     str(candidate.total_years_experience)
                     if candidate.total_years_experience is not None
-                    else "(không cung cấp)"
+                    else "(khA'ng cung cp)"
                 )
             )
             lines.append(
-                "summary: " + (candidate.summary or "(không cung cấp)")
+                "summary: " + (candidate.summary or "(khA'ng cung cp)")
             )
             lines.append(
                 self._format_optional_list("skills", candidate.skills).rstrip()
             )
+            if hasattr(candidate, 'experiences') and candidate.experiences:
+                lines.append("work_experience:")
+                for exp in candidate.experiences:
+                    lines.append(f" - {exp.position} at {exp.company} ({exp.start_date} - {exp.end_date}): {exp.description}")
+            if hasattr(candidate, 'projects') and candidate.projects:
+                lines.append("projects:")
+                for proj in candidate.projects:
+                    lines.append(f" - {proj.name}: {proj.description}")
 
         lines.append("")
         lines.append("--- JOB ---")
         if job is None:
-            lines.append("(thông tin tin tuyển dụng không được cung cấp)")
+            lines.append("(thA'ng tin tin tuyn dng khA'ng c cung cp)")
         else:
-            lines.append("title: " + (job.title or "(không cung cấp)"))
+            lines.append("title: " + (job.title or "(khA'ng cung cp)"))
             lines.append(
-                "summary: " + (job.summary or "(không cung cấp)")
+                "summary: " + (job.summary or "(khA'ng cung cp)")
             )
             lines.append(
                 "minimum_years_experience: "
                 + (
                     str(job.minimum_years_experience)
                     if job.minimum_years_experience is not None
-                    else "(không cung cấp)"
+                    else "(khA'ng cung cp)"
                 )
             )
             lines.append(
@@ -116,11 +128,17 @@ class ExplainableAIService:
                     "preferred_skills", job.preferred_skills
                 ).rstrip()
             )
+            if hasattr(job, 'responsibilities') and job.responsibilities:
+                lines.append(
+                    self._format_optional_list(
+                        "responsibilities", job.responsibilities
+                    ).rstrip()
+                )
 
         lines.append("")
         lines.append(
-            "Hãy tạo giải thích theo schema ExplainMatchResponse. "
-            "Chỉ sử dụng dữ kiện được cung cấp ở trên."
+            "HAy to gii thA-ch theo schema ExplainMatchResponse. "
+            "Ch% s- dng d_ kin c cung cp Y trAn."
         )
         return "\n".join(lines)
 

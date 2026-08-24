@@ -14,6 +14,14 @@ class ParsedJobSchema(BaseModel):
         default=None,
         description="Brief summary of job role and responsibilities",
     )
+    seniority: str | None = Field(
+        default=None,
+        description="Seniority level (e.g. Junior, Mid, Senior, Lead, Manager)",
+    )
+    responsibilities: list[str] = Field(
+        default_factory=list,
+        description="List of key responsibilities and duties",
+    )
     required_skills: list[str] = Field(
         default_factory=list,
         description="List of mandatory/required technical and professional skills",
@@ -28,5 +36,13 @@ class ParsedJobSchema(BaseModel):
     )
     education_level: str | None = Field(
         default=None,
-        description="Required education degree/level",
+        description="Required education degree/level (e.g. Bachelor, Master)",
+    )
+    certifications: list[str] = Field(
+        default_factory=list,
+        description="List of required or preferred certifications",
+    )
+    languages: list[str] = Field(
+        default_factory=list,
+        description="List of required or preferred languages",
     )

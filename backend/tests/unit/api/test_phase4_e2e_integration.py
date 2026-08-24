@@ -218,11 +218,21 @@ def _mock_explain_service():
     service = MagicMock()
     service.explain_match = AsyncMock(
         return_value={
+            "match_score": 85.0,
             "summary": "Good match.",
             "strengths": ["Python"],
-            "skill_gaps": ["Docker"],
+            "missing_skills": ["Docker"],
             "experience_analysis": "5 years vs 3 required.",
+            "education_analysis": "Candidate has Bachelor's degree matching requirement.",
+            "evidence": [
+                {
+                    "source": "candidate_cv",
+                    "section": "skills",
+                    "content": "Python, FastAPI",
+                }
+            ],
             "recommendation": "Proceed.",
+            "confidence": 0.9,
         }
     )
     return service
@@ -270,6 +280,7 @@ def _mock_interview_generator_service():
                     "target_skill_or_topic": "Python",
                     "evaluation_criteria": "Shows async understanding.",
                     "sample_answer_points": ["asyncio", "event loop"],
+                    "reason": "Candidate has Python in skills but async experience not explicitly mentioned.",
                 }
             ],
         }

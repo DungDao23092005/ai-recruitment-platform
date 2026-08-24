@@ -16,6 +16,7 @@ export const CATEGORY_LABELS: Record<QuestionCategory, string> = {
   behavioral: 'Hành vi',
   experience: 'Kinh nghiệm',
   skill_gap: 'Khoảng cách kỹ năng',
+  project: 'Dự án',
 }
 
 export const DIFFICULTY_LABELS: Record<QuestionDifficulty, string> = {

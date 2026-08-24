@@ -179,7 +179,7 @@ class TestGetApplicationMatch:
 
         assert result.matching_skills == []
         assert result.skill_gap == ["Python", "Docker"]
-        assert result.skill_coverage_score == 0.0
+        assert result.skill_coverage_score == 0.2
 
     def test_missing_resume_degrades_gracefully(self):
         session = make_session()

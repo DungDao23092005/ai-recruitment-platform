@@ -10,13 +10,25 @@ class MatchResultSchema(BaseModel):
         description="Final match score from 0.0 to 100.0"
     )
     cosine_similarity: float = Field(
-        description="Cosine similarity from 0.0 to 1.0"
+        description="Semantic/Cosine similarity from 0.0 to 1.0"
     )
     skill_coverage_score: float = Field(
         description="Required skill coverage from 0.0 to 1.0"
     )
+    preferred_skill_coverage_score: float = Field(
+        default=0.0,
+        description="Preferred skill coverage from 0.0 to 1.0"
+    )
     experience_match_score: float = Field(
         description="Experience compatibility from 0.0 to 1.0"
+    )
+    education_score: float = Field(
+        default=0.0,
+        description="Education compatibility from 0.0 to 1.0"
+    )
+    project_score: float = Field(
+        default=0.0,
+        description="Project relevance score from 0.0 to 1.0"
     )
 
     matching_skills: list[str] = Field(

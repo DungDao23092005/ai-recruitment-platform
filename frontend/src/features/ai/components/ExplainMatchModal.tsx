@@ -130,9 +130,9 @@ export function ExplainMatchModal({
             </Section>
 
             <Section title="Khoảng cách kỹ năng">
-              {explanation.skill_gaps.length > 0 ? (
+              {explanation.missing_skills.length > 0 ? (
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {explanation.skill_gaps.map((skill) => (
+                  {explanation.missing_skills.map((skill) => (
                     <Badge key={skill} variant="destructive">
                       {skill}
                     </Badge>

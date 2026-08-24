@@ -43,6 +43,12 @@ class EducationSchema(BaseModel):
     )
 
 
+class ProjectSchema(BaseModel):
+    name: str | None = Field(default=None, description="Name of the project")
+    description: str | None = Field(default=None, description="Description of the project")
+    skills_used: list[str] = Field(default_factory=list, description="Skills or technologies used in the project")
+
+
 class ParsedResumeSchema(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -61,7 +67,22 @@ class ParsedResumeSchema(BaseModel):
     )
     skills: list[str] = Field(
         default_factory=list,
-        description="List of technical and professional skills",
+        description="List of all skills (combined)",
+    )
+    technical_skills: list[str] = Field(
+        default_factory=list,
+        description="List of technical/hard skills",
+    )
+    soft_skills: list[str] = Field(
+        default_factory=list,
+        description="List of soft/interpersonal skills",
+    )
+    job_titles: list[str] = Field(
+        default_factory=list,
+        description="List of job titles the candidate has held",
+    )
+    projects: list[ProjectSchema] = Field(
+        default_factory=list, description="List of projects"
     )
     experiences: list[WorkExperienceSchema] = Field(
         default_factory=list, description="List of work experiences"

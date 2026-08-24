@@ -78,14 +78,29 @@ export function MatchScoreCard({
       raw: matchResult.cosine_similarity,
     },
     {
-      label: 'Độ phủ kỹ năng',
+      label: 'Độ phủ kỹ năng (Required)',
       value: formatPercent(matchResult.skill_coverage_score),
       raw: matchResult.skill_coverage_score,
+    },
+    {
+      label: 'Độ phủ kỹ năng (Preferred)',
+      value: formatPercent(matchResult.preferred_skill_coverage_score ?? 0),
+      raw: matchResult.preferred_skill_coverage_score ?? 0,
     },
     {
       label: 'Độ khớp kinh nghiệm',
       value: formatPercent(matchResult.experience_match_score),
       raw: matchResult.experience_match_score,
+    },
+    {
+      label: 'Độ khớp học vấn',
+      value: formatPercent(matchResult.education_score ?? 0),
+      raw: matchResult.education_score ?? 0,
+    },
+    {
+      label: 'Độ phù hợp dự án',
+      value: formatPercent(matchResult.project_score ?? 0),
+      raw: matchResult.project_score ?? 0,
     },
   ]
 

@@ -419,7 +419,7 @@ async def test_recommend_jobs_qdrant_vector_repository_fallback(
     mock_dependencies[
         "vector_repository"
     ].search_similar.assert_awaited_once_with(
-        collection_name="jobs", query_vector=[0.1] * 384, limit=5
+        collection_name="jobs", query_vector=[0.1] * 384, limit=50
     )
 
 
@@ -520,7 +520,7 @@ async def test_recommend_jobs_explicit_vector_skips_retrieve(
     ].search_similar.assert_awaited_once_with(
         collection_name="jobs",
         query_vector=[0.7] * 384,
-        limit=5,
+        limit=50,
     )
 
 
@@ -730,6 +730,7 @@ async def test_recommend_candidates_explicit_vector_skips_retrieve(
         )
     )
 
+
     await ai_service.recommend_candidates_for_job(
         job_id=job_id,
         job_vector=[0.6] * 384,
@@ -742,7 +743,7 @@ async def test_recommend_candidates_explicit_vector_skips_retrieve(
     ].search_similar.assert_awaited_once_with(
         collection_name="resumes",
         query_vector=[0.6] * 384,
-        limit=5,
+        limit=50,
     )
 
 
@@ -785,12 +786,43 @@ async def test_recommend_candidates_retrieve_payload_skills_build_parsed_job(
     assert job_arg.required_skills == ["Python"]
 
 
-def _make_profile_session(profiles: list[CandidateProfile]) -> MagicMock:
+def _make_profile_session(
+    profiles: list[CandidateProfile],
+    resumes: list | None = None,
+    jobs: list | None = None,
+) -> MagicMock:
+    """Create a mock session that returns appropriate objects based on the query model.
+
+    Args:
+        profiles: CandidateProfile objects for profile queries
+        resumes: Resume objects for resume queries (with parsed_data)
+        jobs: Job objects for job queries (with parsed_reqs)
+    """
+    from unittest.mock import MagicMock, AsyncMock
+
     session = MagicMock()
     session.execute = AsyncMock()
-    result_mock = MagicMock()
-    result_mock.scalars.return_value.all.return_value = profiles
-    session.execute.return_value = result_mock
+
+    def _execute(stmt):
+        result_mock = MagicMock()
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+
+        if "from candidate_profiles" in compiled or "from candidateprofile" in compiled:
+            # Profile query - return CandidateProfile objects
+            result_mock.scalars.return_value.all.return_value = profiles
+        elif "from resumes" in compiled or "from resume" in compiled:
+            # Resume query - return Resume objects with parsed_data
+            result_mock.scalars.return_value.all.return_value = resumes or []
+        elif "from jobs" in compiled or "from job" in compiled:
+            # Job query - return Job objects with parsed_reqs
+            result_mock.scalars.return_value.all.return_value = jobs or []
+        else:
+            # Default to profiles
+            result_mock.scalars.return_value.all.return_value = profiles
+
+        return result_mock
+
+    session.execute.side_effect = _execute
     return session
 
 
@@ -837,7 +869,38 @@ def test_recommend_candidates_resolves_profiles_in_one_batch(
         full_name="John Smith",
         title="Data Engineer",
     )
-    session = _make_profile_session([profile1, profile2])
+
+    # Create mock Resume objects with parsed_data for the resume query
+    from app.models import Resume
+    resume1 = Resume(
+        id=uuid.uuid4(),
+        candidate_id=cand1_id,
+        title="cv1.pdf",
+        is_primary=True,
+        is_deleted=False,
+        parsed_data={
+            "full_name": "Jane Doe",
+            "title": "Backend Engineer",
+            "skills": ["Python"],
+        },
+    )
+    resume2 = Resume(
+        id=uuid.uuid4(),
+        candidate_id=cand2_id,
+        title="cv2.pdf",
+        is_primary=True,
+        is_deleted=False,
+        parsed_data={
+            "full_name": "John Smith",
+            "title": "Data Engineer",
+            "skills": ["SQL"],
+        },
+    )
+
+    session = _make_profile_session(
+        profiles=[profile1, profile2],
+        resumes=[resume1, resume2],
+    )
 
     recs = asyncio.run(
         ai_service.recommend_candidates_for_job(
@@ -853,8 +916,11 @@ def test_recommend_candidates_resolves_profiles_in_one_batch(
     assert by_id[cand1_id].parsed_resume.full_name == "Jane Doe"
     assert by_id[cand1_id].parsed_resume.title == "Backend Engineer"
     assert by_id[cand2_id].parsed_resume.full_name == "John Smith"
-    session.execute.assert_awaited_once()
-    stmt = session.execute.call_args.args[0]
+    assert by_id[cand2_id].parsed_resume.title == "Data Engineer"
+    # Session.execute is called twice: once for CandidateProfile, once for Resume
+    assert session.execute.await_count == 2
+    # Verify the profile query (first call)
+    stmt = session.execute.call_args_list[0].args[0]
     from sqlalchemy.sql import Select as SQLSelect
 
     assert isinstance(stmt, SQLSelect)
@@ -864,6 +930,14 @@ def test_recommend_candidates_resolves_profiles_in_one_batch(
     assert str(cand1_id).replace("-", "") in compiled_sql
     assert str(cand2_id).replace("-", "") in compiled_sql
     assert "is_deleted" in compiled_sql
+    # Verify the resume query (second call)
+    stmt2 = session.execute.call_args_list[1].args[0]
+    assert isinstance(stmt2, SQLSelect)
+    compiled_sql2 = str(
+        stmt2.compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "is_primary" in compiled_sql2
+    assert "is_deleted" in compiled_sql2
 
 
 def test_recommend_candidates_missing_profile_keeps_fallback(
@@ -888,7 +962,7 @@ def test_recommend_candidates_missing_profile_keeps_fallback(
             experience_match_score=0.5,
         )
     )
-    session = _make_profile_session([])
+    session = _make_profile_session(profiles=[], resumes=[])
 
     recs = asyncio.run(
         ai_service.recommend_candidates_for_job(
@@ -962,7 +1036,7 @@ def test_recommend_candidates_deleted_profiles_not_resolved(
             experience_match_score=0.5,
         )
     )
-    session = _make_profile_session([])
+    session = _make_profile_session(profiles=[], resumes=[])
 
     asyncio.run(
         ai_service.recommend_candidates_for_job(

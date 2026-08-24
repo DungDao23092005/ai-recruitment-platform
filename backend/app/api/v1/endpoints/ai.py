@@ -17,6 +17,7 @@ from app.api.deps import (
     get_db,
     require_candidate,
     require_recruiter,
+    require_admin,
 )
 from app.core.exceptions import (
     AIError,
@@ -38,6 +39,7 @@ from app.schemas.ai_matching import (
     JobMatchRecommendation,
 )
 from app.schemas.ai_resume import ParsedResumeSchema
+from app.models.user import User
 from app.schemas.ai_search import SemanticSearchResult
 from app.services.ai_matching_service import AIMatchingService
 from app.services.explainable_ai_service import ExplainableAIService
@@ -411,3 +413,19 @@ async def recommend_candidates_for_job(
         limit=limit,
         session=db,
     )
+from app.services.ai_evaluation_service import AIEvaluationService, EvaluationSample, RelevanceLabel
+
+@router.post(
+    "/evaluation/run",
+    response_model=dict,
+    summary="Run Offline AI Evaluation",
+    description="Run offline evaluation metrics for the AI Matching Engine. Currently returns unavailable due to lack of labeled dataset.",
+)
+async def run_ai_evaluation(
+    current_user: User = Depends(require_admin),
+) -> dict:
+    """Run offline evaluation. Requires admin role."""
+    return {
+        "status": "success",
+        "message": "Evaluation infrastructure implemented; production metric unavailable because no labeled benchmark dataset exists."
+    }

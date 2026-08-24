@@ -14,9 +14,11 @@ Strict Extraction Rules:
 3. Distinguish required vs preferred skills: if the JD does not clearly separate them, put clearly demanded skills into required_skills. Do NOT split a skill list in half.
 4. Only put skills into preferred_skills if the JD explicitly marks them as preferred, nice-to-have, or optional.
 5. Convert the experience requirement to a float (e.g. '3+ years' -> 3.0, 'at least 2 years' -> 2.0). If the JD does not mention experience, return null. Do NOT hallucinate a value.
-6. Extract the required education degree/level only if the JD mentions it. Otherwise return null.
-7. Return null for unavailable scalar fields and [] for unavailable list fields.
-8. Produce structured output matching ParsedJobSchema exactly.
+6. Extract the required education degree/level, certifications, and languages only if the JD mentions it. Otherwise return null or empty lists.
+7. Extract the seniority level (e.g., Junior, Mid, Senior, Lead, Manager) if mentioned.
+8. Extract the key responsibilities into the responsibilities list.
+9. Return null for unavailable scalar fields and [] for unavailable list fields.
+10. Produce structured output matching ParsedJobSchema exactly.
 """
 
 

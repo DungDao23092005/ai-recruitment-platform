@@ -431,6 +431,9 @@ def _match_result_payload():
         "overall_score": 82.0,
         "cosine_similarity": 0.85,
         "skill_coverage_score": 0.8,
+        "preferred_skill_coverage_score": 0.5,
+        "education_score": 1.0,
+        "project_score": 1.0,
         "experience_match_score": 0.75,
         "matching_skills": ["React", "TypeScript"],
         "skill_gap": ["GraphQL"],
@@ -440,11 +443,15 @@ def _match_result_payload():
 
 def _explain_response_payload():
     return {
+        "match_score": 85.0,
         "summary": "The candidate matches the role well.",
         "strengths": ["Strong overlap in React and TypeScript"],
-        "skill_gaps": ["GraphQL"],
+        "missing_skills": ["GraphQL"],
         "experience_analysis": "Candidate has 5 years experience vs 4 required.",
+        "education_analysis": "x",
+        "evidence": [],
         "recommendation": "Proceed to interview.",
+        "confidence": 0.9,
     }
 
 
@@ -928,6 +935,7 @@ class TestChat:
 def _interview_question_payload():
     return {
         "question": "Explain how you handle React state.",
+        "reason": "Because they have React experience",
         "category": "technical",
         "difficulty": "medium",
         "target_skill_or_topic": "React",

@@ -8,7 +8,7 @@ from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 
-QuestionCategory = Literal["technical", "behavioral", "experience", "skill_gap"]
+QuestionCategory = Literal["technical", "behavioral", "experience", "project", "skill_gap"]
 QuestionDifficulty = Literal["easy", "medium", "hard"]
 
 
@@ -39,10 +39,13 @@ class GenerateInterviewQuestionsRequest(BaseModel):
 class InterviewQuestion(BaseModel):
     question: str = Field(description="The interview question text in Vietnamese")
     category: QuestionCategory = Field(
-        description="Question category: technical, behavioral, experience, or skill_gap"
+        description="Question category: technical, behavioral, experience, project, or skill_gap"
     )
     difficulty: QuestionDifficulty = Field(
         description="Question difficulty: easy, medium, or hard"
+    )
+    reason: str = Field(
+        description="Reason this question was selected based on the CV/JD evidence"
     )
     target_skill_or_topic: str = Field(
         description="The skill or topic this question targets"

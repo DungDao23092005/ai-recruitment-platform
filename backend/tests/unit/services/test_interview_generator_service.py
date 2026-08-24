@@ -63,6 +63,7 @@ def make_question(
 ) -> InterviewQuestion:
     return InterviewQuestion(
         question="Explain how you handle React state.",
+        reason="Good reason",
         category=category,
         difficulty=difficulty,
         target_skill_or_topic="React",
@@ -225,7 +226,7 @@ class TestSuccessfulGeneration:
 
         kwargs = provider.generate_structured_output.await_args.kwargs
         assert kwargs["response_schema"] is GenerateInterviewQuestionsResponse
-        assert "Interview Architect" in kwargs["system_instruction"]
+        assert "AI" in kwargs["system_instruction"]
 
     def test_validate_response_returns_response(self, provider, job):
         service = make_service(provider)

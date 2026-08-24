@@ -165,6 +165,7 @@ class AIMatchingService:
         jobs_data: list[tuple[uuid.UUID, ParsedJobSchema, list[float] | None]]
         | None = None,
         limit: int = 10,
+        session: AsyncSession | None = None,
     ) -> list[JobMatchRecommendation]:
         """Recommend Top-K jobs for a Candidate ranked by Match Score."""
         effective_limit = max(1, min(100, limit))
@@ -214,12 +215,20 @@ class AIMatchingService:
             )
             return recommendations[:effective_limit]
 
-        # Qdrant Vector Repository Search
+        # Qdrant Vector Repository Search with enlarged retrieval pool for reranking
+        search_limit = max(50, effective_limit * 2)
         qdrant_results = await self.vector_repository.search_similar(
             collection_name="jobs",
             query_vector=candidate_vector,
-            limit=effective_limit,
+            limit=search_limit,
         )
+
+        job_ids = [
+            uuid.UUID(str(res.get("id") or res.get("payload", {}).get("job_id")))
+            for res in qdrant_results
+            if res.get("id") or res.get("payload", {}).get("job_id")
+        ]
+        full_jobs = await self._resolve_jobs(session, job_ids)
 
         for res in qdrant_results:
             j_id_raw = res.get("id") or res.get("payload", {}).get("job_id")
@@ -227,9 +236,12 @@ class AIMatchingService:
                 continue
             j_id = uuid.UUID(str(j_id_raw))
             skills_in_payload = res.get("payload", {}).get("skills", [])
-            fallback_parsed_job = ParsedJobSchema(
-                required_skills=skills_in_payload
-            )
+            if j_id in full_jobs:
+                fallback_parsed_job = full_jobs[j_id]
+            else:
+                fallback_parsed_job = ParsedJobSchema(
+                    required_skills=skills_in_payload
+                )
             match_result = self.matching_engine.match_resume_to_job(
                 resume=parsed_resume,
                 job=fallback_parsed_job,
@@ -248,6 +260,52 @@ class AIMatchingService:
             key=lambda rec: rec.match_result.overall_score, reverse=True
         )
         return recommendations[:effective_limit]
+
+
+    async def _resolve_primary_resumes(
+        self,
+        session: AsyncSession | None,
+        candidate_ids: list[uuid.UUID],
+    ) -> dict[uuid.UUID, ParsedResumeSchema]:
+        if session is None or not candidate_ids:
+            return {}
+        from app.models import Resume
+        stmt = select(Resume).where(
+            Resume.candidate_id.in_(candidate_ids),
+            Resume.is_primary == True,
+            Resume.is_deleted == False
+        )
+        result = await session.execute(stmt)
+        resumes = {}
+        for r in result.scalars().all():
+            if r.parsed_data:
+                try:
+                    resumes[r.candidate_id] = ParsedResumeSchema(**r.parsed_data)
+                except Exception:
+                    pass
+        return resumes
+
+    async def _resolve_jobs(
+        self,
+        session: AsyncSession | None,
+        job_ids: list[uuid.UUID],
+    ) -> dict[uuid.UUID, ParsedJobSchema]:
+        if session is None or not job_ids:
+            return {}
+        from app.models import Job
+        stmt = select(Job).where(
+            Job.id.in_(job_ids),
+            Job.is_deleted == False
+        )
+        result = await session.execute(stmt)
+        jobs = {}
+        for j in result.scalars().all():
+            if j.parsed_reqs:
+                try:
+                    jobs[j.id] = ParsedJobSchema(**j.parsed_reqs)
+                except Exception:
+                    pass
+        return jobs
 
     async def _resolve_candidate_profiles(
         self,
@@ -328,11 +386,12 @@ class AIMatchingService:
             )
             return recommendations[:effective_limit]
 
-        # Qdrant Vector Repository Search
+        # Qdrant Vector Repository Search with enlarged retrieval pool for reranking
+        search_limit = max(50, effective_limit * 2)
         qdrant_results = await self.vector_repository.search_similar(
             collection_name="resumes",
             query_vector=job_vector,
-            limit=effective_limit,
+            limit=search_limit,
         )
 
         candidate_ids = [
@@ -348,6 +407,7 @@ class AIMatchingService:
         profiles = await self._resolve_candidate_profiles(
             session, candidate_ids
         )
+        full_resumes = await self._resolve_primary_resumes(session, candidate_ids)
 
         for res in qdrant_results:
             c_id_raw = res.get("id") or res.get("payload", {}).get(
@@ -358,11 +418,14 @@ class AIMatchingService:
             c_id = uuid.UUID(str(c_id_raw))
             skills_in_payload = res.get("payload", {}).get("skills", [])
             profile = profiles.get(c_id)
-            fallback_parsed_resume = ParsedResumeSchema(
-                skills=skills_in_payload,
-                full_name=profile.full_name if profile else None,
-                title=profile.title if profile else None,
-            )
+            if c_id in full_resumes:
+                fallback_parsed_resume = full_resumes[c_id]
+            else:
+                fallback_parsed_resume = ParsedResumeSchema(
+                    skills=skills_in_payload,
+                    full_name=profile.full_name if profile else None,
+                    title=profile.title if profile else None,
+                )
             match_result = self.matching_engine.match_resume_to_job(
                 resume=fallback_parsed_resume,
                 job=parsed_job,

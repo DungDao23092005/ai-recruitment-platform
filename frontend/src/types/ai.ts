@@ -53,7 +53,10 @@ export interface MatchResult {
   overall_score: number
   cosine_similarity: number
   skill_coverage_score: number
+  preferred_skill_coverage_score: number
   experience_match_score: number
+  education_score: number
+  project_score: number
   matching_skills: string[]
   skill_gap: string[]
   match_reasons: string[]
@@ -82,12 +85,22 @@ export interface ExplainMatchRequest {
   job?: ParsedJob | null
 }
 
+export interface EvidenceItem {
+  source: string
+  section: string
+  content: string
+}
+
 export interface ExplainMatchResponse {
+  match_score: number
   summary: string
   strengths: string[]
-  skill_gaps: string[]
+  missing_skills: string[]
   experience_analysis: string
+  education_analysis: string
+  evidence: EvidenceItem[]
   recommendation: string
+  confidence: number
 }
 
 export interface SemanticSearchResult {
@@ -137,6 +150,7 @@ export type QuestionCategory =
   | 'technical'
   | 'behavioral'
   | 'experience'
+  | 'project'
   | 'skill_gap'
 
 export type QuestionDifficulty = 'easy' | 'medium' | 'hard'
@@ -149,6 +163,7 @@ export type QuestionGenerationDifficulty =
 
 export interface InterviewQuestion {
   question: string
+  reason: string
   category: QuestionCategory
   difficulty: QuestionDifficulty
   target_skill_or_topic: string
