@@ -298,7 +298,7 @@ class TestRAGBenchmark:
         self.jobs_dict = {
             uuid4() if i == 4 else uuid.UUID(self.job_ids[i]): ParsedJobSchema(
                 title=f"Job {i+1}",
-                skills=self.jobs_data[i]["payload"]["skills"]
+                required_skills=self.jobs_data[i]["payload"]["skills"]
             )
             for i in range(5)
         }
@@ -528,7 +528,7 @@ class TestRAGBenchmark:
             LLMChatResponse(
                 answer="Test answer",
                 cited_source_ids=[uuid.UUID(self.job_ids[0]), uuid.UUID(self.job_ids[1])],
-                evidence_quotes=[],
+                evidence_quotes=["Python", "FastAPI"],
                 suggested_followups=[],
             )
             for _ in range(5)
@@ -567,7 +567,7 @@ class TestRAGQualityBenchmarks:
         """Benchmark evidence quote validation accuracy."""
         job_id = str(uuid4())
         jobs_data = [make_job_point(job_id, 0.9, ["Python", "FastAPI", "PostgreSQL"])]
-        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Backend Dev", skills=["Python", "FastAPI", "PostgreSQL"])}
+        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Backend Dev", required_skills=["Python", "FastAPI", "PostgreSQL"])}
 
         llm_responses = [
             LLMChatResponse(
@@ -596,7 +596,7 @@ class TestRAGQualityBenchmarks:
         """Verify hallucinated citations are rejected."""
         job_id = str(uuid4())
         jobs_data = [make_job_point(job_id, 0.9, ["Python"])]
-        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", skills=["Python"])}
+        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
 
         fake_id = uuid4()
         llm_responses = [
@@ -627,13 +627,13 @@ class TestRAGQualityBenchmarks:
         """Verify duplicate citations are deduplicated."""
         job_id = str(uuid4())
         jobs_data = [make_job_point(job_id, 0.85, ["Python"])]
-        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", skills=["Python"])}
+        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
 
         llm_responses = [
             LLMChatResponse(
                 answer="Answer",
                 cited_source_ids=[uuid.UUID(job_id), uuid.UUID(job_id), uuid.UUID(job_id)],
-                evidence_quotes=[],
+                evidence_quotes=["Python"],
                 suggested_followups=[],
             )
         ]

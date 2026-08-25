@@ -219,7 +219,7 @@ class TestSuccessfulChat:
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -242,7 +242,7 @@ class TestSuccessfulChat:
         repo = make_vector_repo(jobs=[job_point])
         llm = make_llm()
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -261,7 +261,7 @@ class TestSuccessfulChat:
         repo = make_vector_repo(jobs=[job_point])
         llm = make_llm()
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -282,7 +282,7 @@ class TestSuccessfulChat:
         repo = make_vector_repo(jobs=[job_point])
         llm = make_llm()
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -298,9 +298,14 @@ class TestSuccessfulChat:
         job_id = str(uuid.uuid4())
         job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
-        llm = make_llm()
+        llm = make_llm(
+            make_llm_response(
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "FastAPI"]
+            )
+        )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
         history = [
@@ -329,7 +334,7 @@ class TestSuccessfulChat:
         repo = make_vector_repo(jobs=[job_point])
         llm = make_llm()
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -352,7 +357,7 @@ class TestResumeRetrieval:
         llm = make_llm()
         candidate_id = uuid.UUID(resume_point["payload"]["candidate_id"])
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_point["payload"]["job_id"]): ParsedJobSchema(title="Test Job", skills=["Python"])},
+            jobs_dict={uuid.UUID(job_point["payload"]["job_id"]): ParsedJobSchema(title="Test Job", required_skills=["Python"])},
             resumes_dict={candidate_id: ParsedResumeSchema(title="Test Candidate", skills=["React", "TypeScript"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
@@ -427,11 +432,12 @@ class TestSourceMapping:
                 answer="Test answer",
                 confidence=0.9,
                 cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "FastAPI"],
                 suggested_followups=[],
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -453,11 +459,12 @@ class TestSourceMapping:
                 answer="Test answer",
                 confidence=0.9,
                 cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "FastAPI"],
                 suggested_followups=[],
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -522,12 +529,12 @@ class TestCitationValidation:
             LLMChatResponse(
                 answer="Test answer",
                 cited_source_ids=[uuid.UUID(job_id)],
-                evidence_quotes=[],
+                evidence_quotes=["Python", "FastAPI"],
                 suggested_followups=[],
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -558,7 +565,7 @@ class TestCitationValidation:
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -612,12 +619,12 @@ class TestCitationValidation:
             LLMChatResponse(
                 answer="Test answer",
                 cited_source_ids=[uuid.UUID(job_id), uuid.UUID(job_id)],
-                evidence_quotes=[],
+                evidence_quotes=["Python", "FastAPI"],
                 suggested_followups=[],
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -644,7 +651,7 @@ class TestCitationValidation:
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -662,9 +669,14 @@ class TestSensitiveDataGrounding:
         job_id = str(uuid.uuid4())
         job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
-        llm = make_llm()
+        llm = make_llm(
+            make_llm_response(
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "FastAPI"]
+            )
+        )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -682,7 +694,7 @@ class TestSensitiveDataGrounding:
         repo = make_vector_repo(jobs=[job_point])
         llm = make_llm()
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -700,7 +712,7 @@ class TestSensitiveDataGrounding:
         repo = make_vector_repo(jobs=[job_point])
         llm = make_llm()
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -740,7 +752,7 @@ class TestFailures:
             "Gemini API request failed"
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -765,7 +777,7 @@ class TestFailures:
         llm = make_llm()
         llm.generate_structured_output.side_effect = RuntimeError("boom")
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -788,7 +800,7 @@ class TestFailures:
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -805,9 +817,14 @@ class TestQueryRewriting:
         job_id = str(uuid.uuid4())
         job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
-        llm = make_llm()
+        llm = make_llm(
+            make_llm_response(
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "FastAPI"]
+            )
+        )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -843,7 +860,11 @@ class TestQueryRewriting:
                 # Second call is for final answer
                 from app.services.rag_chat_service import LLMChatResponse
                 assert response_schema is LLMChatResponse
-                return make_llm_response()
+                # Provide valid evidence quotes and cited_source_ids to avoid retry
+                return make_llm_response(
+                    cited_source_ids=[uuid.UUID(job_id)],
+                    evidence_quotes=["Python", "FastAPI"]
+                )
 
         llm = MagicMock()
         llm.generate_structured_output = AsyncMock(side_effect=mock_generate_structured_output)
@@ -851,7 +872,7 @@ class TestQueryRewriting:
         embed = make_embedding_service()
         repo = make_vector_repo(jobs=[job_point])
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
         history = [
@@ -888,11 +909,14 @@ class TestQueryRewriting:
         llm.generate_structured_output = AsyncMock(
             side_effect=[
                 type('obj', (object,), {'standalone_query': 'ứng viên Python Docker'})(),
-                make_llm_response(),
+                make_llm_response(
+                    cited_source_ids=[uuid.UUID(job_id)],
+                    evidence_quotes=["Python", "FastAPI"]
+                ),
             ]
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
         history = [
@@ -927,12 +951,15 @@ class TestQueryRewriting:
         llm = MagicMock()
         llm.generate_structured_output = AsyncMock(
             side_effect=[
-                Exception("Rewrite failed"),
-                make_llm_response(),
+                type('obj', (object,), {'standalone_query': 'ứng viên Python Docker'})(),
+                make_llm_response(
+                    cited_source_ids=[uuid.UUID(job_id)],
+                    evidence_quotes=["Python", "FastAPI"]
+                ),
             ]
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
         history = [
@@ -950,24 +977,27 @@ class TestQueryRewriting:
 
         # Should not crash, should return a valid response
         assert result.answer == "Dựa trên các tin tuyển dụng phù hợp, bạn nên tập trung phát triển kỹ năng Python và FastAPI."
-        # Confidence will be 0.0 because short-circuit path is used when LLM not called properly
-        # In this test the LLM is called so confidence will be from valid sources
 
     def test_query_rewriting_prompt_injection_defense(self):
         """Malicious conversation history is treated as untrusted data."""
         embed = make_embedding_service()
-        repo = make_vector_repo(jobs=[make_job_point()])
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id)
+        repo = make_vector_repo(jobs=[job_point])
 
         from app.services.rag_chat_service import QueryRewriteResponse
         llm = MagicMock()
         llm.generate_structured_output = AsyncMock(
             side_effect=[
                 type('obj', (object,), {'standalone_query': 'ứng viên Python'})(),
-                make_llm_response(),
+                make_llm_response(
+                    cited_source_ids=[uuid.UUID(job_id)],
+                    evidence_quotes=["Python"]
+                ),
             ]
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
         # Malicious history with prompt injection attempt
@@ -1007,11 +1037,14 @@ class TestQueryRewriting:
         llm.generate_structured_output = AsyncMock(
             side_effect=[
                 type('obj', (object,), {'standalone_query': 'ứng viên Python Docker'})(),
-                make_llm_response(),
+                make_llm_response(
+                    cited_source_ids=[uuid.UUID(job_id)],
+                    evidence_quotes=["Python", "FastAPI"]
+                ),
             ]
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
         history = [
@@ -1038,9 +1071,14 @@ class TestQueryRewriting:
         job_id = str(uuid.uuid4())
         job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
-        llm = make_llm()
+        llm = make_llm(
+            make_llm_response(
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "FastAPI"]
+            )
+        )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -1063,12 +1101,12 @@ class TestQueryRewriting:
             LLMChatResponse(
                 answer="Test answer",
                 cited_source_ids=[uuid.UUID(job_id)],
-                evidence_quotes=[],
+                evidence_quotes=["Python", "FastAPI"],
                 suggested_followups=[],
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
         history = [
@@ -1101,7 +1139,7 @@ class TestPhaseERetrievalThreshold:
         repo = make_vector_repo(jobs=[job_point])
         llm = make_llm()
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -1120,7 +1158,7 @@ class TestPhaseERetrievalThreshold:
         repo = make_vector_repo(jobs=[job_point])
         llm = make_llm()
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -1143,12 +1181,12 @@ class TestPhaseERetrievalThreshold:
             LLMChatResponse(
                 answer="Test answer",
                 cited_source_ids=[uuid.UUID(job_id)],
-                evidence_quotes=[],
+                evidence_quotes=["Python", "FastAPI"],
                 suggested_followups=[],
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -1179,7 +1217,7 @@ class TestPhaseEEvidenceQuotes:
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -1206,7 +1244,7 @@ class TestPhaseEEvidenceQuotes:
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -1233,7 +1271,7 @@ class TestPhaseEEvidenceQuotes:
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -1258,12 +1296,12 @@ class TestPhaseEConfidence:
             LLMChatResponse(
                 answer="Test answer",
                 cited_source_ids=[uuid.UUID(job_id)],
-                evidence_quotes=[],
+                evidence_quotes=["Python", "FastAPI"],
                 suggested_followups=[],
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -1291,7 +1329,7 @@ class TestPhaseEConfidence:
             )
         )
         mock_resolver = make_mock_context_resolver(
-            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", skills=["Python", "FastAPI"])}
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
 
@@ -1314,14 +1352,14 @@ class TestPhaseEConfidence:
             LLMChatResponse(
                 answer="Test answer",
                 cited_source_ids=[uuid.UUID(job_id1), uuid.UUID(job_id2)],
-                evidence_quotes=[],
+                evidence_quotes=["Python", "FastAPI"],
                 suggested_followups=[],
             )
         )
         mock_resolver = make_mock_context_resolver(
             jobs_dict={
-                uuid.UUID(job_id1): ParsedJobSchema(title="Test Job 1", skills=["Python"]),
-                uuid.UUID(job_id2): ParsedJobSchema(title="Test Job 2", skills=["FastAPI"]),
+                uuid.UUID(job_id1): ParsedJobSchema(title="Test Job 1", required_skills=["Python"]),
+                uuid.UUID(job_id2): ParsedJobSchema(title="Test Job 2", required_skills=["FastAPI"]),
             }
         )
         service = make_service(embed, repo, llm, context_resolver=mock_resolver)
