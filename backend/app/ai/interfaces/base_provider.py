@@ -81,6 +81,16 @@ class BaseVectorRepository(ABC):
         query_vector: list[float],
         limit: int = 10,
         filters: dict[str, Any] | None = None,
+        score_threshold: float | None = None,
     ) -> list[dict[str, Any]]:
-        """Search similar vectors by Cosine distance."""
+        """Search similar vectors by Cosine distance.
+
+        Args:
+            collection_name: Name of the collection to search.
+            query_vector: Query vector for similarity search.
+            limit: Maximum number of results to return.
+            filters: Optional metadata filters.
+            score_threshold: Minimum similarity score threshold (0.0 to 1.0).
+                           Results below this threshold are filtered out.
+        """
         pass

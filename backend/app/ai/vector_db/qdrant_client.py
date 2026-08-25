@@ -200,6 +200,7 @@ class QdrantVectorRepository(BaseVectorRepository):
         query_vector: list[float],
         limit: int = 10,
         filters: dict[str, Any] | None = None,
+        score_threshold: float | None = None,
     ) -> list[dict[str, Any]]:
         self._validate_vector(query_vector)
         query_filter = self._build_query_filter(filters)
@@ -210,6 +211,7 @@ class QdrantVectorRepository(BaseVectorRepository):
                 query_filter=query_filter,
                 limit=limit,
                 with_payload=True,
+                score_threshold=score_threshold,
             )
         except AIError:
             raise
