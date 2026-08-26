@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import uuid
@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.ai.interfaces.base_provider import BaseReranker, RerankResult
 from app.core.exceptions import AIError, EmptyDocumentError, InvalidDocumentError
 from app.domain.enums import UserRole
 from app.models import User
@@ -145,19 +146,41 @@ def make_mock_context_resolver(jobs_dict=None, resumes_dict=None):
     return resolver
 
 
+def make_reranker(rerank_results=None):
+    """Create a mock reranker that returns predefined results."""
+    reranker = MagicMock(spec=BaseReranker)
+
+    async def mock_rerank(query, candidates):
+        if rerank_results is not None:
+            return rerank_results
+        # Default: return candidates in same order with original scores
+        return [
+            RerankResult(entity_id=c.entity_id, rerank_score=c.original_relevance_score)
+            for c in candidates
+        ]
+
+    reranker.rerank = AsyncMock(side_effect=mock_rerank)
+    return reranker
+
+
 def make_service(
     embedding_service=None,
     vector_repository=None,
     llm_provider=None,
     session_factory=None,
     context_resolver=None,
+    reranker=None,
 ):
+    # Use mock reranker by default for tests
+    if reranker is None:
+        reranker = make_reranker()
     return RAGChatService(
         embedding_service=embedding_service,
         vector_repository=vector_repository,
         llm_provider=llm_provider,
         session_factory=session_factory or make_mock_session_factory(),
         context_resolver=context_resolver,
+        reranker=reranker,
     )
 
 
@@ -289,10 +312,10 @@ class TestSuccessfulChat:
 
         # search_similar is called for jobs (and potentially for resumes)
         assert repo.search_similar.await_count >= 1
-        # Verify it was called with jobs collection and correct limit
+        # Verify it was called with jobs collection and correct limit (Phase H: broad retrieval limit=40)
         call_args = repo.search_similar.await_args_list[0].kwargs
         assert call_args["collection_name"] == "jobs"
-        assert call_args["limit"] == 3
+        assert call_args["limit"] == 40
         assert call_args["query_vector"] == [0.1, 0.2, 0.3]
 
     def test_prompt_contains_deep_sql_context(self):
@@ -1849,3 +1872,159 @@ class TestPhaseGRegression:
         # Test deterministic confidence
         result4 = asyncio.run(service.chat("Python", make_user(UserRole.CANDIDATE)))
         assert result4.confidence == 0.87
+
+class TestPhaseHCrossEncoderSingleton:
+    """Phase H: CrossEncoder model singleton/reuse tests.
+
+    These tests verify that the CrossEncoder model is initialized exactly once
+    per process and shared across all RAGChatService instances/requests.
+    """
+
+    def test_cross_encoder_model_initialized_once_per_process(self):
+        """Multiple RAGChatService instances must share the same CrossEncoder model.
+
+        This test mocks CrossEncoder construction and verifies it's called
+        exactly once regardless of how many service instances are created
+        or how many requests are made.
+        """
+        from unittest.mock import patch, MagicMock
+        from app.ai.reranking.cross_encoder_reranker import _get_shared_cross_encoder_model, _reset_cross_encoder_model_for_testing
+
+        # Reset singleton before test
+        _reset_cross_encoder_model_for_testing()
+
+        mock_model = MagicMock()
+        mock_model.predict.return_value = [0.9, 0.8, 0.7]
+
+        # Track CrossEncoder constructor calls
+        with patch('sentence_transformers.CrossEncoder', return_value=mock_model) as mock_cross_encoder:
+            # Reset singleton before test
+            _reset_cross_encoder_model_for_testing()
+
+            embed = make_embedding_service()
+            job_id = str(uuid.uuid4())
+            job_point = make_job_point(point_id=job_id, score=0.87)
+            repo = make_vector_repo(jobs=[job_point])
+            mock_resolver = make_mock_context_resolver(
+                jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title='Python Dev', required_skills=['Python'])}
+            )
+            mock_llm = make_llm(
+                make_llm_response(
+                    answer='Job requires Python',
+                    cited_source_ids=[uuid.UUID(job_id)],
+                    evidence_quotes=['Python'],
+                    suggested_followups=[],
+                )
+            )
+
+            # Create services WITHOUT mock reranker to test real CrossEncoder initialization
+            from app.ai.reranking.cross_encoder_reranker import CrossEncoderReranker
+
+            # Create first service and make request
+            service1 = make_service(embed, repo, mock_llm, context_resolver=mock_resolver, reranker=CrossEncoderReranker())
+            asyncio.run(service1.chat('python job', make_user(UserRole.CANDIDATE)))
+
+            # Create second service (simulating new request) and make request
+            service2 = make_service(embed, repo, mock_llm, context_resolver=mock_resolver, reranker=CrossEncoderReranker())
+            asyncio.run(service2.chat('python job', make_user(UserRole.CANDIDATE)))
+
+            # Create third service and make request
+            service3 = make_service(embed, repo, mock_llm, context_resolver=mock_resolver, reranker=CrossEncoderReranker())
+            asyncio.run(service3.chat('python job', make_user(UserRole.CANDIDATE)))
+
+            # CrossEncoder constructor should be called exactly ONCE
+            assert mock_cross_encoder.call_count == 1, (
+                f'CrossEncoder constructor called {mock_cross_encoder.call_count} times, expected 1'
+            )
+
+    def test_concurrent_cross_encoder_initialization_thread_safe(self):
+        """CrossEncoder model initialization must be thread-safe.
+
+        Multiple concurrent requests initializing the model simultaneously
+        should result in exactly one model instance.
+        """
+        import threading
+        from unittest.mock import patch, MagicMock
+        from app.ai.reranking.cross_encoder_reranker import _get_shared_cross_encoder_model, _reset_cross_encoder_model_for_testing
+
+        # Reset singleton before test
+        _reset_cross_encoder_model_for_testing()
+
+        mock_model = MagicMock()
+        mock_model.predict.return_value = [0.9]
+
+        results = []
+        errors = []
+
+        def make_request():
+            try:
+                with patch('sentence_transformers.CrossEncoder', return_value=mock_model):
+                    model = _get_shared_cross_encoder_model('cross-encoder/ms-marco-MiniLM-L-6-v2')
+                    results.append(model)
+            except Exception as e:
+                errors.append(e)
+
+        # Simulate 10 concurrent requests
+        threads = [threading.Thread(target=make_request) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # No errors should occur
+        assert len(errors) == 0, f'Thread errors: {errors}'
+
+        # All threads should get the same model instance
+        assert len(results) == 10
+        for model in results:
+            assert model is mock_model
+
+    def test_model_reuse_across_different_services(self):
+        """The same CrossEncoder model must be used by different reranker instances."""
+        from unittest.mock import patch, MagicMock
+        from app.ai.reranking.cross_encoder_reranker import CrossEncoderReranker, _reset_cross_encoder_model_for_testing
+
+        # Reset singleton before test
+        _reset_cross_encoder_model_for_testing()
+
+        mock_model = MagicMock()
+        mock_model.predict.return_value = [0.9, 0.8]
+
+        with patch('sentence_transformers.CrossEncoder', return_value=mock_model) as mock_cross_encoder:
+            # Create two reranker instances with different configs
+            reranker1 = CrossEncoderReranker(model_name='model-a', max_batch_size=16)
+            reranker2 = CrossEncoderReranker(model_name='model-b', max_batch_size=32)
+
+            # Both should get the same model instance (first one wins)
+            model1 = reranker1._get_model()
+            model2 = reranker2._get_model()
+
+            assert model1 is model2 is mock_model
+            # CrossEncoder should be called only once (first model name wins)
+            assert mock_cross_encoder.call_count == 1
+
+    def test_reranker_latency_still_measured(self):
+        """reranker_latency_ms should still be measured with the shared model."""
+        embed = make_embedding_service()
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.87)
+        repo = make_vector_repo(jobs=[job_point])
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title='Python Dev', required_skills=['Python'])}
+        )
+        mock_llm = make_llm(
+            make_llm_response(
+                answer='Job requires Python',
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=['Python'],
+                suggested_followups=[],
+            )
+        )
+
+        service = make_service(embed, repo, mock_llm, context_resolver=mock_resolver)
+
+        asyncio.run(service.chat('python job', make_user(UserRole.CANDIDATE)))
+
+        # Reranker latency should be captured (non-negative)
+        assert hasattr(service, '_last_rerank_latency_ms')
+        assert service._last_rerank_latency_ms >= 0

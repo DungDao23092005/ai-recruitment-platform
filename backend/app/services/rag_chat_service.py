@@ -9,10 +9,11 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.ai.embeddings.embedding_service import EmbeddingService
-from app.ai.interfaces.base_provider import BaseLLMProvider, BaseVectorRepository
+from app.ai.interfaces.base_provider import BaseLLMProvider, BaseVectorRepository, BaseReranker
 from app.ai.providers.gemini_provider import GeminiLLMProvider
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 from app.ai.embeddings.embedding_service import SentenceTransformerEmbeddingProvider
+from app.ai.reranking.cross_encoder_reranker import CrossEncoderReranker
 from app.core.exceptions import AIError, EmptyDocumentError, InvalidDocumentError
 from app.domain.enums import UserRole
 from app.models import User
@@ -30,10 +31,14 @@ from app.schemas.ai_match import MatchResultSchema
 
 JOB_COLLECTION = "jobs"
 RESUME_COLLECTION = "resumes"
-RETRIEVAL_LIMIT = 3
+# Broad retrieval limit for Phase H two-stage retrieval
+# Default can be overridden via environment/configuration
+RETRIEVAL_LIMIT = 40
 # Default similarity score threshold (cosine similarity 0.0-1.0)
 # Results below this threshold are filtered out before SQL hydration
 DEFAULT_SCORE_THRESHOLD = 0.5
+# Final context limit after reranking
+FINAL_CONTEXT_LIMIT = 5
 
 
 class UngroundedAnswerError(Exception):
@@ -61,6 +66,7 @@ class RAGTelemetry:
     authorized_sql_count: int = 0
     generation_latency_ms: float = 0.0
     evaluator_latency_ms: float = 0.0
+    reranker_latency_ms: float = 0.0
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     grounding_retry_count: int = 0
@@ -280,6 +286,7 @@ class RAGChatService:
         llm_provider: BaseLLMProvider | None = None,
         session_factory: Any | None = None,
         context_resolver: ContextResolver | None = None,
+        reranker: BaseReranker | None = None,
     ) -> None:
         self.embedding_service = embedding_service or EmbeddingService(
             SentenceTransformerEmbeddingProvider()
@@ -288,6 +295,7 @@ class RAGChatService:
         self.llm_provider = llm_provider or GeminiLLMProvider()
         self._session_factory = session_factory or async_session_factory
         self._context_resolver = context_resolver
+        self._reranker = reranker or CrossEncoderReranker()
 
     def _get_resolver(self, session: Any) -> ContextResolver:
         """Get ContextResolver instance (use injected one for testing)."""
@@ -358,10 +366,12 @@ class RAGChatService:
         standalone_query = await self._rewrite_query(message, request.history)
         telemetry.rewrite_latency_ms = (time.monotonic() - rewrite_start) * 1000
 
-        # Build RAG context from vector retrieval + authorized SQL hydration
+        # Build RAG context from vector retrieval + authorized SQL hydration + reranking
         qdrant_start = time.monotonic()
         rag_context = await self._build_rag_context(standalone_query, actor_user, message)
         telemetry.qdrant_latency_ms = (time.monotonic() - qdrant_start) * 1000
+        # Include reranker latency (captured in _build_rag_context)
+        telemetry.reranker_latency_ms = getattr(self, '_last_rerank_latency_ms', 0.0)
         telemetry.retrieved_qdrant_count = len(rag_context.sources)
         telemetry.authorized_sql_count = len(rag_context.jobs) + len(rag_context.candidates)
 
@@ -374,6 +384,7 @@ class RAGChatService:
                 extra={
                     "rewrite_latency_ms": telemetry.rewrite_latency_ms,
                     "qdrant_latency_ms": telemetry.qdrant_latency_ms,
+                    "reranker_latency_ms": telemetry.reranker_latency_ms,
                     "retrieved_qdrant_count": telemetry.retrieved_qdrant_count,
                     "authorized_sql_count": telemetry.authorized_sql_count,
                     "generation_latency_ms": telemetry.generation_latency_ms,
@@ -450,6 +461,7 @@ class RAGChatService:
                     extra={
                         "rewrite_latency_ms": telemetry.rewrite_latency_ms,
                         "qdrant_latency_ms": telemetry.qdrant_latency_ms,
+                        "reranker_latency_ms": telemetry.reranker_latency_ms,
                         "retrieved_qdrant_count": telemetry.retrieved_qdrant_count,
                         "authorized_sql_count": telemetry.authorized_sql_count,
                         "generation_latency_ms": telemetry.generation_latency_ms,
@@ -501,6 +513,7 @@ class RAGChatService:
             extra={
                 "rewrite_latency_ms": telemetry.rewrite_latency_ms,
                 "qdrant_latency_ms": telemetry.qdrant_latency_ms,
+                "reranker_latency_ms": telemetry.reranker_latency_ms,
                 "retrieved_qdrant_count": telemetry.retrieved_qdrant_count,
                 "authorized_sql_count": telemetry.authorized_sql_count,
                 "generation_latency_ms": telemetry.generation_latency_ms,
@@ -525,17 +538,19 @@ class RAGChatService:
         actor_user: User | UserRole,
         original_message: str,
     ) -> RAGContext:
-        """Build RAG context from vector retrieval + authorized SQL hydration.
+        """Build RAG context from vector retrieval + authorized SQL hydration + reranking.
 
-        Phase B flow:
-        1. Retrieve semantic candidates from Qdrant using standalone_query
+        Phase H flow:
+        1. Retrieve semantic candidates from Qdrant using standalone_query (broad retrieval)
         2. Extract entity IDs
         3. Hydrate with authorized SQL data via ContextResolver
-        4. Build RAGContext with only authorized records
+        4. Rerank authorized records using CrossEncoder
+        5. Select Top-5
+        6. Build RAGContext with only final Top-5 authorized records
         """
         query_vector = self.embedding_service.embed_text(standalone_query)
 
-        # 1. Retrieve jobs from Qdrant (always available)
+        # 1. Broad retrieval from Qdrant (always available)
         retrieved_jobs = await self._retrieve_sources(
             collection_name=JOB_COLLECTION,
             id_field="job_id",
@@ -577,15 +592,121 @@ class RAGChatService:
             # Hydrate resumes with authorization
             resumes_dict = await resolver.resolve_resumes(resume_candidate_ids, actor_user) if resume_candidate_ids else {}
 
-        # 4. Build sources for citations - ONLY for authorized records
+        # 4. Build rerank candidates from authorized records ONLY
+        # Reranker receives ONLY entities that passed ContextResolver authorization
+        rerank_candidates = []
+
+        # Create text representations for jobs
+        for job_id, job in jobs_dict.items():
+            # Find the original Qdrant source for relevance_score
+            source = next((s for s in retrieved_jobs if s.entity_id == job_id), None)
+            original_score = source.relevance_score if source else 0.0
+
+            # Build text for reranking: title, requirements, responsibilities, skills
+            text_parts = []
+            if job.title:
+                text_parts.append(f"Title: {job.title}")
+            if job.summary:
+                text_parts.append(f"Summary: {job.summary}")
+            if job.required_skills:
+                text_parts.append(f"Required Skills: {', '.join(job.required_skills)}")
+            if job.preferred_skills:
+                text_parts.append(f"Preferred Skills: {', '.join(job.preferred_skills)}")
+            if job.responsibilities:
+                text_parts.append(f"Responsibilities: {', '.join(job.responsibilities)}")
+            if job.seniority:
+                text_parts.append(f"Seniority: {job.seniority}")
+
+            rerank_candidates.append(
+                type("RerankCandidate", (), {
+                    "entity_id": job_id,
+                    "source_type": "job",
+                    "title": job.title or f"Job {str(job_id)[:8]}",
+                    "text_for_reranking": " | ".join(text_parts) if text_parts else f"Job {job_id}",
+                    "original_relevance_score": original_score,
+                })()
+            )
+
+        # Create text representations for candidates/resumes
+        for candidate_id, resume in resumes_dict.items():
+            source = next((s for s in retrieved_resumes if s.entity_id == candidate_id), None)
+            original_score = source.relevance_score if source else 0.0
+
+            # Build text for reranking: skills, experience, education, projects
+            text_parts = []
+            if resume.title:
+                text_parts.append(f"Title: {resume.title}")
+            if resume.summary:
+                text_parts.append(f"Summary: {resume.summary}")
+            if resume.skills:
+                text_parts.append(f"Skills: {', '.join(resume.skills)}")
+            if resume.technical_skills:
+                text_parts.append(f"Technical Skills: {', '.join(resume.technical_skills)}")
+            if resume.job_titles:
+                text_parts.append(f"Job Titles: {', '.join(resume.job_titles)}")
+            if resume.total_years_experience is not None:
+                text_parts.append(f"Experience: {resume.total_years_experience} years")
+            if resume.projects:
+                proj_texts = [f"{p.name}: {p.description or ''}" for p in resume.projects if p.name]
+                if proj_texts:
+                    text_parts.append(f"Projects: {'; '.join(proj_texts)}")
+            if resume.experiences:
+                exp_texts = [f"{e.position} at {e.company}: {e.description or ''}" for e in resume.experiences if e.position or e.company]
+                if exp_texts:
+                    text_parts.append(f"Experience: {'; '.join(exp_texts)}")
+            if resume.education:
+                edu_texts = [f"{e.degree} in {e.field_of_study} at {e.institution}" for e in resume.education if e.degree or e.field_of_study]
+                if edu_texts:
+                    text_parts.append(f"Education: {'; '.join(edu_texts)}")
+
+            rerank_candidates.append(
+                type("RerankCandidate", (), {
+                    "entity_id": candidate_id,
+                    "source_type": "resume",
+                    "title": resume.title or f"Candidate {str(candidate_id)[:8]}",
+                    "text_for_reranking": " | ".join(text_parts) if text_parts else f"Candidate {candidate_id}",
+                    "original_relevance_score": original_score,
+                })()
+            )
+
+        # 5. Rerank authorized records
+        rerank_start = time.monotonic()
+        try:
+            rerank_results = await self._reranker.rerank(
+                query=standalone_query,
+                candidates=rerank_candidates,
+            )
+            rerank_latency = (time.monotonic() - rerank_start) * 1000
+        except Exception as exc:
+            # Reranker failure fallback: use original Qdrant ranking order, take Top-5
+            rerank_latency = (time.monotonic() - rerank_start) * 1000
+            # Log the error but continue with fallback
+            logging.getLogger(__name__).warning(
+                "Reranker failed, falling back to Qdrant ranking: %s", exc
+            )
+            # Sort by original relevance score descending
+            rerank_candidates.sort(key=lambda c: c.original_relevance_score, reverse=True)
+            rerank_results = [
+                type("RerankResult", (), {"entity_id": c.entity_id, "rerank_score": c.original_relevance_score})()
+                for c in rerank_candidates
+            ]
+
+        # 6. Select Top-5 after reranking
+        top_5_ids = [r.entity_id for r in rerank_results[:FINAL_CONTEXT_LIMIT]]
+
+        # 7. Filter authorized records to only Top-5
+        final_jobs = {jid: job for jid, job in jobs_dict.items() if jid in top_5_ids}
+        final_resumes = {cid: resume for cid, resume in resumes_dict.items() if cid in top_5_ids}
+
+        # 8. Build sources for citations - ONLY for final Top-5 authorized records
         sources = []
         for source in retrieved_jobs:
-            if source.entity_id in jobs_dict:
+            if source.entity_id in final_jobs:
                 sources.append(source)
 
         # Convert resumes to ChatSource for citations - preserve relevance_score from Qdrant
         resume_score_map = {source.entity_id: source.relevance_score for source in retrieved_resumes}
-        for candidate_id, resume in resumes_dict.items():
+        for candidate_id, resume in final_resumes.items():
             source = ChatSource(
                 source_type="resume",
                 entity_id=candidate_id,
@@ -595,9 +716,13 @@ class RAGChatService:
             )
             sources.append(source)
 
+        # Store rerank latency in telemetry (will be added in chat method)
+        # We'll pass it back via a temporary attribute
+        self._last_rerank_latency_ms = rerank_latency
+
         return RAGContext(
-            jobs=list(jobs_dict.values()),
-            candidates=list(resumes_dict.values()),
+            jobs=list(final_jobs.values()),
+            candidates=list(final_resumes.values()),
             match_results=[],
             sources=sources,
         )

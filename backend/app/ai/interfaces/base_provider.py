@@ -94,3 +94,59 @@ class BaseVectorRepository(ABC):
                            Results below this threshold are filtered out.
         """
         pass
+
+
+class RerankCandidate:
+    """Represents an authorized entity for reranking."""
+
+    def __init__(
+        self,
+        entity_id: uuid.UUID,
+        source_type: str,
+        title: str,
+        text_for_reranking: str,
+        original_relevance_score: float,
+    ) -> None:
+        self.entity_id = entity_id
+        self.source_type = source_type
+        self.title = title
+        self.text_for_reranking = text_for_reranking
+        self.original_relevance_score = original_relevance_score
+
+
+class RerankResult:
+    """Result of reranking a candidate."""
+
+    def __init__(
+        self,
+        entity_id: uuid.UUID,
+        rerank_score: float,
+    ) -> None:
+        self.entity_id = entity_id
+        self.rerank_score = rerank_score
+
+
+class BaseReranker(ABC):
+    """Abstract interface for semantic reranking of authorized entities.
+
+    The reranker receives ONLY entities that have passed ContextResolver
+    authorization and SQL hydration. It must NOT access SQL, Qdrant, or
+    ContextResolver directly.
+    """
+
+    @abstractmethod
+    async def rerank(
+        self,
+        query: str,
+        candidates: list[RerankCandidate],
+    ) -> list[RerankResult]:
+        """Rerank authorized candidates against the query.
+
+        Args:
+            query: The standalone query for retrieval.
+            candidates: List of authorized, SQL-hydrated entities with text for reranking.
+
+        Returns:
+            List of RerankResult with entity_id and rerank_score, sorted by score descending.
+        """
+        pass

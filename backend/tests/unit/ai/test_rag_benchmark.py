@@ -180,12 +180,32 @@ def make_mock_session_factory(resolver: MockContextResolver):
     return factory
 
 
+class MockReranker:
+    """Mock reranker for benchmarking."""
+
+    def __init__(self, rerank_results=None):
+        self.rerank_results = rerank_results or []
+        self.call_count = 0
+
+    async def rerank(self, query, candidates):
+        self.call_count += 1
+        if self.rerank_results:
+            return self.rerank_results
+        # Default: return candidates in same order with original scores
+        from app.ai.interfaces.base_provider import RerankResult
+        return [
+            RerankResult(entity_id=c.entity_id, rerank_score=c.original_relevance_score)
+            for c in candidates
+        ]
+
+
 def make_benchmark_service(
     jobs_data: list[dict],
     resumes_data: list[dict],
     jobs_dict: dict,
     resumes_dict: dict,
-    llm_responses: list[LLMChatResponse]
+    llm_responses: list[LLMChatResponse],
+    reranker=None
 ) -> RAGChatService:
     """Create a RAGChatService configured for benchmarking."""
     embed = MockEmbeddingService()
@@ -194,12 +214,16 @@ def make_benchmark_service(
     resolver = MockContextResolver(jobs_dict, resumes_dict)
     session_factory = make_mock_session_factory(resolver)
 
+    if reranker is None:
+        reranker = MockReranker()
+
     service = RAGChatService(
         embedding_service=embed,
         vector_repository=repo,
         llm_provider=llm,
         session_factory=session_factory,
         context_resolver=resolver,
+        reranker=reranker,
     )
     return service
 
@@ -751,12 +775,16 @@ class TestPhaseGBenchmarks:
         resolver = MockContextResolver(jobs_dict, {})
         session_factory = make_mock_session_factory(resolver)
 
+        # Use mock reranker to avoid downloading CrossEncoder model
+        mock_reranker = MockReranker()
+
         service = RAGChatService(
             embedding_service=embed,
             vector_repository=repo,
             llm_provider=provider,
             session_factory=session_factory,
             context_resolver=resolver,
+            reranker=mock_reranker,
         )
         return service, call_state
 
@@ -1119,12 +1147,16 @@ class TestPhaseGBenchmarks:
         resolver = MockContextResolver(jobs_dict, {})
         session_factory = make_mock_session_factory(resolver)
 
+        # Use mock reranker to avoid downloading CrossEncoder model
+        mock_reranker = MockReranker()
+
         service = RAGChatService(
             embedding_service=embed,
             vector_repository=repo,
             llm_provider=provider,
             session_factory=session_factory,
             context_resolver=resolver,
+            reranker=mock_reranker,
         )
 
         asyncio.run(service.chat("Python", make_user(UserRole.CANDIDATE)))
