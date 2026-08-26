@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import time
@@ -70,6 +70,7 @@ class RAGTelemetry:
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     grounding_retry_count: int = 0
+    total_llm_calls: int = 0
     total_latency_ms: float = 0.0
     # Error tracking
     error: Optional[str] = None
@@ -307,15 +308,18 @@ class RAGChatService:
         self,
         message: str,
         history: list[ChatMessage],
-    ) -> str:
+    ) -> tuple[str, Optional[int], Optional[int]]:
         """Rewrite the user's query with conversation history context for retrieval.
 
         If history is empty, returns the original message without calling LLM.
         If history exists, uses LLM to rewrite the query with full semantic context.
         On failure, falls back to the original message.
+
+        Returns:
+            tuple of (standalone_query, prompt_tokens, completion_tokens)
         """
         if not history:
-            return message
+            return message, None, None
 
         # Build conversation history text for the rewrite prompt
         history_lines: list[str] = []
@@ -337,10 +341,18 @@ class RAGChatService:
                 response_schema=QueryRewriteResponse,
                 system_instruction=_REWRITE_SYSTEM_INSTRUCTION,
             )
-            return rewrite_response.standalone_query
+            # Extract token usage if available
+            prompt_tokens = None
+            completion_tokens = None
+            if hasattr(rewrite_response, '_token_usage'):
+                usage = getattr(rewrite_response, '_token_usage')
+                if usage:
+                    prompt_tokens = usage.get('prompt_tokens')
+                    completion_tokens = usage.get('completion_tokens')
+            return rewrite_response.standalone_query, prompt_tokens, completion_tokens
         except Exception:
             # Fallback to original message on any rewrite failure
-            return message
+            return message, None, None
 
     async def chat(
         self,
@@ -363,8 +375,20 @@ class RAGChatService:
 
         # Phase D: Query rewriting for contextual retrieval
         rewrite_start = time.monotonic()
-        standalone_query = await self._rewrite_query(message, request.history)
+        standalone_query, rewrite_prompt_tokens, rewrite_completion_tokens = await self._rewrite_query(message, request.history)
         telemetry.rewrite_latency_ms = (time.monotonic() - rewrite_start) * 1000
+
+        # Track rewrite LLM call and token usage if history existed (i.e., LLM was called)
+        if history:
+            telemetry.total_llm_calls += 1
+            if rewrite_prompt_tokens is not None:
+                if telemetry.prompt_tokens is None:
+                    telemetry.prompt_tokens = 0
+                telemetry.prompt_tokens += rewrite_prompt_tokens
+            if rewrite_completion_tokens is not None:
+                if telemetry.completion_tokens is None:
+                    telemetry.completion_tokens = 0
+                telemetry.completion_tokens += rewrite_completion_tokens
 
         # Build RAG context from vector retrieval + authorized SQL hydration + reranking
         qdrant_start = time.monotonic()
@@ -391,6 +415,7 @@ class RAGChatService:
                     "evaluator_latency_ms": telemetry.evaluator_latency_ms,
                     "prompt_tokens": telemetry.prompt_tokens,
                     "completion_tokens": telemetry.completion_tokens,
+                    "total_llm_calls": telemetry.total_llm_calls,
                     "grounding_retry_count": telemetry.grounding_retry_count,
                     "total_latency_ms": telemetry.total_latency_ms,
                     "error": "no_authorized_context",
@@ -423,13 +448,18 @@ class RAGChatService:
                     system_instruction=_SYSTEM_INSTRUCTION if attempt == 0 else _SELF_CORRECTION_INSTRUCTION,
                 )
                 telemetry.generation_latency_ms += (time.monotonic() - generation_start) * 1000
+                telemetry.total_llm_calls += 1
 
                 # Try to extract token usage if available from provider response
                 if hasattr(llm_response, '_token_usage'):
                     usage = getattr(llm_response, '_token_usage')
                     if usage:
-                        telemetry.prompt_tokens = usage.get('prompt_tokens')
-                        telemetry.completion_tokens = usage.get('completion_tokens')
+                        if telemetry.prompt_tokens is None:
+                            telemetry.prompt_tokens = 0
+                        if telemetry.completion_tokens is None:
+                            telemetry.completion_tokens = 0
+                        telemetry.prompt_tokens += usage.get('prompt_tokens', 0)
+                        telemetry.completion_tokens += usage.get('completion_tokens', 0)
 
                 # Validate response - may raise UngroundedAnswerError
                 validated_response, valid_evidence_quotes = self._validate_response(llm_response, rag_context)
@@ -446,6 +476,18 @@ class RAGChatService:
                     fact_check = fact_check_result
                     evaluator_latency = 0.0
                 telemetry.evaluator_latency_ms += evaluator_latency
+                telemetry.total_llm_calls += 1
+
+                # Track evaluator token usage
+                if hasattr(fact_check, '_token_usage'):
+                    usage = getattr(fact_check, '_token_usage')
+                    if usage:
+                        if telemetry.prompt_tokens is None:
+                            telemetry.prompt_tokens = 0
+                        if telemetry.completion_tokens is None:
+                            telemetry.completion_tokens = 0
+                        telemetry.prompt_tokens += usage.get('prompt_tokens', 0)
+                        telemetry.completion_tokens += usage.get('completion_tokens', 0)
 
                 if not fact_check.is_faithful:
                     # Faithfulness check failed - trigger retry
@@ -468,6 +510,7 @@ class RAGChatService:
                         "evaluator_latency_ms": telemetry.evaluator_latency_ms,
                         "prompt_tokens": telemetry.prompt_tokens,
                         "completion_tokens": telemetry.completion_tokens,
+                        "total_llm_calls": telemetry.total_llm_calls,
                         "grounding_retry_count": telemetry.grounding_retry_count,
                         "total_latency_ms": telemetry.total_latency_ms,
                         "error": telemetry.error,
@@ -520,6 +563,7 @@ class RAGChatService:
                 "evaluator_latency_ms": telemetry.evaluator_latency_ms,
                 "prompt_tokens": telemetry.prompt_tokens,
                 "completion_tokens": telemetry.completion_tokens,
+                "total_llm_calls": telemetry.total_llm_calls,
                 "grounding_retry_count": telemetry.grounding_retry_count,
                 "total_latency_ms": telemetry.total_latency_ms,
                 "error": telemetry.error,
@@ -1065,6 +1109,12 @@ class RAGChatService:
                 system_instruction=_EVALUATOR_SYSTEM_INSTRUCTION,
             )
             evaluator_latency = (time.monotonic() - evaluator_start) * 1000
+            # Track evaluator LLM call and token usage
+            if hasattr(fact_check, '_token_usage'):
+                usage = getattr(fact_check, '_token_usage')
+                if usage:
+                    # This will be accumulated in the calling context
+                    pass
             return fact_check, evaluator_latency
         except AIError:
             raise

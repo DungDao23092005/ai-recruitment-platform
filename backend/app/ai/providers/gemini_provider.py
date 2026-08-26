@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
@@ -25,6 +26,19 @@ except ImportError as exc:  # pragma: no cover - environment dependent
     genai = None
     types = None
     logger.warning("google-genai SDK is not installed: %s", exc)
+
+
+@dataclass
+class TokenUsage:
+    """Token usage metadata from LLM provider."""
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+    def to_dict(self) -> dict[str, int | None]:
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+        }
 
 
 class GeminiLLMProvider(BaseLLMProvider):
@@ -86,13 +100,32 @@ class GeminiLLMProvider(BaseLLMProvider):
         if not raw_text:
             raise InvalidDocumentError("Gemini API returned an empty response")
 
+        # Extract token usage metadata if available
+        token_usage = None
+        usage_metadata = getattr(response, "usage_metadata", None)
+        if usage_metadata is not None:
+            prompt_tokens = getattr(usage_metadata, "prompt_token_count", None)
+            completion_tokens = getattr(usage_metadata, "candidates_token_count", None)
+            if prompt_tokens is not None or completion_tokens is not None:
+                token_usage = TokenUsage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
+
         try:
             if isinstance(response_schema, type) and issubclass(
                 response_schema, BaseModel
             ):
-                return response_schema.model_validate_json(raw_text)
+                parsed = response_schema.model_validate_json(raw_text)
+                # Attach token usage to the response object if available
+                if token_usage is not None:
+                    object.__setattr__(parsed, "_token_usage", token_usage.to_dict())
+                return parsed
             parsed_json = json.loads(raw_text)
-            return response_schema(**parsed_json)
+            parsed = response_schema(**parsed_json)
+            if token_usage is not None:
+                object.__setattr__(parsed, "_token_usage", token_usage.to_dict())
+            return parsed
         except Exception as exc:
             raise InvalidDocumentError(
                 f"Failed to validate Gemini JSON response against schema {response_schema.__name__}: {exc}"
