@@ -34,6 +34,17 @@ from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.context_resolver import ContextResolver
 
 
+# Global reference for FactCheckResponse to avoid scoping issues in async mock
+_fact_check_response_cls = None
+
+def _get_fact_check_response_cls():
+    global _fact_check_response_cls
+    if _fact_check_response_cls is None:
+        from app.services.rag_chat_service import FactCheckResponse
+        _fact_check_response_cls = FactCheckResponse
+    return _fact_check_response_cls
+
+
 @dataclass
 class BenchmarkResult:
     """Results from a single benchmark run."""
@@ -702,12 +713,441 @@ class TestRAGRegressionBenchmarks:
         print(f"\nFirst Turn (no rewrite): {result.latency_ms:.2f}ms")
 
 
+class TestPhaseGBenchmarks:
+    """Phase G: Semantic entailment / faithfulness benchmarks."""
+
+    def _make_phase_g_service(self, jobs_data, jobs_dict, generator_responses, evaluator_responses):
+        """Create a service with custom mock provider for Phase G benchmarks."""
+        from unittest.mock import MagicMock, AsyncMock
+        from app.services.rag_chat_service import FactCheckResponse, LLMChatResponse
+
+        call_state = {"generator_calls": 0, "evaluator_calls": 0}
+
+        async def mock_generate_structured_output(prompt, response_schema, system_instruction):
+            FactCheckResponse = _get_fact_check_response_cls()
+            if response_schema is FactCheckResponse:
+                call_state["evaluator_calls"] += 1
+                idx = call_state["evaluator_calls"] - 1
+                if idx < len(evaluator_responses):
+                    return evaluator_responses[idx]
+                return FactCheckResponse(is_faithful=True, contradictions=[])
+            else:
+                call_state["generator_calls"] += 1
+                idx = call_state["generator_calls"] - 1
+                if idx < len(generator_responses):
+                    return generator_responses[idx]
+                return LLMChatResponse(
+                    answer="Default answer",
+                    cited_source_ids=[],
+                    evidence_quotes=[],
+                    suggested_followups=[],
+                )
+
+        provider = MagicMock()
+        provider.generate_structured_output = AsyncMock(side_effect=mock_generate_structured_output)
+
+        embed = MockEmbeddingService()
+        repo = MockVectorRepository(jobs_data, [])
+        resolver = MockContextResolver(jobs_dict, {})
+        session_factory = make_mock_session_factory(resolver)
+
+        service = RAGChatService(
+            embedding_service=embed,
+            vector_repository=repo,
+            llm_provider=provider,
+            session_factory=session_factory,
+            context_resolver=resolver,
+        )
+        return service, call_state
+
+    def test_numerical_contradiction_benchmark(self):
+        """Benchmark evaluator catching numerical hallucination."""
+        job_id = str(uuid4())
+        jobs_data = [make_job_point(job_id, 0.9, ["Python"])]
+        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+
+        generator_responses = [
+            LLMChatResponse(
+                answer="Candidate is Python expert with 10 years experience",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python"],
+                claims=["Candidate is Python expert", "Candidate has 10 years Python experience"],
+                suggested_followups=[],
+            ),
+            LLMChatResponse(
+                answer="Candidate knows Python",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python"],
+                claims=["Candidate knows Python"],
+                suggested_followups=[],
+            ),
+        ]
+
+        evaluator_responses = [
+            type('obj', (object,), {
+                'is_faithful': False,
+                'contradictions': ["Claim '10 years Python experience' has no supporting evidence", "Claim 'Python expert' has no supporting evidence"]
+            })(),
+            type('obj', (object,), {
+                'is_faithful': True,
+                'contradictions': []
+            })(),
+        ]
+
+        service, call_state = self._make_phase_g_service(jobs_data, jobs_dict, generator_responses, evaluator_responses)
+
+        latencies = []
+        for _ in range(5):
+            # Reset call state for each iteration
+            call_state["generator_calls"] = 0
+            call_state["evaluator_calls"] = 0
+            result = run_benchmark(service, "Python experience", make_user(UserRole.CANDIDATE))
+            latencies.append(result.latency_ms)
+
+        avg_latency = statistics.mean(latencies)
+        # Should succeed on retry
+        assert result.success
+        assert result.answer == "Candidate knows Python"
+
+        print(f"\nNumerical Contradiction: {avg_latency:.2f}ms avg (includes retry)")
+
+    def test_unsupported_skill_benchmark(self):
+        """Benchmark evaluator catching unsupported skill claim."""
+        job_id = str(uuid4())
+        jobs_data = [make_job_point(job_id, 0.9, ["Python", "FastAPI"])]
+        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Backend Dev", required_skills=["Python", "FastAPI"])}
+
+        generator_responses = [
+            LLMChatResponse(
+                answer="Candidate is Kubernetes expert",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "FastAPI"],
+                claims=["Candidate is expert in Kubernetes"],
+                suggested_followups=[],
+            ),
+            LLMChatResponse(
+                answer="Candidate knows Python and FastAPI",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "FastAPI"],
+                claims=["Candidate knows Python", "Candidate knows FastAPI"],
+                suggested_followups=[],
+            ),
+        ]
+
+        evaluator_responses = [
+            type('obj', (object,), {
+                'is_faithful': False,
+                'contradictions': ["Claim 'expert in Kubernetes' has no supporting evidence"]
+            })(),
+            type('obj', (object,), {
+                'is_faithful': True,
+                'contradictions': []
+            })(),
+        ]
+
+        service, call_state = self._make_phase_g_service(jobs_data, jobs_dict, generator_responses, evaluator_responses)
+
+        latencies = []
+        for _ in range(5):
+            call_state["generator_calls"] = 0
+            call_state["evaluator_calls"] = 0
+            result = run_benchmark(service, "Kubernetes skills", make_user(UserRole.CANDIDATE))
+            latencies.append(result.latency_ms)
+
+        avg_latency = statistics.mean(latencies)
+        assert result.success
+        assert "Kubernetes" not in result.answer
+
+        print(f"\nUnsupported Skill: {avg_latency:.2f}ms avg (includes retry)")
+
+    def test_entity_mismatch_benchmark(self):
+        """Benchmark evaluator catching entity mismatch."""
+        job_id = str(uuid4())
+        jobs_data = [make_job_point(job_id, 0.9, ["Python"])]
+        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+
+        generator_responses = [
+            LLMChatResponse(
+                answer="Candidate B knows Python",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python"],
+                claims=["Candidate B knows Python"],
+                suggested_followups=[],
+            ),
+            LLMChatResponse(
+                answer="Job requires Python",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python"],
+                claims=["Job requires Python"],
+                suggested_followups=[],
+            ),
+        ]
+
+        evaluator_responses = [
+            type('obj', (object,), {
+                'is_faithful': False,
+                'contradictions': ["Evidence about job requirements cannot support claim about specific candidate B"]
+            })(),
+            type('obj', (object,), {
+                'is_faithful': True,
+                'contradictions': []
+            })(),
+        ]
+
+        service, call_state = self._make_phase_g_service(jobs_data, jobs_dict, generator_responses, evaluator_responses)
+
+        latencies = []
+        for _ in range(5):
+            call_state["generator_calls"] = 0
+            call_state["evaluator_calls"] = 0
+            result = run_benchmark(service, "Candidate Python experience", make_user(UserRole.CANDIDATE))
+            latencies.append(result.latency_ms)
+
+        avg_latency = statistics.mean(latencies)
+        assert result.success
+        assert "Python" in result.answer
+
+        print(f"\nEntity Mismatch: {avg_latency:.2f}ms avg (includes retry)")
+
+    def test_negation_benchmark(self):
+        """Benchmark evaluator catching negation mismatch."""
+        job_id = str(uuid4())
+        jobs_data = [make_job_point(job_id, 0.9, ["Java"])]
+        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Java Dev", required_skills=["Java"])}
+
+        generator_responses = [
+            LLMChatResponse(
+                answer="Candidate is Java expert",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Java"],
+                claims=["Candidate is Java expert"],
+                suggested_followups=[],
+            ),
+            LLMChatResponse(
+                answer="Job requires Java",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Java"],
+                claims=["Job requires Java"],
+                suggested_followups=[],
+            ),
+        ]
+
+        evaluator_responses = [
+            type('obj', (object,), {
+                'is_faithful': False,
+                'contradictions': ["Claim 'Java expert' has no supporting evidence"]
+            })(),
+            type('obj', (object,), {
+                'is_faithful': True,
+                'contradictions': []
+            })(),
+        ]
+
+        service, call_state = self._make_phase_g_service(jobs_data, jobs_dict, generator_responses, evaluator_responses)
+
+        latencies = []
+        for _ in range(5):
+            call_state["generator_calls"] = 0
+            call_state["evaluator_calls"] = 0
+            result = run_benchmark(service, "Java knowledge", make_user(UserRole.CANDIDATE))
+            latencies.append(result.latency_ms)
+
+        avg_latency = statistics.mean(latencies)
+        assert result.success
+        assert "Java" in result.answer
+
+        print(f"\nNegation: {avg_latency:.2f}ms avg (includes retry)")
+
+    def test_faithful_paraphrase_benchmark(self):
+        """Benchmark evaluator accepting faithful paraphrase."""
+        job_id = str(uuid4())
+        jobs_data = [make_job_point(job_id, 0.9, ["Python", "FastAPI"])]
+        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python", "FastAPI"])}
+
+        generator_responses = [
+            LLMChatResponse(
+                answer="The position requires Python and FastAPI skills",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "FastAPI"],
+                claims=["Job requires Python", "Job requires FastAPI"],
+                suggested_followups=[],
+            ),
+        ]
+
+        evaluator_responses = [
+            type('obj', (object,), {
+                'is_faithful': True,
+                'contradictions': []
+            })(),
+        ]
+
+        service, call_state = self._make_phase_g_service(jobs_data, jobs_dict, generator_responses, evaluator_responses)
+
+        latencies = []
+        for _ in range(10):
+            call_state["generator_calls"] = 0
+            call_state["evaluator_calls"] = 0
+            result = run_benchmark(service, "Python experience", make_user(UserRole.CANDIDATE))
+            latencies.append(result.latency_ms)
+
+        avg_latency = statistics.mean(latencies)
+        assert result.success
+        assert result.confidence == 0.9
+
+        print(f"\nFaithful Paraphrase: {avg_latency:.2f}ms avg (no retry)")
+
+    def test_conflicting_evidence_benchmark(self):
+        """Benchmark evaluator with conflicting evidence."""
+        job_id = str(uuid4())
+        jobs_data = [make_job_point(job_id, 0.9, ["Python", "Java"])]
+        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Full Stack Dev", required_skills=["Python", "Java"])}
+
+        generator_responses = [
+            LLMChatResponse(
+                answer="Candidate is expert in Python and Java",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "Java"],
+                claims=["Candidate is Python expert", "Candidate is Java expert"],
+                suggested_followups=[],
+            ),
+            LLMChatResponse(
+                answer="Job requires Python and Java",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "Java"],
+                claims=["Job requires Python", "Job requires Java"],
+                suggested_followups=[],
+            ),
+        ]
+
+        evaluator_responses = [
+            type('obj', (object,), {
+                'is_faithful': False,
+                'contradictions': [
+                    "Claim 'Python expert' has no supporting evidence",
+                    "Claim 'Java expert' has no supporting evidence"
+                ]
+            })(),
+            type('obj', (object,), {
+                'is_faithful': True,
+                'contradictions': []
+            })(),
+        ]
+
+        service, call_state = self._make_phase_g_service(jobs_data, jobs_dict, generator_responses, evaluator_responses)
+
+        latencies = []
+        for _ in range(5):
+            call_state["generator_calls"] = 0
+            call_state["evaluator_calls"] = 0
+            result = run_benchmark(service, "Full stack experience", make_user(UserRole.CANDIDATE))
+            latencies.append(result.latency_ms)
+
+        avg_latency = statistics.mean(latencies)
+        assert result.success
+        assert "Python" in result.answer
+        assert "Java" in result.answer
+
+        print(f"\nConflicting Evidence: {avg_latency:.2f}ms avg (includes retry)")
+
+    def test_evaluator_latency_telemetry_benchmark(self):
+        """Benchmark evaluator latency telemetry."""
+        job_id = str(uuid4())
+        jobs_data = [make_job_point(job_id, 0.9, ["Python"])]
+        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+
+        generator_responses = [
+            LLMChatResponse(
+                answer="Candidate has Python experience",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python"],
+                claims=["Candidate knows Python"],
+                suggested_followups=[],
+            ),
+        ]
+
+        evaluator_responses = [
+            type('obj', (object,), {
+                'is_faithful': True,
+                'contradictions': []
+            })(),
+        ]
+
+        service, call_state = self._make_phase_g_service(jobs_data, jobs_dict, generator_responses, evaluator_responses)
+
+        latencies = []
+        for _ in range(10):
+            call_state["generator_calls"] = 0
+            call_state["evaluator_calls"] = 0
+            result = run_benchmark(service, "Python", make_user(UserRole.CANDIDATE))
+            latencies.append(result.latency_ms)
+
+        avg_latency = statistics.mean(latencies)
+        assert result.success
+
+        print(f"\nEvaluator Latency Telemetry: {avg_latency:.2f}ms avg")
+
+    def test_evaluator_never_receives_unauthorized_benchmark(self):
+        """Benchmark that evaluator only receives authorized evidence."""
+        job_id = str(uuid4())
+        jobs_data = [make_job_point(job_id, 0.9, ["Python"])]
+        jobs_dict = {uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+
+        captured_evaluator_prompts = []
+
+        async def mock_generate_structured_output(prompt, response_schema, system_instruction):
+            FactCheckResponse = _get_fact_check_response_cls()
+            if response_schema is FactCheckResponse:
+                captured_evaluator_prompts.append(prompt)
+                return type('obj', (object,), {
+                    'is_faithful': True,
+                    'contradictions': []
+                })()
+            return LLMChatResponse(
+                answer="Test",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python"],
+                claims=["Test claim"],
+                suggested_followups=[],
+            )
+
+        from unittest.mock import MagicMock, AsyncMock
+        provider = MagicMock()
+        provider.generate_structured_output = AsyncMock(side_effect=mock_generate_structured_output)
+
+        embed = MockEmbeddingService()
+        repo = MockVectorRepository(jobs_data, [])
+        resolver = MockContextResolver(jobs_dict, {})
+        session_factory = make_mock_session_factory(resolver)
+
+        service = RAGChatService(
+            embedding_service=embed,
+            vector_repository=repo,
+            llm_provider=provider,
+            session_factory=session_factory,
+            context_resolver=resolver,
+        )
+
+        asyncio.run(service.chat("Python", make_user(UserRole.CANDIDATE)))
+
+        assert len(captured_evaluator_prompts) == 1
+        prompt = captured_evaluator_prompts[0]
+        assert "PREMISE (Authorized Evidence Quotes)" in prompt
+        assert "HYPOTHESIS (Generated Claims)" in prompt
+        # Should not contain any SQL data, CV text, JD text, conversation history, or secrets
+        assert "authorized_sql_count" not in prompt
+        assert "qdrant" not in prompt.lower()
+        assert "conversation history" not in prompt.lower()
+
+        print(f"\nEvaluator Unauthorized Context Check: PASSED")
+
+
 def run_all_benchmarks() -> dict[str, BenchmarkSummary]:
     """Run all benchmark suites and return summaries."""
     suites = {
         "retrieval": TestRAGBenchmark(),
         "quality": TestRAGQualityBenchmarks(),
         "regression": TestRAGRegressionBenchmarks(),
+        "phase_g": TestPhaseGBenchmarks(),
     }
 
     results = {}

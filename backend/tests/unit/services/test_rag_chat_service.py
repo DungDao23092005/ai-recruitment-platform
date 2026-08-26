@@ -12,7 +12,7 @@ from app.models import User
 from app.schemas.ai_chat import ChatMessage, ChatResponse, ChatSource
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_resume import ParsedResumeSchema
-from app.services.rag_chat_service import RAGChatService
+from app.services.rag_chat_service import RAGChatService, FactCheckResponse
 from app.services.context_resolver import ContextResolver
 
 
@@ -52,11 +52,29 @@ def make_vector_repo(jobs=None, resumes=None):
     return repo
 
 
+# Global reference for FactCheckResponse to avoid scoping issues in async mock
+_fact_check_response_cls = None
+
+def _get_fact_check_response_cls():
+    global _fact_check_response_cls
+    if _fact_check_response_cls is None:
+        from app.services.rag_chat_service import FactCheckResponse
+        _fact_check_response_cls = FactCheckResponse
+    return _fact_check_response_cls
+
 def make_llm(response=None):
     provider = MagicMock()
-    provider.generate_structured_output = AsyncMock(
-        return_value=response or make_llm_response()
-    )
+
+    async def mock_generate_structured_output(prompt, response_schema, system_instruction):
+        # Check which schema is requested
+        FactCheckResponse = _get_fact_check_response_cls()
+        if response_schema is FactCheckResponse:
+            # Return a faithful FactCheckResponse for evaluator
+            return FactCheckResponse(is_faithful=True, contradictions=[])
+        # Default: return the provided response or default LLMChatResponse
+        return response or make_llm_response()
+
+    provider.generate_structured_output = AsyncMock(side_effect=mock_generate_structured_output)
     return provider
 
 
@@ -179,14 +197,16 @@ def make_llm_response(
     answer: str = "Dựa trên các tin tuyển dụng phù hợp, bạn nên tập trung phát triển kỹ năng Python và FastAPI.",
     cited_source_ids: list | None = None,
     evidence_quotes: list | None = None,
+    claims: list | None = None,
     suggested_followups: list | None = None,
 ):
-    """Create a mock LLMChatResponse (Phase C/E internal schema)."""
+    """Create a mock LLMChatResponse (Phase C/E/G internal schema)."""
     from app.services.rag_chat_service import LLMChatResponse
     return LLMChatResponse(
         answer=answer,
         cited_source_ids=cited_source_ids or [],
         evidence_quotes=evidence_quotes or [],
+        claims=claims or [],
         suggested_followups=suggested_followups or ["Lộ trình phát triển kỹ năng AI Engineer?"],
     )
 
@@ -1418,3 +1438,414 @@ class TestPhaseERegression:
 
         # LLM should never be called due to short-circuit
         assert llm.generate_structured_output.await_count == 0
+
+
+class TestPhaseGFaithfulness:
+    """Phase G: Semantic entailment / faithfulness verification tests."""
+
+    def test_evaluator_catches_numerical_hallucination(self):
+        """Evidence: '2 years Python', Claim: '7 years Python' -> should fail."""
+        embed = make_embedding_service()
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.87)
+        repo = make_vector_repo(jobs=[job_point])
+
+        from app.services.rag_chat_service import LLMChatResponse, FactCheckResponse
+
+        # Mock evaluator to detect the numerical contradiction
+        async def mock_evaluator(prompt, response_schema, system_instruction):
+            FactCheckResponse = _get_fact_check_response_cls()
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(
+                    is_faithful=False,
+                    contradictions=["Claim '7 years Python experience' contradicts evidence '2 years Python experience'"]
+                )
+            return make_llm_response(
+                answer="Candidate has 7 years Python experience",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["2 years Python experience"],
+                suggested_followups=[],
+            )
+
+        provider = MagicMock()
+        provider.generate_structured_output = AsyncMock(side_effect=mock_evaluator)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+        )
+        service = make_service(make_embedding_service(), make_vector_repo(jobs=[make_job_point(point_id=job_id, score=0.87)]), provider, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("Python experience", make_user(UserRole.CANDIDATE)))
+
+        # Should refuse due to faithfulness check failure
+        assert result.answer == "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert result.confidence == 0.0
+        assert result.sources == []
+
+    def test_evaluator_catches_unsupported_claim(self):
+        """Evidence: 'Python and FastAPI', Claim: 'Expert in Kubernetes' -> should fail."""
+        embed = make_embedding_service()
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.87)
+        repo = make_vector_repo(jobs=[job_point])
+
+        async def mock_evaluator(prompt, response_schema, system_instruction):
+            FactCheckResponse = _get_fact_check_response_cls()
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(
+                    is_faithful=False,
+                    contradictions=["Claim 'Expert in Kubernetes' has no supporting evidence"]
+                )
+            return make_llm_response(
+                answer="Expert in Kubernetes",
+                cited_source_ids=[uuid.uuid4()],  # Different from job_id
+                evidence_quotes=["Python", "FastAPI"],
+                suggested_followups=[],
+            )
+
+        provider = MagicMock()
+        provider.generate_structured_output = AsyncMock(side_effect=mock_evaluator)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Backend Dev", required_skills=["Python", "FastAPI"])}
+        )
+        service = make_service(make_embedding_service(), make_vector_repo(jobs=[make_job_point(point_id=job_id, score=0.87)]), provider, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("Kubernetes expertise", make_user(UserRole.CANDIDATE)))
+
+        # Should refuse due to unsupported claim
+        assert result.answer == "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert result.confidence == 0.0
+        assert result.sources == []
+
+    def test_evaluator_accepts_faithful_claim(self):
+        """Evidence: 'Python', Claim: 'Candidate knows Python' -> should pass."""
+        embed = make_embedding_service()
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.87)
+        repo = make_vector_repo(jobs=[job_point])
+
+        async def mock_evaluator(prompt, response_schema, system_instruction):
+            FactCheckResponse = _get_fact_check_response_cls()
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(is_faithful=True, contradictions=[])
+            return make_llm_response(
+                answer="Candidate knows Python",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python"],
+                claims=["Candidate knows Python"],
+                suggested_followups=[],
+            )
+
+        provider = MagicMock()
+        provider.generate_structured_output = AsyncMock(side_effect=mock_evaluator)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+        )
+        service = make_service(make_embedding_service(), make_vector_repo(jobs=[make_job_point(point_id=job_id, score=0.87)]), provider, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("Python experience", make_user(UserRole.CANDIDATE)))
+
+        # Should accept faithful answer
+        assert result.answer == "Candidate knows Python"
+        assert result.confidence == 0.87
+        assert len(result.sources) == 1
+
+    def test_evaluator_catches_entity_mismatch(self):
+        """Evidence about Nguyen A, Claim about Nguyen B -> should fail."""
+        embed = make_embedding_service()
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.87)
+        repo = make_vector_repo(jobs=[job_point])
+
+        async def mock_evaluator(prompt, response_schema, system_instruction):
+            FactCheckResponse = _get_fact_check_response_cls()
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(
+                    is_faithful=False,
+                    contradictions=["Evidence about 'Nguyen Van A' cannot support claim about 'Nguyen Van B'"]
+                )
+            return make_llm_response(
+                answer="Nguyen Van B has 5 years Python experience",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Nguyen Van A has 3 years Python experience"],
+                suggested_followups=[],
+            )
+
+        provider = MagicMock()
+        provider.generate_structured_output = AsyncMock(side_effect=mock_evaluator)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+        )
+        service = make_service(make_embedding_service(), make_vector_repo(jobs=[make_job_point(point_id=job_id, score=0.87)]), provider, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("Nguyen Van B Python experience", make_user(UserRole.CANDIDATE)))
+
+        # Should refuse due to entity mismatch
+        assert result.answer == "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert result.confidence == 0.0
+        assert result.sources == []
+
+    def test_evaluator_catches_negation(self):
+        """Evidence: 'does not know Java', Claim: 'knows Java' -> should fail."""
+        embed = make_embedding_service()
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.87)
+        repo = make_vector_repo(jobs=[job_point])
+
+        async def mock_evaluator(prompt, response_schema, system_instruction):
+            FactCheckResponse = _get_fact_check_response_cls()
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(
+                    is_faithful=False,
+                    contradictions=["Claim 'knows Java' contradicts evidence 'does not know Java'"]
+                )
+            return make_llm_response(
+                answer="Candidate knows Java",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Candidate does not know Java"],
+                suggested_followups=[],
+            )
+
+        provider = MagicMock()
+        provider.generate_structured_output = AsyncMock(side_effect=mock_evaluator)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Java Dev", required_skills=["Java"])}
+        )
+        service = make_service(make_embedding_service(), make_vector_repo(jobs=[make_job_point(point_id=job_id, score=0.87)]), provider, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("Java knowledge", make_user(UserRole.CANDIDATE)))
+
+        # Should refuse due to negation mismatch
+        assert result.answer == "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert result.confidence == 0.0
+        assert result.sources == []
+
+
+class TestPhaseGRetry:
+    """Phase G: Retry behavior with evaluator feedback."""
+
+    def test_phase_g_triggers_phase_f_retry(self):
+        """First evaluator fails, second succeeds -> exactly one retry."""
+        embed = make_embedding_service()
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.87)
+        repo = make_vector_repo(jobs=[job_point])
+
+        call_count = 0
+
+        async def mock_evaluator(prompt, response_schema, system_instruction):
+            nonlocal call_count
+            FactCheckResponse = _get_fact_check_response_cls()
+            if response_schema is FactCheckResponse:
+                call_count += 1
+                if call_count == 1:
+                    # First attempt: fail
+                    return FactCheckResponse(
+                        is_faithful=False,
+                        contradictions=["Claim 'expert in Kubernetes' has no supporting evidence"]
+                    )
+                else:
+                    # Second attempt: succeed
+                    return FactCheckResponse(is_faithful=True, contradictions=[])
+
+            # Generator responses
+            if call_count == 0:
+                return make_llm_response(
+                    answer="Candidate is expert in Kubernetes",
+                    cited_source_ids=[uuid.UUID(job_id)],
+                    evidence_quotes=["Python"],
+                    claims=["Candidate is expert in Kubernetes"],
+                    suggested_followups=[],
+                )
+            else:
+                return make_llm_response(
+                    answer="Candidate knows Python",
+                    cited_source_ids=[uuid.UUID(job_id)],
+                    evidence_quotes=["Python"],
+                    claims=["Candidate knows Python"],
+                    suggested_followups=[],
+                )
+
+        provider = MagicMock()
+        provider.generate_structured_output = AsyncMock(side_effect=mock_evaluator)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+        )
+        service = make_service(make_embedding_service(), make_vector_repo(jobs=[make_job_point(point_id=job_id, score=0.87)]), provider, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("Python experience", make_user(UserRole.CANDIDATE)))
+
+        # Should succeed on second attempt
+        assert result.answer == "Candidate knows Python"
+        assert result.confidence == 0.87
+        assert call_count == 2  # Exactly one retry
+
+    def test_phase_g_final_refusal(self):
+        """Both evaluator attempts fail -> deterministic refusal."""
+        embed = make_embedding_service()
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.87)
+        repo = make_vector_repo(jobs=[job_point])
+
+        async def mock_evaluator(prompt, response_schema, system_instruction):
+            FactCheckResponse = _get_fact_check_response_cls()
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(
+                    is_faithful=False,
+                    contradictions=["Evidence does not support the claim"]
+                )
+            return make_llm_response(
+                answer="Wrong answer",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["wrong evidence"],
+                suggested_followups=[],
+            )
+
+        provider = MagicMock()
+        provider.generate_structured_output = AsyncMock(side_effect=mock_evaluator)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+        )
+        service = make_service(make_embedding_service(), make_vector_repo(jobs=[make_job_point(point_id=job_id, score=0.87)]), provider, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("Python experience", make_user(UserRole.CANDIDATE)))
+
+        # Should refuse after two failed attempts
+        assert result.answer == "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert result.confidence == 0.0
+        assert result.sources == []
+
+
+class TestPhaseGTelemetry:
+    """Phase G: Telemetry verification."""
+
+    def test_evaluator_latency_telemetry(self):
+        """Verify evaluator_latency_ms is populated."""
+        embed = make_embedding_service()
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.87)
+        repo = make_vector_repo(jobs=[job_point])
+
+        async def mock_evaluator(prompt, response_schema, system_instruction):
+            FactCheckResponse = _get_fact_check_response_cls()
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(is_faithful=True, contradictions=[])
+            return make_llm_response(
+                answer="Test answer",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python"],
+                suggested_followups=[],
+            )
+
+        provider = MagicMock()
+        provider.generate_structured_output = AsyncMock(side_effect=mock_evaluator)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+        )
+        service = make_service(make_embedding_service(), make_vector_repo(jobs=[make_job_point(point_id=job_id, score=0.87)]), provider, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("Python", make_user(UserRole.CANDIDATE)))
+
+        # We can't directly access telemetry from outside, but we can verify
+        # the service completes successfully with evaluator called
+        assert result.answer == "Test answer"
+        assert result.confidence == 0.87
+
+    def test_evaluator_never_receives_unauthorized_context(self):
+        """Verify evaluator only receives valid evidence quotes."""
+        embed = make_embedding_service()
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.87)
+        repo = make_vector_repo(jobs=[job_point])
+
+        captured_prompts = []
+
+        async def mock_evaluator(prompt, response_schema, system_instruction):
+            FactCheckResponse = _get_fact_check_response_cls()
+            if response_schema is FactCheckResponse:
+                captured_prompts.append(prompt)
+                return FactCheckResponse(is_faithful=True, contradictions=[])
+            return make_llm_response(
+                answer="Test answer",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python"],
+                claims=["Test answer is about Python"],
+                suggested_followups=[],
+            )
+
+        provider = MagicMock()
+        provider.generate_structured_output = AsyncMock(side_effect=mock_evaluator)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+        )
+        service = make_service(make_embedding_service(), make_vector_repo(jobs=[make_job_point(point_id=job_id, score=0.87)]), provider, context_resolver=mock_resolver)
+
+        asyncio.run(service.chat("Python", make_user(UserRole.CANDIDATE)))
+
+        # Verify evaluator prompt only contains authorized evidence
+        assert len(captured_prompts) == 1
+        evaluator_prompt = captured_prompts[0]
+        assert "PREMISE (Authorized Evidence Quotes)" in evaluator_prompt
+        assert "HYPOTHESIS (Generated Claims)" in evaluator_prompt
+        # Should not contain any unauthorized context
+        assert "unauthorized" not in evaluator_prompt.lower()
+
+
+class TestPhaseGRegression:
+    """Phase G: Regression tests for Phase A-F behavior."""
+
+    def test_phase_a_to_f_regression(self):
+        """Verify Phase A-F behavior still works with Phase G enabled."""
+        embed = make_embedding_service()
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.87)
+        repo = make_vector_repo(jobs=[job_point])
+
+        async def mock_evaluator(prompt, response_schema, system_instruction):
+            FactCheckResponse = _get_fact_check_response_cls()
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(is_faithful=True, contradictions=[])
+            return make_llm_response(
+                answer="Python developer role",
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "FastAPI"],
+                suggested_followups=[],
+            )
+
+        provider = MagicMock()
+        provider.generate_structured_output = AsyncMock(side_effect=mock_evaluator)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python", "FastAPI"])}
+        )
+        service = make_service(embed, repo, provider, context_resolver=mock_resolver)
+
+        # Test basic functionality
+        result = asyncio.run(service.chat("Python job", make_user(UserRole.CANDIDATE)))
+        assert result.answer == "Python developer role"
+        assert result.confidence == 0.87
+        assert len(result.sources) == 1
+
+        # Test short-circuit still works
+        service2 = make_service(make_embedding_service(), make_vector_repo(jobs=[]), provider)
+        result2 = asyncio.run(service2.chat("test", make_user(UserRole.CANDIDATE)))
+        assert result2.answer == "Không đủ dữ liệu để trả lời."
+        assert result2.confidence == 0.0
+
+        # Test score threshold filtering
+        service3 = make_service(embed, make_vector_repo(jobs=[make_job_point(score=0.3)]), provider)
+        result3 = asyncio.run(service3.chat("low score", make_user(UserRole.CANDIDATE)))
+        assert result3.answer == "Không đủ dữ liệu để trả lời."
+        assert result3.confidence == 0.0
+
+        # Test deterministic confidence
+        result4 = asyncio.run(service.chat("Python", make_user(UserRole.CANDIDATE)))
+        assert result4.confidence == 0.87
