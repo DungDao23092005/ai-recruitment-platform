@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from typing import Any, Optional
 
 from app.ai.interfaces.base_provider import BaseReranker, RerankCandidate, RerankResult
+from app.core.config import settings
 from app.core.exceptions import AIError, InvalidDocumentError
 
 
@@ -12,14 +14,14 @@ _cross_encoder_model: Any = None
 _cross_encoder_model_lock = threading.Lock()
 
 
-def _get_shared_cross_encoder_model(model_name: str) -> Any:
+def _get_shared_cross_encoder_model(model_name: str | None = None) -> Any:
     """Get the shared CrossEncoder model instance (lazy, thread-safe singleton).
 
     This function ensures the CrossEncoder model is initialized exactly once
     per process, even under concurrent access.
 
     Args:
-        model_name: The model name to load.
+        model_name: The model name to load. Defaults to settings.CROSS_ENCODER_MODEL_NAME.
 
     Returns:
         The shared CrossEncoder model instance.
@@ -29,6 +31,9 @@ def _get_shared_cross_encoder_model(model_name: str) -> Any:
         AIError: If model loading fails.
     """
     global _cross_encoder_model
+
+    # Use default model name from settings if not provided
+    model_name = model_name or settings.CROSS_ENCODER_MODEL_NAME
 
     # Fast path: already initialized
     if _cross_encoder_model is not None:
@@ -82,7 +87,7 @@ class CrossEncoderReranker(BaseReranker):
         model_name: str | None = None,
         max_batch_size: int = 32,
     ) -> None:
-        self.model_name = model_name or "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        self.model_name = model_name
         self.max_batch_size = max_batch_size
 
     def _get_model(self) -> Any:
@@ -118,15 +123,19 @@ class CrossEncoderReranker(BaseReranker):
             candidate_text = self._build_reranking_text(candidate)
             pairs.append([query, candidate_text])
 
-        # Process in batches to avoid OOM
-        all_scores = []
-        for i in range(0, len(pairs), self.max_batch_size):
-            batch = pairs[i : i + self.max_batch_size]
-            try:
-                batch_scores = model.predict(batch, show_progress_bar=False)
-                all_scores.extend(batch_scores)
-            except Exception as exc:
-                raise AIError(f"CrossEncoder prediction failed: {exc}") from exc
+        # Offload blocking PyTorch inference to thread pool to avoid blocking event loop
+        def _predict_batches():
+            all_scores = []
+            for i in range(0, len(pairs), self.max_batch_size):
+                batch = pairs[i : i + self.max_batch_size]
+                try:
+                    batch_scores = model.predict(batch, show_progress_bar=False)
+                    all_scores.extend(batch_scores)
+                except Exception as exc:
+                    raise AIError(f"CrossEncoder prediction failed: {exc}") from exc
+            return all_scores
+
+        all_scores = await asyncio.to_thread(_predict_batches)
 
         # Create results
         results = []

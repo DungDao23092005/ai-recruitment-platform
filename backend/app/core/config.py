@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     QDRANT_PORT: int = 6333
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
     VECTOR_DIMENSION: int = 384
+    CROSS_ENCODER_MODEL_NAME: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    FINAL_SCORE_THRESHOLD: float = 0.3
 
     EMAIL_PROVIDER: str = "mailpit"
     EMAIL_FROM: str = "AI Recruitment Platform <noreply@example.com>"

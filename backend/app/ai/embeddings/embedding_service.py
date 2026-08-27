@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from app.ai.interfaces.base_provider import BaseEmbeddingProvider
 from app.core.exceptions import EmptyDocumentError, InvalidDocumentError
 from app.core.config import settings
@@ -31,12 +32,38 @@ class SentenceTransformerEmbeddingProvider(BaseEmbeddingProvider):
             self.model = SentenceTransformer(self.model_name)
         return self.model
 
-    def embed_text(self, text: str) -> list[float]:
+    async def embed_text(self, text: str) -> list[float]:
+        """Generate embedding for a single text, offloaded to thread pool."""
+        model = self._get_model()
+
+        def _encode():
+            vector = model.encode(text)
+            return [float(value) for value in vector]
+
+        return await asyncio.to_thread(_encode)
+
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings for multiple texts, offloaded to thread pool."""
+        model = self._get_model()
+
+        def _encode_batch():
+            vectors = model.encode(texts)
+            return [
+                [float(value) for value in vector]
+                for vector in vectors
+            ]
+
+        return await asyncio.to_thread(_encode_batch)
+
+    # Sync versions for backward compatibility
+    def embed_text_sync(self, text: str) -> list[float]:
+        """Synchronous version for backward compatibility."""
         model = self._get_model()
         vector = model.encode(text)
         return [float(value) for value in vector]
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+    def embed_documents_sync(self, texts: list[str]) -> list[list[float]]:
+        """Synchronous version for backward compatibility."""
         model = self._get_model()
         vectors = model.encode(texts)
         return [
@@ -51,13 +78,13 @@ class EmbeddingService:
     def __init__(self, provider: BaseEmbeddingProvider) -> None:
         self.provider = provider
 
-    def embed_text(self, text: str) -> list[float]:
+    async def embed_text(self, text: str) -> list[float]:
         if not text or not text.strip():
             raise EmptyDocumentError(
                 "Text for embedding generation cannot be empty"
             )
         try:
-            return self.provider.embed_text(text)
+            return await self.provider.embed_text(text)
         except EmptyDocumentError:
             raise
         except Exception as exc:
@@ -65,11 +92,11 @@ class EmbeddingService:
                 "Failed to generate embedding vector"
             ) from exc
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
         try:
-            return self.provider.embed_documents(texts)
+            return await self.provider.embed_documents(texts)
         except EmptyDocumentError:
             raise
         except Exception as exc:
@@ -101,9 +128,9 @@ class EmbeddingService:
 
         return " | ".join(parts) if parts else "Candidate Profile"
 
-    def embed_resume(self, parsed_resume: ParsedResumeSchema) -> list[float]:
+    async def embed_resume(self, parsed_resume: ParsedResumeSchema) -> list[float]:
         text = self._format_resume_text(parsed_resume)
-        return self.embed_text(text)
+        return await self.embed_text(text)
 
     @staticmethod
     def _format_job_text(job: ParsedJobSchema) -> str:
@@ -125,6 +152,6 @@ class EmbeddingService:
 
         return " | ".join(parts) if parts else "Job Description"
 
-    def embed_job(self, parsed_job: ParsedJobSchema) -> list[float]:
+    async def embed_job(self, parsed_job: ParsedJobSchema) -> list[float]:
         text = self._format_job_text(parsed_job)
-        return self.embed_text(text)
+        return await self.embed_text(text)

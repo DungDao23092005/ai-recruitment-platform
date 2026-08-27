@@ -25,12 +25,12 @@ class BaseEmbeddingProvider(ABC):
     """Abstract interface for Vector Embedding generation."""
 
     @abstractmethod
-    def embed_text(self, text: str) -> list[float]:
+    async def embed_text(self, text: str) -> list[float]:
         """Generate vector embedding for a single text string."""
         pass
 
     @abstractmethod
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Generate vector embeddings for a list of text strings."""
         pass
 

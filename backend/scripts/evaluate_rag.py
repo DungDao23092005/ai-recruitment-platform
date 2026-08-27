@@ -89,6 +89,10 @@ CANDIDATE_TENANT_MAP = {
 ALL_MOCK_JOB_IDS = set(JOB_TENANT_MAP.keys())
 ALL_MOCK_CANDIDATE_IDS = set(CANDIDATE_TENANT_MAP.keys())
 
+# Final score threshold for CrossEncoder reranked results
+# Applied AFTER authorization and reranking, BEFORE final LLM context construction
+FINAL_SCORE_THRESHOLD = 0.3
+
 
 def _get_actor_tenant(actor_user: User | UserRole) -> str:
     """Get tenant for actor user."""
@@ -555,8 +559,8 @@ class MockVectorRepository(BaseVectorRepository):
         # Compute similarity for each document
         scored_results = []
         for doc_id, doc in documents.items():
-            # Embed document content
-            doc_vector = self.embedding_provider.embed_text(doc["content_text"])
+            # Embed document content (async)
+            doc_vector = await self.embedding_provider.embed_text(doc["content_text"])
             similarity = self._cosine_similarity(query_vector, doc_vector)
             if similarity >= threshold:
                 scored_results.append({
@@ -696,12 +700,12 @@ class MockEmbeddingProvider(BaseEmbeddingProvider):
 
         return vector
 
-    def embed_text(self, text: str) -> list[float]:
+    async def embed_text(self, text: str) -> list[float]:
         if not text or not text.strip():
             raise ValueError("Text for embedding generation cannot be empty")
         return self._text_to_tfidf(text)
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
         return [self._text_to_tfidf(t) for t in texts]
@@ -1013,7 +1017,7 @@ async def run_phase_h_comparison(case: EvaluationCase, actor_user: User | UserRo
 
     # STEP 1: Broad retrieval from Qdrant (always available)
     # Generate query embedding from case query
-    query_vector = mock_embedding_provider.embed_text(case.query)
+    query_vector = await mock_embedding_provider.embed_text(case.query)
 
     # Retrieve jobs
     retrieved_jobs_raw = await vector_repo.search_similar(
