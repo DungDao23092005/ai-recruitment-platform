@@ -4,7 +4,9 @@ import {
   ChevronRight,
   Search,
   ShieldCheck,
+  Unlock,
   Users,
+  Trash2,
 } from 'lucide-react'
 import { getAdminUsers } from '@/api/admin'
 import { PageHeader } from '@/components/common/PageHeader'
@@ -17,6 +19,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorBanner } from '@/components/ui/error-banner'
 import { UserDeactivateModal } from '@/features/admin/components/UserDeactivateModal'
+import { UserActivateModal } from '@/features/admin/components/UserActivateModal'
+import { UserDeleteModal } from '@/features/admin/components/UserDeleteModal'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { USER_ROLE_LABELS } from '@/types/auth'
 import type { UserRole } from '@/types/auth'
@@ -30,6 +34,13 @@ type ListState =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
   | { kind: 'success'; data: AdminUserList }
+
+type ActionType = 'lock' | 'unlock' | 'delete'
+
+type ActionState = {
+  type: ActionType
+  user: AdminUser
+} | null
 
 const ROLE_BADGE_VARIANT: Record<
   UserRole,
@@ -58,7 +69,7 @@ export function AdminUsersPage() {
   const [search, setSearch] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [role, setRole] = useState<RoleFilter>('')
-  const [selected, setSelected] = useState<AdminUser | null>(null)
+  const [actionState, setActionState] = useState<ActionState>(null)
 
   const load = useCallback(async () => {
     setListState({ kind: 'loading' })
@@ -90,9 +101,21 @@ export function AdminUsersPage() {
     setPage(1)
   }
 
-  const handleDeactivated = () => {
-    setSelected(null)
+  const handleActionComplete = () => {
+    setActionState(null)
     void load()
+  }
+
+  const handleOpenLockModal = (user: AdminUser) => {
+    setActionState({ type: 'lock', user })
+  }
+
+  const handleOpenUnlockModal = (user: AdminUser) => {
+    setActionState({ type: 'unlock', user })
+  }
+
+  const handleOpenDeleteModal = (user: AdminUser) => {
+    setActionState({ type: 'delete', user })
   }
 
   const totalPages = Math.max(
@@ -214,27 +237,51 @@ export function AdminUsersPage() {
                           </Badge>
                         </td>
                         <td className="px-4 py-3">
-                          {user.is_deleted ? (
-                            <Badge variant="destructive">Đã khóa</Badge>
-                          ) : (
+                          {user.is_active ? (
                             <Badge variant="success">Đang hoạt động</Badge>
+                          ) : (
+                            <Badge variant="destructive">Đã khóa</Badge>
                           )}
                         </td>
                         <td className="px-4 py-3 text-muted-foreground">
                           {formatCreatedAt(user.created_at) || 'Không rõ'}
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            disabled={user.is_deleted}
-                            onClick={() => setSelected(user)}
-                            aria-label={`Khóa tài khoản ${user.email}`}
-                          >
-                            <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
-                            Khóa tài khoản
-                          </Button>
+                          <div className="flex items-center justify-end gap-2">
+                            {user.is_active ? (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleOpenLockModal(user)}
+                                aria-label={`Khóa tài khoản ${user.email}`}
+                              >
+                                <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
+                                Khóa tài khoản
+                              </Button>
+                            ) : (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleOpenUnlockModal(user)}
+                                aria-label={`Mở khóa tài khoản ${user.email}`}
+                              >
+                                <Unlock className="h-3.5 w-3.5" aria-hidden="true" />
+                                Mở khóa
+                              </Button>
+                            )}
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleOpenDeleteModal(user)}
+                              aria-label={`Xóa tài khoản ${user.email}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                              Xóa tài khoản
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -274,12 +321,26 @@ export function AdminUsersPage() {
         </>
       ) : null}
 
-      {selected ? (
-        <UserDeactivateModal
-          user={selected}
-          onClose={() => setSelected(null)}
-          onSuccess={handleDeactivated}
-        />
+      {actionState ? (
+        actionState.type === 'lock' ? (
+          <UserDeactivateModal
+            user={actionState.user}
+            onClose={() => setActionState(null)}
+            onSuccess={handleActionComplete}
+          />
+        ) : actionState.type === 'unlock' ? (
+          <UserActivateModal
+            user={actionState.user}
+            onClose={() => setActionState(null)}
+            onSuccess={handleActionComplete}
+          />
+        ) : (
+          <UserDeleteModal
+            user={actionState.user}
+            onClose={() => setActionState(null)}
+            onSuccess={handleActionComplete}
+          />
+        )
       ) : null}
     </div>
   )

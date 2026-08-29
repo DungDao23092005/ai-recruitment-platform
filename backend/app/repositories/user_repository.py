@@ -19,6 +19,15 @@ class UserRepository(BaseRepository[User]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_email_including_inactive(self, email: str) -> User | None:
+        """Get user by email including inactive (locked) users, but excluding soft-deleted."""
+        stmt = select(User).where(
+            User.email == email,
+            User.is_deleted == False,  # noqa: E712
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_with_profile(self, user_id: Any) -> User | None:
         stmt = (
             select(User)
@@ -49,18 +58,21 @@ class UserRepository(BaseRepository[User]):
     ) -> tuple[list[User], int]:
         """List users for the admin console.
 
-        Unlike the default repository queries, soft-deleted users are
-        included so deactivated accounts remain visible to administrators.
+        Soft-deleted users are excluded (they are permanently deleted accounts).
+        Locked accounts (is_active=False) remain visible to administrators.
         Supports an optional case-insensitive email search and a role filter.
         """
-        filters = []
+        filters = [
+            User.is_deleted == False,  # noqa: E712
+        ]
         if search:
             filters.append(User.email.ilike(f"%{search.strip()}%"))
         if role is not None:
             filters.append(User.role == role)
 
         count_stmt = select(func.count()).select_from(User)
-        list_stmt = select(User).order_by(User.created_at.desc())
+        # Use created_at desc, then id desc for stable pagination
+        list_stmt = select(User).order_by(User.created_at.desc(), User.id.desc())
 
         if filters:
             count_stmt = count_stmt.where(*filters)

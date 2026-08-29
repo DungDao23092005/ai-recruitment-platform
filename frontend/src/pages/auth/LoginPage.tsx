@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { LogIn } from 'lucide-react'
+import { LogIn, AlertCircle } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -124,9 +124,12 @@ export function LoginPage() {
           />
 
           {apiError ? (
-            <p role="alert" className="text-sm font-medium text-destructive">
-              {apiError}
-            </p>
+            <div role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="h-4 w-4" aria-hidden="true" />
+                <span>{apiError}</span>
+              </div>
+            </div>
           ) : null}
 
           <Button type="submit" className="w-full" isLoading={submitting}>

@@ -56,15 +56,22 @@ def decode_access_token(token: str) -> dict | None:
 
 def is_token_valid_after_password_reset(payload: dict, last_password_reset: datetime | None) -> bool:
     """Check if a JWT token is still valid after a password reset.
-    
+
     A token is invalid if it was issued before the last password reset.
     """
     if last_password_reset is None:
         return True
-    
+
     iat = payload.get("iat")
     if iat is None:
         return False
-    
+
     token_issued_at = datetime.fromtimestamp(iat, tz=timezone.utc)
+
+    # SQL Server DATETIME/DATETIME2 does not preserve timezone metadata,
+    # so last_password_reset loaded from DB is offset-naive but represents UTC.
+    # Make it timezone-aware (UTC) for safe comparison with aware token_issued_at.
+    if last_password_reset.tzinfo is None:
+        last_password_reset = last_password_reset.replace(tzinfo=timezone.utc)
+
     return token_issued_at >= last_password_reset

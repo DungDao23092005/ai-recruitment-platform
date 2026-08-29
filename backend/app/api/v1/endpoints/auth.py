@@ -5,7 +5,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_active_user, get_db
-from app.core.exceptions import ConflictException, ForbiddenException
+from app.core.exceptions import ConflictException, ForbiddenException, LockedAccountException
 from app.core.security import create_access_token
 from app.models import User
 from app.schemas.password_reset import (
@@ -52,10 +52,16 @@ async def login_form(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ) -> Token:
-    user = await AuthService(db).authenticate_user(
-        email=form_data.username,
-        password=form_data.password,
-    )
+    try:
+        user = await AuthService(db).authenticate_user(
+            email=form_data.username,
+            password=form_data.password,
+        )
+    except LockedAccountException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -71,10 +77,16 @@ async def login_json(
     data: UserCreate,
     db: AsyncSession = Depends(get_db),
 ) -> Token:
-    user = await AuthService(db).authenticate_user(
-        email=data.email,
-        password=data.password,
-    )
+    try:
+        user = await AuthService(db).authenticate_user(
+            email=data.email,
+            password=data.password,
+        )
+    except LockedAccountException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

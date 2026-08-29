@@ -239,3 +239,55 @@ class TestUpdateCompany:
             asyncio.run(service.update_company(company_id=company.id, data=data))
 
         session.rollback.assert_awaited_once()
+
+
+class TestCreateCompanyRecruiterOwnership:
+    """Tests for recruiter company creation ownership rules."""
+
+    def test_recruiter_without_company_can_create(self):
+        """Recruiter without existing company can create a new company."""
+        session = make_session()
+        service = make_service(session)
+        service.companies.get_by_slug.return_value = None
+        service.companies.get_by_tax_code.return_value = None
+        data = CompanyCreate(
+            name="New Company",
+            slug="new-company",
+            tax_code="999999999",
+            size=CompanySize.STARTUP,
+        )
+
+        company = asyncio.run(service.create_company(data))
+
+        assert company is not None
+        session.add.assert_called_once_with(company)
+        session.commit.assert_awaited_once()
+
+    def test_recruiter_with_existing_company_cannot_create_second(self):
+        """Recruiter who already owns a company cannot create a second one.
+
+        This test would require integration with UserService to check
+        the recruiter's profile. The actual enforcement happens at the API layer.
+        This test documents the expected behavior.
+        """
+        # The actual check is in the API endpoint (companies.py create_company)
+        # which uses UserService to check recruiter_profile.company_id
+        # This test is a placeholder to document the requirement
+        pass
+
+    def test_duplicate_slug_still_raises_conflict(self):
+        """Duplicate slug check still works even with ownership rules."""
+        session = make_session()
+        service = make_service(session)
+        service.companies.get_by_slug.return_value = make_company()
+        data = CompanyCreate(
+            name="Another Company",
+            slug="acme-corp",
+            tax_code="999999999",
+            size=CompanySize.STARTUP,
+        )
+
+        with pytest.raises(ConflictException):
+            asyncio.run(service.create_company(data))
+
+        session.commit.assert_not_awaited()

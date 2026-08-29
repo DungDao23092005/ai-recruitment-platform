@@ -35,6 +35,16 @@ async def create_company(
     current_user: User = Depends(require_recruiter),
     db: AsyncSession = Depends(get_db),
 ) -> CompanyRead:
+    # Check if recruiter already has a company
+    if current_user.role == UserRole.RECRUITER:
+        user_service = UserService(db)
+        user_with_profile = await user_service.get_user_with_profile(current_user.id)
+        if user_with_profile and user_with_profile.recruiter_profile and user_with_profile.recruiter_profile.company_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Nhà tuyển dụng đã có công ty. Không thể tạo thêm công ty thứ hai."
+            )
+
     try:
         company = await CompanyService(db).create_company(data)
     except ConflictException as exc:

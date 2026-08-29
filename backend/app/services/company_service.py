@@ -30,11 +30,11 @@ class CompanyService:
     async def create_company(self, data: CompanyCreate) -> Company:
         if await self.companies.get_by_slug(data.slug) is not None:
             raise ConflictException(
-                f"Company with slug {data.slug!r} already exists"
+                f"Đường dẫn (slug) {data.slug!r} đã được sử dụng."
             )
         if await self.companies.get_by_tax_code(data.tax_code) is not None:
             raise ConflictException(
-                f"Company with tax_code {data.tax_code!r} already exists"
+                f"Mã số thuế {data.tax_code!r} đã được sử dụng."
             )
 
         company = Company(
@@ -102,14 +102,14 @@ class CompanyService:
             existing = await self.companies.get_by_slug(data.slug)
             if existing is not None and existing.id != company.id:
                 raise ConflictException(
-                    f"Company with slug {data.slug!r} already exists"
+                    f"Đường dẫn (slug) {data.slug!r} đã được sử dụng."
                 )
             company.slug = data.slug
         if data.tax_code is not None and data.tax_code != company.tax_code:
             existing = await self.companies.get_by_tax_code(data.tax_code)
             if existing is not None and existing.id != company.id:
                 raise ConflictException(
-                    f"Company with tax_code {data.tax_code!r} already exists"
+                    f"Mã số thuế {data.tax_code!r} đã được sử dụng."
                 )
             company.tax_code = data.tax_code
         if data.size is not None:

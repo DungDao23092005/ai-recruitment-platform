@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ from app.core.security import (
     create_access_token,
     decode_access_token,
     get_password_hash,
+    is_token_valid_after_password_reset,
     verify_password,
 )
 
@@ -119,3 +122,86 @@ def test_no_hardcoded_secret_in_security_module():
     )
 
     assert "change-me-in-development-with-a-random-value" not in source
+
+
+class TestIsTokenValidAfterPasswordReset:
+    """Tests for is_token_valid_after_password_reset function.
+
+    Tests the datetime comparison between JWT iat (aware UTC) and
+    database last_password_reset (naive or aware).
+    """
+
+    def test_no_password_reset_timestamp(self):
+        """If last_password_reset is None, token is always valid."""
+        payload = {"iat": int(datetime.now(timezone.utc).timestamp())}
+
+        assert is_token_valid_after_password_reset(payload, None) is True
+
+    def test_naive_database_datetime_before_jwt(self):
+        """Naive DB datetime (interpreted as UTC) before JWT iat -> token valid."""
+        # DB stores naive datetime representing UTC
+        last_reset = datetime(2026, 8, 27, 10, 0, 0)
+        # JWT issued 1 minute after
+        jwt_issued = datetime(2026, 8, 27, 10, 1, 0, tzinfo=timezone.utc)
+        payload = {"iat": int(jwt_issued.timestamp())}
+
+        assert is_token_valid_after_password_reset(payload, last_reset) is True
+
+    def test_naive_database_datetime_after_jwt(self):
+        """Naive DB datetime after JWT iat -> token invalid."""
+        # DB stores naive datetime representing UTC
+        last_reset = datetime(2026, 8, 27, 10, 1, 0)
+        # JWT issued 1 minute before
+        jwt_issued = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+        payload = {"iat": int(jwt_issued.timestamp())}
+
+        assert is_token_valid_after_password_reset(payload, last_reset) is False
+
+    def test_aware_database_datetime_before_jwt(self):
+        """Aware DB datetime before JWT iat -> token valid."""
+        last_reset = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+        jwt_issued = datetime(2026, 8, 27, 10, 1, 0, tzinfo=timezone.utc)
+        payload = {"iat": int(jwt_issued.timestamp())}
+
+        assert is_token_valid_after_password_reset(payload, last_reset) is True
+
+    def test_aware_database_datetime_after_jwt(self):
+        """Aware DB datetime after JWT iat -> token invalid."""
+        last_reset = datetime(2026, 8, 27, 10, 1, 0, tzinfo=timezone.utc)
+        jwt_issued = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+        payload = {"iat": int(jwt_issued.timestamp())}
+
+        assert is_token_valid_after_password_reset(payload, last_reset) is False
+
+    def test_exact_boundary_equal(self):
+        """Token issued at exact same time as password reset -> valid."""
+        last_reset = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+        jwt_issued = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+        payload = {"iat": int(jwt_issued.timestamp())}
+
+        assert is_token_valid_after_password_reset(payload, last_reset) is True
+
+    def test_exact_boundary_naive_db(self):
+        """Token at exact same time as naive DB datetime -> valid."""
+        last_reset = datetime(2026, 8, 27, 10, 0, 0)  # naive, treated as UTC
+        jwt_issued = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+        payload = {"iat": int(jwt_issued.timestamp())}
+
+        assert is_token_valid_after_password_reset(payload, last_reset) is True
+
+    def test_no_iat_in_payload(self):
+        """Missing iat in payload -> token invalid."""
+        payload = {"sub": "user-123"}
+        last_reset = datetime(2026, 8, 27, 10, 0, 0, tzinfo=timezone.utc)
+
+        assert is_token_valid_after_password_reset(payload, last_reset) is False
+
+    def test_no_typeerror_naive_vs_aware(self):
+        """Naive DB datetime + aware JWT MUST NOT raise TypeError."""
+        last_reset = datetime(2026, 8, 27, 10, 0, 0)  # naive
+        jwt_issued = datetime(2026, 8, 27, 10, 1, 0, tzinfo=timezone.utc)
+        payload = {"iat": int(jwt_issued.timestamp())}
+
+        # Should not raise TypeError
+        result = is_token_valid_after_password_reset(payload, last_reset)
+        assert result is True

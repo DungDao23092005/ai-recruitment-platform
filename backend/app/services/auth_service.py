@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictException, ForbiddenException
+from app.core.exceptions import ConflictException, ForbiddenException, LockedAccountException
 from app.core.password_reset import (
     generate_otp,
     generate_reset_token,
@@ -30,10 +30,12 @@ class AuthService:
         self.email_service = EmailService()
 
     async def register_user(self, data: UserCreate) -> User:
-        existing = await self.users.get_by_email(data.email)
+        # Check for existing user with this email (including locked/inactive users)
+        # but exclude soft-deleted users
+        existing = await self.users.get_by_email_including_inactive(data.email)
         if existing is not None:
             raise ConflictException(
-                f"User with email {data.email!r} already exists"
+                f"Email {data.email!r} đã được sử dụng."
             )
 
         # Prevent mass-assignment: public registration cannot create admin accounts
@@ -64,6 +66,10 @@ class AuthService:
             return None
         if not verify_password(password, user.password_hash):
             return None
+        if not user.is_active:
+            raise LockedAccountException(
+                user.lock_reason or "Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên để biết thêm thông tin."
+            )
         return user
 
     async def forgot_password(self, email: str) -> None:

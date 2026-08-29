@@ -44,6 +44,9 @@ class AdminUserRead(BaseModel):
     role: UserRole
     is_active: bool
     is_deleted: bool
+    lock_reason: str | None = None
+    locked_at: datetime | None = None
+    locked_by: uuid.UUID | None = None
     created_at: datetime
     updated_at: datetime
 

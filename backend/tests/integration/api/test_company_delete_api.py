@@ -27,11 +27,11 @@ JOB_BODY = {
 
 
 class FakeEmbeddingProvider:
-    def embed_text(self, text: str) -> list[float]:
+    async def embed_text(self, text: str) -> list[float]:
         return [0.5, 0.5, 0.5, 0.5]
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [self.embed_text(text) for text in texts]
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [await self.embed_text(text) for text in texts]
 
 
 class FakeVectorRepository:

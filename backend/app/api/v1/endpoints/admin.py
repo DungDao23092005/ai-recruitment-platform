@@ -111,17 +111,69 @@ async def get_admin_user(
     return AdminUserRead.model_validate(user)
 
 
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class DeactivateUserRequest(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    reason: str = Field(..., min_length=1, max_length=500, description="Reason for locking the account")
+
+
 @router.patch(
     "/users/{user_id}/deactivate",
     response_model=AdminUserRead,
 )
 async def deactivate_user(
     user_id: uuid.UUID,
+    payload: DeactivateUserRequest,
     current_user: User = Depends(require_admin),
     service: AdminService = Depends(_get_admin_service),
 ) -> AdminUserRead:
     try:
-        user = await service.deactivate_user(user_id)
+        user = await service.deactivate_user(user_id, reason=payload.reason, admin_id=current_user.id)
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    return AdminUserRead.model_validate(user)
+
+
+@router.patch(
+    "/users/{user_id}/activate",
+    response_model=AdminUserRead,
+)
+async def activate_user(
+    user_id: uuid.UUID,
+    current_user: User = Depends(require_admin),
+    service: AdminService = Depends(_get_admin_service),
+) -> AdminUserRead:
+    try:
+        user = await service.activate_user(user_id)
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    return AdminUserRead.model_validate(user)
+
+
+@router.delete(
+    "/users/{user_id}",
+    response_model=AdminUserRead,
+)
+async def delete_user(
+    user_id: uuid.UUID,
+    current_user: User = Depends(require_admin),
+    service: AdminService = Depends(_get_admin_service),
+) -> AdminUserRead:
+    try:
+        user = await service.delete_user(user_id)
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -3,6 +3,7 @@ import { UserX } from 'lucide-react'
 import { deactivateAdminUser } from '@/api/admin'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
+import { Textarea } from '@/components/ui/textarea'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { AdminUser } from '@/types/admin'
 
@@ -19,12 +20,21 @@ export function UserDeactivateModal({
 }: UserDeactivateModalProps) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [reason, setReason] = useState('')
 
   const handleDeactivate = async () => {
+    if (!reason.trim()) {
+      setError('Lý do khóa tài khoản là bắt buộc')
+      return
+    }
+    if (reason.length > 500) {
+      setError('Lý do không được vượt quá 500 ký tự')
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
-      const updated = await deactivateAdminUser(user.id)
+      const updated = await deactivateAdminUser(user.id, { reason: reason.trim() })
       onSuccess?.(updated)
     } catch (err) {
       setError(getFriendlyErrorMessage(err))
@@ -65,6 +75,25 @@ export function UserDeactivateModal({
         bị khóa. Toàn bộ dữ liệu của họ (hồ sơ, CV, đơn ứng tuyển) vẫn được
         lưu giữ và không bị xóa.
       </p>
+
+      <div className="mt-4">
+        <label htmlFor="deactivate-reason" className="block text-sm font-medium mb-1">
+          Lý do khóa tài khoản <span className="text-destructive">*</span>
+        </label>
+        <Textarea
+          id="deactivate-reason"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="Nhập lý do khóa tài khoản (tối đa 500 ký tự)..."
+          rows={4}
+          maxLength={500}
+          disabled={submitting}
+          className="mt-1"
+        />
+        <p className="mt-1 text-xs text-muted-foreground">
+          {reason.length}/500 ký tự
+        </p>
+      </div>
 
       {error ? (
         <p

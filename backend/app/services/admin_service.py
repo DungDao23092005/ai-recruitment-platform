@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -99,18 +100,71 @@ class AdminService:
             raise EntityNotFoundException(f"User {user_id} not found")
         return user
 
-    async def deactivate_user(self, user_id: uuid.UUID) -> User:
-        """Soft-delete a user account.
+    async def deactivate_user(self, user_id: uuid.UUID, reason: str, admin_id: uuid.UUID) -> User:
+        """Lock a user account by setting is_active = False.
 
-        Deactivated users are immediately rejected by the existing auth flow
-        (``get_current_user`` resolves them through ``get_by_id``, which
-        filters ``is_deleted == False``), and their data is preserved. Users
-        that are already deactivated or unknown resolve to ``None`` here and
-        raise a not-found error, consistent with repository semantics.
+        Locked users cannot authenticate but their data is preserved.
+        This differs from soft_delete which removes the user from active queries
+        and allows email reuse.
+
+        Args:
+            user_id: The ID of the user to lock.
+            reason: The reason for locking the account (required, max 500 chars).
+            admin_id: The ID of the admin performing the lock.
+
+        Raises:
+            EntityNotFoundException: If user not found.
+            ValueError: If reason is empty or exceeds 500 characters.
         """
-        user = await self.users.get_by_id(user_id)
+        reason = reason.strip()
+        if not reason:
+            raise ValueError("Lock reason is required")
+        if len(reason) > 500:
+            raise ValueError("Lock reason must not exceed 500 characters")
+
+        user = await self.users.get_admin_user(user_id)
         if user is None:
             raise EntityNotFoundException(f"User {user_id} not found")
+        user.is_active = False
+        user.lock_reason = reason
+        user.locked_at = datetime.now(timezone.utc)
+        user.locked_by = admin_id
+        await self.session.commit()
+        await self.session.refresh(user)
+        return user
+
+    async def activate_user(self, user_id: uuid.UUID) -> User:
+        """Unlock a user account by setting is_active = True.
+
+        Preserves lock audit fields (lock_reason, locked_at, locked_by)
+        for moderation history.
+        """
+        user = await self.users.get_admin_user(user_id)
+        if user is None:
+            raise EntityNotFoundException(f"User {user_id} not found")
+        user.is_active = True
+        # Preserve lock_reason, locked_at, locked_by for audit trail
+        await self.session.commit()
+        await self.session.refresh(user)
+        return user
+
+    async def delete_user(self, user_id: uuid.UUID) -> User:
+        """Soft-delete a user account with email anonymization.
+
+        This operation:
+        - Anonymizes the email to prevent reuse (deleted_{uuid}@anonymized.local)
+        - Soft-deletes the user (is_deleted = True)
+        - Preserves relational data according to existing architecture
+        - Ensures deleted account cannot authenticate
+        - Ensures PII is no longer exposed in normal admin/user flows
+        """
+        user = await self.users.get_admin_user(user_id)
+        if user is None:
+            raise EntityNotFoundException(f"User {user_id} not found")
+
+        # Anonymize email
+        user.email = f"deleted_{user.id}@anonymized.local"
+        # Soft delete
         await self.users.soft_delete(user)
         await self.session.commit()
         await self.session.refresh(user)

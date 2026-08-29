@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import Boolean, Index, String, Uuid, text
+from sqlalchemy import Boolean, ForeignKey, Index, String, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
@@ -53,6 +53,13 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     role: Mapped[UserRole] = mapped_column(StringEnum(UserRole), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_password_reset: Mapped[datetime | None] = mapped_column(nullable=True)
+    lock_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    locked_by: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("users.id"),
+        nullable=True,
+    )
 
     candidate_profile: Mapped[CandidateProfile | None] = relationship(
         back_populates="user",
@@ -71,4 +78,11 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     password_reset_otps: Mapped[list["PasswordResetOTP"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
+    )
+    locked_by_user: Mapped["User | None"] = relationship(
+        back_populates="locked_users",
+        remote_side=[id],
+    )
+    locked_users: Mapped[list["User"]] = relationship(
+        back_populates="locked_by_user",
     )

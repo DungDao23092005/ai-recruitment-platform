@@ -1,4 +1,4 @@
-import { useState, type FormEvent, useEffect } from 'react'
+import { useState, type FormEvent, useEffect, useRef, useCallback } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { Loader2, AlertCircle, CheckCircle, Mail, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -41,9 +41,93 @@ export function VerifyResetOtpPage() {
   const [errors, setErrors] = useState<FormErrors>({})
   const [apiError, setApiError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
   const [cooldown, setCooldown] = useState(0)
   const [resetToken, setResetToken] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  const inputRefs = useRef<(HTMLInputElement | null)[]>([])
+
+  const focusInput = useCallback((index: number) => {
+    if (index >= 0 && index < 6 && inputRefs.current[index]) {
+      inputRefs.current[index]?.focus()
+    }
+  }, [])
+
+  const handleInputChange = (index: number, value: string) => {
+    // Only allow numeric digits
+    const numericValue = value.replace(/\D/g, '')
+    if (numericValue.length > 1) {
+      // If pasting, only take first character for this input
+      const newOtp = values.otp.slice(0, index) + numericValue[0] + values.otp.slice(index + 1)
+      setValues({ otp: newOtp })
+      if (index < 5) {
+        focusInput(index + 1)
+      }
+      return
+    }
+
+    const newOtp = values.otp.slice(0, index) + numericValue + values.otp.slice(index + 1)
+    setValues({ otp: newOtp })
+
+    if (numericValue && index < 5) {
+      focusInput(index + 1)
+    }
+
+    // Auto-submit when all 6 digits are filled
+    if (newOtp.length === 6 && /^\d{6}$/.test(newOtp)) {
+      const form = document.querySelector('form')
+      if (form) {
+        form.requestSubmit()
+      }
+    }
+  }
+
+  const handleKeyDown = (index: number, event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Backspace') {
+      if (!values.otp[index] && index > 0) {
+        // Current input is empty, move to previous
+        event.preventDefault()
+        const newOtp = values.otp.slice(0, index - 1) + values.otp.slice(index)
+        setValues({ otp: newOtp })
+        focusInput(index - 1)
+      }
+    } else if (event.key === 'ArrowLeft' && index > 0) {
+      event.preventDefault()
+      focusInput(index - 1)
+    } else if (event.key === 'ArrowRight' && index < 5) {
+      event.preventDefault()
+      focusInput(index + 1)
+    }
+  }
+
+  const handlePaste = (index: number, event: React.ClipboardEvent<HTMLInputElement>) => {
+    event.preventDefault()
+    const pastedText = event.clipboardData.getData('text')
+    const numericText = pastedText.replace(/\D/g, '').slice(0, 6 - index)
+
+    if (!numericText) return
+
+    // Distribute pasted digits across inputs starting from current index
+    const newOtpChars = values.otp.split('')
+    for (let i = 0; i < numericText.length && index + i < 6; i++) {
+      newOtpChars[index + i] = numericText[i]
+    }
+    const newOtp = newOtpChars.join('')
+    setValues({ otp: newOtp })
+
+    // Focus the next empty input or the last one
+    const nextEmptyIndex = newOtp.indexOf('')
+    if (nextEmptyIndex !== -1) {
+      focusInput(nextEmptyIndex)
+    } else {
+      focusInput(5)
+      // Auto-submit if all filled
+      const form = document.querySelector('form')
+      if (form) {
+        form.requestSubmit()
+      }
+    }
+  }
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -69,7 +153,7 @@ export function VerifyResetOtpPage() {
 
   const handleResend = async () => {
     if (cooldown > 0) return
-    
+
     setApiError(null)
     setSubmitting(true)
     try {
@@ -78,6 +162,8 @@ export function VerifyResetOtpPage() {
       setValues({ otp: '' })
       setApiError(null)
       setCooldown(60)
+      // Focus first input after resend
+      setTimeout(() => focusInput(0), 0)
     } catch (error) {
       setApiError(getFriendlyErrorMessage(error))
     } finally {
@@ -133,19 +219,6 @@ export function VerifyResetOtpPage() {
     )
   }
 
-  const handleAutoSubmit = (index: number, value: string) => {
-    const newOtp = values.otp.slice(0, index) + value + values.otp.slice(index + 1)
-    setValues({ otp: newOtp })
-    
-    if (newOtp.length === 6 && /^\d{6}$/.test(newOtp)) {
-      // Use form.submit() instead of synthetic event
-      const form = document.querySelector('form')
-      if (form) {
-        form.requestSubmit()
-      }
-    }
-  }
-
   return (
     <Card className="w-full shadow-soft">
       <CardHeader>
@@ -167,20 +240,19 @@ export function VerifyResetOtpPage() {
             {Array.from({ length: 6 }).map((_, i) => (
               <Input
                 key={i}
+                ref={(el) => { inputRefs.current[i] = el }}
                 type="text"
                 maxLength={1}
                 inputMode="numeric"
                 pattern="[0-9]*"
                 value={values.otp[i] || ''}
-                onChange={(e) => handleAutoSubmit(i, e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Backspace' && !values.otp[i] && i > 0) {
-                    // Allow backspace to move to previous input
-                  }
-                }}
+                onChange={(e) => handleInputChange(i, e.target.value)}
+                onKeyDown={(e) => handleKeyDown(i, e)}
+                onPaste={(e) => handlePaste(i, e)}
                 className="text-center text-2xl font-mono tracking-widest"
                 autoComplete="one-time-code"
                 autoFocus={i === 0}
+                disabled={submitting}
               />
             ))}
           </div>

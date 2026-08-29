@@ -29,8 +29,16 @@ export async function getAdminUserById(id: string): Promise<AdminUser> {
   return apiClient.get<AdminUser, AdminUser>(`/admin/users/${id}`)
 }
 
-export async function deactivateAdminUser(id: string): Promise<AdminUser> {
-  return apiClient.patch<AdminUser, AdminUser>(`/admin/users/${id}/deactivate`)
+export async function deactivateAdminUser(id: string, payload: { reason: string }): Promise<AdminUser> {
+  return apiClient.patch<AdminUser, AdminUser>(`/admin/users/${id}/deactivate`, payload)
+}
+
+export async function activateAdminUser(id: string): Promise<AdminUser> {
+  return apiClient.patch<AdminUser, AdminUser>(`/admin/users/${id}/activate`)
+}
+
+export async function deleteAdminUser(id: string): Promise<AdminUser> {
+  return apiClient.delete<AdminUser, AdminUser>(`/admin/users/${id}`)
 }
 
 export async function getAdminCompanies(
