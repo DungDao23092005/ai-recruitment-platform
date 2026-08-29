@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 from typing import Any, Optional
 
@@ -12,6 +13,19 @@ from app.core.exceptions import AIError, InvalidDocumentError
 # Module-level singleton for CrossEncoder model (lazy, thread-safe)
 _cross_encoder_model: Any = None
 _cross_encoder_model_lock = threading.Lock()
+
+
+def _sigmoid(x: float) -> float:
+    """Apply sigmoid normalization to convert raw logits to [0, 1] range.
+
+    Handles numerical stability for extreme values.
+    """
+    if x >= 0:
+        return 1.0 / (1.0 + math.exp(-x))
+    else:
+        # For negative x, compute exp(x) / (1 + exp(x)) to avoid overflow
+        exp_x = math.exp(x)
+        return exp_x / (1.0 + exp_x)
 
 
 def _get_shared_cross_encoder_model(model_name: str | None = None) -> Any:
@@ -140,8 +154,10 @@ class CrossEncoderReranker(BaseReranker):
         # Create results
         results = []
         for candidate, score in zip(candidates, all_scores):
-            # Convert numpy float to Python float
-            rerank_score = float(score)
+            # Convert numpy float to Python float and apply sigmoid normalization
+            # CrossEncoder returns raw logits; normalize to [0, 1] range
+            raw_score = float(score)
+            rerank_score = _sigmoid(raw_score)
             results.append(RerankResult(entity_id=candidate.entity_id, rerank_score=rerank_score))
 
         # Sort by rerank score descending

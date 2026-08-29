@@ -4604,3 +4604,330 @@ class TestPhaseK5KnowledgePipeline:
         # Should deduplicate - only one source in final response
         assert len(result.sources) == 1
         assert str(result.sources[0].entity_id) == knowledge_id
+
+
+class TestKnowledgeDocumentIdMappingFix:
+    """Regression test for knowledge document ID mapping bug fix.
+
+    Bug: _retrieve_knowledge_sources was using Qdrant point ID (res.get("id"))
+    instead of payload.document_id, causing SQL lookup to fail.
+
+    Fix: Prioritize payload["document_id"] over res.get("id")
+    """
+
+    def test_knowledge_retrieval_uses_document_id_from_payload(self):
+        """Verify knowledge retrieval uses payload.document_id, not Qdrant point ID."""
+        embed = make_embedding_service()
+
+        # Real document ID in SQL database
+        real_document_id = "6d7f04d7-3182-4beb-812c-9cf3397137be"
+        # Random Qdrant point UUID (different from document_id)
+        qdrant_point_id = str(uuid.uuid4())
+
+        # Qdrant returns point with payload containing document_id
+        knowledge_point = {
+            "id": qdrant_point_id,
+            "score": 0.6771286,
+            "payload": {
+                "document_id": real_document_id,
+                "chunk_index": 0,
+                "category": "recruitment",
+                "title": "AI Screening Guide",
+                "is_deleted": False,
+            },
+        }
+
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        llm = make_llm(make_llm_response(
+            cited_source_ids=[uuid.UUID(real_document_id)],
+            evidence_quotes=["AI Screening Guide content"]
+        ))
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={
+                uuid.UUID(real_document_id): make_knowledge_doc(
+                    doc_id=real_document_id, title="AI Screening Guide", category="recruitment", content="AI Screening Guide content"
+                )
+            }
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("Cách tối ưu hóa CV để tăng điểm đối sánh tuyển dụng?", make_user(UserRole.CANDIDATE)))
+
+        # Should use the real document_id from payload, not the Qdrant point ID
+        assert len(result.sources) == 1
+        assert str(result.sources[0].entity_id) == real_document_id
+        assert str(result.sources[0].entity_id) != qdrant_point_id
+        assert result.sources[0].title == "AI Screening Guide"
+
+    def test_knowledge_retrieval_fallback_to_point_id_when_no_document_id(self):
+        """Verify fallback to Qdrant point ID when payload has no document_id."""
+        embed = make_embedding_service()
+
+        # No document_id in payload - should fall back to point ID
+        qdrant_point_id = str(uuid.uuid4())
+
+        knowledge_point = {
+            "id": qdrant_point_id,
+            "score": 0.6771286,
+            "payload": {
+                "chunk_index": 0,
+                "category": "recruitment",
+                "title": "Legacy Knowledge",
+                "is_deleted": False,
+            },
+        }
+
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        llm = make_llm(make_llm_response(
+            cited_source_ids=[uuid.UUID(qdrant_point_id)],
+            evidence_quotes=["Legacy Knowledge content"]
+        ))
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={
+                uuid.UUID(qdrant_point_id): make_knowledge_doc(
+                    doc_id=qdrant_point_id, title="Legacy Knowledge", category="recruitment", content="Legacy Knowledge content"
+                )
+            }
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("legacy knowledge", make_user(UserRole.CANDIDATE)))
+
+        # Should fall back to Qdrant point ID when no document_id in payload
+        assert len(result.sources) == 1
+        assert str(result.sources[0].entity_id) == qdrant_point_id
+        assert result.sources[0].title == "Legacy Knowledge"
+
+
+class TestCrossEncoderScoreNormalization:
+    """Regression tests for CrossEncoder score normalization fix.
+
+    Bug: CrossEncoder returned raw logits which were used directly without
+    normalization, causing:
+    1. Valid evidence dropped by FINAL_SCORE_THRESHOLD (0.3) when logits < 0.3
+    2. ChatResponse.confidence validation failure when logits > 1.0
+
+    Fix: Apply sigmoid normalization at reranker boundary to convert raw logits
+    to [0, 1] range.
+    """
+
+    def test_sigmoid_normalization_raw_logit_to_probability(self):
+        """Verify raw CrossEncoder logits are normalized to [0, 1] via sigmoid."""
+        from app.ai.reranking.cross_encoder_reranker import _sigmoid
+
+        # Raw logit 3.54 (observed in production causing confidence=3.54)
+        normalized = _sigmoid(3.54)
+        assert 0.0 <= normalized <= 1.0
+        assert abs(normalized - 0.9718) < 0.001  # sigmoid(3.54) ≈ 0.9718
+
+    def test_sigmoid_normalization_negative_logit(self):
+        """Verify negative raw logits are normalized to [0, 1] via sigmoid."""
+        from app.ai.reranking.cross_encoder_reranker import _sigmoid
+
+        # Negative logit (can happen with CrossEncoder on Vietnamese queries)
+        normalized = _sigmoid(-2.0)
+        assert 0.0 <= normalized <= 1.0
+        assert abs(normalized - 0.1192) < 0.001  # sigmoid(-2.0) ≈ 0.1192
+
+    def test_sigmoid_normalization_zero_logit(self):
+        """Verify zero logit maps to 0.5."""
+        from app.ai.reranking.cross_encoder_reranker import _sigmoid
+
+        normalized = _sigmoid(0.0)
+        assert normalized == 0.5
+
+    def test_sigmoid_normalization_extreme_values(self):
+        """Verify extreme logit values are handled without overflow."""
+        from app.ai.reranking.cross_encoder_reranker import _sigmoid
+
+        # Very large positive logit
+        normalized_high = _sigmoid(100.0)
+        assert 0.0 <= normalized_high <= 1.0
+        assert abs(normalized_high - 1.0) < 1e-10  # Approaches 1
+
+        # Very large negative logit
+        normalized_low = _sigmoid(-100.0)
+        assert 0.0 <= normalized_low <= 1.0
+        assert normalized_low < 1e-10  # Approaches 0
+
+    def test_reranker_returns_normalized_scores(self):
+        """Verify CrossEncoderReranker.rerank returns normalized rerank_score."""
+        from app.ai.reranking.cross_encoder_reranker import CrossEncoderReranker, _reset_cross_encoder_model_for_testing
+        from app.ai.interfaces.base_provider import RerankCandidate, RerankResult
+        from unittest.mock import MagicMock, patch
+        import uuid
+        import asyncio
+
+        _reset_cross_encoder_model_for_testing()
+
+        # Mock CrossEncoder to return raw logits
+        mock_model = MagicMock()
+        mock_model.predict.return_value = [3.54, -1.5, 0.0, 5.0]  # Raw logits
+
+        with patch('sentence_transformers.CrossEncoder', return_value=mock_model):
+            reranker = CrossEncoderReranker()
+
+            candidates = [
+                RerankCandidate(
+                    entity_id=uuid.uuid4(),
+                    source_type="job",
+                    title="Job 1",
+                    text_for_reranking="Job 1 description",
+                    original_relevance_score=0.8,
+                ),
+                RerankCandidate(
+                    entity_id=uuid.uuid4(),
+                    source_type="job",
+                    title="Job 2",
+                    text_for_reranking="Job 2 description",
+                    original_relevance_score=0.7,
+                ),
+                RerankCandidate(
+                    entity_id=uuid.uuid4(),
+                    source_type="job",
+                    title="Job 3",
+                    text_for_reranking="Job 3 description",
+                    original_relevance_score=0.6,
+                ),
+                RerankCandidate(
+                    entity_id=uuid.uuid4(),
+                    source_type="job",
+                    title="Job 4",
+                    text_for_reranking="Job 4 description",
+                    original_relevance_score=0.5,
+                ),
+            ]
+
+            results = asyncio.run(reranker.rerank("test query", candidates))
+
+            # All rerank_scores must be normalized to [0, 1]
+            for r in results:
+                assert 0.0 <= r.rerank_score <= 1.0, f"rerank_score {r.rerank_score} not in [0, 1]"
+
+            # Verify specific normalizations (after sorting by score descending)
+            # Order: sigmoid(5.0)=0.9933, sigmoid(3.54)=0.9718, sigmoid(0.0)=0.5, sigmoid(-1.5)=0.1824
+            assert abs(results[0].rerank_score - 0.9933) < 0.001  # sigmoid(5.0)
+            assert abs(results[1].rerank_score - 0.9718) < 0.001  # sigmoid(3.54)
+            assert abs(results[2].rerank_score - 0.5) < 0.001     # sigmoid(0.0)
+            assert abs(results[3].rerank_score - 0.1824) < 0.001  # sigmoid(-1.5)
+
+            # Results should be sorted by normalized score descending
+            assert results[0].rerank_score >= results[1].rerank_score >= results[2].rerank_score >= results[3].rerank_score
+
+    def test_final_score_threshold_operates_on_normalized_scores(self):
+        """Verify FINAL_SCORE_THRESHOLD works correctly with normalized scores."""
+        from app.ai.reranking.cross_encoder_reranker import CrossEncoderReranker, _sigmoid, _reset_cross_encoder_model_for_testing
+        from app.ai.interfaces.base_provider import RerankCandidate, RerankResult
+        from app.services.rag_chat_service import FINAL_SCORE_THRESHOLD
+        from unittest.mock import MagicMock, patch
+        import uuid
+        import asyncio
+
+        _reset_cross_encoder_model_for_testing()
+
+        # Mock model returning raw logits: some below, some above threshold when normalized
+        mock_model = MagicMock()
+        # Logits that when normalized: 0.97 (high), 0.27 (below 0.3), 0.5 (above 0.3), 0.05 (below 0.3)
+        mock_model.predict.return_value = [3.5, -1.0, 0.0, -3.0]
+
+        with patch('sentence_transformers.CrossEncoder', return_value=mock_model):
+            reranker = CrossEncoderReranker()
+
+            candidates = [
+                RerankCandidate(entity_id=uuid.uuid4(), source_type="job", title="High", text_for_reranking="High", original_relevance_score=0.8),
+                RerankCandidate(entity_id=uuid.uuid4(), source_type="job", title="Low", text_for_reranking="Low", original_relevance_score=0.7),
+                RerankCandidate(entity_id=uuid.uuid4(), source_type="job", title="Medium", text_for_reranking="Medium", original_relevance_score=0.6),
+                RerankCandidate(entity_id=uuid.uuid4(), source_type="job", title="VeryLow", text_for_reranking="VeryLow", original_relevance_score=0.5),
+            ]
+
+            results = asyncio.run(reranker.rerank("test query", candidates))
+
+            # Apply threshold filtering (same logic as rag_chat_service)
+            filtered = [r for r in results if r.rerank_score >= FINAL_SCORE_THRESHOLD]
+
+            # Should keep: 0.97 (high) and 0.5 (medium) - both >= 0.3
+            # Should drop: 0.27 (low) and 0.05 (very low) - both < 0.3
+            assert len(filtered) == 2
+            for r in filtered:
+                assert r.rerank_score >= FINAL_SCORE_THRESHOLD
+
+    def test_chat_confidence_never_exceeds_one(self):
+        """Verify ChatResponse.confidence cannot exceed 1.0 due to normalized rerank scores."""
+        from app.ai.reranking.cross_encoder_reranker import CrossEncoderReranker, _reset_cross_encoder_model_for_testing
+        from app.ai.interfaces.base_provider import RerankCandidate
+        from unittest.mock import MagicMock, patch
+        import uuid
+        import asyncio
+
+        _reset_cross_encoder_model_for_testing()
+
+        # Mock model returning very high raw logits (would cause confidence > 1 without normalization)
+        mock_model = MagicMock()
+        mock_model.predict.return_value = [10.0, 5.0, 3.54]  # Raw logits that would exceed 1
+
+        with patch('sentence_transformers.CrossEncoder', return_value=mock_model):
+            reranker = CrossEncoderReranker()
+
+            candidates = [
+                RerankCandidate(entity_id=uuid.uuid4(), source_type="job", title="Job 1", text_for_reranking="Job 1", original_relevance_score=0.8),
+                RerankCandidate(entity_id=uuid.uuid4(), source_type="job", title="Job 2", text_for_reranking="Job 2", original_relevance_score=0.7),
+                RerankCandidate(entity_id=uuid.uuid4(), source_type="job", title="Job 3", text_for_reranking="Job 3", original_relevance_score=0.6),
+            ]
+
+            results = asyncio.run(reranker.rerank("test query", candidates))
+
+            # Simulate confidence calculation (from _validate_response)
+            max_score = max(r.rerank_score for r in results)
+            confidence = round(max_score, 2)
+
+            # Confidence must never exceed 1.0
+            assert 0.0 <= confidence <= 1.0
+            assert confidence == 1.0  # sigmoid(10.0) ≈ 1.0
+
+    def test_previous_document_id_regression_not_affected(self):
+        """Verify the previous document_id fix still works after normalization."""
+        # This test ensures the knowledge document_id mapping fix is not regressed
+        from app.services.rag_chat_service import RAGChatService
+        import uuid
+        import asyncio
+
+        embed = make_embedding_service()
+
+        real_document_id = "6d7f04d7-3182-4beb-812c-9cf3397137be"
+        qdrant_point_id = str(uuid.uuid4())
+
+        knowledge_point = {
+            "id": qdrant_point_id,
+            "score": 0.6771286,
+            "payload": {
+                "document_id": real_document_id,
+                "chunk_index": 0,
+                "category": "recruitment",
+                "title": "AI Screening Guide",
+                "is_deleted": False,
+            },
+        }
+
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        llm = make_llm(make_llm_response(
+            cited_source_ids=[uuid.UUID(real_document_id)],
+            evidence_quotes=["AI Screening Guide content"]
+        ))
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={
+                uuid.UUID(real_document_id): make_knowledge_doc(
+                    doc_id=real_document_id, title="AI Screening Guide", category="recruitment", content="AI Screening Guide content"
+                )
+            }
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("Cách tối ưu hóa CV để tăng điểm đối sánh tuyển dụng?", make_user(UserRole.CANDIDATE)))
+
+        # Should use the real document_id from payload, not the Qdrant point ID
+        assert len(result.sources) == 1
+        assert str(result.sources[0].entity_id) == real_document_id
+        assert str(result.sources[0].entity_id) != qdrant_point_id
+        assert result.sources[0].title == "AI Screening Guide"
+        # Confidence should be normalized (not raw logit)
+        assert 0.0 <= result.confidence <= 1.0

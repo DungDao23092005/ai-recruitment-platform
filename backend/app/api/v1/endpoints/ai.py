@@ -21,6 +21,7 @@ from app.api.deps import (
 )
 from app.core.exceptions import (
     AIError,
+    AIProviderQuotaExceededError,
     EmptyDocumentError,
     EntityNotFoundException,
     InvalidDocumentError,
@@ -285,7 +286,7 @@ async def ai_chat(
     try:
         return await service.chat(
             message=data.message,
-            user_role=current_user.role,
+            actor_user=current_user,
             history=data.history,
         )
     except EmptyDocumentError as exc:
@@ -297,6 +298,12 @@ async def ai_chat(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
+        ) from exc
+    except AIProviderQuotaExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after) if exc.retry_after else "60"},
         ) from exc
     except AIError as exc:
         raise HTTPException(
@@ -407,7 +414,7 @@ async def recommend_candidates_for_job(
     if retrieved is not None:
         job_vector = retrieved["vector"]
     else:
-        job_vector = service.embedding_service.embed_job(parsed_job)
+        job_vector = await service.embedding_service.embed_job(parsed_job)
 
     return await service.recommend_candidates_for_job(
         job_id=job_id,

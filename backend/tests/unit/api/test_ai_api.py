@@ -932,6 +932,25 @@ class TestChat:
 
         assert resp.status_code == 200
 
+    def test_chat_quota_exceeded_returns_429(
+        self, active_client, mock_rag_chat_service
+    ):
+        """Test that AIProviderQuotaExceededError returns HTTP 429 with Retry-After header."""
+        from app.core.exceptions import AIProviderQuotaExceededError
+
+        mock_rag_chat_service.chat.side_effect = AIProviderQuotaExceededError(
+            "AI provider quota exceeded.", retry_after=60
+        )
+
+        resp = active_client.post(
+            "/api/v1/ai/chat", json={"message": "Xin chào"}
+        )
+
+        assert resp.status_code == status.HTTP_429_TOO_MANY_REQUESTS
+        body = resp.json()
+        assert body["detail"] == "AI provider quota exceeded."
+        assert resp.headers.get("Retry-After") == "60"
+
 
 def _interview_question_payload():
     return {

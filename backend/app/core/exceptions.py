@@ -21,8 +21,28 @@ class ForbiddenException(ServiceException):
     """Raised when an operation is not permitted for the caller."""
 
 
+class LockedAccountException(ForbiddenException):
+    """Raised when a locked account attempts to authenticate with correct credentials."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
 class AIError(Exception):
     """Base class for all AI module errors."""
+
+
+class AIProviderQuotaExceededError(AIError):
+    """Raised when AI provider quota or rate limit is exceeded."""
+
+    def __init__(self, message: str = "AI provider quota exceeded", retry_after: int | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class AIProviderUnavailableError(AIError):
+    """Raised when AI provider is temporarily unavailable."""
 
 
 class EmptyDocumentError(AIError):

@@ -1454,7 +1454,7 @@ class RAGChatService:
         sources: list[ChatSource] = []
         for res in raw_results:
             payload = res.get("payload") or {}
-            raw_id = res.get("id") or payload.get("document_id")
+            raw_id = payload.get("document_id") or res.get("id")
             if raw_id is None:
                 continue
             try:
