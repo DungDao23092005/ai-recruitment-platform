@@ -317,10 +317,8 @@ class ApplicationService:
                     matching_service, "resumes", application.candidate_id
                 )
                 if resume_vector is None:
-                    resume_vector = (
-                        matching_service.embedding_service.embed_resume(
-                            parsed_resume
-                        )
+                    resume_vector = await matching_service.embedding_service.embed_resume(
+                        parsed_resume
                     )
 
         parsed_job = ParsedJobSchema(
@@ -332,7 +330,7 @@ class ApplicationService:
             matching_service, "jobs", application.job_id
         )
         if job_vector is None:
-            job_vector = matching_service.embedding_service.embed_job(
+            job_vector = await matching_service.embedding_service.embed_job(
                 parsed_job
             )
 

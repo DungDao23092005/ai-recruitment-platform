@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.ai.interfaces.base_provider import BaseLLMProvider
 from app.core.config import settings
-from app.core.exceptions import InvalidDocumentError
+from app.core.exceptions import AIProviderQuotaExceededError, InvalidDocumentError
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -22,9 +22,11 @@ GEMINI_REQUEST_FAILED_MESSAGE = (
 try:
     from google import genai
     from google.genai import types
+    from google.genai.errors import APIError
 except ImportError as exc:  # pragma: no cover - environment dependent
     genai = None
     types = None
+    APIError = None
     logger.warning("google-genai SDK is not installed: %s", exc)
 
 
@@ -88,6 +90,19 @@ class GeminiLLMProvider(BaseLLMProvider):
                 contents=prompt,
                 config=config,
             )
+        except APIError as exc:
+            logger.error(
+                "Gemini API request failed for model %s: %s",
+                self.model_name,
+                exc,
+            )
+            if exc.code == 429:
+                raise AIProviderQuotaExceededError(
+                    "AI provider quota exceeded.",
+                    retry_after=60,
+                ) from exc
+
+            raise InvalidDocumentError(GEMINI_REQUEST_FAILED_MESSAGE) from exc
         except Exception as exc:
             logger.error(
                 "Gemini API request failed for model %s: %s",

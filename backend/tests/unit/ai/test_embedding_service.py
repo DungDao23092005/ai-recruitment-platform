@@ -80,55 +80,55 @@ def make_job() -> ParsedJobSchema:
 
 
 class TestEmbeddingService:
-    def test_embed_text_success(self):
+    async def test_embed_text_success(self):
         provider = make_mock_provider()
         provider.embed_text.return_value = MOCK_VECTOR_384
         service = EmbeddingService(provider)
 
-        vector = service.embed_text("text")
+        vector = await service.embed_text("text")
 
         assert vector == MOCK_VECTOR_384
         assert len(vector) == 384
         provider.embed_text.assert_called_once_with("text")
 
     @pytest.mark.parametrize("bad_text", ["", " ", "\n", "  \n\t  "])
-    def test_embed_text_empty_raises_empty_document_error(self, bad_text):
+    async def test_embed_text_empty_raises_empty_document_error(self, bad_text):
         provider = make_mock_provider()
         service = EmbeddingService(provider)
 
         with pytest.raises(EmptyDocumentError):
-            service.embed_text(bad_text)
+            await service.embed_text(bad_text)
 
         provider.embed_text.assert_not_called()
 
-    def test_embed_documents_batch(self):
+    async def test_embed_documents_batch(self):
         provider = make_mock_provider()
         provider.embed_documents.return_value = [MOCK_VECTOR_384, MOCK_VECTOR_384]
         service = EmbeddingService(provider)
         texts = ["python", "fastapi"]
 
-        vectors = service.embed_documents(texts)
+        vectors = await service.embed_documents(texts)
 
         assert len(vectors) == 2
         assert all(len(v) == 384 for v in vectors)
         provider.embed_documents.assert_called_once_with(texts)
 
-    def test_embed_documents_empty_returns_empty_list(self):
+    async def test_embed_documents_empty_returns_empty_list(self):
         provider = make_mock_provider()
         service = EmbeddingService(provider)
 
-        result = service.embed_documents([])
+        result = await service.embed_documents([])
 
         assert result == []
         provider.embed_documents.assert_not_called()
 
-    def test_embed_resume_formatting(self):
+    async def test_embed_resume_formatting(self):
         provider = make_mock_provider()
         provider.embed_text.return_value = MOCK_VECTOR_384
         service = EmbeddingService(provider)
         resume = make_resume()
 
-        vector = service.embed_resume(resume)
+        vector = await service.embed_resume(resume)
 
         assert vector == MOCK_VECTOR_384
         formatted = provider.embed_text.call_args.args[0]
@@ -138,13 +138,13 @@ class TestEmbeddingService:
         assert "Experiences:" in formatted
         assert "Senior Python Developer at Tech Corp: Lead backend team" in formatted
 
-    def test_embed_job_formatting(self):
+    async def test_embed_job_formatting(self):
         provider = make_mock_provider()
         provider.embed_text.return_value = MOCK_VECTOR_384
         service = EmbeddingService(provider)
         job = make_job()
 
-        vector = service.embed_job(job)
+        vector = await service.embed_job(job)
 
         assert vector == MOCK_VECTOR_384
         formatted = provider.embed_text.call_args.args[0]
@@ -153,17 +153,17 @@ class TestEmbeddingService:
         assert "Required Skills: Python, FastAPI" in formatted
         assert "Preferred Skills: Docker" in formatted
 
-    def test_provider_failure_maps_to_invalid_document_error(self):
+    async def test_provider_failure_maps_to_invalid_document_error(self):
         provider = make_mock_provider()
         provider.embed_text.side_effect = RuntimeError("boom")
         service = EmbeddingService(provider)
 
         with pytest.raises(InvalidDocumentError):
-            service.embed_text("text")
+            await service.embed_text("text")
 
         error_message = None
         try:
-            service.embed_text("text")
+            await service.embed_text("text")
         except InvalidDocumentError as exc:
             error_message = str(exc)
         assert "boom" not in (error_message or "")
@@ -171,35 +171,35 @@ class TestEmbeddingService:
 
 
 class TestSentenceTransformerEmbeddingProvider:
-    def test_lazy_load(self, fake_sentence_transformer):
+    async def test_lazy_load(self, fake_sentence_transformer):
         provider = SentenceTransformerEmbeddingProvider()
 
         fake_sentence_transformer.assert_not_called()
         assert provider.model is None
 
-        provider.embed_text("hello")
+        await provider.embed_text("hello")
 
         fake_sentence_transformer.assert_called_once_with(provider.model_name)
         mock_model = fake_sentence_transformer.return_value
         mock_model.encode.assert_called_once_with("hello")
 
-    def test_embed_text(self, fake_sentence_transformer):
+    async def test_embed_text(self, fake_sentence_transformer):
         mock_model = fake_sentence_transformer.return_value
         mock_model.encode.return_value = MOCK_VECTOR_384
         provider = SentenceTransformerEmbeddingProvider(model_name="test-model")
 
-        vector = provider.embed_text("hello")
+        vector = await provider.embed_text("hello")
 
         mock_model.encode.assert_called_once_with("hello")
         assert len(vector) == 384
         assert all(isinstance(v, float) for v in vector)
 
-    def test_embed_documents(self, fake_sentence_transformer):
+    async def test_embed_documents(self, fake_sentence_transformer):
         mock_model = fake_sentence_transformer.return_value
         mock_model.encode.return_value = [MOCK_VECTOR_384, MOCK_VECTOR_384]
         provider = SentenceTransformerEmbeddingProvider(model_name="test-model")
 
-        vectors = provider.embed_documents(["a", "b"])
+        vectors = await provider.embed_documents(["a", "b"])
 
         mock_model.encode.assert_called_once_with(["a", "b"])
         assert len(vectors) == 2

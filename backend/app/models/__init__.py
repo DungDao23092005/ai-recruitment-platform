@@ -4,6 +4,7 @@ from app.models.company import Company
 from app.models.interview import Interview
 from app.models.job import Job
 from app.models.junctions import CandidateSkill, JobSkill
+from app.models.knowledge import KnowledgeDocument
 from app.models.notification import Notification
 from app.models.password_reset_otp import PasswordResetOTP
 from app.models.recruiter import RecruiterProfile
@@ -19,6 +20,7 @@ __all__ = [
     "Interview",
     "Job",
     "JobSkill",
+    "KnowledgeDocument",
     "Notification",
     "PasswordResetOTP",
     "RecruiterProfile",

@@ -159,12 +159,13 @@ class JobService:
 
     async def _reindex_job(self, job: Job) -> None:
         text = self._canonical_job_text(job)
-        vector = self.embedding_service.embed_text(text)
-        skills = [skill.name for skill in job.skills] if job.skills else []
+        vector = await self.embedding_service.embed_text(text)
+        skills = await job.awaitable_attrs.skills
+        skills_list = [skill.name for skill in skills] if skills else []
         await self.vector_repository.upsert_job_vector(
             job_id=job.id,
             vector=vector,
-            skills=skills,
+            skills=skills_list,
             created_at=job.created_at,
         )
 

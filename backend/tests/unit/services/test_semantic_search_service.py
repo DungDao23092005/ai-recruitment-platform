@@ -12,7 +12,7 @@ from app.services.semantic_search_service import SemanticSearchService
 
 def make_embedding_service(query_vector=None):
     svc = MagicMock()
-    svc.embed_text = MagicMock(return_value=query_vector or [0.1, 0.2, 0.3])
+    svc.embed_text = AsyncMock(return_value=query_vector or [0.1, 0.2, 0.3])
     return svc
 
 

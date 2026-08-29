@@ -20,17 +20,17 @@ class ChatMessage(BaseModel):
 class ChatSource(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    source_type: Literal["job", "resume"] = Field(
+    source_type: Literal["job", "resume", "knowledge"] = Field(
         ..., description="Type of the retrieved source"
     )
     entity_id: uuid.UUID = Field(
-        ..., description="Id of the job or resume vector point"
+        ..., description="Id of the job, resume, or knowledge vector point"
     )
     title: str = Field(
         ..., description="Human readable title for the source"
     )
     relevance_score: float = Field(
-        ..., ge=0.0, le=1.0, description="Original Qdrant semantic score"
+        ..., description="CrossEncoder logit or Qdrant semantic score (unbounded)"
     )
     skills: list[str] = Field(
         default_factory=list, description="Skills stored on the vector point"

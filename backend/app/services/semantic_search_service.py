@@ -140,7 +140,7 @@ class SemanticSearchService:
                 "Search query cannot be empty"
             )
 
-        query_vector = self.embedding_service.embed_text(query)
+        query_vector = await self.embedding_service.embed_text(query)
 
         try:
             raw_results = await self.vector_repository.search_similar(

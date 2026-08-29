@@ -33,6 +33,7 @@ class QdrantVectorRepository(BaseVectorRepository):
 
     RESUME_COLLECTION = "resumes"
     JOB_COLLECTION = "jobs"
+    KNOWLEDGE_COLLECTION = "knowledge"
 
     def __init__(self, client: AsyncQdrantClient | None = None) -> None:
         self.client = client or AsyncQdrantClient(
@@ -53,13 +54,14 @@ class QdrantVectorRepository(BaseVectorRepository):
         return value.isoformat()
 
     async def init_collections(self) -> None:
-        """Ensure the resumes and jobs collections exist.
+        """Ensure the resumes, jobs, and knowledge collections exist.
 
         Existing collections are never recreated.
         """
         for collection_name in (
             self.RESUME_COLLECTION,
             self.JOB_COLLECTION,
+            self.KNOWLEDGE_COLLECTION,
         ):
             if await self.client.collection_exists(
                 collection_name=collection_name
@@ -238,3 +240,33 @@ class QdrantVectorRepository(BaseVectorRepository):
             ],
             must_not=SOFT_DELETE_FILTER.must_not,
         )
+
+    async def delete_vectors_by_filter(
+        self,
+        collection_name: str,
+        filter_key: str,
+        filter_value: Any,
+    ) -> None:
+        """Delete all vectors in a collection matching a filter key/value."""
+        from qdrant_client.models import FilterSelector, FieldCondition, MatchValue, Filter
+
+        query_filter = Filter(
+            must=[
+                FieldCondition(
+                    key=filter_key,
+                    match=MatchValue(value=filter_value),
+                )
+            ]
+        )
+        try:
+            await self.client.delete(
+                collection_name=collection_name,
+                points_selector=FilterSelector(filter=query_filter),
+            )
+        except AIError:
+            raise
+        except Exception as exc:
+            raise AIError(
+                f"Failed to delete vectors from collection "
+                f"'{collection_name}' with filter {filter_key}={filter_value}"
+            ) from exc

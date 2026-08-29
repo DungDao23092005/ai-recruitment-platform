@@ -16,7 +16,7 @@ const DEFAULT_LIMIT = 10
 type PageState =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'success'; recommendations: JobMatchRecommendation[] }
+  | { kind: 'success'; recommendations: JobMatchRecommendation[]; hasCV: boolean }
 
 export function CandidateRecommendationsPage() {
   const [state, setState] = useState<PageState>({ kind: 'loading' })
@@ -25,11 +25,11 @@ export function CandidateRecommendationsPage() {
     setState({ kind: 'loading' })
 
     getJobRecommendations(DEFAULT_LIMIT)
-      .then((recommendations) => {
-        const sorted = [...recommendations].sort(
+      .then((result) => {
+        const sorted = [...result.recommendations].sort(
           (a, b) => b.match_result.overall_score - a.match_result.overall_score,
         )
-        setState({ kind: 'success', recommendations: sorted })
+        setState({ kind: 'success', recommendations: sorted, hasCV: result.hasCV })
       })
       .catch((err) => {
         setState({
@@ -65,18 +65,26 @@ export function CandidateRecommendationsPage() {
 
       {state.kind === 'success' ? (
         state.recommendations.length === 0 ? (
-          <EmptyState
-            icon={<Sparkles className="h-6 w-6" aria-hidden="true" />}
-            title="Chưa có gợi ý việc làm"
-            description="Chưa có gợi ý việc làm phù hợp. Hãy tải lên CV PDF để AI phân tích kỹ năng của bạn!"
-          >
-            <Link to="/candidate/cv-upload">
-              <Button>
-                <FileUp className="h-4 w-4" aria-hidden="true" />
-                Tải lên CV
-              </Button>
-            </Link>
-          </EmptyState>
+          state.hasCV ? (
+            <EmptyState
+              icon={<Sparkles className="h-6 w-6" aria-hidden="true" />}
+              title="Chưa có việc làm phù hợp"
+              description="Hiện tại chưa có gợi ý việc làm nào khớp với kỹ năng của bạn. Hãy cập nhật CV hoặc quay lại sau."
+            />
+          ) : (
+            <EmptyState
+              icon={<FileUp className="h-6 w-6" aria-hidden="true" />}
+              title="Chưa có CV"
+              description="Bạn cần tải lên CV để AI có thể gợi ý việc làm phù hợp."
+            >
+              <Link to="/candidate/cv-upload">
+                <Button>
+                  <FileUp className="h-4 w-4" aria-hidden="true" />
+                  Tải lên CV
+                </Button>
+              </Link>
+            </EmptyState>
+          )
         ) : (
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
             {state.recommendations.map((recommendation) => (

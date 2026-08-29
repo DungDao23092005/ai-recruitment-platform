@@ -5,6 +5,7 @@ import uuid
 from typing import BinaryIO
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.embeddings.embedding_service import EmbeddingService
@@ -63,7 +64,7 @@ class AIMatchingService:
         extracted_text = PDFTextExtractor.extract(pdf_source)
         parsed_resume = await self.resume_parser.parse(extracted_text)
 
-        vector = self.embedding_service.embed_resume(parsed_resume)
+        vector = await self.embedding_service.embed_resume(parsed_resume)
         payload = {
             "candidate_id": str(candidate_id),
             "skills": parsed_resume.skills,
@@ -128,7 +129,7 @@ class AIMatchingService:
         if not parsed_job.title:
             parsed_job.title = job_title
 
-        vector = self.embedding_service.embed_job(parsed_job)
+        vector = await self.embedding_service.embed_job(parsed_job)
         all_skills = list(
             set(parsed_job.required_skills + parsed_job.preferred_skills)
         )
@@ -146,7 +147,7 @@ class AIMatchingService:
 
         return parsed_job
 
-    def match_candidate_with_job(
+    async def match_candidate_with_job(
         self,
         parsed_resume: ParsedResumeSchema,
         parsed_job: ParsedJobSchema,
@@ -155,9 +156,9 @@ class AIMatchingService:
     ) -> MatchResultSchema:
         """Compute comprehensive match score and explanation between a Candidate Resume and Job Description."""
         if resume_vector is None:
-            resume_vector = self.embedding_service.embed_resume(parsed_resume)
+            resume_vector = await self.embedding_service.embed_resume(parsed_resume)
         if job_vector is None:
-            job_vector = self.embedding_service.embed_job(parsed_job)
+            job_vector = await self.embedding_service.embed_job(parsed_job)
 
         return self.matching_engine.match_resume_to_job(
             resume=parsed_resume,
@@ -182,7 +183,7 @@ class AIMatchingService:
 
         if candidate_vector is None:
             if parsed_resume is not None:
-                candidate_vector = self.embedding_service.embed_resume(
+                candidate_vector = await self.embedding_service.embed_resume(
                     parsed_resume
                 )
             else:
@@ -206,7 +207,7 @@ class AIMatchingService:
         if jobs_data is not None:
             for job_id, parsed_job, j_vec in jobs_data:
                 if j_vec is None:
-                    j_vec = self.embedding_service.embed_job(parsed_job)
+                    j_vec = await self.embedding_service.embed_job(parsed_job)
                 match_result = self.matching_engine.match_resume_to_job(
                     resume=parsed_resume,
                     job=parsed_job,
@@ -307,18 +308,26 @@ class AIMatchingService:
         if session is None or not job_ids:
             return {}
         from app.models import Job
-        stmt = select(Job).where(
+        stmt = select(Job).options(selectinload(Job.skills)).where(
             Job.id.in_(job_ids),
             Job.is_deleted == False
         )
         result = await session.execute(stmt)
         jobs = {}
         for j in result.scalars().all():
-            if j.parsed_reqs:
-                try:
-                    jobs[j.id] = ParsedJobSchema(**j.parsed_reqs)
-                except Exception:
-                    pass
+            skills = [skill.name for skill in j.skills] if j.skills else []
+            try:
+                jobs[j.id] = ParsedJobSchema(
+                    title=j.title,
+                    summary=j.description,
+                    required_skills=skills,
+                    location=j.location,
+                    city=j.location,
+                    employment_type=j.job_type.value if j.job_type else None,
+                    workplace_type=j.workplace_type.value if j.workplace_type else None,
+                )
+            except Exception:
+                pass
         return jobs
 
     async def _resolve_candidate_profiles_legacy(
@@ -360,7 +369,7 @@ class AIMatchingService:
 
         if job_vector is None:
             if parsed_job is not None:
-                job_vector = self.embedding_service.embed_job(parsed_job)
+                job_vector = await self.embedding_service.embed_job(parsed_job)
             else:
                 retrieved = await self.vector_repository.retrieve_vector(
                     collection_name="jobs",
@@ -382,7 +391,7 @@ class AIMatchingService:
         if candidates_data is not None:
             for cand_id, parsed_resume, c_vec in candidates_data:
                 if c_vec is None:
-                    c_vec = self.embedding_service.embed_resume(parsed_resume)
+                    c_vec = await self.embedding_service.embed_resume(parsed_resume)
                 match_result = self.matching_engine.match_resume_to_job(
                     resume=parsed_resume,
                     job=parsed_job,

@@ -59,6 +59,20 @@ class BaseVectorRepository(ABC):
         pass
 
     @abstractmethod
+    async def delete_vectors_by_filter(
+        self,
+        collection_name: str,
+        filter_key: str,
+        filter_value: Any,
+    ) -> None:
+        """Delete all vectors in a collection matching a filter key/value.
+
+        This is used for idempotent seeding operations where existing vectors
+        for a document need to be removed before inserting new chunks.
+        """
+        pass
+
+    @abstractmethod
     async def retrieve_vector(
         self,
         collection_name: str,

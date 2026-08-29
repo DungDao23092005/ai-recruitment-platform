@@ -79,14 +79,21 @@ def make_resume(candidate_id: uuid.UUID, parsed_data: dict | None = None, is_pri
     return resume
 
 
-def make_job(job_id: uuid.UUID, company_id: uuid.UUID, parsed_reqs: dict | None = None, is_deleted: bool = False, status: str = "PUBLISHED"):
+def make_job(job_id: uuid.UUID, company_id: uuid.UUID, skills: list | None = None, is_deleted: bool = False, status: str = "PUBLISHED", location: str = "Hanoi", job_type=None, workplace_type=None):
     """Create a mock Job object."""
+    from app.domain.enums import JobType, WorkplaceType
     job = MagicMock(spec=Job)
     job.id = job_id
     job.company_id = company_id
-    job.parsed_reqs = parsed_reqs or {"title": "Test Job", "required_skills": ["Python"]}
+    job.title = "Test Job"
+    job.description = "Test job description"
     job.is_deleted = is_deleted
     job.status = status
+    job.location = location
+    job.city = location  # Using location as city as well
+    job.job_type = job_type or JobType.FULL_TIME
+    job.workplace_type = workplace_type or WorkplaceType.ON_SITE
+    job.skills = skills or []
     return job
 
 

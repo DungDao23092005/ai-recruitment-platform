@@ -25,7 +25,7 @@ def mock_dependencies():
     return {
         "resume_parser": AsyncMock(spec=ResumeParser),
         "job_parser": AsyncMock(spec=JobParser),
-        "embedding_service": MagicMock(spec=EmbeddingService),
+        "embedding_service": AsyncMock(spec=EmbeddingService),
         "vector_repository": AsyncMock(spec=BaseVectorRepository),
         "matching_engine": MagicMock(spec=MatchingEngine),
     }
@@ -252,7 +252,8 @@ async def test_process_and_index_job_empty_description_raises_error(
         )
 
 
-def test_match_candidate_with_job_success(ai_service, mock_dependencies):
+@pytest.mark.asyncio
+async def test_match_candidate_with_job_success(ai_service, mock_dependencies):
     parsed_resume = ParsedResumeSchema(skills=["Python"])
     parsed_job = ParsedJobSchema(required_skills=["Python"])
     expected_match = MatchResultSchema(
@@ -271,7 +272,7 @@ def test_match_candidate_with_job_success(ai_service, mock_dependencies):
         expected_match
     )
 
-    res = ai_service.match_candidate_with_job(parsed_resume, parsed_job)
+    res = await ai_service.match_candidate_with_job(parsed_resume, parsed_job)
 
     assert res.overall_score == 95.0
     mock_dependencies["matching_engine"].match_resume_to_job.assert_called_once()

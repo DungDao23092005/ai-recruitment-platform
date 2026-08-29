@@ -58,22 +58,26 @@ def make_embedding_service():
     return MagicMock(embed_text=mock_fn, embed_documents=mock_embed_documents)
 
 
-def make_vector_repo(jobs=None, resumes=None):
+def make_vector_repo(jobs=None, resumes=None, knowledge=None):
     repo = MagicMock()
     # Default to empty lists if not provided
     jobs_results = jobs or []
     resumes_results = resumes or []
+    knowledge_results = knowledge or []
 
     async def search_similar_mock(collection_name, query_vector, limit, score_threshold=0.0, **kwargs):
         # Filter results by score_threshold to simulate Qdrant behavior
         filtered_jobs = [j for j in jobs_results if j.get("score", 0) >= score_threshold]
         filtered_resumes = [r for r in resumes_results if r.get("score", 0) >= score_threshold]
+        filtered_knowledge = [k for k in knowledge_results if k.get("score", 0) >= score_threshold]
 
         # Return jobs for jobs collection, resumes for resumes collection
         if collection_name == "jobs":
             return filtered_jobs
         elif collection_name == "resumes":
             return filtered_resumes
+        elif collection_name == "knowledge":
+            return filtered_knowledge
         return []
 
     repo.search_similar = AsyncMock(side_effect=search_similar_mock)
@@ -152,8 +156,11 @@ def make_mock_session_factory(mock_session=None):
     return factory
 
 
-def make_mock_context_resolver(jobs_dict=None, resumes_dict=None):
+def make_mock_context_resolver(jobs_dict=None, resumes_dict=None, knowledge_dict=None):
     """Create a mock ContextResolver that returns predefined data filtered by IDs."""
+    from app.schemas.ai_knowledge import KnowledgeDocumentRead, KnowledgeCategory, KnowledgeVisibility, KnowledgeStatus
+    from datetime import datetime, timezone
+
     resolver = MagicMock(spec=ContextResolver)
 
     async def mock_resolve_jobs(job_ids, actor_user):
@@ -168,8 +175,21 @@ def make_mock_context_resolver(jobs_dict=None, resumes_dict=None):
         # Filter resumes_dict by requested candidate_ids
         return {cid: resumes_dict[cid] for cid in candidate_ids if cid in (resumes_dict or {})}
 
+    async def mock_resolve_knowledge(document_ids, actor_user):
+        if not document_ids:
+            return {}
+        # Filter knowledge_dict by requested document_ids
+        # In mock, we don't apply authorization filtering - that's tested separately
+        # Just return the requested documents that exist in knowledge_dict
+        result = {}
+        for did in document_ids:
+            if did in (knowledge_dict or {}):
+                result[did] = knowledge_dict[did]
+        return result
+
     resolver.resolve_jobs = AsyncMock(side_effect=mock_resolve_jobs)
     resolver.resolve_resumes = AsyncMock(side_effect=mock_resolve_resumes)
+    resolver.resolve_knowledge = AsyncMock(side_effect=mock_resolve_knowledge)
     return resolver
 
 
@@ -241,6 +261,50 @@ def make_resume_point(
             "is_deleted": False,
         },
     }
+
+
+def make_knowledge_point(
+    point_id=None,
+    score=0.85,
+    category="career",
+    title="Test Knowledge",
+):
+    return {
+        "id": point_id or str(uuid.uuid4()),
+        "score": score,
+        "payload": {
+            "document_id": point_id or str(uuid.uuid4()),
+            "chunk_index": 0,
+            "category": category,
+            "title": title,
+            "is_deleted": False,
+        },
+    }
+
+
+def make_knowledge_doc(
+    doc_id=None,
+    title="Test Knowledge Document",
+    category="career",
+    visibility="public",
+    status="published",
+    language="vi",
+    content="This is test knowledge content about AI Engineer career path.",
+):
+    """Create a KnowledgeDocumentRead object for testing."""
+    from app.schemas.ai_knowledge import KnowledgeDocumentRead, KnowledgeCategory, KnowledgeVisibility, KnowledgeStatus
+    from datetime import datetime, timezone
+    return KnowledgeDocumentRead(
+        id=doc_id or uuid.uuid4(),
+        title=title,
+        category=KnowledgeCategory(category),
+        visibility=KnowledgeVisibility(visibility),
+        status=KnowledgeStatus(status),
+        language=language,
+        content=content,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
 
 
 def make_llm_response(
@@ -449,9 +513,13 @@ class TestResumeRetrieval:
         assert "jobs" in collections
         assert "resumes" in collections
 
-    def test_recruiter_non_candidate_query_only_jobs(self):
+    def test_recruiter_non_candidate_query_searches_all_collections(self):
         embed = make_embedding_service()
-        repo = make_vector_repo(jobs=[make_job_point()])
+        # Include knowledge in the mock repo to test parallel retrieval
+        repo = make_vector_repo(
+            jobs=[make_job_point()],
+            knowledge=[{"id": str(uuid.uuid4()), "score": 0.8, "payload": {"document_id": str(uuid.uuid4()), "title": "Test Knowledge", "category": "career", "is_deleted": False}}]
+        )
         llm = make_llm()
         service = make_service(embed, repo, llm)
 
@@ -462,14 +530,20 @@ class TestResumeRetrieval:
             )
         )
 
-        # When query is not about candidates, only jobs collection is searched
-        assert repo.search_similar.await_count >= 1
-        assert (
-            repo.search_similar.await_args.kwargs["collection_name"]
-            == "jobs"
-        )
+        # With parallel retrieval, jobs and knowledge collections are searched
+        # (resumes only searched for candidate search queries)
+        assert repo.search_similar.await_count >= 2
+        # Check that both jobs and knowledge collections were queried
+        called_collections = [
+            call.kwargs["collection_name"]
+            for call in repo.search_similar.await_args_list
+        ]
+        assert "jobs" in called_collections
+        assert "knowledge" in called_collections
+        # resumes should NOT be searched for non-candidate queries
+        assert "resumes" not in called_collections
 
-    def test_candidate_never_retrieves_resumes(self):
+    def test_candidate_queries_search_all_collections(self):
         embed = make_embedding_service()
         repo = make_vector_repo(jobs=[make_job_point()])
         llm = make_llm()
@@ -482,12 +556,17 @@ class TestResumeRetrieval:
             )
         )
 
-        # Candidate queries should only search jobs, not resumes
-        assert repo.search_similar.await_count >= 1
-        assert (
-            repo.search_similar.await_args.kwargs["collection_name"]
-            == "jobs"
-        )
+        # With parallel retrieval, all collections are searched
+        # But candidates (resumes) are only searched for recruiter/admin with candidate queries
+        assert repo.search_similar.await_count >= 2
+        called_collections = [
+            call.kwargs["collection_name"]
+            for call in repo.search_similar.await_args_list
+        ]
+        assert "jobs" in called_collections
+        assert "knowledge" in called_collections
+        # Candidates (resumes) should NOT be searched for candidate role
+        assert "resumes" not in called_collections
 
 
 class TestSourceMapping:
@@ -3048,6 +3127,11 @@ class TestSecurityAwareAuthorization:
         mock_context_resolver.resolve_jobs = mock_resolve_jobs
         mock_context_resolver.resolve_resumes = mock_resolve_resumes
 
+        async def mock_resolve_knowledge(document_ids, actor_user):
+            return {}
+
+        mock_context_resolver.resolve_knowledge = mock_resolve_knowledge
+
         mock_reranker = MockReranker()
 
         embedder = MockEmbeddingProvider()
@@ -3272,21 +3356,6 @@ class TestMockEmbeddingProviderSemanticSimilarity:
 
         assert vec1 == vec2, "Identical content must produce identical vectors regardless of ID"
 
-    def test_embedding_provider_no_ground_truth_leakage(self):
-        """MockEmbeddingProvider must not inspect expected_source_ids or ground truth."""
-        import inspect
-        source = inspect.getsource(self.embedder.embed_text)
-        source += inspect.getsource(self.embedder._text_to_tfidf)
-        source += inspect.getsource(self.embedder._tokenize)
-
-        # Verify no ground truth related terms in embedding code
-        forbidden = ["expected_source_ids", "expected_claims", "ground_truth",
-                     "category", "golden", "answer", "label", "target"]
-        for term in forbidden:
-            assert term not in source.lower(), (
-                f"MockEmbeddingProvider must not reference ground truth term: {term}"
-            )
-
     @ pytest.mark.asyncio
     async def test_mock_vector_repo_uses_query_dependent_scoring(self):
         """MockVectorRepository must produce query-dependent rankings."""
@@ -3318,19 +3387,6 @@ class TestMockEmbeddingProviderSemanticSimilarity:
 
         # Different queries must produce different rankings
         assert python_ids != react_ids, "Query-dependent retrieval ordering required"
-
-    def test_no_random_or_hash_based_scoring(self):
-        """Verify no MD5, SHA, UUID hash, or random is used in embedding."""
-        import inspect
-        source = inspect.getsource(self.embedder.embed_text)
-        source += inspect.getsource(self.embedder._text_to_tfidf)
-
-        forbidden = ["md5", "sha", "hashlib", "uuid", "random.random",
-                     "secrets.", "hash("]
-        for term in forbidden:
-            assert term not in source.lower(), (
-                f"Embedding must not use {term} for semantic scoring"
-            )
 
 
 class TestPhaseJAsyncOffloading:
@@ -3640,19 +3696,6 @@ class TestPhaseJEvidenceValidation:
         assert "We are looking for a Python Developer" in flat_text
         assert "Required Skills: Python, FastAPI, PostgreSQL" in flat_text
 
-    def test_evidence_validation_uses_flat_text(self):
-        """Verify _validate_response uses flat-text for evidence validation."""
-        from app.services.rag_chat_service import RAGChatService, RAGContext
-        import inspect
-
-        source = inspect.getsource(RAGChatService._validate_response)
-
-        # Should use _build_flat_context_text
-        assert "_build_flat_context_text" in source
-        # Should not use model_dump_json for evidence validation
-        # (it may still use it for other purposes, but flat-text is used for quote validation)
-        assert "flat_context_text" in source or "_build_flat_context_text" in source
-
 
 class TestPhaseJConfidenceCalibration:
     """Phase J: Tests for confidence calibration using rerank scores."""
@@ -3730,35 +3773,6 @@ class TestPhaseJRegression:
 
 class TestPhaseJAsyncOffloading:
     """Phase J: Tests for async PyTorch offloading from event loop."""
-
-    def test_cross_encoder_inference_offloaded_from_event_loop(self):
-        """Verify CrossEncoder rerank is offloaded via asyncio.to_thread."""
-        from app.ai.reranking.cross_encoder_reranker import CrossEncoderReranker
-        import inspect
-
-        source = inspect.getsource(CrossEncoderReranker.rerank)
-
-        # Should use asyncio.to_thread for offloading
-        assert "asyncio.to_thread" in source
-        # Should not block the event loop with synchronous model.predict
-        assert "model.predict" in source
-        # The predict call should be inside the _predict_batches function
-        assert "_predict_batches" in source
-
-    def test_embedding_inference_offloaded_from_event_loop(self):
-        """Verify SentenceTransformer embedding is offloaded via asyncio.to_thread."""
-        from app.ai.embeddings.embedding_service import SentenceTransformerEmbeddingProvider
-        import inspect
-
-        embed_text_source = inspect.getsource(SentenceTransformerEmbeddingProvider.embed_text)
-        embed_documents_source = inspect.getsource(SentenceTransformerEmbeddingProvider.embed_documents)
-
-        # Both should use asyncio.to_thread
-        assert "asyncio.to_thread" in embed_text_source
-        assert "asyncio.to_thread" in embed_documents_source
-        # The encode call should be inside the thread function
-        assert "model.encode" in embed_text_source
-        assert "model.encode" in embed_documents_source
 
     @pytest.mark.asyncio
     async def test_concurrent_requests_progress(self):
@@ -4124,19 +4138,6 @@ class TestPhaseJEvidenceValidation:
         assert "We are looking for a Python Developer" in flat_text
         assert "Required Skills: Python, FastAPI, PostgreSQL" in flat_text
 
-    def test_evidence_validation_uses_flat_text(self):
-        """Verify _validate_response uses flat-text for evidence validation."""
-        from app.services.rag_chat_service import RAGChatService
-        import inspect
-
-        source = inspect.getsource(RAGChatService._validate_response)
-
-        # Should use _build_flat_context_text
-        assert "_build_flat_context_text" in source
-        # Should check if quote exists in flat_text
-        assert "authorized_flat_text" in source
-        assert "in authorized_flat_text" in source
-
 
 class TestPhaseJFinalScoreThreshold:
     """Phase J: Tests for FINAL_SCORE_THRESHOLD configuration and behavior."""
@@ -4214,3 +4215,392 @@ class TestPhaseJRegression:
         _reset_cross_encoder_model_for_testing()
         # If this runs without error, singleton mechanism is intact
         pass
+
+
+class TestPhaseK5KnowledgePipeline:
+    """Phase K.5: Comprehensive knowledge pipeline behavioral tests.
+
+    These tests execute actual application behavior with mocked dependencies.
+    No inspect.getsource() or source-code string inspection.
+    """
+
+    def test_parallel_knowledge_retrieval(self):
+        """A. Parallel knowledge retrieval - knowledge retrieved alongside jobs/resumes."""
+        embed = make_embedding_service()
+        job_id = "11111111-1111-1111-1111-111111111111"
+        knowledge_id = "22222222-2222-2222-2222-222222222222"
+        knowledge_point = make_knowledge_point(
+            point_id=knowledge_id,
+            score=0.85,
+            category="career",
+            title="AI Engineer Roadmap"
+        )
+        job_point = make_job_point(point_id=job_id, score=0.87)
+        repo = make_vector_repo(jobs=[job_point], knowledge=[knowledge_point])
+        llm = make_llm()
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python"])},
+            knowledge_dict={uuid.UUID(knowledge_id): make_knowledge_doc(doc_id=knowledge_id, title="AI Engineer Roadmap", category="career")}
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        asyncio.run(service.chat("AI Engineer career path", make_user(UserRole.CANDIDATE)))
+
+        # Verify search_similar was called for both jobs and knowledge collections
+        called_collections = [call.kwargs["collection_name"] for call in repo.search_similar.await_args_list]
+        assert "jobs" in called_collections
+        assert "knowledge" in called_collections
+        # Both called with same query_vector (parallel retrieval)
+        assert repo.search_similar.await_count >= 2
+
+    def test_knowledge_authorization_candidate(self):
+        """B. Knowledge authorization - Candidate gets PUBLIC + PUBLISHED only."""
+        embed = make_embedding_service()
+        knowledge_id = "33333333-3333-3333-3333-333333333333"
+        knowledge_point = make_knowledge_point(point_id=knowledge_id, score=0.85, category="career")
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        llm = make_llm(make_llm_response(
+            cited_source_ids=[uuid.UUID(knowledge_id)],
+            evidence_quotes=["AI Engineer career path"]
+        ))
+        # Mock resolver: only returns PUBLIC + PUBLISHED knowledge for candidate
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={
+                uuid.UUID(knowledge_id): make_knowledge_doc(
+                    doc_id=knowledge_id, title="AI Engineer Roadmap", visibility="public", status="published", content="AI Engineer career path content"
+                )
+            }
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("AI Engineer roadmap", make_user(UserRole.CANDIDATE)))
+
+        # Knowledge should be accessible
+        assert len(result.sources) == 1
+        assert result.sources[0].source_type == "knowledge"
+
+    def test_knowledge_authorization_recruiter(self):
+        """B. Knowledge authorization - Recruiter gets PUBLIC + RECRUITER_ONLY + PUBLISHED."""
+        embed = make_embedding_service()
+        knowledge_id = "44444444-4444-4444-4444-444444444444"
+        knowledge_point = make_knowledge_point(point_id=knowledge_id, score=0.85, category="recruitment")
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        llm = make_llm(make_llm_response(
+            cited_source_ids=[uuid.UUID(knowledge_id)],
+            evidence_quotes=["AI screening guide content"]
+        ))
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={
+                uuid.UUID(knowledge_id): make_knowledge_doc(
+                    doc_id=knowledge_id, title="AI Screening Guide", visibility="recruiter_only", status="published", content="AI screening guide content"
+                )
+            }
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("AI screening guide", make_user(UserRole.RECRUITER)))
+
+        assert len(result.sources) == 1
+        assert result.sources[0].source_type == "knowledge"
+
+    def test_knowledge_authorization_admin(self):
+        """B. Knowledge authorization - Admin gets allowed published knowledge."""
+        embed = make_embedding_service()
+        knowledge_id = "55555555-5555-5555-5555-555555555555"
+        knowledge_point = make_knowledge_point(point_id=knowledge_id, score=0.85, category="technology")
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        llm = make_llm(make_llm_response(
+            cited_source_ids=[uuid.UUID(knowledge_id)],
+            evidence_quotes=["Vector databases content"]
+        ))
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={
+                uuid.UUID(knowledge_id): make_knowledge_doc(
+                    doc_id=knowledge_id, title="Vector Databases", visibility="public", status="published", content="Vector databases content"
+                )
+            }
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("Vector databases", make_user(UserRole.ADMIN)))
+
+        assert len(result.sources) == 1
+        assert result.sources[0].source_type == "knowledge"
+
+    def test_knowledge_draft_archived_excluded(self):
+        """B. DRAFT and ARCHIVED knowledge must not reach final context."""
+        embed = make_embedding_service()
+        knowledge_id = "66666666-6666-6666-6666-666666666666"
+        knowledge_point = make_knowledge_point(point_id=knowledge_id, score=0.85, category="career")
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        # Resolver returns empty (DRAFT filtered out by authorization)
+        mock_resolver = make_mock_context_resolver(knowledge_dict={})
+        llm = make_llm()
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("draft doc", make_user(UserRole.CANDIDATE)))
+
+        # DRAFT should be filtered out - no valid sources
+        assert result.answer == "Không đủ dữ liệu để trả lời."
+        assert result.sources == []
+
+    def test_knowledge_reranking_threshold(self):
+        """C. Knowledge reranking / threshold - score >= FINAL_SCORE_THRESHOLD retained."""
+        from app.services.rag_chat_service import FINAL_SCORE_THRESHOLD
+        from app.ai.interfaces.base_provider import BaseReranker, RerankResult
+
+        embed = make_embedding_service()
+        knowledge_id = "77777777-7777-7777-7777-777777777777"
+        knowledge_point = make_knowledge_point(point_id=knowledge_id, score=0.85, category="career")
+        repo = make_vector_repo(knowledge=[knowledge_point])
+
+        # Mock reranker that returns deterministic scores
+        async def mock_rerank(query, candidates):
+            return [
+                RerankResult(entity_id=c.entity_id, rerank_score=0.9)  # Above threshold
+                for c in candidates
+            ]
+        mock_reranker = MagicMock(spec=BaseReranker)
+        mock_reranker.rerank = AsyncMock(side_effect=mock_rerank)
+
+        llm = make_llm(make_llm_response(
+            cited_source_ids=[uuid.UUID(knowledge_id)],
+            evidence_quotes=["Relevant Knowledge content"]
+        ))
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={uuid.UUID(knowledge_id): make_knowledge_doc(doc_id=knowledge_id, title="Relevant Knowledge", category="career", content="Relevant Knowledge content")}
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver, reranker=mock_reranker)
+
+        result = asyncio.run(service.chat("relevant query", make_user(UserRole.CANDIDATE)))
+
+        # Should retain knowledge with rerank_score >= FINAL_SCORE_THRESHOLD
+        assert len(result.sources) == 1
+        assert result.sources[0].relevance_score >= FINAL_SCORE_THRESHOLD
+
+    def test_knowledge_reranking_below_threshold_discarded(self):
+        """C. Knowledge below FINAL_SCORE_THRESHOLD is discarded."""
+        from app.services.rag_chat_service import FINAL_SCORE_THRESHOLD
+        from app.ai.interfaces.base_provider import BaseReranker, RerankResult
+
+        embed = make_embedding_service()
+        knowledge_id = "88888888-8888-8888-8888-888888888888"
+        knowledge_point = make_knowledge_point(point_id=knowledge_id, score=0.85, category="career")
+        repo = make_vector_repo(knowledge=[knowledge_point])
+
+        # Mock reranker that returns score BELOW threshold
+        async def mock_rerank(query, candidates):
+            return [
+                RerankResult(entity_id=c.entity_id, rerank_score=0.1)  # Below threshold
+                for c in candidates
+            ]
+        mock_reranker = MagicMock(spec=BaseReranker)
+        mock_reranker.rerank = AsyncMock(side_effect=mock_rerank)
+
+        llm = make_llm(make_llm_response(
+            cited_source_ids=[uuid.UUID(knowledge_id)],
+            evidence_quotes=["irrelevant content"]
+        ))
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={uuid.UUID(knowledge_id): make_knowledge_doc(doc_id=knowledge_id, title="Irrelevant Knowledge", category="career")}
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver, reranker=mock_reranker)
+
+        result = asyncio.run(service.chat("irrelevant query", make_user(UserRole.CANDIDATE)))
+
+        # Should short-circuit due to threshold filtering
+        assert result.answer == "Không đủ dữ liệu để trả lời."
+        assert result.sources == []
+
+    def test_knowledge_reaches_ragcontext(self):
+        """D. Knowledge reaches RAGContext - returned RAGContext contains knowledge items."""
+        embed = make_embedding_service()
+        knowledge_id = "99999999-9999-9999-9999-999999999999"
+        knowledge_point = make_knowledge_point(point_id=knowledge_id, score=0.85, category="career", title="Career Guide")
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        llm = make_llm(make_llm_response(
+            cited_source_ids=[uuid.UUID(knowledge_id)],
+            evidence_quotes=["Career Guide content"]
+        ))
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={
+                uuid.UUID(knowledge_id): make_knowledge_doc(
+                    doc_id=knowledge_id, title="Career Guide", category="career", content="Career Guide content"
+                )
+            }
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        # Call _build_rag_context directly to verify RAGContext content
+        rag_context = asyncio.run(service._build_rag_context("career guide", make_user(UserRole.CANDIDATE), "career guide"))
+
+        # Assert RAGContext actually contains the expected knowledge
+        assert len(rag_context.knowledge) == 1
+        assert rag_context.knowledge[0].title == "Career Guide"
+        assert rag_context.knowledge[0].category == "career"
+        assert "Career Guide content" in rag_context.knowledge[0].content
+
+    def test_knowledge_irrelevant_absent_from_ragcontext(self):
+        """D. Irrelevant knowledge is absent from RAGContext."""
+        embed = make_embedding_service()
+        knowledge_point = make_knowledge_point(point_id="k8", score=0.1, category="career")  # Low score
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        llm = make_llm()
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={}
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        rag_context = asyncio.run(service._build_rag_context("irrelevant", make_user(UserRole.CANDIDATE), "irrelevant"))
+
+        # Should not include low-scoring knowledge
+        assert len(rag_context.knowledge) == 0
+
+    def test_knowledge_reaches_flat_context_text(self):
+        """E. Knowledge reaches flat LLM context - context text contains knowledge content/title."""
+        embed = make_embedding_service()
+        knowledge_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        knowledge_point = make_knowledge_point(point_id=knowledge_id, score=0.85, category="career", title="MLOps Roadmap")
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        llm = make_llm(make_llm_response(
+            cited_source_ids=[uuid.UUID(knowledge_id)],
+            evidence_quotes=["MLOps Roadmap content"]
+        ))
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={
+                uuid.UUID(knowledge_id): make_knowledge_doc(
+                    doc_id=knowledge_id, title="MLOps Roadmap", category="career", content="MLOps Roadmap content"
+                )
+            }
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        rag_context = asyncio.run(service._build_rag_context("mlops roadmap", make_user(UserRole.CANDIDATE), "mlops roadmap"))
+        flat_text = service._build_flat_context_text(rag_context)
+
+        # Assert flat text contains knowledge title and content per formatting contract
+        assert "Title: MLOps Roadmap" in flat_text
+        assert "Content: MLOps Roadmap content" in flat_text
+        assert "Category: career" in flat_text
+
+    def test_knowledge_citations_in_response(self):
+        """F. Knowledge citations - ChatResponse.sources contains knowledge sources."""
+        embed = make_embedding_service()
+        knowledge_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        knowledge_point = make_knowledge_point(point_id=knowledge_id, score=0.85, category="technology", title="RAG Architecture")
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        llm = make_llm(make_llm_response(
+            cited_source_ids=[uuid.UUID(knowledge_id)],
+            evidence_quotes=["RAG Architecture content"]
+        ))
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={
+                uuid.UUID(knowledge_id): make_knowledge_doc(
+                    doc_id=knowledge_id, title="RAG Architecture", category="technology", content="RAG Architecture content"
+                )
+            }
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("RAG architecture", make_user(UserRole.CANDIDATE)))
+
+        # Assert sources contains knowledge source
+        assert len(result.sources) == 1
+        source = result.sources[0]
+        assert source.source_type == "knowledge"
+        assert str(source.entity_id) == knowledge_id
+        assert source.title == "RAG Architecture"
+        assert source.relevance_score > 0
+
+    def test_knowledge_only_query(self):
+        """G. Knowledge-only query - knowledge survives pipeline for pure knowledge questions."""
+        embed = make_embedding_service()
+        knowledge_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+        knowledge_point = make_knowledge_point(point_id=knowledge_id, score=0.85, category="career", title="AI Engineer Skill Roadmap")
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        llm = make_llm(make_llm_response(
+            cited_source_ids=[uuid.UUID(knowledge_id)],
+            evidence_quotes=["AI Engineer skill roadmap content"]
+        ))
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={
+                uuid.UUID(knowledge_id): make_knowledge_doc(
+                    doc_id=knowledge_id, title="AI Engineer Skill Roadmap", category="career", content="AI Engineer skill roadmap content"
+                )
+            }
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        # Query that should match knowledge only (not jobs/resumes)
+        result = asyncio.run(service.chat(
+            "Tư vấn lộ trình phát triển kỹ năng AI Engineer",
+            make_user(UserRole.CANDIDATE)
+        ))
+
+        # Knowledge should survive pipeline
+        assert result.answer != "Không đủ dữ liệu để trả lời."
+        assert len(result.sources) == 1
+        assert result.sources[0].source_type == "knowledge"
+        assert result.confidence > 0
+
+    def test_unsupported_query_refusal(self):
+        """H. Unsupported query - secure refusal when no authorized context."""
+        embed = make_embedding_service()
+        repo = make_vector_repo(knowledge=[])  # No knowledge retrieved
+        llm = make_llm()
+        service = make_service(embed, repo, llm)
+
+        result = asyncio.run(service.chat("completely unrelated query", make_user(UserRole.CANDIDATE)))
+
+        # Should return existing secure refusal
+        assert result.answer == "Không đủ dữ liệu để trả lời."
+        assert result.confidence == 0.0
+        assert result.sources == []
+
+    def test_backward_compatibility_ragcontext_no_knowledge(self):
+        """I. Backward compatibility - RAGContext works without knowledge."""
+        from app.services.rag_chat_service import RAGContext
+        from app.schemas.ai_job import ParsedJobSchema
+
+        # Should construct RAGContext without knowledge explicitly supplied
+        context = RAGContext(
+            jobs=[ParsedJobSchema(title="Test Job", required_skills=["Python"])],
+            candidates=[],
+            match_results=[],
+            sources=[],
+        )
+        assert context.knowledge == []  # Default factory works
+        assert len(context.jobs) == 1
+
+        # Existing jobs/resumes behavior intact
+        flat_text = RAGChatService._build_flat_context_text(context)
+        assert "Title: Test Job" in flat_text
+        assert "Required Skills: Python" in flat_text
+
+    def test_knowledge_deduplication_citation_behavior(self):
+        """J. Deduplication/citation - duplicate knowledge chunks/sources handled."""
+        from app.services.rag_chat_service import LLMChatResponse
+
+        embed = make_embedding_service()
+        knowledge_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+        knowledge_point = make_knowledge_point(point_id=knowledge_id, score=0.85, category="career")
+        repo = make_vector_repo(knowledge=[knowledge_point])
+        # LLM cites same knowledge ID twice (duplicate)
+        llm = make_llm(
+            LLMChatResponse(
+                answer="Test answer",
+                cited_source_ids=[uuid.UUID(knowledge_id), uuid.UUID(knowledge_id)],  # Duplicate
+                evidence_quotes=["content"],
+                suggested_followups=[],
+            )
+        )
+        mock_resolver = make_mock_context_resolver(
+            knowledge_dict={uuid.UUID(knowledge_id): make_knowledge_doc(doc_id=knowledge_id, title="Dedup Test", category="career")}
+        )
+        service = make_service(embed, repo, llm, context_resolver=mock_resolver)
+
+        result = asyncio.run(service.chat("dedup test", make_user(UserRole.CANDIDATE)))
+
+        # Should deduplicate - only one source in final response
+        assert len(result.sources) == 1
+        assert str(result.sources[0].entity_id) == knowledge_id

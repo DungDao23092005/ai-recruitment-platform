@@ -29,7 +29,7 @@ services:
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_started
+        condition: service_healthy
     networks:
       - recruitment-net
 

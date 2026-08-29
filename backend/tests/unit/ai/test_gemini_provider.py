@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
@@ -9,7 +9,7 @@ from app.ai.providers.gemini_provider import (
     GeminiLLMProvider,
 )
 from app.core.config import settings
-from app.core.exceptions import InvalidDocumentError
+from app.core.exceptions import AIProviderQuotaExceededError, InvalidDocumentError
 
 
 class _DummySchema(BaseModel):
@@ -118,3 +118,105 @@ class TestErrorMapping:
                 )
 
         assert "empty response" in str(exc_info.value)
+
+
+class TestQuotaHandling:
+    """Tests for AIProviderQuotaExceededError handling."""
+
+    def test_429_api_error_becomes_quota_exceeded(self, monkeypatch):
+        """TEST A: HTTP 429 becomes AIProviderQuotaExceededError."""
+        from google.genai.errors import APIError
+
+        monkeypatch.setattr(settings, "GEMINI_GENERATION_MODEL", "gemini-3.5-flash")
+        provider = GeminiLLMProvider(api_key="test-key")
+
+        # Create a real APIError with code 429
+        api_error = APIError(code=429, response_json={"error": "quota exceeded"})
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = api_error
+
+        with patch("google.genai.Client", return_value=mock_client):
+            with pytest.raises(AIProviderQuotaExceededError) as exc_info:
+                _run(
+                    provider.generate_structured_output(
+                        prompt="Parse this resume",
+                        response_schema=_DummySchema,
+                    )
+                )
+
+        assert exc_info.value.retry_after == 60
+        assert "quota exceeded" in str(exc_info.value).lower()
+
+    def test_non_429_api_error_is_not_quota(self, monkeypatch):
+        """TEST B: Non-429 APIError is NOT treated as quota."""
+        from google.genai.errors import APIError
+
+        monkeypatch.setattr(settings, "GEMINI_GENERATION_MODEL", "gemini-3.5-flash")
+        provider = GeminiLLMProvider(api_key="test-key")
+
+        # Create APIError with code 400 (bad request)
+        api_error = APIError(code=400, response_json={"error": "bad request"})
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = api_error
+
+        with patch("google.genai.Client", return_value=mock_client):
+            with pytest.raises(InvalidDocumentError) as exc_info:
+                _run(
+                    provider.generate_structured_output(
+                        prompt="Parse this resume",
+                        response_schema=_DummySchema,
+                    )
+                )
+
+        assert str(exc_info.value) == GEMINI_REQUEST_FAILED_MESSAGE
+
+    def test_false_positive_quota_string_not_triggered(self, monkeypatch):
+        """TEST C: False-positive string case - 'quota' in message but not 429."""
+        from google.genai.errors import APIError
+
+        monkeypatch.setattr(settings, "GEMINI_GENERATION_MODEL", "gemini-3.5-flash")
+        provider = GeminiLLMProvider(api_key="test-key")
+
+        # Create APIError with code 500 but message contains "quota"
+        api_error = APIError(code=500, response_json={"error": "internal quota system failure"})
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = api_error
+
+        with patch("google.genai.Client", return_value=mock_client):
+            with pytest.raises(InvalidDocumentError) as exc_info:
+                _run(
+                    provider.generate_structured_output(
+                        prompt="Parse this resume",
+                        response_schema=_DummySchema,
+                    )
+                )
+
+        assert str(exc_info.value) == GEMINI_REQUEST_FAILED_MESSAGE
+
+    def test_false_positive_429_string_not_triggered(self, monkeypatch):
+        """TEST C (continued): Generic exception with '429' in message."""
+        monkeypatch.setattr(settings, "GEMINI_GENERATION_MODEL", "gemini-3.5-flash")
+        provider = GeminiLLMProvider(api_key="test-key")
+
+        # Generic Exception with "429" in message
+        generic_error = RuntimeError("Some error with 429 in message")
+
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = generic_error
+
+        with patch("google.genai.Client", return_value=mock_client):
+            with pytest.raises(InvalidDocumentError) as exc_info:
+                _run(
+                    provider.generate_structured_output(
+                        prompt="Parse this resume",
+                        response_schema=_DummySchema,
+                    )
+                )
+
+        assert str(exc_info.value) == GEMINI_REQUEST_FAILED_MESSAGE
+
+    # The HTTP 429 endpoint mapping test is now in test_ai_api.py::TestChat::test_chat_quota_exceeded
+# where the proper FastAPI test infrastructure exists.

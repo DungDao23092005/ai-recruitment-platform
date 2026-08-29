@@ -3,15 +3,17 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import EntityNotFoundException
 from app.domain.enums import JobStatus
-from app.models import CandidateProfile, Company, Job, RecruiterProfile, Resume, User
+from app.models import CandidateProfile, Company, Job, KnowledgeDocument, RecruiterProfile, Resume, User
 from app.repositories import ResumeRepository
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_resume import ParsedResumeSchema
+from app.schemas.ai_knowledge import KnowledgeDocumentRead
 
 
 class ContextResolver:
@@ -146,16 +148,24 @@ class ContextResolver:
             # CANDIDATE - only published jobs
             filters.append(Job.status == JobStatus.PUBLISHED)
 
-        stmt = select(Job).where(*filters)
+        stmt = select(Job).options(selectinload(Job.skills)).where(*filters)
         result = await self.session.execute(stmt)
 
         jobs: dict[uuid.UUID, ParsedJobSchema] = {}
         for j in result.scalars().all():
-            if j.parsed_reqs:
-                try:
-                    jobs[j.id] = ParsedJobSchema(**j.parsed_reqs)
-                except Exception:
-                    pass
+            skills = [skill.name for skill in j.skills] if j.skills else []
+            try:
+                jobs[j.id] = ParsedJobSchema(
+                    title=j.title,
+                    summary=j.description,
+                    required_skills=skills,
+                    location=j.location,
+                    city=j.location,  # Using location as city since Job model only has location
+                    employment_type=j.job_type.value if j.job_type else None,
+                    workplace_type=j.workplace_type.value if j.workplace_type else None,
+                )
+            except Exception:
+                pass
 
         return jobs
 
@@ -218,6 +228,62 @@ class ContextResolver:
 
         return {profile.id: profile for profile in result.scalars().all()}
 
+    async def resolve_knowledge(
+        self,
+        document_ids: list[uuid.UUID],
+        actor_user: User,
+    ) -> dict[uuid.UUID, KnowledgeDocumentRead]:
+        """
+        Resolve knowledge documents by IDs with authorization.
+
+        Authorization rules:
+        - CANDIDATE: Can only access PUBLIC + PUBLISHED documents
+        - RECRUITER: Can access PUBLIC + PUBLISHED and RECRUITER_ONLY + PUBLISHED
+        - ADMIN: Can access all published documents according to architecture
+
+        Args:
+            document_ids: List of knowledge document IDs to resolve
+            actor_user: The user making the request (for authorization)
+
+        Returns:
+            Mapping of document_id -> KnowledgeDocumentRead for authorized records only
+        """
+        if not document_ids or self.session is None:
+            return {}
+
+        # Build authorization filters based on actor role
+        filters = [
+            KnowledgeDocument.id.in_(document_ids),
+            KnowledgeDocument.is_deleted == False,  # noqa: E712
+            KnowledgeDocument.status == "published",
+        ]
+
+        if actor_user.role.name == "CANDIDATE":
+            # Candidate: only PUBLIC + PUBLISHED
+            filters.append(KnowledgeDocument.visibility == "public")
+        elif actor_user.role.name == "RECRUITER":
+            # Recruiter: PUBLIC + PUBLISHED and RECRUITER_ONLY + PUBLISHED
+            from sqlalchemy import or_
+            filters.append(
+                or_(
+                    KnowledgeDocument.visibility == "public",
+                    KnowledgeDocument.visibility == "recruiter_only",
+                )
+            )
+        # ADMIN: no additional visibility filter (can see all published)
+
+        stmt = select(KnowledgeDocument).where(*filters)
+        result = await self.session.execute(stmt)
+
+        documents: dict[uuid.UUID, KnowledgeDocumentRead] = {}
+        for doc in result.scalars().all():
+            try:
+                documents[doc.id] = KnowledgeDocumentRead.model_validate(doc)
+            except Exception:
+                pass
+
+        return documents
+
     async def _get_recruiter_company_id(self, user_id: uuid.UUID) -> uuid.UUID | None:
         """Get the company ID for a recruiter user."""
         stmt = select(RecruiterProfile.company_id).where(
@@ -273,7 +339,7 @@ class ContextBuilder:
         from app.schemas.ai_resume import ParsedResumeSchema
         from app.schemas.ai_job import ParsedJobSchema
 
-        query_vector = self.embedding_service.embed_text(message)
+        query_vector = await self.embedding_service.embed_text(message)
 
         # 1. Retrieve jobs from Qdrant (always available)
         retrieved_jobs_raw = await self._retrieve_sources(
@@ -412,7 +478,7 @@ class ContextBuilder:
         try:
             raw_results = await self.vector_repository.search_similar(
                 collection_name="resumes",
-                query_vector=self.embedding_service.embed_text(message),
+                query_vector=await self.embedding_service.embed_text(message),
                 limit=3,
             )
         except Exception as exc:

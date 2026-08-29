@@ -46,3 +46,31 @@ class ParsedJobSchema(BaseModel):
         default_factory=list,
         description="List of required or preferred languages",
     )
+    location: str | None = Field(
+        default=None,
+        description="Job location (city, region, or remote)",
+    )
+    city: str | None = Field(
+        default=None,
+        description="City where the job is located",
+    )
+    salary_min: float | None = Field(
+        default=None,
+        description="Minimum salary offered",
+    )
+    salary_max: float | None = Field(
+        default=None,
+        description="Maximum salary offered",
+    )
+    currency: str | None = Field(
+        default=None,
+        description="Currency for salary (e.g. VND, USD)",
+    )
+    employment_type: str | None = Field(
+        default=None,
+        description="Employment type (e.g. Full-time, Part-time, Contract)",
+    )
+    workplace_type: str | None = Field(
+        default=None,
+        description="Workplace type (e.g. On-site, Hybrid, Remote)",
+    )

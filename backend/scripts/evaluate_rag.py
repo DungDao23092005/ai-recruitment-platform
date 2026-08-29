@@ -532,6 +532,9 @@ class MockVectorRepository(BaseVectorRepository):
     async def delete_vector(self, collection_name: str, point_id: str | uuid.UUID) -> None:
         pass
 
+    async def delete_vectors_by_filter(self, collection_name: str, filter_key: str, filter_value: Any) -> None:
+        pass
+
     async def retrieve_vector(self, collection_name: str, point_id: str | uuid.UUID) -> dict[str, Any] | None:
         pass
 

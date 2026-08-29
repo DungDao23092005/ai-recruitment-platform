@@ -29,9 +29,11 @@ from app.schemas.ai_chat import (
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.schemas.ai_match import MatchResultSchema
+from app.schemas.ai_knowledge import KnowledgeDocumentRead
 
 JOB_COLLECTION = "jobs"
 RESUME_COLLECTION = "resumes"
+KNOWLEDGE_COLLECTION = "knowledge"
 # Broad retrieval limit for Phase H two-stage retrieval
 # Default can be overridden via environment/configuration
 RETRIEVAL_LIMIT = 40
@@ -263,6 +265,7 @@ class RAGContext:
     candidates: list[ParsedResumeSchema]
     match_results: list[MatchResultSchema]
     sources: list[ChatSource]
+    knowledge: list[KnowledgeDocumentRead] = field(default_factory=list)
 
 
 def _is_candidate_search_query(message: str) -> bool:
@@ -634,9 +637,16 @@ class RAGChatService:
                 query_vector=query_vector,
             )
 
+        # 3. Retrieve knowledge documents for all user roles (parallel retrieval)
+        # Knowledge is always retrieved in parallel; ContextResolver authorization
+        # and CrossEncoder threshold will filter appropriately.
+        retrieved_knowledge = await self._retrieve_knowledge_sources(
+            query_vector=query_vector,
+        )
+
         # Short-circuit: if no results pass the score threshold, return empty context
         # to trigger insufficient evidence response without calling final LLM
-        if not retrieved_jobs and not retrieved_resumes:
+        if not retrieved_jobs and not retrieved_resumes and not retrieved_knowledge:
             return RAGContext(
                 jobs=[],
                 candidates=[],
@@ -658,6 +668,10 @@ class RAGChatService:
             # Hydrate resumes with authorization
             resumes_dict = await resolver.resolve_resumes(resume_candidate_ids, actor_user) if resume_candidate_ids else {}
 
+            # Hydrate knowledge with authorization
+            knowledge_candidate_ids = [source.entity_id for source in retrieved_knowledge if source.entity_id]
+            knowledge_dict = await resolver.resolve_knowledge(knowledge_candidate_ids, actor_user) if knowledge_candidate_ids else {}
+
         # 4. Build rerank candidates from authorized records ONLY
         # Reranker receives ONLY entities that passed ContextResolver authorization
         rerank_candidates = []
@@ -668,12 +682,29 @@ class RAGChatService:
             source = next((s for s in retrieved_jobs if s.entity_id == job_id), None)
             original_score = source.relevance_score if source else 0.0
 
-            # Build text for reranking: title, requirements, responsibilities, skills
+            # Build text for reranking: title, requirements, responsibilities, skills, location, salary, employment type
             text_parts = []
             if job.title:
                 text_parts.append(f"Title: {job.title}")
             if job.summary:
                 text_parts.append(f"Summary: {job.summary}")
+            if job.location:
+                text_parts.append(f"Location: {job.location}")
+            if job.city:
+                text_parts.append(f"City: {job.city}")
+            if job.salary_min is not None or job.salary_max is not None:
+                salary_parts = []
+                if job.salary_min is not None:
+                    salary_parts.append(f"Min: {job.salary_min}")
+                if job.salary_max is not None:
+                    salary_parts.append(f"Max: {job.salary_max}")
+                if job.currency:
+                    salary_parts.append(job.currency)
+                text_parts.append(f"Salary: {', '.join(salary_parts)}")
+            if job.employment_type:
+                text_parts.append(f"Employment Type: {job.employment_type}")
+            if job.workplace_type:
+                text_parts.append(f"Workplace Type: {job.workplace_type}")
             if job.required_skills:
                 text_parts.append(f"Required Skills: {', '.join(job.required_skills)}")
             if job.preferred_skills:
@@ -735,6 +766,30 @@ class RAGChatService:
                 })()
             )
 
+        # Create text representations for knowledge documents
+        for doc_id, knowledge in knowledge_dict.items():
+            source = next((s for s in retrieved_knowledge if s.entity_id == doc_id), None)
+            original_score = source.relevance_score if source else 0.0
+
+            # Build text for reranking: title, content, category
+            text_parts = []
+            if knowledge.title:
+                text_parts.append(f"Title: {knowledge.title}")
+            if knowledge.content:
+                text_parts.append(f"Content: {knowledge.content}")
+            if knowledge.category:
+                text_parts.append(f"Category: {knowledge.category}")
+
+            rerank_candidates.append(
+                type("RerankCandidate", (), {
+                    "entity_id": doc_id,
+                    "source_type": "knowledge",
+                    "title": knowledge.title or f"Knowledge {str(doc_id)[:8]}",
+                    "text_for_reranking": " | ".join(text_parts) if text_parts else f"Knowledge {doc_id}",
+                    "original_relevance_score": original_score,
+                })()
+            )
+
         # 5. Rerank authorized records
         rerank_start = time.monotonic()
         reranker_succeeded = False
@@ -777,6 +832,7 @@ class RAGChatService:
         # 8. Filter authorized records to only Top-5
         final_jobs = {jid: job for jid, job in jobs_dict.items() if jid in top_5_ids}
         final_resumes = {cid: resume for cid, resume in resumes_dict.items() if cid in top_5_ids}
+        final_knowledge = {kid: knowledge for kid, knowledge in knowledge_dict.items() if kid in top_5_ids}
 
         # 9. Build rerank score map for score propagation
         rerank_score_map = {r.entity_id: r.rerank_score for r in filtered_rerank_results}
@@ -809,6 +865,19 @@ class RAGChatService:
             )
             sources.append(source)
 
+        # Convert knowledge to ChatSource for citations - use rerank score if available
+        knowledge_score_map = {source.entity_id: source.relevance_score for source in retrieved_knowledge}
+        for knowledge_id, knowledge in final_knowledge.items():
+            relevance_score = rerank_score_map.get(knowledge_id, knowledge_score_map.get(knowledge_id, 0.0))
+            source = ChatSource(
+                source_type="knowledge",
+                entity_id=knowledge_id,
+                title=knowledge.title or f"Knowledge {str(knowledge_id)[:8]}",
+                relevance_score=relevance_score,
+                skills=[knowledge.category.value] if knowledge.category else [],
+            )
+            sources.append(source)
+
         # Store rerank latency in telemetry (will be added in chat method)
         # We'll pass it back via a temporary attribute
         self._last_rerank_latency_ms = rerank_latency
@@ -816,6 +885,7 @@ class RAGChatService:
         return RAGContext(
             jobs=list(final_jobs.values()),
             candidates=list(final_resumes.values()),
+            knowledge=list(final_knowledge.values()),
             match_results=[],
             sources=sources,
         )
@@ -1028,6 +1098,23 @@ class RAGChatService:
                     parts.append(f"Title: {job.title}")
                 if job.summary:
                     parts.append(f"Summary: {job.summary}")
+                if job.location:
+                    parts.append(f"Location: {job.location}")
+                if job.city:
+                    parts.append(f"City: {job.city}")
+                if job.salary_min is not None or job.salary_max is not None:
+                    salary_parts = []
+                    if job.salary_min is not None:
+                        salary_parts.append(f"Min: {job.salary_min}")
+                    if job.salary_max is not None:
+                        salary_parts.append(f"Max: {job.salary_max}")
+                    if job.currency:
+                        salary_parts.append(job.currency)
+                    parts.append(f"Salary: {', '.join(salary_parts)}")
+                if job.employment_type:
+                    parts.append(f"Employment Type: {job.employment_type}")
+                if job.workplace_type:
+                    parts.append(f"Workplace Type: {job.workplace_type}")
                 if job.required_skills:
                     parts.append(f"Required Skills: {', '.join(job.required_skills)}")
                 if job.preferred_skills:
@@ -1073,6 +1160,15 @@ class RAGChatService:
                             parts.append(f"Field of Study: {edu.field_of_study}")
                         if edu.institution:
                             parts.append(f"Institution: {edu.institution}")
+
+        if rag_context.knowledge:
+            for knowledge in rag_context.knowledge:
+                if knowledge.title:
+                    parts.append(f"Title: {knowledge.title}")
+                if knowledge.content:
+                    parts.append(f"Content: {knowledge.content}")
+                if knowledge.category:
+                    parts.append(f"Category: {knowledge.category.value}")
 
         return " | ".join(parts)
 
@@ -1304,3 +1400,85 @@ class RAGChatService:
         lines.append("</user_input>")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _is_knowledge_search_query(message: str) -> bool:
+        """Check if message is a knowledge search query."""
+        keywords = (
+            "kỹ năng",
+            "skill",
+            "roadmap",
+            "lộ trình",
+            "phỏng vấn",
+            "interview",
+            "AI Engineer",
+            "MLOps",
+            "machine learning",
+            "deep learning",
+            "NLP",
+            "LLM",
+            "RAG",
+            "vector database",
+            "technology",
+            "công nghệ",
+            "kỹ thuật",
+            "học",
+            "học gì",
+            "cần gì",
+            "yêu cầu",
+            "requirement",
+        )
+        lowered = message.lower()
+        return any(keyword in lowered for keyword in keywords)
+
+    async def _retrieve_knowledge_sources(
+        self,
+        query_vector: list[float],
+    ) -> list:
+        """Retrieve knowledge document sources from vector repository as ChatSource objects."""
+        try:
+            raw_results = await self.vector_repository.search_similar(
+                collection_name=KNOWLEDGE_COLLECTION,
+                query_vector=query_vector,
+                limit=RETRIEVAL_LIMIT,
+                score_threshold=DEFAULT_SCORE_THRESHOLD,
+            )
+        except AIError:
+            raise
+        except Exception as exc:
+            raise AIError(
+                f"Failed to search similar vectors in collection "
+                f"'{KNOWLEDGE_COLLECTION}'"
+            ) from exc
+
+        sources: list[ChatSource] = []
+        for res in raw_results:
+            payload = res.get("payload") or {}
+            raw_id = res.get("id") or payload.get("document_id")
+            if raw_id is None:
+                continue
+            try:
+                entity_id = uuid.UUID(str(raw_id))
+            except (ValueError, TypeError):
+                continue
+
+            raw_score = res.get("score")
+            if raw_score is None:
+                continue
+            try:
+                score = float(raw_score)
+            except (TypeError, ValueError):
+                continue
+
+            category = payload.get("category") or ""
+            title = payload.get("title") or f"Knowledge {str(entity_id)[:8]}"
+
+            source = ChatSource(
+                source_type="knowledge",
+                entity_id=entity_id,
+                title=title,
+                relevance_score=score,
+                skills=[category] if category else [],
+            )
+            sources.append(source)
+        return sources

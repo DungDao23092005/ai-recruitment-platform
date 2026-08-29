@@ -1,4 +1,5 @@
 import apiClient from '@/api/client'
+import { AxiosError } from 'axios'
 import type {
   CandidateMatchRecommendation,
   ChatRequest,
@@ -16,6 +17,11 @@ import type {
   SemanticSearchResult,
 } from '@/types/ai'
 
+export interface JobRecommendationsResult {
+  recommendations: JobMatchRecommendation[]
+  hasCV: boolean
+}
+
 export async function parseResume(file: File): Promise<ParsedResume> {
   const formData = new FormData()
   formData.append('file', file)
@@ -32,13 +38,21 @@ export async function getMyResume(): Promise<ResumeRead> {
 
 export async function getJobRecommendations(
   limit = 10,
-): Promise<JobMatchRecommendation[]> {
-  return apiClient.get<JobMatchRecommendation[], JobMatchRecommendation[]>(
-    '/ai/recommendations/jobs',
-    {
-      params: { limit },
-    },
-  )
+): Promise<JobRecommendationsResult> {
+  try {
+    const recommendations = await apiClient.get<JobMatchRecommendation[], JobMatchRecommendation[]>(
+      '/ai/recommendations/jobs',
+      {
+        params: { limit },
+      },
+    )
+    return { recommendations, hasCV: true }
+  } catch (error) {
+    if (error instanceof AxiosError && error.response?.status === 404) {
+      return { recommendations: [], hasCV: false }
+    }
+    throw error
+  }
 }
 
 export async function getCandidateRecommendations(

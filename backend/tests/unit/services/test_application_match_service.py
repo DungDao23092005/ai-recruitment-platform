@@ -89,8 +89,8 @@ def make_matching_service(
         return_value={"vector": [1.0, 0.0]}
     )
     embedding = SimpleNamespace(
-        embed_resume=MagicMock(return_value=resume_vector or [1.0, 0.0]),
-        embed_job=MagicMock(return_value=job_vector or [1.0, 0.0]),
+        embed_resume=AsyncMock(return_value=resume_vector or [1.0, 0.0]),
+        embed_job=AsyncMock(return_value=job_vector or [1.0, 0.0]),
     )
     return SimpleNamespace(
         vector_repository=vector_repo,
