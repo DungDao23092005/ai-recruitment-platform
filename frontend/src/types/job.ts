@@ -21,6 +21,10 @@ export interface Job {
 export interface JobListParams {
   skip: number
   limit: number
+  keyword?: string
+  workplace_type?: WorkplaceType
+  job_type?: JobType
+  location?: string
 }
 
 export const JOB_TYPE_LABELS: Record<JobType, string> = {

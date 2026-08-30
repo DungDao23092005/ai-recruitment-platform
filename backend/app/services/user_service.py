@@ -190,30 +190,42 @@ class UserService:
         ``company_id`` is only accepted when it references a company that the
         recruiter already owns (per the existing ownership model). Recruiter A
         must never link Recruiter B's company.
+
+        If the recruiter already has a company linked, the existing company_id
+        is preserved when the incoming data omits or clears company_id.
         """
         user = await self.users.get_with_profile(user_id)
         if user is None:
             raise EntityNotFoundException(f"User {user_id} not found")
 
-        if data.company_id is not None:
-            company = await self.companies.get_by_id(data.company_id)
+        incoming_company_id = data.company_id
+        existing_profile = user.recruiter_profile
+        existing_company_id = existing_profile.company_id if existing_profile else None
+
+        # If incoming company_id is provided, validate ownership
+        if incoming_company_id is not None:
+            company = await self.companies.get_by_id(incoming_company_id)
             if company is None:
                 raise EntityNotFoundException(
-                    f"Company {data.company_id} not found"
+                    f"Company {incoming_company_id} not found"
                 )
 
-            profile = user.recruiter_profile
-            owned_company_id = profile.company_id if profile is not None else None
-            if owned_company_id is None or owned_company_id != data.company_id:
+            owned_company_id = existing_company_id
+            if owned_company_id is None or owned_company_id != incoming_company_id:
                 raise ForbiddenException(
                     f"Recruiter {user_id} is not allowed to link "
-                    f"company {data.company_id}"
+                    f"company {incoming_company_id}"
                 )
+
+        # If incoming company_id is None/empty but profile already has one, preserve it
+        final_company_id = incoming_company_id
+        if incoming_company_id is None and existing_company_id is not None:
+            final_company_id = existing_company_id
 
         if user.recruiter_profile is None:
             profile = RecruiterProfile(
                 user_id=user_id,
-                company_id=data.company_id,
+                company_id=final_company_id,
                 full_name=data.full_name,
                 position=data.position,
             )
@@ -227,7 +239,7 @@ class UserService:
             return profile
 
         profile = user.recruiter_profile
-        profile.company_id = data.company_id
+        profile.company_id = final_company_id
         profile.full_name = data.full_name
         profile.position = data.position
         try:

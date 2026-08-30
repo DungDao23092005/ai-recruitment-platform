@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { getJobs } from '@/api/jobs'
 import type { Job, JobType, WorkplaceType } from '@/types/job'
 
@@ -18,6 +18,7 @@ export interface UseJobsResult {
   filters: JobFiltersState
   page: number
   totalPages: number
+  total: number
   setKeyword: (value: string) => void
   setWorkplaceType: (value: WorkplaceType | '') => void
   setJobType: (value: JobType | '') => void
@@ -38,6 +39,7 @@ export function useJobs(): UseJobsResult {
     location: '',
   })
   const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
 
   const load = useCallback(async () => {
     setIsLoading(true)
@@ -46,8 +48,13 @@ export function useJobs(): UseJobsResult {
       const data = await getJobs({
         skip: (page - 1) * PAGE_SIZE,
         limit: PAGE_SIZE,
+        keyword: filters.keyword || undefined,
+        workplace_type: filters.workplace_type || undefined,
+        job_type: filters.job_type || undefined,
+        location: filters.location || undefined,
       })
-      setJobs(data)
+      setJobs(data.items)
+      setTotal(data.total)
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Unable to load jobs'
@@ -55,37 +62,13 @@ export function useJobs(): UseJobsResult {
     } finally {
       setIsLoading(false)
     }
-  }, [page])
+  }, [page, filters])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const filteredJobs = useMemo(() => {
-    const keyword = filters.keyword.trim().toLowerCase()
-    const location = filters.location.trim().toLowerCase()
-
-    return jobs.filter((job) => {
-      if (
-        filters.workplace_type &&
-        job.workplace_type !== filters.workplace_type
-      ) {
-        return false
-      }
-      if (filters.job_type && job.job_type !== filters.job_type) {
-        return false
-      }
-      if (keyword && !job.title.toLowerCase().includes(keyword)) {
-        return false
-      }
-      if (location && !job.location.toLowerCase().includes(location)) {
-        return false
-      }
-      return true
-    })
-  }, [jobs, filters])
-
-  const totalPages = Math.max(1, Math.ceil(filteredJobs.length / PAGE_SIZE))
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   const setKeyword = useCallback((value: string) => {
     setFilters((f) => ({ ...f, keyword: value }))
@@ -114,19 +97,26 @@ export function useJobs(): UseJobsResult {
       job_type: '',
       location: '',
     })
+    setPage(1)
   }, [])
 
   const refresh = useCallback(() => {
     void load()
   }, [load])
 
+  // Reset page to 1 when filters change
+  useEffect(() => {
+    setPage(1)
+  }, [filters.keyword, filters.workplace_type, filters.job_type, filters.location])
+
   return {
-    jobs: filteredJobs,
+    jobs,
     isLoading,
     error,
     filters,
     page,
     totalPages,
+    total,
     setKeyword,
     setWorkplaceType,
     setJobType,

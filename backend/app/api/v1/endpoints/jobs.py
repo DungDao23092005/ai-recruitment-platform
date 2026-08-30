@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_recruiter
@@ -13,7 +13,7 @@ from app.core.exceptions import (
     InvalidDocumentError,
     InvalidTransitionException,
 )
-from app.domain.enums import JobStatus, UserRole
+from app.domain.enums import JobStatus, JobType, UserRole, WorkplaceType
 from app.models import Job, User
 from app.schemas.job import JobCreate, JobRead, JobStatusUpdate, JobUpdate
 from app.services.company_service import CompanyService
@@ -79,15 +79,30 @@ async def create_job(
 
 @router.get(
     "",
-    response_model=list[JobRead],
+    response_model=dict,
 )
 async def list_jobs(
-    skip: int = 0,
-    limit: int = 10,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=100),
+    keyword: str | None = Query(None),
+    workplace_type: WorkplaceType | None = Query(None),
+    job_type: JobType | None = Query(None),
+    location: str | None = Query(None),
     service: JobService = Depends(_get_job_service),
-) -> list[JobRead]:
-    jobs = await service.list_jobs(skip=skip, limit=limit)
-    return [to_job_read(j) for j in jobs]
+) -> dict:
+    """Public job board: list published jobs with filters and pagination.
+
+    Returns: { items: JobRead[], total: int }
+    """
+    jobs, total = await service.list_public_jobs(
+        skip=skip,
+        limit=limit,
+        keyword=keyword,
+        workplace_type=workplace_type,
+        job_type=job_type,
+        location=location,
+    )
+    return {"items": [to_job_read(j) for j in jobs], "total": total}
 
 
 @router.get(

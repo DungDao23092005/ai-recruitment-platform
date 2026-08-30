@@ -51,6 +51,7 @@ export function RecruiterProfileForm() {
   const [apiError, setApiError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [hasExistingCompany, setHasExistingCompany] = useState(false)
 
   const loadProfile = async () => {
     setIsLoading(true)
@@ -62,6 +63,7 @@ export function RecruiterProfileForm() {
         position: profile.position ?? '',
         company_id: profile.company_id ?? '',
       })
+      setHasExistingCompany(!!profile.company_id)
     } catch (error) {
       if (!isNotFoundError(error)) {
         setLoadError(getFriendlyErrorMessage(error))
@@ -135,13 +137,18 @@ export function RecruiterProfileForm() {
       />
       <Input
         name="company_id"
-        label="Mã công ty (tùy chọn)"
+        label="Mã công ty"
         placeholder="vd: 3fa85f64-5717-4562-b3fc-2c963f66afa6"
-        helperText="Có thể liên kết tài khoản với công ty đã tạo trên nền tảng."
+        helperText={
+          hasExistingCompany
+            ? 'Đã liên kết với công ty. Không thể xóa liên kết này.'
+            : 'Có thể liên kết tài khoản với công ty đã tạo trên nền tảng.'
+        }
         value={values.company_id}
         onChange={(e) =>
           setValues((v) => ({ ...v, company_id: e.target.value }))
         }
+        disabled={hasExistingCompany}
       />
 
       {apiError ? (

@@ -15,8 +15,13 @@ export interface JobUpdatePayload {
   location?: string | null
 }
 
-export async function getJobs(params: JobListParams): Promise<Job[]> {
-  return apiClient.get<Job[], Job[]>('/jobs', { params })
+export interface JobListResponse {
+  items: Job[]
+  total: number
+}
+
+export async function getJobs(params: JobListParams): Promise<JobListResponse> {
+  return apiClient.get<JobListResponse, JobListResponse>('/jobs', { params })
 }
 
 export async function getMyJobs(params: JobListParams): Promise<Job[]> {

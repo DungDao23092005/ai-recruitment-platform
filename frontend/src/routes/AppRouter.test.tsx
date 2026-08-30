@@ -186,7 +186,7 @@ function renderAt(path: string) {
 beforeEach(() => {
   vi.resetAllMocks()
   localStorage.clear()
-  mockedGetJobs.mockResolvedValue([mockJob])
+  mockedGetJobs.mockResolvedValue({ items: [mockJob], total: 1 })
   mockedGetJobById.mockResolvedValue(mockJob)
   mockedGetMyJobById.mockResolvedValue(mockJob)
   mockedSearchJobs.mockResolvedValue([])
@@ -194,7 +194,7 @@ beforeEach(() => {
   mockedGetJobRecommendations.mockResolvedValue({ recommendations: [], hasCV: true })
   mockedGetCandidateRecommendations.mockResolvedValue([])
   mockedSendChatMessage.mockRejectedValue(new Error('no chat'))
-  mockedGenerateInterviewQuestions.mockRejectedValue(new Error('no interview'))
+  mockedGenerateInterviewQuestions.mockResolvedValue(new Error('no interview'))
   mockedGetAdminStats.mockResolvedValue(mockStats)
   mockedGetSystemHealth.mockResolvedValue(mockHealth)
   mockedGetAdminUsers.mockResolvedValue({

@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload
 
-from app.domain.enums import JobStatus
+from app.domain.enums import JobStatus, JobType, WorkplaceType
 from app.models import Company, Job
 from app.repositories.base import BaseRepository
 
@@ -25,6 +25,59 @@ class JobRepository(BaseRepository[Job]):
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_active_jobs_with_filters(
+        self,
+        skip: int = 0,
+        limit: int = 10,
+        keyword: str | None = None,
+        workplace_type: WorkplaceType | None = None,
+        job_type: JobType | None = None,
+        location: str | None = None,
+    ) -> tuple[list[Job], int]:
+        """Return a page of published/active jobs with filters and total count."""
+        # Build the base query with filters
+        base_stmt = (
+            select(Job)
+            .options(joinedload(Job.company))
+            .where(
+                Job.status == JobStatus.PUBLISHED,
+                Job.is_deleted == False,  # noqa: E712
+            )
+        )
+        count_stmt = select(func.count(Job.id)).where(
+            Job.status == JobStatus.PUBLISHED,
+            Job.is_deleted == False,  # noqa: E712
+        )
+
+        if keyword:
+            search_filter = Job.title.ilike(f"%{keyword}%")
+            base_stmt = base_stmt.where(search_filter)
+            count_stmt = count_stmt.where(search_filter)
+
+        if workplace_type:
+            base_stmt = base_stmt.where(Job.workplace_type == workplace_type)
+            count_stmt = count_stmt.where(Job.workplace_type == workplace_type)
+
+        if job_type:
+            base_stmt = base_stmt.where(Job.job_type == job_type)
+            count_stmt = count_stmt.where(Job.job_type == job_type)
+
+        if location:
+            location_filter = Job.location.ilike(f"%{location}%")
+            base_stmt = base_stmt.where(location_filter)
+            count_stmt = count_stmt.where(location_filter)
+
+        # Get total count
+        total_result = await self.session.execute(count_stmt)
+        total = total_result.scalar_one()
+
+        # Get paginated items
+        base_stmt = base_stmt.order_by(Job.created_at.desc()).offset(skip).limit(limit)
+        result = await self.session.execute(base_stmt)
+        items = list(result.scalars().unique().all())
+
+        return items, total
 
     async def list_jobs_by_company(
         self,

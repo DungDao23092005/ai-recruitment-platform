@@ -59,7 +59,7 @@ describe('RecruiterProfileForm', () => {
       expect(screen.getByLabelText('Vị trí')).toHaveValue(
         'Trưởng phòng Tuyển dụng',
       )
-      expect(screen.getByLabelText('Mã công ty (tùy chọn)')).toHaveValue(
+      expect(screen.getByLabelText('Mã công ty')).toHaveValue(
         'company-1',
       )
     })
@@ -73,7 +73,7 @@ describe('RecruiterProfileForm', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Họ và tên')).toHaveValue('')
       expect(screen.getByLabelText('Vị trí')).toHaveValue('')
-      expect(screen.getByLabelText('Mã công ty (tùy chọn)')).toHaveValue('')
+      expect(screen.getByLabelText('Mã công ty')).toHaveValue('')
     })
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
@@ -193,7 +193,7 @@ describe('RecruiterProfileForm', () => {
       expect(screen.getByLabelText('Họ và tên')).toHaveValue('Trần Thị Bích')
     })
 
-    fireEvent.change(screen.getByLabelText('Mã công ty (tùy chọn)'), {
+    fireEvent.change(screen.getByLabelText('Mã công ty'), {
       target: { value: 'company-b' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Lưu hồ sơ/i }))

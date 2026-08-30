@@ -176,6 +176,28 @@ class JobService:
     ) -> list[Job]:
         return await self.jobs.list_active_jobs(skip=skip, limit=limit)
 
+    async def list_public_jobs(
+        self,
+        skip: int = 0,
+        limit: int = 10,
+        keyword: str | None = None,
+        workplace_type: WorkplaceType | None = None,
+        job_type: JobType | None = None,
+        location: str | None = None,
+    ) -> tuple[list[Job], int]:
+        """List published/active jobs with filters for public job board.
+
+        Returns (items, total_count).
+        """
+        return await self.jobs.list_active_jobs_with_filters(
+            skip=skip,
+            limit=limit,
+            keyword=keyword,
+            workplace_type=workplace_type,
+            job_type=job_type,
+            location=location,
+        )
+
     async def list_recruiter_jobs(
         self,
         user_id: uuid.UUID,
