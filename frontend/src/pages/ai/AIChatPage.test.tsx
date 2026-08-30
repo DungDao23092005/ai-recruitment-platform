@@ -227,9 +227,122 @@ describe('AIChatPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Gửi/i }))
 
     await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: /Đang gửi\.\.\./i }),
-      ).toBeDisabled()
+      expect(screen.getByRole('button', { name: /Đang gửi\.\.\./i })).toBeDisabled()
     })
+  })
+
+  it('preserves conversation when clicking suggested followup', async () => {
+    render(<AIChatPage />)
+
+    fireEvent.change(screen.getByLabelText('Tin nhắn chat'), {
+      target: { value: 'Câu hỏi ban đầu' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Gửi/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Câu hỏi ban đầu')).toBeInTheDocument()
+      expect(screen.getByText('Python')).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'Lộ trình AI Engineer?' }),
+      ).toBeInTheDocument()
+    })
+
+    // Click the suggestion button
+    const suggestionButton = screen.getByRole('button', { name: 'Lộ trình AI Engineer?' })
+    fireEvent.click(suggestionButton)
+
+    await waitFor(() => {
+      expect(screen.getByText('Câu hỏi ban đầu')).toBeInTheDocument()
+      // Two "Python" occurrences: one from each AI response
+      expect(screen.getAllByText('Python')).toHaveLength(2)
+      // The suggestion button should still exist (from the latest AI response)
+      expect(screen.getAllByRole('button', { name: 'Lộ trình AI Engineer?' }).length).toBeGreaterThanOrEqual(1)
+      // Check for the AI response text using a partial match (there are two now, use getAllByText)
+      expect(screen.getAllByText(/Dựa trên dữ kiện, bạn nên học/).length).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  it('prevents multiple concurrent requests on rapid suggestion clicks', async () => {
+    let firstResolve: (value: typeof mockResponse) => void
+    const firstPromise = new Promise<typeof mockResponse>((resolve) => {
+      firstResolve = resolve
+    })
+
+    let secondResolve: (value: typeof mockResponse) => void
+    const secondPromise = new Promise<typeof mockResponse>((resolve) => {
+      secondResolve = resolve
+    })
+
+    mockedSendChatMessage
+      .mockReturnValueOnce(firstPromise)
+      .mockReturnValueOnce(secondPromise)
+
+    render(<AIChatPage />)
+
+    fireEvent.change(screen.getByLabelText('Tin nhắn chat'), {
+      target: { value: 'Câu hỏi' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Gửi/i }))
+
+    // Resolve first request so suggestion button appears
+    firstResolve!(mockResponse)
+
+    // Wait for first response and suggestion button to appear
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: 'Lộ trình AI Engineer?' }),
+      ).toBeInTheDocument()
+    })
+
+    const suggestionButton = screen.getByRole('button', {
+      name: 'Lộ trình AI Engineer?',
+    })
+
+    // Rapidly click the suggestion 3 times
+    fireEvent.click(suggestionButton)
+    fireEvent.click(suggestionButton)
+    fireEvent.click(suggestionButton)
+
+    // Should only call sendChatMessage once more (the lock should prevent duplicates)
+    await waitFor(() => {
+      expect(mockedSendChatMessage).toHaveBeenCalledTimes(2) // 1 initial + 1 suggestion
+    })
+
+    secondResolve!(mockResponse)
+
+    await waitFor(() => {
+      expect(screen.getByText(/Dựa trên dữ kiện, bạn nên học/)).toBeInTheDocument()
+    })
+  })
+
+  it('scrolls local chat container on new messages', async () => {
+    const scrollToSpy = vi.fn()
+
+    // Mock scrollTo on HTMLElement prototype
+    const originalScrollTo = HTMLElement.prototype.scrollTo
+    HTMLElement.prototype.scrollTo = scrollToSpy
+
+    mockedSendChatMessage.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(mockResponse), 10)),
+    )
+
+    render(<AIChatPage />)
+
+    fireEvent.change(screen.getByLabelText('Tin nhắn chat'), {
+      target: { value: 'Câu hỏi test scroll' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Gửi/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Câu hỏi test scroll')).toBeInTheDocument()
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText('Python')).toBeInTheDocument()
+    })
+
+    expect(scrollToSpy).toHaveBeenCalled()
+
+    HTMLElement.prototype.scrollTo = originalScrollTo
   })
 })

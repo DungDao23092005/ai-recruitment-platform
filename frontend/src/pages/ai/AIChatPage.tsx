@@ -36,10 +36,16 @@ export function AIChatPage() {
     pendingText: null,
   })
   const bottomRef = useRef<HTMLDivElement | null>(null)
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null)
+  const isLoadingRef = useRef(false)
 
   const scrollToBottom = () => {
-    if (typeof bottomRef.current?.scrollIntoView === 'function') {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' })
+    const container = messagesContainerRef.current
+    if (container) {
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: 'smooth',
+      })
     }
   }
 
@@ -48,9 +54,11 @@ export function AIChatPage() {
   }, [state.messages, state.isLoading])
 
   const send = async (text: string) => {
-    if (!text.trim() || state.isLoading) {
+    if (!text.trim() || isLoadingRef.current) {
       return
     }
+
+    isLoadingRef.current = true
 
     const userMessage: ChatMessage = { role: 'user', content: text.trim() }
     const history: ChatMessage[] = state.messages
@@ -94,6 +102,8 @@ export function AIChatPage() {
         error: getFriendlyErrorMessage(err),
         pendingText: text.trim(),
       }))
+    } finally {
+      isLoadingRef.current = false
     }
   }
 
@@ -115,7 +125,10 @@ export function AIChatPage() {
       />
 
       <div className="flex flex-1 flex-col overflow-hidden rounded-xl border bg-card/40">
-        <div className="flex-1 space-y-4 overflow-y-auto p-4">
+        <div
+          ref={messagesContainerRef}
+          className="flex-1 space-y-4 overflow-y-auto p-4"
+        >
           {state.messages.length === 0 && !state.isLoading ? (
             <div className="flex h-full flex-col items-center justify-center gap-6 text-center">
               <div className="ai-gradient flex h-14 w-14 items-center justify-center rounded-full text-white">
