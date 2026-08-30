@@ -62,6 +62,9 @@ class FakeVectorRepository:
     async def delete_vector(self, *args, **kwargs):
         return None
 
+    async def delete_vectors_by_filter(self, collection_name, filter_key, filter_value):
+        return None
+
 
 class FakeEmbeddingService:
     def __init__(self):

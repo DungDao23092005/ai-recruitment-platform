@@ -93,10 +93,10 @@ class FakeLLMProvider(BaseLLMProvider):
 class FakeEmbeddingProvider(BaseEmbeddingProvider):
     """Deterministic embedding stub producing VECTOR_DIM vectors."""
 
-    def embed_text(self, text: str) -> list[float]:
+    async def embed_text(self, text: str) -> list[float]:
         return self._hash_vector(text)
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [self._hash_vector(text) for text in texts]
 
     @staticmethod
@@ -129,6 +129,20 @@ class FakeVectorRepository(BaseVectorRepository):
         point_id: str | uuid.UUID,
     ) -> None:
         self.store.pop((collection_name, str(point_id)), None)
+
+    async def delete_vectors_by_filter(
+        self,
+        collection_name: str,
+        filter_key: str,
+        filter_value: Any,
+    ) -> None:
+        keys_to_delete = [
+            (col, pid)
+            for (col, pid), (_, payload) in self.store.items()
+            if col == collection_name and payload.get(filter_key) == filter_value
+        ]
+        for key in keys_to_delete:
+            self.store.pop(key, None)
 
     async def retrieve_vector(
         self,
@@ -249,7 +263,8 @@ class TestJobPipeline:
 
 
 class TestMatchingPipeline:
-    def test_full_matching_uses_real_engine(self, pipeline):
+    @pytest.mark.asyncio
+    async def test_full_matching_uses_real_engine(self, pipeline):
         resume = ParsedResumeSchema(
             full_name="Alice",
             skills=["Python", "FastAPI", "Docker"],
@@ -264,7 +279,7 @@ class TestMatchingPipeline:
         resume_vector = FakeEmbeddingProvider._hash_vector("Python FastAPI Docker")
         job_vector = FakeEmbeddingProvider._hash_vector("Python FastAPI Docker")
 
-        result = pipeline["service"].match_candidate_with_job(
+        result = await pipeline["service"].match_candidate_with_job(
             parsed_resume=resume,
             parsed_job=job,
             resume_vector=resume_vector,

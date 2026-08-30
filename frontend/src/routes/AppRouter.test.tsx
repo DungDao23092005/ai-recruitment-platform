@@ -130,6 +130,10 @@ vi.mock('@/api/metrics', () => ({
   getRecruiterMetrics: vi.fn(),
 }))
 
+vi.mock('@/api/notifications', () => ({
+  getUnreadNotificationCount: vi.fn().mockResolvedValue({ count: 0 }),
+}))
+
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
 const mockedGetJobs = vi.mocked(jobsApi.getJobs)
 const mockedGetJobById = vi.mocked(jobsApi.getJobById)
@@ -187,7 +191,7 @@ beforeEach(() => {
   mockedGetMyJobById.mockResolvedValue(mockJob)
   mockedSearchJobs.mockResolvedValue([])
   mockedSearchCandidates.mockResolvedValue([])
-  mockedGetJobRecommendations.mockResolvedValue([])
+  mockedGetJobRecommendations.mockResolvedValue({ recommendations: [], hasCV: true })
   mockedGetCandidateRecommendations.mockResolvedValue([])
   mockedSendChatMessage.mockRejectedValue(new Error('no chat'))
   mockedGenerateInterviewQuestions.mockRejectedValue(new Error('no interview'))
@@ -450,7 +454,9 @@ describe('AppRouter role guards', () => {
         screen.getByRole('heading', { name: 'Quản lý công ty', level: 1 }),
       ).toBeInTheDocument()
     })
-    expect(mockedGetAdminCompanies).toHaveBeenCalled()
+    await waitFor(() => {
+      expect(mockedGetAdminCompanies).toHaveBeenCalled()
+    })
   })
 })
 
@@ -493,7 +499,9 @@ describe('AppRouter recruiter job routes', () => {
         screen.getByRole('heading', { name: 'Sửa tin tuyển dụng' }),
       ).toBeInTheDocument()
     })
-    expect(mockedGetMyJobById).toHaveBeenCalledWith('job-1')
+    await waitFor(() => {
+      expect(mockedGetMyJobById).toHaveBeenCalledWith('job-1')
+    })
   })
 
   it('blocks a candidate from the recruiter job edit page', async () => {
@@ -551,14 +559,14 @@ describe('AppRouter AI routes', () => {
 })
 
 describe('AppRouter Navbar integration', () => {
-  it('keeps private role navigation out of the public navbar for a candidate', async () => {
+  it('shows candidate role navigation in the public navbar', async () => {
     setUser('candidate')
 
     renderAt('/')
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+        screen.getByRole('navigation', { name: 'Điều hướng chính' }),
       ).toBeInTheDocument()
     })
     const publicNav = screen.getByRole('navigation', {
@@ -566,60 +574,64 @@ describe('AppRouter Navbar integration', () => {
     })
     expect(within(publicNav).getByText('Trang chủ')).toBeInTheDocument()
     expect(within(publicNav).getByText('Việc làm')).toBeInTheDocument()
-    expect(within(publicNav).queryByText('Trợ lý AI')).not.toBeInTheDocument()
-    expect(within(publicNav).queryByText('Tìm việc AI')).not.toBeInTheDocument()
-    expect(
-      within(publicNav).queryByText('Gợi ý việc làm'),
-    ).not.toBeInTheDocument()
+    expect(within(publicNav).getByText('Tìm việc AI')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Gợi ý việc làm')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Trợ lý AI')).toBeInTheDocument()
+    // Dashboard link for candidate is "Tổng quan" pointing to /candidate/portal
     const dashboardCta = within(publicNav).getByRole('link', {
-      name: 'Vào bảng điều khiển',
+      name: 'Tổng quan',
     })
     expect(dashboardCta).toHaveAttribute('href', '/candidate/portal')
   })
 
-  it('points the dashboard CTA at the recruiter portal for a recruiter', async () => {
+  it('shows recruiter role navigation in the public navbar', async () => {
     setUser('recruiter')
 
     renderAt('/')
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+        screen.getByRole('navigation', { name: 'Điều hướng chính' }),
       ).toBeInTheDocument()
     })
     const publicNav = screen.getByRole('navigation', {
       name: 'Điều hướng chính',
     })
-    expect(
-      within(publicNav).queryByText('Quản lý tuyển dụng'),
-    ).not.toBeInTheDocument()
-    expect(
-      within(publicNav).queryByText('Tìm ứng viên AI'),
-    ).not.toBeInTheDocument()
+    expect(within(publicNav).getByText('Trang chủ')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Việc làm')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Quản lý tuyển dụng')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Đăng tin')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Trợ lý AI')).toBeInTheDocument()
+    // Dashboard link for recruiter is "Quản lý tuyển dụng" pointing to /recruiter/portal
     const dashboardCta = within(publicNav).getByRole('link', {
-      name: 'Vào bảng điều khiển',
+      name: 'Quản lý tuyển dụng',
     })
     expect(dashboardCta).toHaveAttribute('href', '/recruiter/portal')
   })
 
-  it('points the dashboard CTA at the admin dashboard for an admin', async () => {
+  it('shows admin role navigation in the public navbar', async () => {
     setUser('admin')
 
     renderAt('/')
 
     await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+        screen.getByRole('navigation', { name: 'Điều hướng chính' }),
       ).toBeInTheDocument()
     })
     const publicNav = screen.getByRole('navigation', {
       name: 'Điều hướng chính',
     })
-    expect(
-      within(publicNav).queryByText('Quản lý tuyển dụng'),
-    ).not.toBeInTheDocument()
+    expect(within(publicNav).getByText('Trang chủ')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Việc làm')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Bảng điều khiển')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Quản lý tuyển dụng')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
+    expect(within(publicNav).getByText('Trợ lý AI')).toBeInTheDocument()
+    // Dashboard link for admin is "Bảng điều khiển" pointing to /admin/dashboard
     const dashboardCta = within(publicNav).getByRole('link', {
-      name: 'Vào bảng điều khiển',
+      name: 'Bảng điều khiển',
     })
     expect(dashboardCta).toHaveAttribute('href', '/admin/dashboard')
   })
@@ -761,7 +773,7 @@ describe('AppRouter layout integration', () => {
         match_reasons: ['Good fit'],
       },
     }
-    mockedGetJobRecommendations.mockResolvedValue([recommendation])
+    mockedGetJobRecommendations.mockResolvedValue({ recommendations: [recommendation], hasCV: true })
 
     renderAt('/candidate/recommendations')
 

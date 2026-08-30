@@ -7,16 +7,25 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 # Skip CrossEncoder tests in this environment due to model loading issues
+# This is checked lazily in a fixture to avoid import-time model loading
 SKIP_CROSS_ENCODER = True
-try:
-    from sentence_transformers import CrossEncoder
-    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    # Test that it actually works
-    test_result = model.predict([["test query", "test document"]])
-    if len(test_result) == 1:
-        SKIP_CROSS_ENCODER = False
-except Exception:
-    SKIP_CROSS_ENCODER = True
+
+
+def _check_cross_encoder_available() -> bool:
+    """Check if CrossEncoder model is available, loading it lazily."""
+    global SKIP_CROSS_ENCODER
+    if not SKIP_CROSS_ENCODER:
+        return True
+    try:
+        from sentence_transformers import CrossEncoder
+        model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        test_result = model.predict([["test query", "test document"]])
+        if len(test_result) == 1:
+            SKIP_CROSS_ENCODER = False
+            return True
+    except Exception:
+        pass
+    return False
 
 from app.ai.interfaces.base_provider import BaseReranker, RerankResult
 from app.core.exceptions import AIError, EmptyDocumentError, InvalidDocumentError
@@ -2647,8 +2656,8 @@ class TestPhaseHRealCrossEncoderEvaluation:
         assert "66666666-6666-6666-6666-666666666666" not in candidate_ids
         assert "77777777-7777-7777-7777-777777777777" not in candidate_ids
 
-    # @pytest.mark.skipif(SKIP_CROSS_ENCODER, reason="CrossEncoder model unavailable in this environment")
-    # def test_real_cross_encoder_changes_ordering_in_discriminative_fixture(self):
+    #     @pytest.mark.skipif(not _check_cross_encoder_available(), reason="CrossEncoder model unavailable in this environment")
+#     # def test_real_cross_encoder_changes_ordering_in_discriminative_fixture(self):
         # """Test that real CrossEncoder can change candidate ordering.
         #
         # This test uses realistic deterministic candidate text where Qdrant
@@ -3392,7 +3401,7 @@ class TestMockEmbeddingProviderSemanticSimilarity:
 class TestPhaseJAsyncOffloading:
     """Phase J: Tests for async offloading of blocking PyTorch inference."""
 
-    @pytest.mark.skipif(SKIP_CROSS_ENCODER, reason="CrossEncoder model unavailable in this environment")
+    @pytest.mark.skipif("not _check_cross_encoder_available()", reason="CrossEncoder model unavailable in this environment")
     def test_crossencoder_inference_offloaded_from_event_loop(self):
         """Verify CrossEncoder inference is offloaded to thread pool."""
         from app.ai.reranking.cross_encoder_reranker import CrossEncoderReranker

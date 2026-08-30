@@ -67,10 +67,10 @@ def recruiter_client(mock_auth_service):
     app.dependency_overrides.clear()
 
 
-def test_anonymous_forgot_password_returns_200():
+def test_anonymous_forgot_password_returns_200(mock_auth_service):
     """Forgot password endpoint is public, returns 200 for anonymous users"""
     app.dependency_overrides.clear()
-    with TestClient(app) as c:
+    with patch("app.api.v1.endpoints.auth.AuthService", return_value=mock_auth_service), TestClient(app) as c:
         resp = c.post("/api/v1/auth/forgot-password", json={"email": "test@example.com"})
         assert resp.status_code == 200
         data = resp.json()

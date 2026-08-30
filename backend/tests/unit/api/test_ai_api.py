@@ -105,8 +105,12 @@ def mock_service():
     service = MagicMock()
     service.process_and_index_resume = AsyncMock()
     service.process_and_index_job = AsyncMock()
+    service.match_candidate_with_job = AsyncMock()
     service.recommend_jobs_for_candidate = AsyncMock()
     service.recommend_candidates_for_job = AsyncMock()
+    service.embedding_service = MagicMock()
+    service.embedding_service.embed_job = AsyncMock(return_value=[0.1] * 384)
+    service.embedding_service.embed_resume = AsyncMock(return_value=[0.1] * 384)
     return service
 
 

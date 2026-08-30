@@ -418,11 +418,15 @@ describe('ApplicationDetailModal', () => {
     mockedGetApplicationDetail.mockResolvedValue(mockDetail)
     mockedGetApplicationMatch.mockResolvedValue(mockMatchResult)
     mockedExplainMatch.mockResolvedValue({
+      match_score: 85,
       summary: 'Ứng viên phù hợp tốt.',
       strengths: ['Python'],
-      skill_gaps: ['Docker'],
+      missing_skills: ['Docker'],
       experience_analysis: 'Đủ kinh nghiệm.',
+      education_analysis: 'Đủ yêu cầu học vấn.',
+      evidence: [],
       recommendation: 'Nên phỏng vấn.',
+      confidence: 0.9,
     })
 
     renderModal()
@@ -463,11 +467,15 @@ describe('ApplicationDetailModal', () => {
     Object.assign(error, { response: { status: 502 } })
     mockedExplainMatch.mockRejectedValueOnce(error)
     mockedExplainMatch.mockResolvedValueOnce({
+      match_score: 80,
       summary: 'OK',
       strengths: [],
-      skill_gaps: [],
+      missing_skills: [],
       experience_analysis: '',
+      education_analysis: '',
+      evidence: [],
       recommendation: '',
+      confidence: 0.8,
     })
 
     renderModal()

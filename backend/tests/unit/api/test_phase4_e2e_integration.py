@@ -96,10 +96,10 @@ class FakeLLMProvider(BaseLLMProvider):
 
 
 class FakeEmbeddingProvider(BaseEmbeddingProvider):
-    def embed_text(self, text: str) -> list[float]:
+    async def embed_text(self, text: str) -> list[float]:
         return self._hash_vector(text)
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [self._hash_vector(text) for text in texts]
 
     @staticmethod
@@ -137,6 +137,20 @@ class FakeVectorRepository(BaseVectorRepository):
             results.append({"id": pid, "score": score, "payload": payload})
         results.sort(key=lambda item: item["score"], reverse=True)
         return results[:limit]
+
+    async def delete_vectors_by_filter(
+        self,
+        collection_name: str,
+        filter_key: str,
+        filter_value: Any,
+    ) -> None:
+        keys_to_delete = [
+            (col, pid)
+            for (col, pid), (_, payload) in self.store.items()
+            if col == collection_name and payload.get(filter_key) == filter_value
+        ]
+        for key in keys_to_delete:
+            self.store.pop(key, None)
 
 
 def build_pipeline_service() -> tuple[AIMatchingService, FakeVectorRepository]:
@@ -322,6 +336,9 @@ def _make_db_job() -> MagicMock:
     job.description = "Backend role focused on Python and FastAPI."
     job.status = JobStatus.PUBLISHED
     job.is_deleted = False
+    job.location = "Ho Chi Minh City"
+    job.job_type = None
+    job.workplace_type = None
     job.company = SimpleNamespace(id=KNOWN_COMPANY_ID, name="TechNova AI")
     job.skills = []
     return job
@@ -378,22 +395,11 @@ def _fake_db_session() -> MagicMock:
         result.scalars().all.return_value = []
         result.all.return_value = []
         compiled = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+        print("EXECUTE CALLED WITH:", compiled)
 
         if "from jobs" in compiled:
-            # Check for JobService query first (has company join and is_deleted filter)
-            if "company" in compiled and "is_deleted" in compiled and "job_skills" in compiled:
-                # JobService.get_job_with_company_and_skills - join with company and skills, filter by id and is_deleted
-
-                result.scalars().unique().first.return_value = _make_db_job()
-            elif "is_deleted" in compiled and "status" in compiled:
-                # ContextResolver job query - return published job (has status filter)
-                result.scalars().all.return_value = [_make_db_job()]
-            elif "company" in compiled and "is_deleted" in compiled:
-                # JobService.get_job_with_company_and_skills - join with company, filter by id and is_deleted
-
-                result.scalars().unique().first.return_value = _make_db_job()
-            else:
-                result.scalars().unique().first.return_value = _make_db_job()
+            result.scalars().unique().first.return_value = _make_db_job()
+            result.scalars().all.return_value = [_make_db_job()]
         elif "from candidate_profiles" in compiled or "from candidateprofile" in compiled:
             if "is_deleted" in compiled:
                 # ContextResolver candidate profile query
@@ -412,8 +418,8 @@ def _fake_db_session() -> MagicMock:
         elif "from users" in compiled:
             if "recruiter_profile" in compiled or "candidate_profile" in compiled:
                 # UserService.get_user_with_profile with joinedload
-
                 result.scalars().unique().first.return_value = _make_db_user()
+                result.scalar_one_or_none.return_value = _make_db_user()
             else:
                 result.scalar_one_or_none.return_value = _make_db_user()
         elif "from recruiter_profiles" in compiled or "from recruiterprofile" in compiled:
@@ -766,6 +772,7 @@ class TestCandidateFlow:
         assert resp.status_code == 200
         body = resp.json()
         assert isinstance(body, list)
+        print("BODY IS", body)
         assert body[0]["job_id"] == str(KNOWN_JOB_ID)
 
 
@@ -859,7 +866,8 @@ class TestAdminFlow:
 
 
 class TestAiPipelineIntegration:
-    def test_indexed_resume_can_be_matched(self, vector_repository):
+    @pytest.mark.asyncio
+    async def test_indexed_resume_can_be_matched(self, vector_repository):
         resume = ParsedResumeSchema(
             full_name="Alice",
             skills=["Python", "FastAPI"],
@@ -880,7 +888,7 @@ class TestAiPipelineIntegration:
             vector_repository=vector_repository,
             matching_engine=MatchingEngine(),
         )
-        result = service.match_candidate_with_job(
+        result = await service.match_candidate_with_job(
             parsed_resume=resume,
             parsed_job=job,
             resume_vector=vector,

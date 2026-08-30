@@ -24,6 +24,11 @@ vi.mock('@/api/auth', () => ({
   createRecruiterProfile: vi.fn(),
 }))
 
+vi.mock('@/api/notifications', () => ({
+  getUnreadNotificationCount: vi.fn().mockResolvedValue({ count: 0 }),
+  getNotifications: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+}))
+
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
 
 function renderShell(role: UserRole, path: string) {

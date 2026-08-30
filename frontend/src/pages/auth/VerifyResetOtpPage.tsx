@@ -21,7 +21,7 @@ interface FormErrors {
   otp?: string
 }
 
-function validate(values: FormValues) {
+export function validate(values: FormValues) {
   const errors: FormErrors = {}
   if (!values.otp) {
     errors.otp = 'Mã OTP không được để trống'

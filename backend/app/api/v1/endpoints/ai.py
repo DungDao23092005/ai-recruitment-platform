@@ -174,7 +174,7 @@ async def match_candidate_and_job(
     current_user: User = Depends(get_current_active_user),
     service: AIMatchingService = Depends(_get_ai_service),
 ) -> MatchResultSchema:
-    return service.match_candidate_with_job(
+    return await service.match_candidate_with_job(
         parsed_resume=data.parsed_resume,
         parsed_job=data.parsed_job,
         resume_vector=data.resume_vector,

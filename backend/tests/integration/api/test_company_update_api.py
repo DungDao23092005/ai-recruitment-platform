@@ -43,6 +43,9 @@ class FakeVectorRepository:
         self.deleted_point_ids.append(str(point_id))
         self.job_vectors.pop(str(point_id), None)
 
+    async def delete_vectors_by_filter(self, collection_name, filter_key, filter_value):
+        return None
+
 
 @pytest.fixture
 def company_service_override():

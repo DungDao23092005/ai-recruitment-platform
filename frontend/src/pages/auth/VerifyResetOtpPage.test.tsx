@@ -50,8 +50,7 @@ describe('VerifyResetOtpPage', () => {
     const inputs = screen.getAllByRole('textbox')
     expect(inputs).toHaveLength(6)
   })
-
-  it('shows error for empty OTP', async () => {
+it('shows error for empty OTP', async () => {
     vi.mocked(authApi.verifyResetOtp).mockResolvedValue({ reset_token: 'test-token' })
 
     await act(async () => {
@@ -78,21 +77,22 @@ describe('VerifyResetOtpPage', () => {
       })
     }
 
-    // Fill 6th digit with non-digit to trigger format error
+    // Try to enter non-digit in 6th position - component filters non-digits
     await act(async () => {
       fireEvent.change(inputs[5], { target: { value: 'a' } })
     })
 
-    // Submit form
-    await act(async () => {
-      const submitButton = screen.getByRole('button', { name: /xác thực/i })
-      fireEvent.click(submitButton)
-    })
+    // Component filters non-digits, so 6th input remains empty
+    // Submit button should remain disabled (requires 6 digits)
+    const submitButton = screen.getByRole('button', { name: /xác thực/i })
+    expect(submitButton).toBeDisabled()
 
-    await waitFor(() => {
-      expect(screen.getByText('Mã OTP phải là 6 chữ số')).toBeInTheDocument()
-    })
+    // Directly test the validation function for invalid OTP format
+    const { validate } = await import('@/pages/auth/VerifyResetOtpPage')
+    const validationErrors = validate({ otp: '11111a' })
+    expect(validationErrors.otp).toBe('Mã OTP phải là 6 chữ số')
   })
+
 
   it('navigates to reset password page on successful verification', async () => {
     vi.mocked(authApi.verifyResetOtp).mockResolvedValue({ reset_token: 'test-reset-token' })

@@ -105,7 +105,7 @@ class MockEmbeddingService:
         self.call_count = 0
         self.last_text = ""
 
-    def embed_text(self, text: str) -> list[float]:
+    async def embed_text(self, text: str) -> list[float]:
         self.call_count += 1
         self.last_text = text
         # Return a deterministic vector based on text hash

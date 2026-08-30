@@ -78,7 +78,7 @@ beforeEach(() => {
 
 describe('CandidateRecommendationsPage', () => {
   it('calls getJobRecommendations on mount', async () => {
-    mockedGetJobRecommendations.mockResolvedValue(mockRecommendations)
+    mockedGetJobRecommendations.mockResolvedValue({ recommendations: mockRecommendations, hasCV: true })
 
     renderPage()
 
@@ -88,7 +88,7 @@ describe('CandidateRecommendationsPage', () => {
   })
 
   it('shows the loading state while fetching', async () => {
-    let resolve!: (value: JobMatchRecommendation[]) => void
+    let resolve!: (value: { recommendations: JobMatchRecommendation[]; hasCV: boolean }) => void
     mockedGetJobRecommendations.mockReturnValue(
       new Promise((r) => {
         resolve = r
@@ -101,11 +101,11 @@ describe('CandidateRecommendationsPage', () => {
       expect(container.querySelector('.animate-pulse')).not.toBeNull()
     })
 
-    resolve(mockRecommendations)
+    resolve({ recommendations: mockRecommendations, hasCV: true })
   })
 
   it('renders recommendation cards on success', async () => {
-    mockedGetJobRecommendations.mockResolvedValue(mockRecommendations)
+    mockedGetJobRecommendations.mockResolvedValue({ recommendations: mockRecommendations, hasCV: true })
 
     renderPage()
 
@@ -118,20 +118,20 @@ describe('CandidateRecommendationsPage', () => {
   })
 
   it('sorts recommendations by score descending', async () => {
-    mockedGetJobRecommendations.mockResolvedValue(mockRecommendations)
+    mockedGetJobRecommendations.mockResolvedValue({ recommendations: mockRecommendations, hasCV: true })
 
     renderPage()
 
     await waitFor(() => {
       const scoreBadges = screen
-        .getAllByLabelText(/Điểm đối sánh \d+ phần trăm/i)
+        .getAllByLabelText(/điểm đối sánh \d+ phần trăm/i)
         .map((el) => Number(el.textContent?.replace('%', '')))
       expect(scoreBadges).toEqual([91, 82])
     })
   })
 
   it('links recommendation cards to the candidate job detail route', async () => {
-    mockedGetJobRecommendations.mockResolvedValue(mockRecommendations)
+    mockedGetJobRecommendations.mockResolvedValue({ recommendations: mockRecommendations, hasCV: true })
 
     renderPage()
 
@@ -149,14 +149,14 @@ describe('CandidateRecommendationsPage', () => {
   })
 
   it('shows the empty state with a CV upload CTA', async () => {
-    mockedGetJobRecommendations.mockResolvedValue([])
+    mockedGetJobRecommendations.mockResolvedValue({ recommendations: [], hasCV: false })
 
     renderPage()
 
     await waitFor(() => {
       expect(
         screen.getByText(
-          /Chưa có gợi ý việc làm phù hợp/i,
+          /Chưa có CV/i,
         ),
       ).toBeInTheDocument()
     })
@@ -172,7 +172,7 @@ describe('CandidateRecommendationsPage', () => {
     })
     mockedGetJobRecommendations
       .mockRejectedValueOnce(error)
-      .mockResolvedValueOnce(mockRecommendations)
+      .mockResolvedValueOnce({ recommendations: mockRecommendations, hasCV: true })
 
     renderPage()
 

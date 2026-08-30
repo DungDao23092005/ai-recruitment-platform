@@ -45,7 +45,7 @@ def repo(mock_client: AsyncMock) -> QdrantVectorRepository:
 async def test_init_collections(repo: QdrantVectorRepository, mock_client: AsyncMock):
     await repo.init_collections()
 
-    assert mock_client.collection_exists.call_count == 2
+    assert mock_client.collection_exists.call_count == 3
     assert (
         mock_client.collection_exists.await_args_list[0].kwargs[
             "collection_name"
@@ -58,15 +58,23 @@ async def test_init_collections(repo: QdrantVectorRepository, mock_client: Async
         ]
         == QdrantVectorRepository.JOB_COLLECTION
     )
+    assert (
+        mock_client.collection_exists.await_args_list[2].kwargs[
+            "collection_name"
+        ]
+        == QdrantVectorRepository.KNOWLEDGE_COLLECTION
+    )
 
-    assert mock_client.create_collection.await_count == 2
+    assert mock_client.create_collection.await_count == 3
     resume_call = mock_client.create_collection.await_args_list[0].kwargs
     job_call = mock_client.create_collection.await_args_list[1].kwargs
+    knowledge_call = mock_client.create_collection.await_args_list[2].kwargs
 
     assert resume_call["collection_name"] == "resumes"
     assert job_call["collection_name"] == "jobs"
+    assert knowledge_call["collection_name"] == "knowledge"
 
-    for call in (resume_call, job_call):
+    for call in (resume_call, job_call, knowledge_call):
         vectors_config = call["vectors_config"]
         assert isinstance(vectors_config, VectorParams)
         assert vectors_config.size == VECTOR_DIM

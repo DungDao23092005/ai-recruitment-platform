@@ -12,7 +12,7 @@ from app.api.deps import get_current_user
 from app.api.v1.endpoints.admin import _get_admin_service
 from app.domain.enums import UserRole
 from app.main import app
-from app.schemas.admin import AdminUserListResponse
+from app.schemas.admin import AdminUserListResponse, AdminUserRead
 
 
 def _fake_admin_user(
@@ -20,6 +20,9 @@ def _fake_admin_user(
     email: str = "someone@example.com",
     role: UserRole = UserRole.CANDIDATE,
     is_deleted: bool = False,
+    lock_reason: str | None = None,
+    locked_at: datetime | None = None,
+    locked_by: uuid.UUID | None = None,
 ) -> dict:
     now = datetime.now(timezone.utc)
     return {
@@ -28,6 +31,9 @@ def _fake_admin_user(
         "role": role.value,
         "is_active": True,
         "is_deleted": is_deleted,
+        "lock_reason": lock_reason,
+        "locked_at": locked_at.isoformat() if locked_at else None,
+        "locked_by": str(locked_by) if locked_by else None,
         "created_at": now.isoformat(),
         "updated_at": now.isoformat(),
     }
@@ -35,8 +41,21 @@ def _fake_admin_user(
 
 def _fake_list_payload() -> AdminUserListResponse:
     return AdminUserListResponse(
-        items=[],
-        total=0,
+        items=[
+            AdminUserRead(
+                id=uuid.uuid4(),
+                email="test@example.com",
+                role=UserRole.CANDIDATE,
+                is_active=True,
+                is_deleted=False,
+                lock_reason=None,
+                locked_at=None,
+                locked_by=None,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        ],
+        total=1,
         skip=0,
         limit=10,
     )
@@ -205,10 +224,19 @@ class TestAdminUsersList:
 
     def test_returns_items_and_total(self, admin_client, mock_service):
         user = _fake_admin_user()
-        mock_service.list_users.return_value = (
-            [MagicMock(**{k: v for k, v in user.items()})],
-            1,
+        mock_user = AdminUserRead(
+            id=uuid.UUID(user["id"]),
+            email=user["email"],
+            role=UserRole(user["role"]),
+            is_active=user["is_active"],
+            is_deleted=user["is_deleted"],
+            lock_reason=user["lock_reason"],
+            locked_at=datetime.fromisoformat(user["locked_at"]) if user["locked_at"] else None,
+            locked_by=uuid.UUID(user["locked_by"]) if user["locked_by"] else None,
+            created_at=datetime.fromisoformat(user["created_at"]),
+            updated_at=datetime.fromisoformat(user["updated_at"]),
         )
+        mock_service.list_users.return_value = ([mock_user], 1)
         resp = admin_client.get("/api/v1/admin/users")
         assert resp.status_code == 200
         data = resp.json()
@@ -231,10 +259,19 @@ class TestAdminUsersListSensitiveFields:
     def test_no_password_hash_exposed(self, admin_client, mock_service):
         user = _fake_admin_user()
         user["password_hash"] = "super-secret"
-        mock_service.list_users.return_value = (
-            [MagicMock(**{k: v for k, v in user.items()})],
-            1,
+        mock_user = AdminUserRead(
+            id=uuid.uuid4(),
+            email=user["email"],
+            role=UserRole(user["role"]),
+            is_active=user["is_active"],
+            is_deleted=user["is_deleted"],
+            lock_reason=user["lock_reason"],
+            locked_at=datetime.fromisoformat(user["locked_at"]) if user["locked_at"] else None,
+            locked_by=uuid.UUID(user["locked_by"]) if user["locked_by"] else None,
+            created_at=datetime.fromisoformat(user["created_at"]),
+            updated_at=datetime.fromisoformat(user["updated_at"]),
         )
+        mock_service.list_users.return_value = ([mock_user], 1)
         resp = admin_client.get("/api/v1/admin/users")
         assert resp.status_code == 200
         item = resp.json()["items"][0]
@@ -244,10 +281,19 @@ class TestAdminUsersListSensitiveFields:
 
     def test_schema_exposes_only_expected_fields(self, admin_client, mock_service):
         user = _fake_admin_user()
-        mock_service.list_users.return_value = (
-            [MagicMock(**{k: v for k, v in user.items()})],
-            1,
+        mock_user = AdminUserRead(
+            id=uuid.uuid4(),
+            email=user["email"],
+            role=UserRole(user["role"]),
+            is_active=user["is_active"],
+            is_deleted=user["is_deleted"],
+            lock_reason=user["lock_reason"],
+            locked_at=datetime.fromisoformat(user["locked_at"]) if user["locked_at"] else None,
+            locked_by=uuid.UUID(user["locked_by"]) if user["locked_by"] else None,
+            created_at=datetime.fromisoformat(user["created_at"]),
+            updated_at=datetime.fromisoformat(user["updated_at"]),
         )
+        mock_service.list_users.return_value = ([mock_user], 1)
         resp = admin_client.get("/api/v1/admin/users")
         item = resp.json()["items"][0]
         assert set(item.keys()) == {
@@ -256,6 +302,9 @@ class TestAdminUsersListSensitiveFields:
             "role",
             "is_active",
             "is_deleted",
+            "lock_reason",
+            "locked_at",
+            "locked_by",
             "created_at",
             "updated_at",
         }
@@ -264,9 +313,19 @@ class TestAdminUsersListSensitiveFields:
 class TestAdminUsersDetail:
     def test_admin_can_view_user(self, admin_client, mock_service):
         user = _fake_admin_user(role=UserRole.RECRUITER)
-        mock_service.get_user.return_value = MagicMock(
-            **{k: v for k, v in user.items()}
+        mock_user = AdminUserRead(
+            id=uuid.UUID(user["id"]),
+            email=user["email"],
+            role=UserRole(user["role"]),
+            is_active=user["is_active"],
+            is_deleted=user["is_deleted"],
+            lock_reason=user["lock_reason"],
+            locked_at=datetime.fromisoformat(user["locked_at"]) if user["locked_at"] else None,
+            locked_by=uuid.UUID(user["locked_by"]) if user["locked_by"] else None,
+            created_at=datetime.fromisoformat(user["created_at"]),
+            updated_at=datetime.fromisoformat(user["updated_at"]),
         )
+        mock_service.get_user.return_value = mock_user
         resp = admin_client.get(f"/api/v1/admin/users/{user['id']}")
         assert resp.status_code == 200
         data = resp.json()
@@ -288,11 +347,22 @@ class TestAdminUsersDetail:
 class TestAdminUsersDeactivate:
     def test_admin_can_deactivate_user(self, admin_client, mock_service):
         user = _fake_admin_user(is_deleted=False)
-        mock_service.deactivate_user.return_value = MagicMock(
-            **{k: v for k, v in user.items()}
+        mock_user = AdminUserRead(
+            id=uuid.UUID(user["id"]),
+            email=user["email"],
+            role=UserRole(user["role"]),
+            is_active=user["is_active"],
+            is_deleted=user["is_deleted"],
+            lock_reason=user["lock_reason"],
+            locked_at=datetime.fromisoformat(user["locked_at"]) if user["locked_at"] else None,
+            locked_by=uuid.UUID(user["locked_by"]) if user["locked_by"] else None,
+            created_at=datetime.fromisoformat(user["created_at"]),
+            updated_at=datetime.fromisoformat(user["updated_at"]),
         )
+        mock_service.deactivate_user.return_value = mock_user
         resp = admin_client.patch(
-            f"/api/v1/admin/users/{user['id']}/deactivate"
+            f"/api/v1/admin/users/{user['id']}/deactivate",
+            json={"reason": "Test deactivation reason"}
         )
         assert resp.status_code == 200
         mock_service.deactivate_user.assert_awaited_once()
@@ -302,6 +372,7 @@ class TestAdminUsersDeactivate:
             status.HTTP_404_NOT_FOUND
         )
         resp = admin_client.patch(
-            f"/api/v1/admin/users/{uuid.uuid4()}/deactivate"
+            f"/api/v1/admin/users/{uuid.uuid4()}/deactivate",
+            json={"reason": "Test deactivation reason"}
         )
         assert resp.status_code == status.HTTP_404_NOT_FOUND

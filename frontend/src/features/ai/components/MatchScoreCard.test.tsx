@@ -75,7 +75,7 @@ describe('MatchScoreCard', () => {
   it('renders the score breakdown', () => {
     render(<MatchScoreCard matchResult={highMatch} />)
     expect(screen.getByText('Độ tương đồng ngữ nghĩa')).toBeInTheDocument()
-    expect(screen.getByText('Độ phủ kỹ năng')).toBeInTheDocument()
+    expect(screen.getByText('Độ phủ kỹ năng (Required)')).toBeInTheDocument()
     expect(screen.getByText('Độ khớp kinh nghiệm')).toBeInTheDocument()
     expect(screen.getByText('90%')).toBeInTheDocument()
     expect(screen.getByText('80%')).toBeInTheDocument()

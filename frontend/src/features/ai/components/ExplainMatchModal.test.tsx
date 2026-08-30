@@ -16,11 +16,15 @@ const mockMatchResult: MatchResult = {
 }
 
 const mockExplanation: ExplainMatchResponse = {
+  match_score: 82,
   summary: 'The candidate matches the role well.',
   strengths: ['Strong overlap in React and TypeScript'],
-  skill_gaps: ['GraphQL'],
+  missing_skills: ['GraphQL'],
   experience_analysis: 'Candidate has 5 years experience vs 4 required.',
+  education_analysis: 'Candidate has relevant education.',
+  evidence: [],
   recommendation: 'Proceed to interview.',
+  confidence: 0.9,
 }
 
 vi.mock('@/api/ai', () => ({
