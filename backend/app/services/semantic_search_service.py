@@ -10,7 +10,7 @@ from app.core.exceptions import (
     EmptyDocumentError,
     InvalidDocumentError,
 )
-from app.models import CandidateProfile
+from app.models import CandidateProfile, Job
 from app.repositories import BaseRepository
 from app.schemas.ai_search import SemanticSearchResult
 
@@ -42,14 +42,54 @@ class SemanticSearchService:
         query: str,
         limit: int = 10,
         score_threshold: float | None = None,
+        job_repository: BaseRepository[Job] | None = None,
     ) -> list[SemanticSearchResult]:
-        return await self._search(
+        """Search jobs and enrich with job metadata.
+
+        When ``job_repository`` is provided, results are enriched with
+        ``title``, ``company_name``, and ``location`` from ``Job`` using a single
+        batch query. Ghost/deleted jobs are filtered out. Qdrant ranking
+        order is preserved.
+        """
+        raw_results = await self._search(
             collection_name="jobs",
             id_field="job_id",
             query=query,
             limit=limit,
             score_threshold=score_threshold,
         )
+
+        if job_repository is None or not raw_results:
+            return raw_results
+
+        # Extract job IDs from Qdrant results (preserving order)
+        job_ids = [uuid.UUID(r.id) for r in raw_results]
+
+        # Batch query for jobs with company
+        jobs = await self._fetch_jobs(job_repository, job_ids)
+
+        # Build lookup map
+        job_map = {j.id: j for j in jobs}
+
+        # Enrich results preserving Qdrant order, filter out missing/deleted
+        enriched: list[SemanticSearchResult] = []
+        for r in raw_results:
+            job_id = uuid.UUID(r.id)
+            job = job_map.get(job_id)
+            if job is None:
+                continue  # Ghost or deleted job - filter out
+            enriched.append(
+                SemanticSearchResult(
+                    id=r.id,
+                    score=r.score,
+                    skills=r.skills,
+                    created_at=r.created_at,
+                    title=job.title,
+                    company_name=job.company.name if job.company else None,
+                    location=job.location,
+                )
+            )
+        return enriched
 
     async def search_candidates(
         self,
@@ -124,6 +164,27 @@ class SemanticSearchService:
         )
         result = await repository.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def _fetch_jobs(
+        self,
+        repository: BaseRepository[Job],
+        job_ids: list[uuid.UUID],
+    ) -> list[Job]:
+        """Batch fetch non-deleted jobs with company by IDs."""
+        if not job_ids:
+            return []
+        from sqlalchemy import select
+        from sqlalchemy.orm import joinedload
+        stmt = (
+            select(Job)
+            .options(joinedload(Job.company))
+            .where(
+                Job.id.in_(job_ids),
+                Job.is_deleted == False,  # noqa: E712
+            )
+        )
+        result = await repository.session.execute(stmt)
+        return list(result.scalars().unique().all())
 
     async def _search(
         self,

@@ -26,6 +26,21 @@ const mockResultsWithoutName: SemanticSearchResult[] = [
     created_at: '2026-01-01T00:00:00+00:00',
     full_name: null,
     title: 'Frontend Developer',
+    company_name: null,
+    location: null,
+  },
+]
+
+const mockResultsWithTitleOnly: SemanticSearchResult[] = [
+  {
+    id: 'job-1',
+    score: 0.76,
+    skills: ['Python', 'FastAPI'],
+    created_at: '2026-01-01T00:00:00+00:00',
+    full_name: null,
+    title: 'Backend Engineer',
+    company_name: 'Example Company',
+    location: 'HCM',
   },
 ]
 
@@ -109,6 +124,7 @@ describe('SemanticSearchBar', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Nguyễn Văn A')).toBeInTheDocument()
+      // Candidate title should be shown as subtitle
       expect(screen.getByText('Backend Engineer')).toBeInTheDocument()
       expect(screen.getByText('Python')).toBeInTheDocument()
       expect(
@@ -117,7 +133,32 @@ describe('SemanticSearchBar', () => {
     })
   })
 
-  it('falls back to UUID when full_name is missing', async () => {
+  it('renders job results with title, company, and location', async () => {
+    mockSearchFn.mockResolvedValue(mockResultsWithTitleOnly)
+
+    render(<SemanticSearchBar searchFn={mockSearchFn} />)
+
+    fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
+      target: { value: 'python' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
+
+    await waitFor(() => {
+      // Job title should be displayed (not UUID)
+      expect(screen.getByText('Backend Engineer')).toBeInTheDocument()
+      // Company and location should be displayed in subtitle
+      expect(screen.getByText('Example Company • HCM')).toBeInTheDocument()
+      // Score should be displayed
+      expect(screen.getByText('76%')).toBeInTheDocument()
+      // Skills should be displayed
+      expect(screen.getByText('Python')).toBeInTheDocument()
+      expect(screen.getByText('FastAPI')).toBeInTheDocument()
+      // UUID should NOT be the primary display
+      expect(screen.queryByText('job-1')).not.toBeInTheDocument()
+    })
+  })
+
+  it('falls back to title when full_name is missing', async () => {
     mockSearchFn.mockResolvedValue(mockResultsWithoutName)
 
     render(<SemanticSearchBar searchFn={mockSearchFn} />)
@@ -128,8 +169,10 @@ describe('SemanticSearchBar', () => {
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('candidate-2')).toBeInTheDocument()
+      // Should show title instead of UUID
       expect(screen.getByText('Frontend Developer')).toBeInTheDocument()
+      // UUID should NOT be displayed
+      expect(screen.queryByText('candidate-2')).not.toBeInTheDocument()
     })
   })
 

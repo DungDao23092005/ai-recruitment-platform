@@ -322,13 +322,19 @@ async def semantic_search_jobs(
     limit: int = Query(default=10, ge=1, le=100),
     score_threshold: float | None = Query(default=None, ge=0.0, le=1.0),
     current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
     service: SemanticSearchService = Depends(_get_semantic_search_service),
 ) -> list[SemanticSearchResult]:
     try:
+        from app.repositories import BaseRepository
+        from app.models import Job
+
+        job_repo = BaseRepository(db, Job)
         return await service.search_jobs(
             query=q,
             limit=limit,
             score_threshold=score_threshold,
+            job_repository=job_repo,
         )
     except EmptyDocumentError as exc:
         raise HTTPException(

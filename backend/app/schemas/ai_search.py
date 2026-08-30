@@ -23,5 +23,12 @@ class SemanticSearchResult(BaseModel):
         default=None, description="Candidate full name (enriched from profile)"
     )
     title: str | None = Field(
-        default=None, description="Candidate professional title (enriched from profile)"
+        default=None,
+        description="Candidate professional title or Job title (enriched from profile)",
+    )
+    company_name: str | None = Field(
+        default=None, description="Company name for job results (enriched from database)"
+    )
+    location: str | None = Field(
+        default=None, description="Job location (enriched from database)"
     )

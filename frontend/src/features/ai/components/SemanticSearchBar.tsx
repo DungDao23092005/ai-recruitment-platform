@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Search, RefreshCw, Briefcase } from 'lucide-react'
+import { Search, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -27,10 +27,34 @@ function scoreVariant(score: number): 'success' | 'warning' | 'neutral' {
 }
 
 function getDisplayName(result: SemanticSearchResult): string {
+  // Priority: full_name (candidates) > title (jobs) > id (fallback)
   if (result.full_name) {
     return result.full_name
   }
+  if (result.title) {
+    return result.title
+  }
   return result.id
+}
+
+function getSubtitle(result: SemanticSearchResult): string | null {
+  // Candidate: full_name + title → show title as subtitle
+  if (result.full_name && result.title) {
+    return result.title
+  }
+
+  // Job: company_name + location → show "Company • Location"
+  if (result.company_name) {
+    const parts = [result.company_name]
+
+    if (result.location) {
+      parts.push(result.location)
+    }
+
+    return parts.join(' • ')
+  }
+
+  return null
 }
 
 export function SemanticSearchBar({
@@ -119,10 +143,9 @@ export function SemanticSearchBar({
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{getDisplayName(result)}</p>
-                  {result.title ? (
+                  {getSubtitle(result) ? (
                     <p className="truncate text-xs text-muted-foreground mt-0.5">
-                      <Briefcase className="h-3 w-3 inline-block align-middle mr-1" aria-hidden="true" />
-                      {result.title}
+                      {getSubtitle(result)}
                     </p>
                   ) : null}
                   {result.skills.length > 0 ? (

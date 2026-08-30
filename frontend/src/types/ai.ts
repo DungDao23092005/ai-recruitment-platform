@@ -110,6 +110,8 @@ export interface SemanticSearchResult {
   created_at: string | null
   full_name: string | null
   title: string | null
+  company_name: string | null
+  location: string | null
 }
 
 export interface SemanticSearchParams {

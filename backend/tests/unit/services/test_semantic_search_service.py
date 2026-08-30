@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -44,6 +45,36 @@ def make_scored_point(
             "is_deleted": False,
         },
     }
+
+
+def make_job_repo(jobs=None):
+    repo = MagicMock()
+    repo.session = MagicMock()
+    # Create a proper async mock chain for execute -> scalars -> unique -> all
+    mock_result = MagicMock()
+    mock_scalars = MagicMock()
+    mock_unique = MagicMock()
+    mock_unique.all.return_value = jobs or []
+    mock_scalars.unique.return_value = mock_unique
+    mock_result.scalars.return_value = mock_scalars
+    repo.session.execute = AsyncMock(return_value=mock_result)
+    return repo
+
+
+def make_company(name="Test Company"):
+    company = MagicMock()
+    company.name = name
+    return company
+
+
+def make_job(job_id, title="Test Job", company=None, location="HCM"):
+    job = MagicMock()
+    job.id = job_id
+    job.title = title
+    job.company = company or make_company()
+    job.location = location
+    job.is_deleted = False
+    return job
 
 
 @pytest.fixture
@@ -189,6 +220,115 @@ class TestSearchJobs:
 
         assert result[0].skills == []
         assert result[0].created_at is None
+
+
+class TestSearchJobsEnrichment:
+    """Tests for job search with database enrichment."""
+
+    def test_enrichment_adds_job_metadata(self, provider):
+        embed, repo = provider
+        job_id = str(uuid.uuid4())
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=job_id, score=0.76, skills=["Python", "FastAPI"])
+        ]
+        service = make_service(embed, repo)
+
+        job_repo = make_job_repo()
+        job = make_job(uuid.UUID(job_id), title="Backend Engineer", location="HCM")
+        job_repo.session.execute.return_value.scalars.return_value.unique.return_value.all.return_value = [job]
+
+        result = asyncio.run(service.search_jobs("python backend", job_repository=job_repo))
+
+        assert len(result) == 1
+        item = result[0]
+        assert item.id == job_id
+        assert item.score == 0.76
+        assert item.skills == ["Python", "FastAPI"]
+        assert item.title == "Backend Engineer"
+        assert item.company_name == "Test Company"
+        assert item.location == "HCM"
+
+    def test_enrichment_preserves_qdrant_order(self, provider):
+        embed, repo = provider
+        job_id_1 = str(uuid.uuid4())
+        job_id_2 = str(uuid.uuid4())
+        # Qdrant returns in order: job_id_1 (score 0.8), job_id_2 (score 0.7)
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=job_id_1, score=0.8),
+            make_scored_point(point_id=job_id_2, score=0.7),
+        ]
+        service = make_service(embed, repo)
+
+        job_repo = make_job_repo()
+        job1 = make_job(uuid.UUID(job_id_1), title="Job A", location="HN")
+        job2 = make_job(uuid.UUID(job_id_2), title="Job B", location="HCM")
+        job_repo.session.execute.return_value.scalars.return_value.unique.return_value.all.return_value = [job1, job2]
+
+        result = asyncio.run(service.search_jobs("python", job_repository=job_repo))
+
+        assert len(result) == 2
+        assert result[0].id == job_id_1
+        assert result[0].title == "Job A"
+        assert result[1].id == job_id_2
+        assert result[1].title == "Job B"
+
+    def test_enrichment_filters_deleted_jobs(self, provider):
+        embed, repo = provider
+        job_id_1 = str(uuid.uuid4())
+        job_id_2 = str(uuid.uuid4())
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=job_id_1, score=0.8),
+            make_scored_point(point_id=job_id_2, score=0.7),
+        ]
+        service = make_service(embed, repo)
+
+        job_repo = make_job_repo()
+        # Only job1 exists in DB (job2 is deleted/missing)
+        job1 = make_job(uuid.UUID(job_id_1), title="Job A", location="HN")
+        job_repo.session.execute.return_value.scalars.return_value.unique.return_value.all.return_value = [job1]
+
+        result = asyncio.run(service.search_jobs("python", job_repository=job_repo))
+
+        assert len(result) == 1
+        assert result[0].id == job_id_1
+
+    def test_enrichment_handles_missing_company(self, provider):
+        embed, repo = provider
+        job_id = str(uuid.uuid4())
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=job_id, score=0.76)
+        ]
+        service = make_service(embed, repo)
+
+        job_repo = make_job_repo()
+        # Create job without company
+        job = make_job(uuid.UUID(job_id), title="Backend Engineer", location="HCM")
+        job.company = None
+        job_repo.session.execute.return_value.scalars.return_value.unique.return_value.all.return_value = [job]
+
+        result = asyncio.run(service.search_jobs("python backend", job_repository=job_repo))
+
+        assert len(result) == 1
+        assert result[0].title == "Backend Engineer"
+        assert result[0].company_name is None
+        assert result[0].location == "HCM"
+
+    def test_without_repository_returns_raw_results(self, provider):
+        embed, repo = provider
+        job_id = str(uuid.uuid4())
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=job_id, score=0.76)
+        ]
+        service = make_service(embed, repo)
+
+        result = asyncio.run(service.search_jobs("python"))
+
+        assert len(result) == 1
+        assert result[0].id == job_id
+        assert result[0].score == 0.76
+        assert result[0].title is None
+        assert result[0].company_name is None
+        assert result[0].location is None
 
 
 class TestSearchCandidates:

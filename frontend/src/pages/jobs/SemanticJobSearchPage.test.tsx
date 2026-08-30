@@ -8,11 +8,13 @@ import type { SemanticSearchResult } from '@/types/ai'
 const mockResults: SemanticSearchResult[] = [
   {
     id: 'job-1',
-    score: 0.87,
+    score: 0.76,
     skills: ['Python', 'FastAPI'],
     created_at: '2026-01-01T00:00:00+00:00',
     full_name: null,
-    title: null,
+    title: 'Backend Engineer',
+    company_name: 'Example Company',
+    location: 'HCM',
   },
 ]
 
@@ -51,7 +53,7 @@ describe('SemanticJobSearchPage', () => {
     })
   })
 
-  it('renders job search results', async () => {
+  it('renders enriched job search results with title, company, location', async () => {
     render(<SemanticJobSearchPage />)
 
     fireEvent.change(screen.getByLabelText('Từ khóa tìm kiếm ngữ nghĩa'), {
@@ -60,8 +62,17 @@ describe('SemanticJobSearchPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Tìm kiếm/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('job-1')).toBeInTheDocument()
+      // Job title should be displayed (not UUID)
+      expect(screen.getByText('Backend Engineer')).toBeInTheDocument()
+      // Company and location should be displayed in subtitle
+      expect(screen.getByText('Example Company • HCM')).toBeInTheDocument()
+      // Score should be displayed
+      expect(screen.getByText('76%')).toBeInTheDocument()
+      // Skills should be displayed
       expect(screen.getByText('Python')).toBeInTheDocument()
+      expect(screen.getByText('FastAPI')).toBeInTheDocument()
+      // UUID should NOT be the primary display
+      expect(screen.queryByText('job-1')).not.toBeInTheDocument()
     })
   })
 
@@ -107,7 +118,7 @@ describe('SemanticJobSearchPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /Thử lại/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('job-1')).toBeInTheDocument()
+      expect(screen.getByText('Backend Engineer')).toBeInTheDocument()
     })
   })
 })
