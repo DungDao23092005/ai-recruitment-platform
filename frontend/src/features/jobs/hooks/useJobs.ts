@@ -53,8 +53,13 @@ export function useJobs(): UseJobsResult {
         job_type: filters.job_type || undefined,
         location: filters.location || undefined,
       })
+
+      if (!data || typeof data !== 'object' || !Array.isArray(data.items)) {
+        throw new Error('Invalid API response format (expected JSON object with items array).')
+      }
+
       setJobs(data.items)
-      setTotal(data.total)
+      setTotal(data.total ?? 0)
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Unable to load jobs'
