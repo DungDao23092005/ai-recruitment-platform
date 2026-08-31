@@ -88,6 +88,7 @@ describe('JobForm', () => {
         workplace_type: 'remote',
         location: null,
         status: 'draft',
+        skills: [],
       })
       expect(
         screen.getByText('Tạo tin tuyển dụng thành công.'),
@@ -209,6 +210,7 @@ describe('JobForm', () => {
         job_type: 'full_time',
         workplace_type: 'remote',
         location: 'Ho Chi Minh City',
+        skills: [],
       })
       expect(
         screen.getByText('Cập nhật tin tuyển dụng thành công.'),

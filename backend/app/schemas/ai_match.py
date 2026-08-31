@@ -31,6 +31,24 @@ class MatchResultSchema(BaseModel):
         description="Project relevance score from 0.0 to 1.0"
     )
 
+    # Requirement presence flags
+    has_required_skills: bool = Field(
+        default=False,
+        description="Whether the job has any required skills defined"
+    )
+    has_preferred_skills: bool = Field(
+        default=False,
+        description="Whether the job has any preferred skills defined"
+    )
+    has_experience_requirement: bool = Field(
+        default=False,
+        description="Whether the job has a minimum experience requirement"
+    )
+    has_education_requirement: bool = Field(
+        default=False,
+        description="Whether the job has an education level requirement"
+    )
+
     matching_skills: list[str] = Field(
         default_factory=list,
         description="Skills the candidate shares with the job requirements",

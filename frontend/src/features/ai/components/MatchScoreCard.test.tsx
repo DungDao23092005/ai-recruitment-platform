@@ -16,6 +16,10 @@ const highMatch: MatchResult = {
   matching_skills: ['React', 'TypeScript'],
   skill_gap: ['GraphQL'],
   match_reasons: ['Strong skill overlap', 'Relevant experience'],
+  has_required_skills: true,
+  has_preferred_skills: false,
+  has_experience_requirement: true,
+  has_education_requirement: true,
 }
 
 const mediumMatch: MatchResult = {
@@ -113,6 +117,27 @@ describe('MatchScoreCard', () => {
     expect(
       screen.getByText('Không phát hiện khoảng cách kỹ năng.'),
     ).toBeInTheDocument()
+  })
+
+  it('shows a placeholder when there are no skill gaps', () => {
+    render(<MatchScoreCard matchResult={{ ...highMatch, skill_gap: [] }} />)
+    expect(
+      screen.getByText('Không phát hiện khoảng cách kỹ năng.'),
+    ).toBeInTheDocument()
+  })
+
+  it('shows "Chưa có yêu cầu" for requirements that are not present', () => {
+    const noRequirementsMatch: MatchResult = {
+      ...highMatch,
+      has_required_skills: false,
+      has_preferred_skills: false,
+      has_experience_requirement: false,
+      has_education_requirement: false,
+    }
+    render(<MatchScoreCard matchResult={noRequirementsMatch} />)
+
+    expect(screen.getAllByText('Chưa có yêu cầu').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('Độ tương đồng ngữ nghĩa')).toBeInTheDocument()
   })
 
   it('uses medium color class for a medium score', () => {

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.enums import JobStatus, JobType, WorkplaceType
 
@@ -14,6 +14,10 @@ class JobCreate(BaseModel):
     workplace_type: WorkplaceType
     location: str | None = None
     status: JobStatus = JobStatus.DRAFT
+    skills: list[str] = Field(
+        default_factory=list,
+        description="Required skills for the job",
+    )
 
 
 class JobRead(BaseModel):
@@ -39,6 +43,7 @@ class JobUpdate(BaseModel):
     job_type: JobType | None = None
     workplace_type: WorkplaceType | None = None
     location: str | None = None
+    skills: list[str] | None = None
 
 
 class JobStatusUpdate(BaseModel):

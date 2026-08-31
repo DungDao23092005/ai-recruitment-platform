@@ -80,33 +80,45 @@ class MatchingEngine:
             candidate_projects, required_skills
         )
 
-        has_any_input = bool(
-            resume is not None
-            or job is not None
-            or resume_vector
-            or job_vector
+        # Determine requirement presence flags
+        has_required_skills = len(required_skills) > 0
+        has_preferred_skills = len(preferred_skills) > 0
+        has_experience_requirement = minimum_exp is not None and minimum_exp > 0
+        has_education_requirement = required_education is not None and len(required_education.strip()) > 0
+
+# Dynamic weight calculation
+        # Semantic is always active (weight 40)
+        active_weight_sum = SEMANTIC_WEIGHT
+
+        # Required skills weight (30) + Project weight (5) - they activate together
+        if has_required_skills:
+            active_weight_sum += SKILL_WEIGHT + PROJECT_WEIGHT
+
+        # Experience weight (15) - only when there's a real requirement
+        if has_experience_requirement:
+            active_weight_sum += EXPERIENCE_WEIGHT
+
+        # Education weight (10) - only when there's a real requirement
+        if has_education_requirement:
+            active_weight_sum += EDUCATION_WEIGHT
+
+        # Calculate weighted score
+        weighted_sum = (
+            semantic_score * SEMANTIC_WEIGHT
         )
 
-        if not has_any_input:
-            return MatchResultSchema(
-                overall_score=0.0,
-                cosine_similarity=0.0,
-                skill_coverage_score=0.0,
-                preferred_skill_coverage_score=0.0,
-                experience_match_score=0.0,
-                education_score=0.0,
-                project_score=0.0,
-            )
+        if has_required_skills:
+            weighted_sum += skill_score * SKILL_WEIGHT
+            weighted_sum += project_score * PROJECT_WEIGHT
+
+        if has_experience_requirement:
+            weighted_sum += experience_score * EXPERIENCE_WEIGHT
+
+        if has_education_requirement:
+            weighted_sum += education_score * EDUCATION_WEIGHT
 
         overall_score = round(
-            (
-                semantic_score * SEMANTIC_WEIGHT
-                + skill_score * SKILL_WEIGHT
-                + experience_score * EXPERIENCE_WEIGHT
-                + education_score * EDUCATION_WEIGHT
-                + project_score * PROJECT_WEIGHT
-            )
-            * 100,
+            (weighted_sum / active_weight_sum) * 100,
             2,
         )
 
@@ -116,7 +128,11 @@ class MatchingEngine:
             candidate_exp=candidate_exp,
             minimum_exp=minimum_exp,
             education_score=education_score,
-            project_score=project_score
+            project_score=project_score,
+            has_required_skills=has_required_skills,
+            has_preferred_skills=has_preferred_skills,
+            has_experience_requirement=has_experience_requirement,
+            has_education_requirement=has_education_requirement,
         )
 
         return MatchResultSchema(
@@ -130,6 +146,10 @@ class MatchingEngine:
             matching_skills=list(set(matching_required + matching_preferred)),
             skill_gap=skill_gap,
             match_reasons=match_reasons,
+            has_required_skills=has_required_skills,
+            has_preferred_skills=has_preferred_skills,
+            has_experience_requirement=has_experience_requirement,
+            has_education_requirement=has_education_requirement,
         )
 
     @staticmethod
@@ -140,6 +160,10 @@ class MatchingEngine:
         minimum_exp: float | None,
         education_score: float,
         project_score: float,
+        has_required_skills: bool,
+        has_preferred_skills: bool,
+        has_experience_requirement: bool,
+        has_education_requirement: bool,
     ) -> list[str]:
         reasons: list[str] = []
 
@@ -153,7 +177,7 @@ class MatchingEngine:
                 "✗ Missing required skills: " + ", ".join(skill_gap)
             )
 
-        if minimum_exp is not None and minimum_exp > 0:
+        if has_experience_requirement:
             if candidate_exp is None:
                 reasons.append(
                     "✗ Candidate experience unknown; defaulted to 0.5"
@@ -169,12 +193,13 @@ class MatchingEngine:
                     f"below minimum requirement ({minimum_exp} yrs)"
                 )
 
-        if education_score >= 1.0:
-            reasons.append("✓ Education meets requirements")
-        elif education_score > 0.0:
-            reasons.append("⚠ Education partially meets requirements")
+        if has_education_requirement:
+            if education_score >= 1.0:
+                reasons.append("✓ Education meets requirements")
+            elif education_score > 0.0:
+                reasons.append("⚠ Education partially meets requirements")
 
-        if project_score >= 0.5:
+        if has_required_skills and project_score >= 0.5:
             reasons.append("✓ Relevant project experience found")
 
         return reasons

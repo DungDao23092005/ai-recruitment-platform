@@ -213,6 +213,7 @@ class QdrantVectorRepository(BaseVectorRepository):
                 query_filter=query_filter,
                 limit=limit,
                 with_payload=True,
+                with_vectors=True,
                 score_threshold=score_threshold,
             )
         except AIError:

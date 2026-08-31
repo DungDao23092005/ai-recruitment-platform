@@ -60,6 +60,8 @@ export function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`
 }
 
+
+
 export function MatchScoreCard({
   matchResult,
   candidate,
@@ -76,31 +78,37 @@ export function MatchScoreCard({
       label: 'Độ tương đồng ngữ nghĩa',
       value: formatPercent(matchResult.cosine_similarity),
       raw: matchResult.cosine_similarity,
+      hasRequirement: true,
     },
     {
       label: 'Độ phủ kỹ năng (Required)',
       value: formatPercent(matchResult.skill_coverage_score),
       raw: matchResult.skill_coverage_score,
+      hasRequirement: matchResult.has_required_skills,
     },
     {
       label: 'Độ phủ kỹ năng (Preferred)',
       value: formatPercent(matchResult.preferred_skill_coverage_score ?? 0),
       raw: matchResult.preferred_skill_coverage_score ?? 0,
+      hasRequirement: matchResult.has_preferred_skills,
     },
     {
       label: 'Độ khớp kinh nghiệm',
       value: formatPercent(matchResult.experience_match_score),
       raw: matchResult.experience_match_score,
+      hasRequirement: matchResult.has_experience_requirement,
     },
     {
       label: 'Độ khớp học vấn',
       value: formatPercent(matchResult.education_score ?? 0),
       raw: matchResult.education_score ?? 0,
+      hasRequirement: matchResult.has_education_requirement,
     },
     {
       label: 'Độ phù hợp dự án',
       value: formatPercent(matchResult.project_score ?? 0),
       raw: matchResult.project_score ?? 0,
+      hasRequirement: matchResult.has_required_skills, // Project depends on required skills
     },
   ]
 
@@ -132,6 +140,16 @@ export function MatchScoreCard({
 
         <div className="space-y-3">
           {breakdown.map((item) => {
+            if (!item.hasRequirement) {
+              return (
+                <div key={item.label} className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">{item.label}</span>
+                  <Badge variant="neutral" className="text-xs">
+                    Chưa có yêu cầu
+                  </Badge>
+                </div>
+              )
+            }
             const { progress } = getScoreColor(item.raw * 100)
             return (
               <div key={item.label}>
@@ -146,51 +164,68 @@ export function MatchScoreCard({
         </div>
 
         <div className="space-y-3">
-          <div className="space-y-1.5">
-            <p className="flex items-center gap-1.5 text-sm font-medium">
-              <CheckCircle2
-                className="h-4 w-4 text-success"
-                aria-hidden="true"
-              />
-              Kỹ năng khớp
-            </p>
-            {matchResult.matching_skills.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5">
-                {matchResult.matching_skills.map((skill) => (
-                  <Badge key={skill} variant="success">
-                    {skill}
-                  </Badge>
-                ))}
+          {matchResult.has_required_skills ? (
+            <>
+              <div className="space-y-1.5">
+                <p className="flex items-center gap-1.5 text-sm font-medium">
+                  <CheckCircle2
+                    className="h-4 w-4 text-success"
+                    aria-hidden="true"
+                  />
+                  Kỹ năng khớp
+                </p>
+                {matchResult.matching_skills.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {matchResult.matching_skills.map((skill) => (
+                      <Badge key={skill} variant="success">
+                        {skill}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Chưa có kỹ năng khớp nào.
+                  </p>
+                )}
               </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Chưa có kỹ năng khớp nào.
-              </p>
-            )}
-          </div>
 
-          <div className="space-y-1.5">
-            <p className="flex items-center gap-1.5 text-sm font-medium">
-              <XCircle
-                className="h-4 w-4 text-destructive"
-                aria-hidden="true"
-              />
-              Khoảng cách kỹ năng
-            </p>
-            {matchResult.skill_gap.length > 0 ? (
-              <div className="flex flex-wrap gap-1.5">
-                {matchResult.skill_gap.map((skill) => (
-                  <Badge key={skill} variant="destructive">
-                    {skill}
-                  </Badge>
-                ))}
+              <div className="space-y-1.5">
+                <p className="flex items-center gap-1.5 text-sm font-medium">
+                  <XCircle
+                    className="h-4 w-4 text-destructive"
+                    aria-hidden="true"
+                  />
+                  Khoảng cách kỹ năng
+                </p>
+                {matchResult.skill_gap.length > 0 ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {matchResult.skill_gap.map((skill) => (
+                      <Badge key={skill} variant="destructive">
+                        {skill}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Không phát hiện khoảng cách kỹ năng.
+                  </p>
+                )}
               </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Không phát hiện khoảng cách kỹ năng.
+            </>
+          ) : (
+            <div className="space-y-1.5">
+              <p className="flex items-center gap-1.5 text-sm font-medium">
+                <CheckCircle2
+                  className="h-4 w-4 text-success"
+                  aria-hidden="true"
+                />
+                Kỹ năng
               </p>
-            )}
-          </div>
+              <p className="text-sm text-muted-foreground">
+                Chưa có yêu cầu kỹ năng.
+              </p>
+            </div>
+          )}
         </div>
 
         {matchResult.match_reasons.length > 0 ? (

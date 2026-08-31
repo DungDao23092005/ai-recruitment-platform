@@ -19,8 +19,17 @@ def make_session() -> MagicMock:
     session = MagicMock()
     session.add = MagicMock()
     session.commit = AsyncMock()
+    session.flush = AsyncMock()
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
+
+    # Mock execute to return a proper async chain for select queries
+    mock_result = MagicMock()
+    mock_scalars = MagicMock()
+    mock_scalars.first = MagicMock(return_value=None)
+    mock_result.scalars = MagicMock(return_value=mock_scalars)
+    session.execute = AsyncMock(return_value=mock_result)
+
     return session
 
 
@@ -769,3 +778,112 @@ class TestMissingGreenletRegression:
 
         assert len(job.skills) == 2
         assert {s.name for s in job.skills} == {"Python", "Docker"}
+
+
+class TestAttachSkillsDeduplication:
+    """Regression tests for skill deduplication in _attach_skills."""
+
+    @pytest.mark.asyncio
+    async def test_duplicate_skills_case_insensitive(self):
+        """Test G: Duplicate skills case-insensitive."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        skill_names = ["Python", "python", " PYTHON ", "FastAPI"]
+
+        await service._attach_skills(job, skill_names)
+
+        # Should have 2 unique skills
+        assert len(job.skills) == 2
+        skill_names_lower = {s.name.casefold() for s in job.skills}
+        assert skill_names_lower == {"python", "fastapi"}
+
+    @pytest.mark.asyncio
+    async def test_duplicate_skills_with_whitespace(self):
+        """Test H: Duplicate skills with whitespace."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        skill_names = ["FastAPI", "fastapi", " SQL Server ", "SQL Server", "Docker"]
+
+        await service._attach_skills(job, skill_names)
+
+        # Should have 3 unique skills
+        assert len(job.skills) == 3
+        skill_names_lower = {s.name.casefold() for s in job.skills}
+        assert skill_names_lower == {"fastapi", "sql server", "docker"}
+
+    @pytest.mark.asyncio
+    async def test_empty_and_whitespace_skills_ignored(self):
+        """Test H: Empty and whitespace skills are ignored."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        skill_names = ["", "   ", "Python", "  FastAPI  "]
+
+        await service._attach_skills(job, skill_names)
+
+        # Should have 2 unique skills
+        assert len(job.skills) == 2
+        skill_names_set = {s.name for s in job.skills}
+        assert skill_names_set == {"Python", "FastAPI"}
+
+    @pytest.mark.asyncio
+    async def test_attach_skills_preserves_first_casing(self):
+        """Test G: Preserves first occurrence's canonical spelling."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        # First occurrence is "Python" (capitalized)
+        skill_names = ["python", "Python", "PYTHON"]
+
+        await service._attach_skills(job, skill_names)
+
+        # Should preserve the first occurrence's casing
+        assert len(job.skills) == 1
+        assert job.skills[0].name == "python"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_skills_no_duplicate_relationship(self):
+        """Test G: No duplicate Skill relationship created."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        skill_names = ["Python", "python", "FastAPI", "fastapi"]
+
+        await service._attach_skills(job, skill_names)
+
+        # Should have 2 unique skills, no duplicates
+        assert len(job.skills) == 2
+
+    @pytest.mark.asyncio
+    async def test_empty_skills_list(self):
+        """Test H: Empty skills list."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        await service._attach_skills(job, [])
+
+        assert len(job.skills) == 0
+
+    @pytest.mark.asyncio
+    async def test_attach_skills_clears_existing(self):
+        """Verify existing skills are cleared before attaching new ones."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        existing_skill = Skill(name="OldSkill")
+        job.skills.append(existing_skill)
+
+        await service._attach_skills(job, ["Python", "FastAPI"])
+
+        assert len(job.skills) == 2
+        skill_names = {s.name for s in job.skills}
+        assert skill_names == {"Python", "FastAPI"}

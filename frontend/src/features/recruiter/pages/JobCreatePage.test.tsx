@@ -199,6 +199,7 @@ describe('JobCreatePage', () => {
         workplace_type: 'on_site',
         location: null,
         status: 'draft',
+        skills: [],
       })
       expect(
         screen.getByText('Tạo tin tuyển dụng thành công.'),
@@ -206,8 +207,19 @@ describe('JobCreatePage', () => {
     })
   })
 
-  it('applies parsed JD from the AI modal into the form', async () => {
-    mockedPost.mockResolvedValue(mockParsedJob as never)
+  it('applies parsed JD from the AI modal into the form and submits with required skills', async () => {
+    const parsedJobResponse: ParsedJob = {
+      title: 'Senior Frontend Engineer',
+      summary: 'Build modern web applications with React.',
+      required_skills: ['React', 'TypeScript'],
+      preferred_skills: ['Next.js'],
+      minimum_years_experience: 3,
+      education_level: 'Bachelor degree',
+    }
+
+    mockedPost
+      .mockResolvedValueOnce(parsedJobResponse as never) // /ai/parse-jd
+      .mockResolvedValueOnce(mockJob as never) // /jobs
 
     render(
       <MemoryRouter>
@@ -238,6 +250,152 @@ describe('JobCreatePage', () => {
         job_description: 'Build modern web applications with React.',
         job_id: null,
       })
+    })
+
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: /Áp dụng vào tin tuyển dụng/i }),
+    )
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Tiêu đề công việc')).toHaveValue('Senior Frontend Engineer')
+      expect(screen.getByLabelText('Mô tả công việc')).toHaveValue('Build modern web applications with React.')
+      expect(screen.getByLabelText('Kỹ năng yêu cầu')).toHaveValue('React, TypeScript')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Tạo tin tuyển dụng/i }))
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith('/jobs', {
+        company_id: 'company-1',
+        title: 'Senior Frontend Engineer',
+        description: 'Build modern web applications with React.',
+        job_type: 'full_time',
+        workplace_type: 'on_site',
+        location: null,
+        status: 'draft',
+        skills: ['React', 'TypeScript'],
+      })
+      expect(
+        screen.getByText('Tạo tin tuyển dụng thành công.'),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('reapplies AI parsed result with same title but different required skills', async () => {
+    const firstParsed: ParsedJob = {
+      title: 'Software Engineer',
+      summary: 'Frontend role with React.',
+      required_skills: ['React', 'TypeScript'],
+      preferred_skills: ['Next.js'],
+      minimum_years_experience: 3,
+      education_level: 'Bachelor degree',
+    }
+
+    const secondParsed: ParsedJob = {
+      title: 'Software Engineer',
+      summary: 'Backend role with Python.',
+      required_skills: ['Python', 'FastAPI'],
+      preferred_skills: ['Docker'],
+      minimum_years_experience: 5,
+      education_level: 'Master degree',
+    }
+
+    mockedPost
+      .mockResolvedValueOnce(firstParsed as never) // first /ai/parse-jd
+      .mockResolvedValueOnce(secondParsed as never) // second /ai/parse-jd
+      .mockResolvedValueOnce(mockJob as never) // /jobs
+
+    render(
+      <MemoryRouter>
+        <JobCreatePage companyId="company-1" />
+      </MemoryRouter>,
+    )
+
+    // First AI parse
+    fireEvent.click(
+      screen.getByRole('button', { name: /Phân tích JD bằng AI/i }),
+    )
+
+    let dialog = screen.getByRole('dialog', { name: 'AI phân tích JD' })
+    expect(dialog).toBeInTheDocument()
+
+    fireEvent.change(within(dialog).getByLabelText(/Mô tả công việc/), {
+      target: { value: 'Frontend role with React.' },
+    })
+
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: /Phân tích JD bằng AI/i }),
+    )
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith('/ai/parse-jd', {
+        job_title: '',
+        job_description: 'Frontend role with React.',
+        job_id: null,
+      })
+    })
+
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: /Áp dụng vào tin tuyển dụng/i }),
+    )
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Tiêu đề công việc')).toHaveValue('Software Engineer')
+      expect(screen.getByLabelText('Mô tả công việc')).toHaveValue('Frontend role with React.')
+      expect(screen.getByLabelText('Kỹ năng yêu cầu')).toHaveValue('React, TypeScript')
+    })
+
+    // Second AI parse with SAME title but different skills
+    fireEvent.click(
+      screen.getByRole('button', { name: /Phân tích JD bằng AI/i }),
+    )
+
+    dialog = screen.getByRole('dialog', { name: 'AI phân tích JD' })
+    expect(dialog).toBeInTheDocument()
+
+    fireEvent.change(within(dialog).getByLabelText(/Mô tả công việc/), {
+      target: { value: 'Backend role with Python.' },
+    })
+
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: /Phân tích JD bằng AI/i }),
+    )
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith('/ai/parse-jd', {
+        job_title: '',
+        job_description: 'Backend role with Python.',
+        job_id: null,
+      })
+    })
+
+    fireEvent.click(
+      within(dialog).getByRole('button', { name: /Áp dụng vào tin tuyển dụng/i }),
+    )
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Tiêu đề công việc')).toHaveValue('Software Engineer')
+      expect(screen.getByLabelText('Mô tả công việc')).toHaveValue('Backend role with Python.')
+      expect(screen.getByLabelText('Kỹ năng yêu cầu')).toHaveValue('Python, FastAPI')
+    })
+
+    // Submit second result
+    fireEvent.click(screen.getByRole('button', { name: /Tạo tin tuyển dụng/i }))
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith('/jobs', {
+        company_id: 'company-1',
+        title: 'Software Engineer',
+        description: 'Backend role with Python.',
+        job_type: 'full_time',
+        workplace_type: 'on_site',
+        location: null,
+        status: 'draft',
+        skills: ['Python', 'FastAPI'],
+      })
+      expect(
+        screen.getByText('Tạo tin tuyển dụng thành công.'),
+      ).toBeInTheDocument()
     })
   })
 })

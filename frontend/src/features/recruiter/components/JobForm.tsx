@@ -32,6 +32,7 @@ interface FormValues {
   workplace_type: WorkplaceType
   location: string
   status: JobStatus
+  skills: string
 }
 
 interface FormErrors {
@@ -48,6 +49,13 @@ function validate(values: FormValues): FormErrors {
     errors.description = 'Mô tả công việc là bắt buộc'
   }
   return errors
+}
+
+function parseSkills(skillsInput: string): string[] {
+  return skillsInput
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
 }
 
 function isForbiddenError(error: unknown): boolean {
@@ -82,6 +90,7 @@ export function JobForm({
       job?.workplace_type ?? initialValues?.workplace_type ?? 'on_site',
     location: job?.location ?? initialValues?.location ?? '',
     status: initialValues?.status ?? job?.status ?? 'draft',
+    skills: initialValues?.skills ?? job?.skills?.join(', ') ?? '',
   })
   const [errors, setErrors] = useState<FormErrors>({})
   const [apiError, setApiError] = useState<string | null>(null)
@@ -101,6 +110,8 @@ export function JobForm({
 
     setSubmitting(true)
     try {
+      const skills = parseSkills(values.skills)
+
       if (isEditing && job) {
         const updated = await apiClient.patch<Job, Job>(`/jobs/mine/${job.id}`, {
           title: values.title.trim(),
@@ -108,6 +119,7 @@ export function JobForm({
           job_type: values.job_type,
           workplace_type: values.workplace_type,
           location: values.location.trim() || null,
+          skills,
         })
         setSuccess(true)
         onSaved?.(updated)
@@ -122,6 +134,7 @@ export function JobForm({
         workplace_type: values.workplace_type,
         location: values.location.trim() || null,
         status: values.status,
+        skills,
       })
       setSuccess(true)
       onCreated?.(created)
@@ -218,6 +231,15 @@ export function JobForm({
             <option value="published">{JOB_STATUS_LABELS.published}</option>
           </Select>
         ) : null}
+
+        <Input
+          name="skills"
+          label="Kỹ năng yêu cầu"
+          placeholder="Python, FastAPI, SQL, Docker"
+          value={values.skills}
+          onChange={(e) => updateField('skills', e.target.value)}
+          helperText="Nhập các kỹ năng cách nhau bằng dấu phẩy"
+        />
       </div>
 
       {isEditing ? (

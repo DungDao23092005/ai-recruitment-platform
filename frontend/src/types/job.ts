@@ -14,6 +14,7 @@ export interface Job {
   job_type: JobType
   workplace_type: WorkplaceType
   location: string
+  skills: string[]
   created_at: string
   updated_at: string
 }

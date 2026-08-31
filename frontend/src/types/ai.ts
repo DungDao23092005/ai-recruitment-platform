@@ -60,6 +60,10 @@ export interface MatchResult {
   matching_skills: string[]
   skill_gap: string[]
   match_reasons: string[]
+  has_required_skills: boolean
+  has_preferred_skills: boolean
+  has_experience_requirement: boolean
+  has_education_requirement: boolean
 }
 
 export interface JobMatchRecommendation {

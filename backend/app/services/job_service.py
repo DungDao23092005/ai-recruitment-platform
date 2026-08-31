@@ -56,6 +56,8 @@ class JobService:
         )
         self.session.add(job)
         try:
+            await self.session.flush()  # Get the job ID before adding skills
+            await self._attach_skills(job, data.skills)
             await self.session.commit()
             await self.session.refresh(job)
         except Exception:
@@ -120,10 +122,13 @@ class JobService:
         if data.location is not None and data.location.strip() != job.location:
             job.location = data.location.strip()
             has_changes = True
-        if not has_changes:
+        if not has_changes and data.skills is None:
             return job
         try:
-            await self._reindex_job(job)
+            if data.skills is not None:
+                await self._attach_skills(job, data.skills)
+            if has_changes:
+                await self._reindex_job(job)
             await self._commit_and_refresh(job)
         except Exception:
             await self.session.rollback()
@@ -259,3 +264,41 @@ class JobService:
         except Exception:
             await self.session.rollback()
             raise
+
+    async def _attach_skills(self, job: Job, skill_names: list[str]) -> None:
+        """Attach skills to a job, creating new skills if they don't exist.
+
+        Deduplicates skill names case-insensitively before attaching to prevent
+        duplicate Skill relationships and SQL Server IntegrityError.
+        """
+        from app.models import Skill
+        from sqlalchemy import select
+
+        # Clear existing skills
+        job.skills.clear()
+
+        # Deduplicate skills case-insensitively, preserving first occurrence's canonical spelling
+        seen: set[str] = set()
+        unique_skill_names: list[str] = []
+
+        for skill_name in skill_names:
+            stripped = skill_name.strip()
+            if not stripped:
+                continue
+            key = stripped.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_skill_names.append(stripped)
+
+        for skill_name in unique_skill_names:
+            # Find existing skill (case-insensitive)
+            stmt = select(Skill).where(Skill.name.ilike(skill_name))
+            result = await self.session.execute(stmt)
+            skill = result.scalars().first()
+            if skill is None:
+                # Create new skill
+                skill = Skill(name=skill_name)
+                self.session.add(skill)
+                await self.session.flush()
+            job.skills.append(skill)

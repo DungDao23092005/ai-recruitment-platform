@@ -115,6 +115,10 @@ const mockMatchResult = {
   matching_skills: ['Python', 'FastAPI'],
   skill_gap: ['Docker'],
   match_reasons: ['✓ Matching skills: Python'],
+  has_required_skills: true,
+  has_preferred_skills: false,
+  has_experience_requirement: true,
+  has_education_requirement: true,
 }
 
 beforeEach(() => {

@@ -28,6 +28,7 @@ export interface JobCreatePageProps {
 export function JobCreatePage({ companyId }: JobCreatePageProps) {
   const [showAiModal, setShowAiModal] = useState(false)
   const [appliedParsed, setAppliedParsed] = useState<ParsedJob | null>(null)
+  const [formRevision, setFormRevision] = useState(0)
 
   const [companies, setCompanies] = useState<Company[] | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -194,6 +195,7 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
           </CardHeader>
           <CardContent>
             <JobForm
+              key={`job-form-${formRevision}`}
               companyId={effectiveCompanyId}
               initialValues={
                 appliedParsed
@@ -203,6 +205,7 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
                         appliedParsed.summary ??
                         appliedParsed.title ??
                         '',
+                      skills: appliedParsed.required_skills?.join(', ') ?? '',
                     }
                   : undefined
               }
@@ -216,6 +219,7 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
           onClose={() => setShowAiModal(false)}
           onApply={(parsed) => {
             setAppliedParsed(parsed)
+            setFormRevision((prev) => prev + 1)
             setShowAiModal(false)
           }}
         />
