@@ -36,10 +36,18 @@ class QdrantVectorRepository(BaseVectorRepository):
     KNOWLEDGE_COLLECTION = "knowledge"
 
     def __init__(self, client: AsyncQdrantClient | None = None) -> None:
-        self.client = client or AsyncQdrantClient(
-            host=settings.QDRANT_HOST,
-            port=settings.QDRANT_PORT,
-        )
+        if client is not None:
+            self.client = client
+        elif settings.QDRANT_URL and settings.QDRANT_API_KEY:
+            self.client = AsyncQdrantClient(
+                url=settings.QDRANT_URL,
+                api_key=settings.QDRANT_API_KEY,
+            )
+        else:
+            self.client = AsyncQdrantClient(
+                host=settings.QDRANT_HOST,
+                port=settings.QDRANT_PORT,
+            )
 
     @staticmethod
     def _serialize_point_id(point_id: str | uuid.UUID) -> str:

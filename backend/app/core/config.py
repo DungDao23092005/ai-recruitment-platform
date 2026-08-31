@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     GEMINI_GENERATION_MODEL: str = "gemini-3.5-flash"
     QDRANT_HOST: str = "localhost"
     QDRANT_PORT: int = 6333
+    QDRANT_URL: str | None = None
+    QDRANT_API_KEY: str | None = None
     EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
     VECTOR_DIMENSION: int = 384
     CROSS_ENCODER_MODEL_NAME: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"

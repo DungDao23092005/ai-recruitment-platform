@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from qdrant_client import AsyncQdrantClient
@@ -19,7 +19,7 @@ from app.ai.vector_db.qdrant_client import (
     QdrantVectorRepository,
     SOFT_DELETE_FILTER,
 )
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.core.exceptions import AIError, InvalidDocumentError
 
 VECTOR_DIM = settings.VECTOR_DIMENSION
@@ -440,3 +440,87 @@ async def test_retrieve_vector_preserved(
     result = await repo.retrieve_vector("resumes", "point-1")
 
     assert result["vector"] == vector
+
+
+class TestQdrantVectorRepositoryInitialization:
+    """Tests for QdrantVectorRepository.__init__ configuration selection logic."""
+
+    def test_cloud_mode_when_url_and_api_key_configured(self):
+        """Cloud mode: QDRANT_URL + QDRANT_API_KEY → AsyncQdrantClient(url=..., api_key=...)."""
+        with patch.object(settings, "QDRANT_URL", "https://test-cloud.qdrant.io"):
+            with patch.object(settings, "QDRANT_API_KEY", "test-api-key"):
+                with patch("app.ai.vector_db.qdrant_client.AsyncQdrantClient") as mock_client_class:
+                    mock_client = AsyncMock()
+                    mock_client_class.return_value = mock_client
+
+                    repo = QdrantVectorRepository()
+
+                    mock_client_class.assert_called_once()
+                    call_kwargs = mock_client_class.call_args.kwargs
+                    assert call_kwargs["url"] == "https://test-cloud.qdrant.io"
+                    assert call_kwargs["api_key"] == "test-api-key"
+                    assert "host" not in call_kwargs
+                    assert "port" not in call_kwargs
+
+    def test_local_fallback_when_cloud_not_configured(self):
+        """Local fallback: no Cloud config → AsyncQdrantClient(host=..., port=...)."""
+        with patch.object(settings, "QDRANT_URL", None):
+            with patch.object(settings, "QDRANT_API_KEY", None):
+                with patch("app.ai.vector_db.qdrant_client.AsyncQdrantClient") as mock_client_class:
+                    mock_client = AsyncMock()
+                    mock_client_class.return_value = mock_client
+
+                    repo = QdrantVectorRepository()
+
+                    mock_client_class.assert_called_once()
+                    call_kwargs = mock_client_class.call_args.kwargs
+                    assert call_kwargs["host"] == "localhost"
+                    assert call_kwargs["port"] == 6333
+                    assert "url" not in call_kwargs
+                    assert "api_key" not in call_kwargs
+
+    def test_partial_cloud_config_falls_back_to_local(self):
+        """Partial Cloud config: only QDRANT_URL set → fallback to local."""
+        with patch.object(settings, "QDRANT_URL", "https://test-cloud.qdrant.io"):
+            with patch.object(settings, "QDRANT_API_KEY", None):
+                with patch("app.ai.vector_db.qdrant_client.AsyncQdrantClient") as mock_client_class:
+                    mock_client = AsyncMock()
+                    mock_client_class.return_value = mock_client
+
+                    repo = QdrantVectorRepository()
+
+                    mock_client_class.assert_called_once()
+                    call_kwargs = mock_client_class.call_args.kwargs
+                    assert call_kwargs["host"] == "localhost"
+                    assert call_kwargs["port"] == 6333
+                    assert "url" not in call_kwargs
+                    assert "api_key" not in call_kwargs
+
+    def test_partial_cloud_config_falls_back_to_local_v2(self):
+        """Partial Cloud config: only QDRANT_API_KEY set → fallback to local."""
+        with patch.object(settings, "QDRANT_URL", None):
+            with patch.object(settings, "QDRANT_API_KEY", "test-api-key"):
+                with patch("app.ai.vector_db.qdrant_client.AsyncQdrantClient") as mock_client_class:
+                    mock_client = AsyncMock()
+                    mock_client_class.return_value = mock_client
+
+                    repo = QdrantVectorRepository()
+
+                    mock_client_class.assert_called_once()
+                    call_kwargs = mock_client_class.call_args.kwargs
+                    assert call_kwargs["host"] == "localhost"
+                    assert call_kwargs["port"] == 6333
+                    assert "url" not in call_kwargs
+                    assert "api_key" not in call_kwargs
+
+    def test_injected_client_takes_priority(self):
+        """Injected client: always used, Cloud/local config never evaluated."""
+        injected_client = AsyncMock(spec=AsyncQdrantClient)
+
+        with patch("app.ai.vector_db.qdrant_client.AsyncQdrantClient") as mock_client_class:
+            mock_client_class.return_value = AsyncMock()
+
+            repo = QdrantVectorRepository(client=injected_client)
+
+            mock_client_class.assert_not_called()
+            assert repo.client == injected_client
