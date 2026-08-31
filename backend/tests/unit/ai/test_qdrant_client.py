@@ -11,6 +11,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     MatchValue,
+    PayloadSchemaType,
     PointStruct,
     VectorParams,
 )
@@ -524,3 +525,111 @@ class TestQdrantVectorRepositoryInitialization:
 
             mock_client_class.assert_not_called()
             assert repo.client == injected_client
+
+
+class TestInitCollectionsPayloadIndex:
+    """Tests for payload index creation in init_collections."""
+
+    @pytest.mark.asyncio
+    async def test_payload_index_created_for_existing_collection(self):
+        """Existing collection: init_collections calls create_payload_index for is_deleted."""
+        mock_client = AsyncMock(spec=AsyncQdrantClient)
+        mock_client.collection_exists.return_value = True
+
+        repo = QdrantVectorRepository(client=mock_client)
+        await repo.init_collections()
+
+        # Verify collection_exists called for all 3 collections
+        assert mock_client.collection_exists.call_count == 3
+
+        # Verify create_payload_index called for all 3 collections with is_deleted
+        assert mock_client.create_payload_index.call_count == 3
+
+        for call in mock_client.create_payload_index.call_args_list:
+            kwargs = call.kwargs
+            assert kwargs["field_name"] == "is_deleted"
+            assert kwargs["field_schema"] == PayloadSchemaType.BOOL
+            assert kwargs["collection_name"] in (
+                QdrantVectorRepository.RESUME_COLLECTION,
+                QdrantVectorRepository.JOB_COLLECTION,
+                QdrantVectorRepository.KNOWLEDGE_COLLECTION,
+            )
+
+    @pytest.mark.asyncio
+    async def test_payload_index_created_for_new_collection(self):
+        """New collection: init_collections creates collection then payload index for each."""
+        mock_client = AsyncMock(spec=AsyncQdrantClient)
+        mock_client.collection_exists.return_value = False
+
+        repo = QdrantVectorRepository(client=mock_client)
+        await repo.init_collections()
+
+        # Verify collection created for all 3 collections
+        assert mock_client.create_collection.call_count == 3
+
+        # Verify create_payload_index called for all 3 collections
+        assert mock_client.create_payload_index.call_count == 3
+
+        for call in mock_client.create_payload_index.call_args_list:
+            kwargs = call.kwargs
+            assert kwargs["field_name"] == "is_deleted"
+            assert kwargs["field_schema"] == PayloadSchemaType.BOOL
+
+        # Verify call order: for each collection, create_collection must be called before create_payload_index
+        calls = mock_client.mock_calls
+        collection_order = []
+        for call in calls:
+            if call[0] == "create_collection":
+                collection_order.append(("create_collection", call.kwargs["collection_name"]))
+            elif call[0] == "create_payload_index":
+                collection_order.append(("create_payload_index", call.kwargs["collection_name"]))
+
+        # For each collection, create_collection must appear before create_payload_index
+        collections = [
+            QdrantVectorRepository.RESUME_COLLECTION,
+            QdrantVectorRepository.JOB_COLLECTION,
+            QdrantVectorRepository.KNOWLEDGE_COLLECTION,
+        ]
+        for coll in collections:
+            create_idx = next(i for i, (method, name) in enumerate(collection_order)
+                              if method == "create_collection" and name == coll)
+            index_idx = next(i for i, (method, name) in enumerate(collection_order)
+                             if method == "create_payload_index" and name == coll)
+            assert create_idx < index_idx, f"create_collection must precede create_payload_index for {coll}"
+
+    @pytest.mark.asyncio
+    async def test_payload_index_for_all_managed_collections(self):
+        """Index created for resumes, jobs, and knowledge collections."""
+        mock_client = AsyncMock(spec=AsyncQdrantClient)
+        mock_client.collection_exists.return_value = True
+
+        repo = QdrantVectorRepository(client=mock_client)
+        await repo.init_collections()
+
+        # Verify all 3 collections have the index
+        collections_with_index = {
+            call.kwargs["collection_name"]
+            for call in mock_client.create_payload_index.call_args_list
+        }
+
+        assert collections_with_index == {
+            QdrantVectorRepository.RESUME_COLLECTION,
+            QdrantVectorRepository.JOB_COLLECTION,
+            QdrantVectorRepository.KNOWLEDGE_COLLECTION,
+        }
+
+    @pytest.mark.asyncio
+    async def test_payload_index_idempotent(self):
+        """Repeated init_collections calls do not cause errors."""
+        mock_client = AsyncMock(spec=AsyncQdrantClient)
+        mock_client.collection_exists.return_value = True
+
+        repo = QdrantVectorRepository(client=mock_client)
+
+        # Call init_collections multiple times
+        await repo.init_collections()
+        await repo.init_collections()
+        await repo.init_collections()
+
+        # Should call create_payload_index 3 times per call (9 total)
+        assert mock_client.create_payload_index.call_count == 9

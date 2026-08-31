@@ -10,6 +10,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    PayloadSchemaType,
     PointStruct,
     VectorParams,
 )
@@ -74,13 +75,21 @@ class QdrantVectorRepository(BaseVectorRepository):
             if await self.client.collection_exists(
                 collection_name=collection_name
             ):
-                continue
-            await self.client.create_collection(
+                # Ensure payload index exists even for existing collections
+                pass
+            else:
+                await self.client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(
+                        size=settings.VECTOR_DIMENSION,
+                        distance=Distance.COSINE,
+                    ),
+                )
+            # Create payload index for is_deleted (idempotent)
+            await self.client.create_payload_index(
                 collection_name=collection_name,
-                vectors_config=VectorParams(
-                    size=settings.VECTOR_DIMENSION,
-                    distance=Distance.COSINE,
-                ),
+                field_name="is_deleted",
+                field_schema=PayloadSchemaType.BOOL,
             )
 
     def _validate_vector(self, vector: list[float]) -> None:
