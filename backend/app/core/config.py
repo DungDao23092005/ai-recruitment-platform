@@ -53,9 +53,6 @@ class Settings(BaseSettings):
     GMAIL_HOST: str = "smtp.gmail.com"
     GMAIL_PORT: int = 587
 
-    # Maintenance
-    MAINTENANCE_TOKEN: str = ""
-
 
     model_config = SettingsConfigDict(
         env_file=".env",

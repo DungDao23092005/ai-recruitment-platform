@@ -8,7 +8,6 @@ from app.api.v1.endpoints import (
     companies,
     health,
     jobs,
-    maintenance,
     notifications,
     users,
 )
@@ -29,4 +28,3 @@ api_router.include_router(
 )
 api_router.include_router(ai.router, prefix="/ai", tags=["AI Engine"])
 api_router.include_router(admin.router, prefix="/admin", tags=["Admin"])
-api_router.include_router(maintenance.router, prefix="/maintenance", tags=["Maintenance"])

@@ -312,8 +312,8 @@ class TestReconcileQdrantJobs:
         assert mock_repo.delete_vector.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_global_sql_failure_stops_deletion(self, mock_repo):
-        """Test 7: Global SQL failure stops deletion safely."""
+    async def test_global_sql_failure_raises_exception(self, mock_repo):
+        """Test: Global SQL failure raises SourceOfTruthUnavailableError."""
         mock_session_cm = AsyncMock()
         session = AsyncMock()
         session.execute = AsyncMock(side_effect=Exception("SQL connection failed"))
@@ -330,15 +330,24 @@ class TestReconcileQdrantJobs:
                 return_value=mock_session_cm,
             ):
                 run_reconcile = self._get_run_reconcile()
-                await run_reconcile(dry_run=False)
+                exception_raised = False
+                try:
+                    await run_reconcile(dry_run=False)
+                except Exception as e:
+                    assert e.__class__.__name__ == "SourceOfTruthUnavailableError"
+                    assert "SQL source of truth unavailable" in str(e)
+                    exception_raised = True
+                assert exception_raised, "Expected SourceOfTruthUnavailableError to be raised"
 
         # No deletions should happen when SQL fails
         mock_repo.delete_vector.assert_not_called()
         mock_repo.client.scroll.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_global_qdrant_failure_stops_safely(self, mock_repo):
-        """Test 8: Global Qdrant failure stops safely."""
+    async def test_global_qdrant_failure_raises_exception(self, mock_repo):
+        """Test: Global Qdrant failure raises QdrantEnumerationError."""
+        from scripts.reconcile_qdrant_jobs import QdrantEnumerationError
+
         mock_session_cm = AsyncMock()
         session = AsyncMock()
         session.execute = AsyncMock(return_value=self._make_mock_result([]))
@@ -358,7 +367,12 @@ class TestReconcileQdrantJobs:
                 return_value=mock_session_cm,
             ):
                 run_reconcile = self._get_run_reconcile()
-                await run_reconcile(dry_run=False)
+                try:
+                    await run_reconcile(dry_run=False)
+                    pytest.fail("Expected QdrantEnumerationError to be raised")
+                except Exception as e:
+                    assert e.__class__.__name__ == "QdrantEnumerationError"
+                    assert "Qdrant enumeration failed" in str(e)
 
         # No deletions should happen when Qdrant fails
         mock_repo.delete_vector.assert_not_called()

@@ -31,6 +31,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class ReconciliationError(Exception):
+    """Base exception for reconciliation errors."""
+    pass
+
+
+class SourceOfTruthUnavailableError(ReconciliationError):
+    """Raised when SQL source of truth is unavailable."""
+    pass
+
+
+class QdrantEnumerationError(ReconciliationError):
+    """Raised when Qdrant enumeration fails."""
+    pass
+
+
 async def run_reconcile(dry_run: bool = True) -> dict:
     """Reconcile Qdrant job vectors with Azure SQL Server.
 
@@ -39,6 +54,10 @@ async def run_reconcile(dry_run: bool = True) -> dict:
 
     Returns:
         Dictionary with reconciliation counters.
+
+    Raises:
+        SourceOfTruthUnavailableError: If SQL source of truth is unavailable.
+        QdrantEnumerationError: If Qdrant enumeration fails.
     """
     logger.info("Starting Qdrant job vector reconciliation...")
     logger.info(f"Mode: {'DRY RUN' if dry_run else 'EXECUTE'}")
@@ -67,14 +86,7 @@ async def run_reconcile(dry_run: bool = True) -> dict:
         except Exception as e:
             logger.error(f"CRITICAL: Failed to fetch jobs from SQL Server: {e}")
             logger.error("Aborting reconciliation - cannot verify job existence without SQL Server")
-            return {
-                "sql_jobs": 0,
-                "scanned": 0,
-                "valid": 0,
-                "stale": 0,
-                "deleted": 0,
-                "failed": 0,
-            }
+            raise SourceOfTruthUnavailableError("SQL source of truth unavailable") from e
 
     logger.info(f"SQL Server jobs (is_deleted=False): {len(sql_job_ids)}")
 
@@ -148,14 +160,7 @@ async def run_reconcile(dry_run: bool = True) -> dict:
         except Exception as e:
             logger.error(f"Error during Qdrant scroll: {e}")
             logger.error("Aborting reconciliation due to Qdrant error")
-            return {
-                "sql_jobs": len(sql_job_ids),
-                "scanned": total_scanned,
-                "valid": valid_count,
-                "stale": stale_count,
-                "deleted": deleted_count,
-                "failed": failed_count,
-            }
+            raise QdrantEnumerationError("Qdrant enumeration failed") from e
 
     # Summary
     logger.info("\n=== Reconciliation Summary ===")
