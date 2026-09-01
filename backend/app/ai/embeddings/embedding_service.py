@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from app.ai.interfaces.base_provider import BaseEmbeddingProvider
 from app.core.exceptions import EmptyDocumentError, InvalidDocumentError
 from app.core.config import settings
@@ -19,24 +20,27 @@ class SentenceTransformerEmbeddingProvider(BaseEmbeddingProvider):
     def __init__(self, model_name: str | None = None) -> None:
         self.model_name = model_name or settings.EMBEDDING_MODEL_NAME
         self.model = None
+        self._lock = threading.Lock()
 
     def _get_model(self):
-        """Load the SentenceTransformer model on first use."""
+        """Load the SentenceTransformer model on first use with thread-safe initialization."""
         if self.model is None:
-            try:
-                from sentence_transformers import SentenceTransformer
-            except ImportError as exc:
-                raise InvalidDocumentError(
-                    f"sentence-transformers is not installed: {exc}"
-                ) from exc
-            self.model = SentenceTransformer(self.model_name)
+            with self._lock:
+                if self.model is None:
+                    try:
+                        from sentence_transformers import SentenceTransformer
+                    except ImportError as exc:
+                        raise InvalidDocumentError(
+                            f"sentence-transformers is not installed: {exc}"
+                        ) from exc
+                    self.model = SentenceTransformer(self.model_name)
         return self.model
 
     async def embed_text(self, text: str) -> list[float]:
         """Generate embedding for a single text, offloaded to thread pool."""
-        model = self._get_model()
 
         def _encode():
+            model = self._get_model()
             vector = model.encode(text)
             return [float(value) for value in vector]
 
@@ -44,9 +48,9 @@ class SentenceTransformerEmbeddingProvider(BaseEmbeddingProvider):
 
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for multiple texts, offloaded to thread pool."""
-        model = self._get_model()
 
         def _encode_batch():
+            model = self._get_model()
             vectors = model.encode(texts)
             return [
                 [float(value) for value in vector]

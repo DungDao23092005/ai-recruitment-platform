@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import sys
+import threading
 import types
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -77,6 +79,13 @@ def make_job() -> ParsedJobSchema:
         minimum_years_experience=3.0,
         education_level="Bachelor",
     )
+
+
+MOCK_VECTOR_384 = [0.1] * 384
+
+
+def make_mock_provider() -> MagicMock:
+    return MagicMock(spec=BaseEmbeddingProvider)
 
 
 class TestEmbeddingService:
@@ -204,3 +213,110 @@ class TestSentenceTransformerEmbeddingProvider:
         mock_model.encode.assert_called_once_with(["a", "b"])
         assert len(vectors) == 2
         assert all(len(v) == 384 for v in vectors)
+
+    async def test_get_model_runs_in_worker_thread(self, fake_sentence_transformer):
+        """Test that _get_model() executes inside the worker thread, not the main event loop.
+
+        This test ensures the fix for the thread-offload regression.
+        The old buggy implementation called _get_model() on the main event loop
+        before offloading to thread pool.
+        """
+        provider = SentenceTransformerEmbeddingProvider(model_name="test-model")
+
+        # Record the main thread ID
+        main_thread_id = threading.get_ident()
+        model_init_thread_id = None
+
+        # Patch the fake SentenceTransformer to record the thread ID where it's instantiated
+        original_init = fake_sentence_transformer.return_value.__class__.__init__ if hasattr(fake_sentence_transformer.return_value, '__class__') else None
+
+        # Use a closure to capture the thread ID when the fake constructor is called
+        init_thread_id = None
+
+        def spy_init(*args, **kwargs):
+            nonlocal init_thread_id
+            init_thread_id = threading.get_ident()
+            mock_model = MagicMock()
+            mock_model.encode.return_value = MOCK_VECTOR_384
+            return mock_model
+
+        fake_sentence_transformer.side_effect = spy_init
+
+        provider = SentenceTransformerEmbeddingProvider(model_name="test-model")
+
+        await provider.embed_text("hello")
+
+        # Verify the model was initialized in a different thread (worker thread)
+        assert init_thread_id is not None, "SentenceTransformer should have been initialized"
+        assert init_thread_id != threading.get_ident(), "Model should be initialized in worker thread, not main thread"
+
+    async def test_concurrent_initialization_single_model(self, fake_sentence_transformer):
+        """Test that concurrent calls to _get_model() initialize the model only once.
+
+        Multiple concurrent calls to _get_model() should result in exactly one
+        SentenceTransformer instantiation, with all callers receiving the same instance.
+        """
+        init_count = 0
+
+        def counting_init(*args, **kwargs):
+            nonlocal init_count
+            init_count += 1
+            mock_model = MagicMock()
+            mock_model.encode.return_value = [0.1] * 384
+            return mock_model
+
+        fake_sentence_transformer.side_effect = counting_init
+
+        provider = SentenceTransformerEmbeddingProvider(model_name="test-model")
+
+        # Call concurrently using run_in_executor to simulate concurrent access
+        loop = asyncio.get_event_loop()
+        results = await asyncio.gather(*[loop.run_in_executor(None, provider._get_model) for _ in range(5)])
+
+        # Should have initialized only once despite concurrent calls
+        assert init_count == 1, f"Expected 1 initialization, got {init_count}"
+        # All callers should receive the same model instance
+        assert len(set(id(r) for r in results)) == 1
+
+    async def test_initialization_failure_safe(self, fake_sentence_transformer):
+        """Test that initialization failure leaves provider in a retryable state.
+
+        If SentenceTransformer construction fails, the provider should:
+        - Raise the exception
+        - Leave model as None (so subsequent calls can retry)
+        - Release the lock so subsequent attempts can try again
+        """
+        def failing_init(*args, **kwargs):
+            raise RuntimeError("Model download failed")
+
+        fake_sentence_transformer.side_effect = failing_init
+
+        provider = SentenceTransformerEmbeddingProvider(model_name="test-model")
+
+        # First attempt should raise the exception
+        with pytest.raises(RuntimeError, match="Model download failed"):
+            await provider.embed_text("hello")
+
+        # Model should remain None after failure
+        assert provider.model is None
+
+        # Second attempt should retry and succeed
+        mock_model = MagicMock()
+        mock_model.encode.return_value = [0.1] * 384
+        fake_sentence_transformer.side_effect = lambda *args, **kwargs: mock_model
+
+        vector = await provider.embed_text("hello")
+        assert vector == [0.1] * 384
+        assert fake_sentence_transformer.call_count == 2
+
+    async def test_embed_documents_thread_safety(self, fake_sentence_transformer):
+        """Verify embed_documents also uses thread-safe _get_model."""
+        mock_model = fake_sentence_transformer.return_value
+        mock_model.encode.return_value = [[0.1] * 384, [0.2] * 384]
+        provider = SentenceTransformerEmbeddingProvider(model_name="test-model")
+
+        vectors = await provider.embed_documents(["a", "b"])
+
+        mock_model.encode.assert_called_once_with(["a", "b"])
+        assert len(vectors) == 2
+        assert len(vectors[0]) == 384
