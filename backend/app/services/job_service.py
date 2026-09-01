@@ -58,8 +58,11 @@ class JobService:
         try:
             await self.session.flush()  # Get the job ID before adding skills
             await self._attach_skills(job, data.skills)
+            await self._reindex_job(job)
             await self.session.commit()
             await self.session.refresh(job)
+            # Explicitly load company relationship AFTER refresh for response serialization
+            await job.awaitable_attrs.company
         except Exception:
             await self.session.rollback()
             raise
@@ -165,6 +168,7 @@ class JobService:
     async def _reindex_job(self, job: Job) -> None:
         text = self._canonical_job_text(job)
         vector = await self.embedding_service.embed_text(text)
+        # Explicitly load skills relationship to avoid implicit lazy loading
         skills = await job.awaitable_attrs.skills
         skills_list = [skill.name for skill in skills] if skills else []
         await self.vector_repository.upsert_job_vector(
@@ -273,6 +277,9 @@ class JobService:
         """
         from app.models import Skill
         from sqlalchemy import select
+
+        # Explicitly load skills relationship to avoid implicit lazy loading
+        await job.awaitable_attrs.skills
 
         # Clear existing skills
         job.skills.clear()
