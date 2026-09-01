@@ -80,16 +80,20 @@ describe('JobForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /Tạo tin tuyển dụng/i }))
 
     await waitFor(() => {
-      expect(mockedPost).toHaveBeenCalledWith('/jobs', {
-        company_id: 'company-1',
-        title: 'Senior Frontend Engineer',
-        description: 'Build modern web applications with React.',
-        job_type: 'full_time',
-        workplace_type: 'remote',
-        location: null,
-        status: 'draft',
-        skills: [],
-      })
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/jobs',
+        {
+          company_id: 'company-1',
+          title: 'Senior Frontend Engineer',
+          description: 'Build modern web applications with React.',
+          job_type: 'full_time',
+          workplace_type: 'remote',
+          location: null,
+          status: 'draft',
+          skills: [],
+        },
+        { timeout: 45000 }
+      )
       expect(
         screen.getByText('Tạo tin tuyển dụng thành công.'),
       ).toBeInTheDocument()

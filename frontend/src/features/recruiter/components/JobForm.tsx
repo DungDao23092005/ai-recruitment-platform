@@ -126,16 +126,20 @@ export function JobForm({
         return
       }
 
-      const created = await apiClient.post<Job, Job>('/jobs', {
-        company_id: companyId,
-        title: values.title.trim(),
-        description: values.description.trim(),
-        job_type: values.job_type,
-        workplace_type: values.workplace_type,
-        location: values.location.trim() || null,
-        status: values.status,
-        skills,
-      })
+      const created = await apiClient.post<Job, Job>(
+        '/jobs',
+        {
+          company_id: companyId,
+          title: values.title.trim(),
+          description: values.description.trim(),
+          job_type: values.job_type,
+          workplace_type: values.workplace_type,
+          location: values.location.trim() || null,
+          status: values.status,
+          skills,
+        },
+        { timeout: 45000 }
+      )
       setSuccess(true)
       onCreated?.(created)
     } catch (error) {
