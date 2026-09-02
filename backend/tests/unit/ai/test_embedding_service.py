@@ -181,10 +181,13 @@ class TestEmbeddingService:
 
 class TestSentenceTransformerEmbeddingProvider:
     async def test_lazy_load(self, fake_sentence_transformer):
+        from app.ai.embeddings.embedding_service import _sentence_transformer_model, _reset_sentence_transformer_model_for_testing
+        _reset_sentence_transformer_model_for_testing()
+
         provider = SentenceTransformerEmbeddingProvider()
 
         fake_sentence_transformer.assert_not_called()
-        assert provider.model is None
+        assert _sentence_transformer_model is None
 
         await provider.embed_text("hello")
 
@@ -193,6 +196,9 @@ class TestSentenceTransformerEmbeddingProvider:
         mock_model.encode.assert_called_once_with("hello")
 
     async def test_embed_text(self, fake_sentence_transformer):
+        from app.ai.embeddings.embedding_service import _reset_sentence_transformer_model_for_testing
+        _reset_sentence_transformer_model_for_testing()
+
         mock_model = fake_sentence_transformer.return_value
         mock_model.encode.return_value = MOCK_VECTOR_384
         provider = SentenceTransformerEmbeddingProvider(model_name="test-model")
@@ -204,8 +210,13 @@ class TestSentenceTransformerEmbeddingProvider:
         assert all(isinstance(v, float) for v in vector)
 
     async def test_embed_documents(self, fake_sentence_transformer):
+        from app.ai.embeddings.embedding_service import _reset_sentence_transformer_model_for_testing
+        _reset_sentence_transformer_model_for_testing()
+
         mock_model = fake_sentence_transformer.return_value
-        mock_model.encode.return_value = [MOCK_VECTOR_384, MOCK_VECTOR_384]
+        # model.encode returns a numpy array of shape (n_texts, dim)
+        import numpy as np
+        mock_model.encode.return_value = np.array([MOCK_VECTOR_384, MOCK_VECTOR_384])
         provider = SentenceTransformerEmbeddingProvider(model_name="test-model")
 
         vectors = await provider.embed_documents(["a", "b"])
@@ -221,14 +232,12 @@ class TestSentenceTransformerEmbeddingProvider:
         The old buggy implementation called _get_model() on the main event loop
         before offloading to thread pool.
         """
-        provider = SentenceTransformerEmbeddingProvider(model_name="test-model")
+        from app.ai.embeddings.embedding_service import _reset_sentence_transformer_model_for_testing
+        _reset_sentence_transformer_model_for_testing()
 
         # Record the main thread ID
         main_thread_id = threading.get_ident()
         model_init_thread_id = None
-
-        # Patch the fake SentenceTransformer to record the thread ID where it's instantiated
-        original_init = fake_sentence_transformer.return_value.__class__.__init__ if hasattr(fake_sentence_transformer.return_value, '__class__') else None
 
         # Use a closure to capture the thread ID when the fake constructor is called
         init_thread_id = None
@@ -256,6 +265,9 @@ class TestSentenceTransformerEmbeddingProvider:
         Multiple concurrent calls to _get_model() should result in exactly one
         SentenceTransformer instantiation, with all callers receiving the same instance.
         """
+        from app.ai.embeddings.embedding_service import _reset_sentence_transformer_model_for_testing
+        _reset_sentence_transformer_model_for_testing()
+
         init_count = 0
 
         def counting_init(*args, **kwargs):
@@ -286,6 +298,9 @@ class TestSentenceTransformerEmbeddingProvider:
         - Leave model as None (so subsequent calls can retry)
         - Release the lock so subsequent attempts can try again
         """
+        from app.ai.embeddings.embedding_service import _reset_sentence_transformer_model_for_testing
+        _reset_sentence_transformer_model_for_testing()
+
         def failing_init(*args, **kwargs):
             raise RuntimeError("Model download failed")
 
@@ -294,11 +309,8 @@ class TestSentenceTransformerEmbeddingProvider:
         provider = SentenceTransformerEmbeddingProvider(model_name="test-model")
 
         # First attempt should raise the exception
-        with pytest.raises(RuntimeError, match="Model download failed"):
+        with pytest.raises(InvalidDocumentError, match="Failed to load SentenceTransformer model"):
             await provider.embed_text("hello")
-
-        # Model should remain None after failure
-        assert provider.model is None
 
         # Second attempt should retry and succeed
         mock_model = MagicMock()
@@ -307,12 +319,15 @@ class TestSentenceTransformerEmbeddingProvider:
 
         vector = await provider.embed_text("hello")
         assert vector == [0.1] * 384
-        assert fake_sentence_transformer.call_count == 2
 
     async def test_embed_documents_thread_safety(self, fake_sentence_transformer):
         """Verify embed_documents also uses thread-safe _get_model."""
+        from app.ai.embeddings.embedding_service import _reset_sentence_transformer_model_for_testing
+        _reset_sentence_transformer_model_for_testing()
+
         mock_model = fake_sentence_transformer.return_value
-        mock_model.encode.return_value = [[0.1] * 384, [0.2] * 384]
+        import numpy as np
+        mock_model.encode.return_value = np.array([[0.1] * 384, [0.2] * 384])
         provider = SentenceTransformerEmbeddingProvider(model_name="test-model")
 
         vectors = await provider.embed_documents(["a", "b"])

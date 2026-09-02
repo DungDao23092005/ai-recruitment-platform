@@ -2,39 +2,89 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from typing import Any
+
 from app.ai.interfaces.base_provider import BaseEmbeddingProvider
-from app.core.exceptions import EmptyDocumentError, InvalidDocumentError
 from app.core.config import settings
+from app.core.exceptions import EmptyDocumentError, InvalidDocumentError
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_resume import ParsedResumeSchema
+
+
+# Module-level singleton for SentenceTransformer model (lazy, thread-safe)
+_sentence_transformer_model: Any = None
+_sentence_transformer_model_lock = threading.Lock()
+
+
+def _get_shared_sentence_transformer_model(model_name: str | None = None) -> Any:
+    """Get the shared SentenceTransformer model instance (lazy, thread-safe singleton).
+
+    This function ensures the SentenceTransformer model is initialized exactly once
+    per process, even under concurrent access.
+
+    Args:
+        model_name: The model name to load. Defaults to settings.EMBEDDING_MODEL_NAME.
+
+    Returns:
+        The shared SentenceTransformer model instance.
+
+    Raises:
+        InvalidDocumentError: If sentence-transformers is not installed or model loading fails.
+    """
+    global _sentence_transformer_model
+
+    model_name = model_name or settings.EMBEDDING_MODEL_NAME
+
+    # Fast path: already initialized
+    if _sentence_transformer_model is not None:
+        return _sentence_transformer_model
+
+    # Slow path: need to initialize (with lock for thread safety)
+    with _sentence_transformer_model_lock:
+        # Double-check after acquiring lock
+        if _sentence_transformer_model is not None:
+            return _sentence_transformer_model
+
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise InvalidDocumentError(
+                f"sentence-transformers is not installed: {exc}"
+            ) from exc
+
+        try:
+            _sentence_transformer_model = SentenceTransformer(model_name)
+        except Exception as exc:
+            raise InvalidDocumentError(
+                f"Failed to load SentenceTransformer model '{model_name}': {exc}"
+            ) from exc
+
+    return _sentence_transformer_model
+
+
+def _reset_sentence_transformer_model_for_testing() -> None:
+    """Reset the shared model for testing purposes.
+
+    WARNING: Only use in tests. Not thread-safe for production use.
+    """
+    global _sentence_transformer_model
+    with _sentence_transformer_model_lock:
+        _sentence_transformer_model = None
 
 
 class SentenceTransformerEmbeddingProvider(BaseEmbeddingProvider):
     """SentenceTransformers embedding provider.
 
-    The underlying SentenceTransformer model is loaded lazily: instantiating
-    this provider never triggers a model download; the model is created only
-    when an embedding is actually requested.
+    The underlying SentenceTransformer model is shared across all instances
+    via a module-level thread-safe singleton. Model is loaded lazily on first use.
     """
 
     def __init__(self, model_name: str | None = None) -> None:
         self.model_name = model_name or settings.EMBEDDING_MODEL_NAME
-        self.model = None
-        self._lock = threading.Lock()
 
-    def _get_model(self):
-        """Load the SentenceTransformer model on first use with thread-safe initialization."""
-        if self.model is None:
-            with self._lock:
-                if self.model is None:
-                    try:
-                        from sentence_transformers import SentenceTransformer
-                    except ImportError as exc:
-                        raise InvalidDocumentError(
-                            f"sentence-transformers is not installed: {exc}"
-                        ) from exc
-                    self.model = SentenceTransformer(self.model_name)
-        return self.model
+    def _get_model(self) -> Any:
+        """Get the shared SentenceTransformer model instance."""
+        return _get_shared_sentence_transformer_model(self.model_name)
 
     async def embed_text(self, text: str) -> list[float]:
         """Generate embedding for a single text, offloaded to thread pool."""
