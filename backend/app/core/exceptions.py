@@ -51,3 +51,7 @@ class EmptyDocumentError(AIError):
 
 class InvalidDocumentError(AIError):
     """Raised when a document is corrupted, invalid format, or exceeds size limits."""
+
+
+class ValidationError(ServiceException):
+    """Raised when input validation fails (maps to HTTP 422)."""

@@ -12,6 +12,7 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidDocumentError,
     InvalidTransitionException,
+    ValidationError,
 )
 from app.domain.enums import JobStatus, JobType, UserRole, WorkplaceType
 from app.models import Job, User
@@ -72,6 +73,11 @@ async def create_job(
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
     return to_job_read(job)
@@ -162,6 +168,11 @@ async def update_my_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
     except (AIError, EmptyDocumentError, InvalidDocumentError) as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -210,6 +221,11 @@ async def delete_my_job(
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
     except (AIError, EmptyDocumentError, InvalidDocumentError) as exc:

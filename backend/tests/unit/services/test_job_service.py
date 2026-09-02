@@ -7,6 +7,7 @@ import pytest
 from app.core.exceptions import (
     EntityNotFoundException,
     InvalidTransitionException,
+    ValidationError,
 )
 from app.domain.enums import JobStatus, JobType, WorkplaceType
 from app.models import Company, Job, Skill
@@ -998,3 +999,119 @@ class TestAttachSkillsDeduplication:
         assert len(job.skills) == 2
         skill_names = {s.name for s in job.skills}
         assert skill_names == {"Python", "FastAPI"}
+
+
+class TestAttachSkillsValidation:
+    """Regression tests for skill name length validation in _attach_skills."""
+
+    @pytest.mark.asyncio
+    async def test_long_skill_rejected(self):
+        """Test I: Skill name > 100 chars raises ValidationError."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        long_skill = "A" * 101
+
+        with pytest.raises(ValidationError, match="exceeds maximum length"):
+            await service._attach_skills(job, [long_skill])
+
+        # Verify no skill was added to session
+        session.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_exact_100_char_boundary_accepted(self):
+        """Test I: Skill name exactly 100 chars is accepted."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        skill_100 = "A" * 100
+
+        await service._attach_skills(job, [skill_100])
+
+        assert len(job.skills) == 1
+        assert job.skills[0].name == skill_100
+        session.add.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_101_char_boundary_rejected(self):
+        """Test I: Skill name 101 chars is rejected."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        skill_101 = "A" * 101
+
+        with pytest.raises(ValidationError, match="exceeds maximum length"):
+            await service._attach_skills(job, [skill_101])
+
+        assert len(job.skills) == 0
+        session.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_whitespace_normalized_before_validation(self):
+        """Test I: Whitespace is stripped before length validation."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        # "  Docker  " -> "Docker" (6 chars) after strip
+        skill_with_whitespace = "  Docker  "
+
+        await service._attach_skills(job, [skill_with_whitespace])
+
+        assert len(job.skills) == 1
+        assert job.skills[0].name == "Docker"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_pushing_over_limit_rejected(self):
+        """Test I: Whitespace that makes skill > 100 chars is rejected after strip."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        # 101 chars content + whitespace = rejected after strip (101 > 100)
+        skill_over_limit = " " + "A" * 101 + " "
+
+        with pytest.raises(ValidationError, match="exceeds maximum length"):
+            await service._attach_skills(job, [skill_over_limit])
+
+        assert len(job.skills) == 0
+        session.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_production_malformed_skill_rejected(self):
+        """Test I: Exact production malformed skill is rejected."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        # This is the exact malformed skill from production bug
+        malformed_skill = (
+            "Hỗ trợ xây dựng và quản lý Docker containers và development environments. "
+            "Tham gia xây dựng CI/CD pipeline và tự động hóa quy trình deployment. "
+            "Làm việc với Linux"
+        )
+
+        with pytest.raises(ValidationError, match="exceeds maximum length"):
+            await service._attach_skills(job, [malformed_skill])
+
+        assert len(job.skills) == 0
+        session.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mixed_valid_and_invalid_skills_rejects_all(self):
+        """Test I: If any skill is invalid, none are persisted (atomic validation)."""
+        session = make_session()
+        service = make_service(session)
+
+        job = make_job()
+        skill_names = ["Python", "A" * 101, "FastAPI"]
+
+        with pytest.raises(ValidationError, match="exceeds maximum length"):
+            await service._attach_skills(job, skill_names)
+
+        # No skills should be added because validation happens before any persistence
+        assert len(job.skills) == 0
+        session.add.assert_not_called()

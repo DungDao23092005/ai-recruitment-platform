@@ -274,9 +274,14 @@ class JobService:
 
         Deduplicates skill names case-insensitively before attaching to prevent
         duplicate Skill relationships and SQL Server IntegrityError.
+
+        Validates skill name length (max 100 chars) to prevent SQL truncation errors.
         """
+        from app.core.exceptions import ValidationError
         from app.models import Skill
         from sqlalchemy import select
+
+        MAX_SKILL_NAME_LENGTH = 100
 
         # Explicitly load skills relationship to avoid implicit lazy loading
         await job.awaitable_attrs.skills
@@ -292,6 +297,10 @@ class JobService:
             stripped = skill_name.strip()
             if not stripped:
                 continue
+            if len(stripped) > MAX_SKILL_NAME_LENGTH:
+                raise ValidationError(
+                    f"Skill name exceeds maximum length of {MAX_SKILL_NAME_LENGTH} characters: {stripped!r}"
+                )
             key = stripped.casefold()
             if key in seen:
                 continue

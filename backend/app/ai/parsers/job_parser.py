@@ -19,6 +19,15 @@ Strict Extraction Rules:
 8. Extract the key responsibilities into the responsibilities list.
 9. Return null for unavailable scalar fields and [] for unavailable list fields.
 10. Produce structured output matching ParsedJobSchema exactly.
+
+Skill Name Constraints (CRITICAL):
+- Each skill in required_skills and preferred_skills MUST be a concise technical term or keyword (maximum 3-4 words).
+- Do NOT return full sentences, descriptions, paragraphs, or explanations as skill names.
+- Do NOT include responsibilities or duties inside skill names.
+- Extract only the core technology, tool, language, or methodology name.
+- Example: "Docker" not "Hỗ trợ xây dựng và quản lý Docker containers và development environments"
+- Example: "CI/CD" not "Tham gia xây dựng CI/CD pipeline và tự động hóa quy trình deployment"
+- Example: "Linux" not "Làm việc với Linux"
 """
 
 
