@@ -636,7 +636,7 @@ class TestSourceMapping:
         assert source.source_type == "job"
         assert str(source.entity_id) == job_id
         assert source.skills == ["Python", "FastAPI"]
-        assert source.title.startswith("Job")
+        assert source.title == "Test Job"
 
     def test_no_fabricated_sources_when_context_empty(self):
         """Phase E: Short-circuit returns insufficient evidence without calling LLM."""
@@ -704,7 +704,7 @@ class TestCitationValidation:
 
         assert len(result.sources) == 1
         assert str(result.sources[0].entity_id) == job_id
-        assert result.sources[0].title.startswith("Job")
+        assert result.sources[0].title == "Test Job"
 
     def test_validate_response_filters_hallucinated_ids(self):
         """Fake UUID never appears in final sources."""

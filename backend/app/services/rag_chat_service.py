@@ -841,11 +841,12 @@ class RAGChatService:
         sources = []
         for source in retrieved_jobs:
             if source.entity_id in final_jobs:
-                # Use rerank score if available, otherwise fall back to Qdrant score
+                # Use hydrated SQL job title with fallback to Qdrant title
+                hydrated_job = final_jobs[source.entity_id]
                 updated_source = ChatSource(
                     source_type=source.source_type,
                     entity_id=source.entity_id,
-                    title=source.title,
+                    title=hydrated_job.title or source.title,
                     relevance_score=rerank_score_map.get(source.entity_id, source.relevance_score),
                     skills=source.skills,
                 )
