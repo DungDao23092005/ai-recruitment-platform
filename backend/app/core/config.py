@@ -137,7 +137,7 @@ class Settings(BaseSettings):
         return (
             f"mssql+aioodbc://"
             f"{credentials}{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
-            f"?driver={driver_param}&TrustServerCertificate=yes"
+            f"?driver={driver_param}&TrustServerCertificate=yes&ConnectRetryCount=3&ConnectRetryInterval=10"
         )
 
 
