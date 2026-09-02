@@ -1,9 +1,34 @@
 from __future__ import annotations
 
 import uuid
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class ExhaustiveJobFilter(BaseModel):
+    """Structured filter for exhaustive job inventory queries.
+
+    The LLM produces this validated filter object; the backend constructs the SQLAlchemy query.
+    """
+    model_config = ConfigDict(extra="ignore")
+
+    is_exhaustive: bool = Field(
+        default=False,
+        description="Whether this is an exhaustive inventory query",
+    )
+    employment_type: Optional[Literal["full_time", "part_time", "contract", "internship"]] = Field(
+        default=None,
+        description="Filter by employment type (maps to JobType enum)",
+    )
+    location: Optional[str] = Field(
+        default=None,
+        description="Location filter (normalized: HCM, Hồ Chí Minh, TP.HCM, TP. Hồ Chí Minh, Ho Chi Minh City)",
+    )
+    remote_only: Optional[bool] = Field(
+        default=None,
+        description="Filter for remote-only positions",
+    )
 
 
 class ChatMessage(BaseModel):

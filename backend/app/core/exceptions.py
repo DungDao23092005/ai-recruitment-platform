@@ -42,7 +42,11 @@ class AIProviderQuotaExceededError(AIError):
 
 
 class AIProviderUnavailableError(AIError):
-    """Raised when AI provider is temporarily unavailable."""
+    """Raised when AI provider is temporarily unavailable (e.g., 503)."""
+
+    def __init__(self, message: str = "AI provider temporarily unavailable", retry_after: int | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class EmptyDocumentError(AIError):

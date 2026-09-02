@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.ai.interfaces.base_provider import BaseLLMProvider
 from app.core.config import settings
-from app.core.exceptions import AIProviderQuotaExceededError, InvalidDocumentError
+from app.core.exceptions import AIProviderQuotaExceededError, AIProviderUnavailableError, InvalidDocumentError
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -99,6 +99,11 @@ class GeminiLLMProvider(BaseLLMProvider):
             if exc.code == 429:
                 raise AIProviderQuotaExceededError(
                     "AI provider quota exceeded.",
+                    retry_after=60,
+                ) from exc
+            if exc.code == 503:
+                raise AIProviderUnavailableError(
+                    "AI provider temporarily unavailable.",
                     retry_after=60,
                 ) from exc
 

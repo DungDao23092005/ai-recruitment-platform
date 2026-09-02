@@ -22,6 +22,7 @@ from app.api.deps import (
 from app.core.exceptions import (
     AIError,
     AIProviderQuotaExceededError,
+    AIProviderUnavailableError,
     EmptyDocumentError,
     EntityNotFoundException,
     InvalidDocumentError,
@@ -115,6 +116,12 @@ async def parse_resume(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
+        ) from exc
+    except AIProviderUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after) if exc.retry_after else "60"},
         ) from exc
     except AIError as exc:
         raise HTTPException(
@@ -302,6 +309,12 @@ async def ai_chat(
     except AIProviderQuotaExceededError as exc:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after) if exc.retry_after else "60"},
+        ) from exc
+    except AIProviderUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
             headers={"Retry-After": str(exc.retry_after) if exc.retry_after else "60"},
         ) from exc

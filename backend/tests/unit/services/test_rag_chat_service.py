@@ -109,9 +109,22 @@ def make_llm(response=None):
     async def mock_generate_structured_output(prompt, response_schema, system_instruction):
         # Check which schema is requested
         FactCheckResponse = _get_fact_check_response_cls()
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse
+
         if response_schema is FactCheckResponse:
             # Return a faithful FactCheckResponse for evaluator
             return FactCheckResponse(is_faithful=True, contradictions=[])
+        elif response_schema is ExhaustiveIntentResponse:
+            # Default: not exhaustive for most tests
+            return ExhaustiveIntentResponse(
+                is_exhaustive=False,
+                employment_type=None,
+                location=None,
+                remote_only=None,
+            )
+        elif response_schema is QueryRewriteResponse:
+            # Return a standalone query for rewrite
+            return type('obj', (object,), {'standalone_query': 'python job'})()
         # Default: return the provided response or default LLMChatResponse
         return response or make_llm_response()
 
@@ -639,7 +652,10 @@ class TestSourceMapping:
         assert source.title == "Test Job"
 
     def test_no_fabricated_sources_when_context_empty(self):
-        """Phase E: Short-circuit returns insufficient evidence without calling LLM."""
+        """Phase E: Short-circuit returns insufficient evidence without calling final LLM.
+
+        Note: Exhaustive intent detection LLM call still happens.
+        """
         embed = make_embedding_service()
         repo = make_vector_repo(jobs=[])
         llm = make_llm()
@@ -649,12 +665,12 @@ class TestSourceMapping:
             service.chat("hỏi gì đó", make_user(UserRole.CANDIDATE))
         )
 
-        # Short-circuit: LLM not called, empty sources, confidence 0.0
+        # Short-circuit: final LLM not called, empty sources, confidence 0.0
         assert result.sources == []
         assert result.confidence == 0.0
         assert result.answer == "Không đủ dữ liệu để trả lời."
-        # LLM should not be called due to short-circuit
-        assert llm.generate_structured_output.await_count == 0
+        # Only exhaustive intent detection LLM call happens (not final generation)
+        assert llm.generate_structured_output.await_count == 1
 
     def test_skips_non_uuid_points(self):
         embed = make_embedding_service()
@@ -974,7 +990,10 @@ class TestQueryRewriting:
     """Phase D: Query rewriting tests."""
 
     def test_query_rewriting_empty_history(self):
-        """Verify no rewrite LLM call when history is empty."""
+        """Verify no rewrite LLM call when history is empty.
+
+        Note: Exhaustive intent detection LLM call still happens.
+        """
         embed = make_embedding_service()
         job_id = str(uuid.uuid4())
         job_point = make_job_point(point_id=job_id)
@@ -994,9 +1013,9 @@ class TestQueryRewriting:
             service.chat("python job", make_user(UserRole.CANDIDATE))
         )
 
-        # Should only call generate_structured_output once (for final answer)
-        # No rewrite call should be made
-        assert llm.generate_structured_output.await_count == 1
+        # Should call generate_structured_output twice: once for exhaustive intent, once for final answer
+        # No rewrite call should be made when history is empty
+        assert llm.generate_structured_output.await_count == 2
 
     def test_query_rewriting_with_history(self):
         """Verify rewrite LLM is called when history exists."""
@@ -1013,13 +1032,23 @@ class TestQueryRewriting:
             nonlocal call_count, call_schemas
             call_count += 1
             call_schemas.append(response_schema)
-            if call_count == 1:
-                # First call is for query rewrite
+            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse
+
+            if response_schema is ExhaustiveIntentResponse:
+                # First call is for exhaustive intent detection
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                )
+            elif call_count == 2:
+                # Second call is for query rewrite (when history exists)
                 from app.services.rag_chat_service import QueryRewriteResponse
                 assert response_schema is QueryRewriteResponse
                 return type('obj', (object,), {'standalone_query': 'ứng viên Python Docker'})()
             else:
-                # Second call is for final answer
+                # Third call is for final answer
                 from app.services.rag_chat_service import LLMChatResponse
                 assert response_schema is LLMChatResponse
                 # Provide valid evidence quotes and cited_source_ids to avoid retry
@@ -1050,14 +1079,17 @@ class TestQueryRewriting:
             )
         )
 
-        # Should call generate_structured_output twice: once for rewrite, once for final answer
-        assert call_count == 2
-        # First call should use QueryRewriteResponse schema
+        # Should call generate_structured_output three times: exhaustive intent + rewrite + final answer
+        assert call_count == 3
+        # First call should use ExhaustiveIntentResponse schema
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+        assert call_schemas[0] is ExhaustiveIntentResponse
+        # Second call should use QueryRewriteResponse schema
         from app.services.rag_chat_service import QueryRewriteResponse
-        assert call_schemas[0] is QueryRewriteResponse
-        # Second call should use LLMChatResponse schema
+        assert call_schemas[1] is QueryRewriteResponse
+        # Third call should use LLMChatResponse schema
         from app.services.rag_chat_service import LLMChatResponse
-        assert call_schemas[1] is LLMChatResponse
+        assert call_schemas[2] is LLMChatResponse
 
     def test_query_rewriting_preserves_original_message(self):
         """Verify final answer-generation prompt still receives original message."""
@@ -1066,10 +1098,16 @@ class TestQueryRewriting:
         job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import QueryRewriteResponse
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse
         llm = MagicMock()
         llm.generate_structured_output = AsyncMock(
             side_effect=[
+                ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                ),
                 type('obj', (object,), {'standalone_query': 'ứng viên Python Docker'})(),
                 make_llm_response(
                     cited_source_ids=[uuid.UUID(job_id)],
@@ -1095,7 +1133,8 @@ class TestQueryRewriting:
         )
 
         # Check that the final prompt contains the ORIGINAL message, not the rewritten query
-        prompt = llm.generate_structured_output.await_args_list[1].kwargs["prompt"]
+        # Note: args_list[0] = exhaustive intent, args_list[1] = rewrite, args_list[2] = final answer
+        prompt = llm.generate_structured_output.await_args_list[2].kwargs["prompt"]
         assert "Còn ai biết Docker?" in prompt
         # History should also be in the prompt
         assert "Tìm ứng viên Python" in prompt
@@ -1108,11 +1147,16 @@ class TestQueryRewriting:
         job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
 
-        # LLM raises exception on rewrite, but succeeds on final answer
-        from app.services.rag_chat_service import QueryRewriteResponse
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse
         llm = MagicMock()
         llm.generate_structured_output = AsyncMock(
             side_effect=[
+                ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                ),
                 type('obj', (object,), {'standalone_query': 'ứng viên Python Docker'})(),
                 make_llm_response(
                     cited_source_ids=[uuid.UUID(job_id)],
@@ -1147,10 +1191,16 @@ class TestQueryRewriting:
         job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import QueryRewriteResponse
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse
         llm = MagicMock()
         llm.generate_structured_output = AsyncMock(
             side_effect=[
+                ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                ),
                 type('obj', (object,), {'standalone_query': 'ứng viên Python'})(),
                 make_llm_response(
                     cited_source_ids=[uuid.UUID(job_id)],
@@ -1179,7 +1229,8 @@ class TestQueryRewriting:
 
         # Should not crash, should handle gracefully
         # The rewrite should not have followed the injection instruction
-        rewrite_call = llm.generate_structured_output.await_args_list[0]
+        # Note: args_list[0] = exhaustive intent, args_list[1] = rewrite
+        rewrite_call = llm.generate_structured_output.await_args_list[1]
         rewrite_prompt = rewrite_call.kwargs["prompt"]
         # The rewrite prompt should contain the malicious text as data, not instruction
         assert "IGNORE ALL PREVIOUS INSTRUCTIONS" in rewrite_prompt
@@ -1195,10 +1246,16 @@ class TestQueryRewriting:
         job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import QueryRewriteResponse
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse
         llm = MagicMock()
         llm.generate_structured_output = AsyncMock(
             side_effect=[
+                ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                ),
                 type('obj', (object,), {'standalone_query': 'ứng viên Python Docker'})(),
                 make_llm_response(
                     cited_source_ids=[uuid.UUID(job_id)],
@@ -1229,7 +1286,10 @@ class TestQueryRewriting:
         # which used the rewritten query embedding
 
     def test_first_turn_does_not_add_llm_call(self):
-        """Verify first-turn requests only perform the existing final generation call."""
+        """Verify first-turn requests only perform the existing final generation call.
+
+        Note: Exhaustive intent detection LLM call is added.
+        """
         embed = make_embedding_service()
         job_id = str(uuid.uuid4())
         job_point = make_job_point(point_id=job_id)
@@ -1249,8 +1309,8 @@ class TestQueryRewriting:
             service.chat("python job", make_user(UserRole.CANDIDATE))
         )
 
-        # Only one call to generate_structured_output (for final answer)
-        assert llm.generate_structured_output.await_count == 1
+        # Two calls to generate_structured_output: exhaustive intent + final answer
+        assert llm.generate_structured_output.await_count == 2
 
     def test_phase_c_citations_remain_intact(self):
         """Verify cited_source_ids and deterministic citation filtering continue working."""
@@ -1537,7 +1597,10 @@ class TestPhaseERegression:
     """Phase E: Regression tests for short-circuit behavior."""
 
     def test_short_circuit_when_no_jobs_pass_threshold(self):
-        """Empty Qdrant results trigger short-circuit without calling LLM."""
+        """Empty Qdrant results trigger short-circuit without calling final LLM.
+
+        Note: Exhaustive intent detection LLM call still happens.
+        """
         embed = make_embedding_service()
         repo = make_vector_repo(jobs=[])  # No jobs retrieved
         llm = make_llm()
@@ -1549,10 +1612,14 @@ class TestPhaseERegression:
         assert result.answer == "Không đủ dữ liệu để trả lời."
         assert result.confidence == 0.0
         assert result.sources == []
-        assert llm.generate_structured_output.await_count == 0
+        # Only exhaustive intent detection LLM call happens
+        assert llm.generate_structured_output.await_count == 1
 
     def test_short_circuit_when_context_empty_after_authorization(self):
-        """Authorized context empty triggers short-circuit."""
+        """Authorized context empty triggers short-circuit.
+
+        Note: Exhaustive intent detection LLM call still happens.
+        """
         embed = make_embedding_service()
         job_id = str(uuid.uuid4())
         job_point = make_job_point(point_id=job_id, score=0.87)
@@ -1568,10 +1635,14 @@ class TestPhaseERegression:
         assert result.answer == "Không đủ dữ liệu để trả lời."
         assert result.confidence == 0.0
         assert result.sources == []
-        assert llm.generate_structured_output.await_count == 0
+        # Only exhaustive intent detection LLM call happens
+        assert llm.generate_structured_output.await_count == 1
 
     def test_llm_not_called_when_short_circuit(self):
-        """Verify LLM is not invoked when short-circuit triggers."""
+        """Verify final LLM is not invoked when short-circuit triggers.
+
+        Note: Exhaustive intent detection LLM call still happens.
+        """
         embed = make_embedding_service()
         repo = make_vector_repo(jobs=[])
         llm = make_llm()
@@ -1579,8 +1650,9 @@ class TestPhaseERegression:
 
         asyncio.run(service.chat("test", make_user(UserRole.CANDIDATE)))
 
-        # LLM should never be called due to short-circuit
-        assert llm.generate_structured_output.await_count == 0
+        # Final LLM should never be called due to short-circuit
+        # Only exhaustive intent detection LLM call happens
+        assert llm.generate_structured_output.await_count == 1
 
 
 class TestPhaseGFaithfulness:
@@ -1593,7 +1665,7 @@ class TestPhaseGFaithfulness:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import LLMChatResponse, FactCheckResponse
+        from app.services.rag_chat_service import LLMChatResponse, FactCheckResponse, ExhaustiveIntentResponse
 
         # Mock evaluator to detect the numerical contradiction
         async def mock_evaluator(prompt, response_schema, system_instruction):
@@ -1602,6 +1674,13 @@ class TestPhaseGFaithfulness:
                 return FactCheckResponse(
                     is_faithful=False,
                     contradictions=["Claim '7 years Python experience' contradicts evidence '2 years Python experience'"]
+                )
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
                 )
             return make_llm_response(
                 answer="Candidate has 7 years Python experience",
@@ -1632,12 +1711,21 @@ class TestPhaseGFaithfulness:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+
         async def mock_evaluator(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(
                     is_faithful=False,
                     contradictions=["Claim 'Expert in Kubernetes' has no supporting evidence"]
+                )
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
                 )
             return make_llm_response(
                 answer="Expert in Kubernetes",
@@ -1668,10 +1756,19 @@ class TestPhaseGFaithfulness:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+
         async def mock_evaluator(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                )
             return make_llm_response(
                 answer="Candidate knows Python",
                 cited_source_ids=[uuid.UUID(job_id)],
@@ -1702,12 +1799,21 @@ class TestPhaseGFaithfulness:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+
         async def mock_evaluator(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(
                     is_faithful=False,
                     contradictions=["Evidence about 'Nguyen Van A' cannot support claim about 'Nguyen Van B'"]
+                )
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
                 )
             return make_llm_response(
                 answer="Nguyen Van B has 5 years Python experience",
@@ -1738,12 +1844,21 @@ class TestPhaseGFaithfulness:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+
         async def mock_evaluator(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(
                     is_faithful=False,
                     contradictions=["Claim 'knows Java' contradicts evidence 'does not know Java'"]
+                )
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
                 )
             return make_llm_response(
                 answer="Candidate knows Java",
@@ -1778,6 +1893,8 @@ class TestPhaseGRetry:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+
         call_count = 0
 
         async def mock_evaluator(prompt, response_schema, system_instruction):
@@ -1794,6 +1911,13 @@ class TestPhaseGRetry:
                 else:
                     # Second attempt: succeed
                     return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                )
 
             # Generator responses
             if call_count == 0:
@@ -1835,22 +1959,52 @@ class TestPhaseGRetry:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
-        async def mock_evaluator(prompt, response_schema, system_instruction):
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+
+        # Track call counts for both evaluator and generator
+        gen_call_count = 0
+        eval_call_count = 0
+
+        async def mock_generator(prompt, response_schema, system_instruction):
+            nonlocal gen_call_count
             FactCheckResponse = _get_fact_check_response_cls()
             if response_schema is FactCheckResponse:
+                eval_call_count += 1
+                # Both evaluator attempts fail
                 return FactCheckResponse(
                     is_faithful=False,
-                    contradictions=["Evidence does not support the claim"]
+                    contradictions=["Claim 'expert in Kubernetes' has no supporting evidence"]
                 )
-            return make_llm_response(
-                answer="Wrong answer",
-                cited_source_ids=[uuid.UUID(job_id)],
-                evidence_quotes=["wrong evidence"],
-                suggested_followups=[],
-            )
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                )
+
+            gen_call_count += 1
+            if gen_call_count == 1:
+                # First generation
+                return make_llm_response(
+                    answer="Candidate is expert in Kubernetes",
+                    cited_source_ids=[uuid.UUID(job_id)],
+                    evidence_quotes=["Python"],
+                    claims=["Candidate is expert in Kubernetes"],
+                    suggested_followups=[],
+                )
+            else:
+                # Second generation (retry)
+                return make_llm_response(
+                    answer="Candidate knows Python",
+                    cited_source_ids=[uuid.UUID(job_id)],
+                    evidence_quotes=["Python"],
+                    claims=["Candidate knows Python"],
+                    suggested_followups=[],
+                )
 
         provider = MagicMock()
-        provider.generate_structured_output = AsyncMock(side_effect=mock_evaluator)
+        provider.generate_structured_output = AsyncMock(side_effect=mock_generator)
 
         mock_resolver = make_mock_context_resolver(
             jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
@@ -1875,10 +2029,19 @@ class TestPhaseGTelemetry:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+
         async def mock_evaluator(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                )
             return make_llm_response(
                 answer="Test answer",
                 cited_source_ids=[uuid.UUID(job_id)],
@@ -1908,6 +2071,8 @@ class TestPhaseGTelemetry:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+
         captured_prompts = []
 
         async def mock_evaluator(prompt, response_schema, system_instruction):
@@ -1915,6 +2080,13 @@ class TestPhaseGTelemetry:
             if response_schema is FactCheckResponse:
                 captured_prompts.append(prompt)
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                )
             return make_llm_response(
                 answer="Test answer",
                 cited_source_ids=[uuid.UUID(job_id)],
@@ -1952,10 +2124,19 @@ class TestPhaseGRegression:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+
         async def mock_evaluator(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                )
             return make_llm_response(
                 answer="Python developer role",
                 cited_source_ids=[uuid.UUID(job_id)],
@@ -2313,11 +2494,11 @@ class TestPhaseIEvaluationIntegration:
         ]
 
         # We can't directly access telemetry from chat(), but we can verify the rewrite was called
-        # by checking that generate_structured_output was called twice
+        # by checking that generate_structured_output was called 3 times (exhaustive + rewrite + final)
         result = asyncio.run(service.chat("Còn ai biết Docker?", make_user(UserRole.RECRUITER), history=history))
 
-        # Verify rewrite was called (2 calls: rewrite + final answer)
-        assert call_count == 2
+        # Verify rewrite was called (3 calls: exhaustive intent + rewrite + final answer)
+        assert call_count == 3
         # Verify result is valid
         assert result.sources[0].entity_id == uuid.UUID(job_id)
 
@@ -2333,6 +2514,15 @@ class TestPhaseIEvaluationIntegration:
         async def mock_generate_structured_output(prompt, response_schema, system_instruction):
             call_schemas.append(response_schema)
             if len(call_schemas) == 1:
+                from app.services.rag_chat_service import ExhaustiveIntentResponse
+                assert response_schema is ExhaustiveIntentResponse
+                class MockRewriteResponse:
+                    is_exhaustive = False
+                    employment_type = None
+                    location = None
+                    remote_only = None
+                return MockRewriteResponse()
+            elif len(call_schemas) == 2:
                 from app.services.rag_chat_service import QueryRewriteResponse
                 assert response_schema is QueryRewriteResponse
                 class MockRewriteResponse:
@@ -2362,12 +2552,12 @@ class TestPhaseIEvaluationIntegration:
 
         result = asyncio.run(service.chat("Còn ai biết Docker?", make_user(UserRole.RECRUITER), history=history))
 
-        # Should have 2 calls: 1 for rewrite, 1 for final answer
-        # Note: The telemetry.total_llm_calls is internal, but we verify the call count
-        assert len(call_schemas) == 2
-        from app.services.rag_chat_service import QueryRewriteResponse, LLMChatResponse
-        assert call_schemas[0] is QueryRewriteResponse
-        assert call_schemas[1] is LLMChatResponse
+        # Should have 3 calls: 1 for exhaustive intent, 1 for rewrite, 1 for final answer
+        assert len(call_schemas) == 3
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse
+        assert call_schemas[0] is ExhaustiveIntentResponse
+        assert call_schemas[1] is QueryRewriteResponse
+        assert call_schemas[2] is LLMChatResponse
 
     def test_refusal_classification_uses_structured_failure_state(self):
         """Test that refusal classification uses structured telemetry error state."""
@@ -3163,6 +3353,14 @@ class TestSecurityAwareAuthorization:
             if "FactCheckResponse" in str(response_schema):
                 from app.services.rag_chat_service import FactCheckResponse
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif "ExhaustiveIntentResponse" in str(response_schema):
+                from app.services.rag_chat_service import ExhaustiveIntentResponse
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                )
             return LLMChatResponse(
                 answer="Test answer",
                 cited_source_ids=[authorized_id, unauthorized_id],
@@ -4940,3 +5138,1164 @@ class TestCrossEncoderScoreNormalization:
         assert result.sources[0].title == "AI Screening Guide"
         # Confidence should be normalized (not raw logit)
         assert 0.0 <= result.confidence <= 1.0
+
+
+# =========================================================================
+# EXHAUSTIVE QUERY REGRESSION TESTS
+# =========================================================================
+
+def _make_parsed_job(job_id, title="Test Job", employment_type="internship", location="Hồ Chí Minh"):
+    """Create a ParsedJobSchema for testing."""
+    return ParsedJobSchema(
+        title=title,
+        summary=f"Summary for {title}",
+        required_skills=["Python"],
+        preferred_skills=[],
+        location=location,
+        city=location,
+        employment_type=employment_type,
+        workplace_type="on_site",
+    )
+
+
+def make_exhaustive_intent_llm(is_exhaustive=True, employment_type="internship", location="Hồ Chí Minh", remote_only=False, cited_job_ids=None):
+    """Create an LLM that returns the specified exhaustive intent."""
+    from app.services.rag_chat_service import ExhaustiveIntentResponse
+
+    intent_response = ExhaustiveIntentResponse(
+        is_exhaustive=is_exhaustive,
+        employment_type=employment_type,
+        location=location,
+        remote_only=remote_only,
+    )
+
+    # Default: cite all provided job IDs
+    if cited_job_ids is None:
+        cited_job_ids = []
+
+    provider = MagicMock()
+
+    async def mock_generate_structured_output(prompt, response_schema, system_instruction):
+        FactCheckResponse = _get_fact_check_response_cls()
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse
+
+        if response_schema is FactCheckResponse:
+            return FactCheckResponse(is_faithful=True, contradictions=[])
+        elif response_schema is ExhaustiveIntentResponse:
+            return intent_response
+        elif response_schema is QueryRewriteResponse:
+            return type('obj', (object,), {'standalone_query': 'python job'})()
+        elif response_schema is LLMChatResponse:
+            # Final answer generation - cite the provided job IDs
+            return make_llm_response(
+                cited_source_ids=cited_job_ids,
+                evidence_quotes=["Python"]
+            )
+
+        return make_llm_response(
+            cited_source_ids=[],
+            evidence_quotes=[]
+        )
+
+    provider = MagicMock()
+    provider.generate_structured_output = AsyncMock(side_effect=mock_generate_structured_output)
+    return provider
+
+
+def make_exhaustive_repo_and_session(jobs_list, count_result):
+    """Create a mock repo and session factory that returns the specified jobs and count."""
+    from app.repositories import JobRepository
+
+    # Mock JobRepository
+    mock_repo = MagicMock(spec=JobRepository)
+    mock_repo.count_matching_jobs = AsyncMock(return_value=count_result)
+    mock_repo.get_matching_jobs = AsyncMock(return_value=jobs_list)
+
+    # Create a mock session that returns proper results for JobRepository queries
+    mock_session = make_mock_session()
+
+    # Mock session factory that returns our mock session
+    mock_session_factory = MagicMock()
+    mock_session_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session_factory.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    return mock_repo, mock_session_factory
+
+
+class TestExhaustiveQueryCompleteness:
+    """Test CASE 1: Exact exhaustive scenario - 10 internship jobs in HCM, 50 full-time in HCM"""
+
+    @pytest.mark.asyncio
+    async def test_exhaustive_internship_hcm_returns_all_10_internships_no_fulltime(self):
+        """Test: 10 internship jobs in HCM + 50 full-time in HCM. Query asks for all internships in HCM."""
+        import uuid
+        from unittest.mock import patch, AsyncMock
+        from app.repositories import JobRepository
+
+# Create 10 internship jobs in HCM
+        internship_job_ids = [uuid.uuid4() for _ in range(10)]
+        internship_jobs = []
+        for i, job_id in enumerate(internship_job_ids):
+            job = MagicMock()
+            job.id = job_id
+            job.title = f"Internship Position {i+1}"
+            job.description = f"Internship role {i+1} in HCM"
+            job.job_type.value = "internship"
+            job.workplace_type.value = "on_site"
+            job.location = "Hồ Chí Minh"
+            job.company = MagicMock()
+            job.company.name = "Test Company"
+            # Skills need to be objects with .name attribute
+            skill_mock = MagicMock()
+            skill_mock.name = "Python"
+            job.skills = [skill_mock]
+            internship_jobs.append(job)
+
+        # Create 50 full-time jobs in HCM (should NOT be returned)
+        fulltime_job_ids = [uuid.uuid4() for _ in range(50)]
+        fulltime_jobs = []
+        for i, job_id in enumerate(fulltime_job_ids):
+            job = MagicMock()
+            job.id = job_id
+            job.title = f"Full-time Position {i+1}"
+            job.description = f"Full-time role {i+1} in HCM"
+            job.job_type.value = "full_time"
+            job.workplace_type.value = "on_site"
+            job.location = "Hồ Chí Minh"
+            job.company = MagicMock()
+            job.company.name = "Test Company"
+            skill_mock = MagicMock()
+            skill_mock.name = "Java"
+            job.skills = [skill_mock]
+            fulltime_jobs.append(job)
+
+        # Mock LLM to return exhaustive intent for internships in HCM
+        llm = make_exhaustive_intent_llm(
+            is_exhaustive=True,
+            employment_type="internship",
+            location="Hồ Chí Minh",
+            cited_job_ids=[job_id for job_id in internship_job_ids]
+        )
+
+        # Patch JobRepository methods
+        with patch.object(JobRepository, 'count_matching_jobs', new_callable=AsyncMock) as mock_count, \
+             patch.object(JobRepository, 'get_matching_jobs', new_callable=AsyncMock) as mock_fetch:
+
+            mock_count.return_value = 10
+            mock_fetch.return_value = internship_jobs
+
+            embed = make_embedding_service()
+
+            # Create service with mocked components
+            service = RAGChatService(
+                embedding_service=make_embedding_service(),
+                vector_repository=MagicMock(),  # Should NOT be called
+                llm_provider=llm,
+                session_factory=make_mock_session_factory(),
+                context_resolver=MagicMock(),  # Not used in exhaustive path
+                reranker=MagicMock(),  # Should NOT be called
+            )
+
+            # Execute the query
+            result = await service.chat(
+                "Liệt kê tất cả các vị trí thực tập tại Hồ Chí Minh",
+                make_user(UserRole.CANDIDATE)
+            )
+
+            # Assertions
+            # 1. Exhaustive path was selected
+            assert result.sources is not None
+
+            # 2. Exactly 10 internship jobs returned
+            returned_job_ids = {str(s.entity_id) for s in result.sources}
+            expected_internship_ids = {str(jid) for jid in internship_job_ids}
+            assert returned_job_ids == expected_internship_ids, \
+                f"Expected {expected_internship_ids}, got {returned_job_ids}"
+
+            # 3. Zero full-time jobs returned
+            returned_fulltime_ids = returned_job_ids & {str(jid) for jid in fulltime_job_ids}
+            assert len(returned_fulltime_ids) == 0, \
+                f"Full-time jobs incorrectly returned: {returned_fulltime_ids}"
+
+            # 4. Source titles match actual Job.title
+            for source in result.sources:
+                assert source.title.startswith("Internship Position"), \
+                    f"Title '{source.title}' does not match expected internship job"
+
+            # 5. Qdrant retrieval NOT called
+            # We can't directly check since we mocked vector_repository, but we can verify
+            # by ensuring the exhaustive path was taken
+
+            # 6. Reranker NOT called
+            # Same as above
+
+            # 7. Semantic query rewrite NOT used for job retrieval
+            # (exhaustive path bypasses Qdrant and reranking)
+
+            # 8. Result is complete
+            assert result.sources is not None
+            assert len(result.sources) == 10
+            assert result.answer is not None
+
+            # Verify count and fetch were called
+            assert mock_count.called
+            assert mock_fetch.called
+
+
+class TestExhaustiveQueryEmpty:
+    """Test CASE 2: Empty exhaustive result"""
+
+    @pytest.mark.asyncio
+    async def test_exhaustive_no_internships_in_hcm_returns_empty(self):
+        """Test: Zero internship jobs in HCM."""
+        import uuid
+        from unittest.mock import patch, AsyncMock
+        from app.repositories import JobRepository
+
+        # Mock LLM to return exhaustive intent for internships in HCM
+        llm = make_exhaustive_intent_llm(
+            is_exhaustive=True,
+            employment_type="internship",
+            location="Hồ Chí Minh"
+        )
+
+        # Patch JobRepository methods
+        with patch.object(JobRepository, 'count_matching_jobs', new_callable=AsyncMock) as mock_count, \
+             patch.object(JobRepository, 'get_matching_jobs', new_callable=AsyncMock) as mock_fetch:
+
+            mock_count.return_value = 0
+            mock_fetch.return_value = []
+
+            embed = make_embedding_service()
+
+            service = RAGChatService(
+                embedding_service=embed,
+                vector_repository=MagicMock(),  # Should NOT be called
+                llm_provider=llm,
+                session_factory=make_mock_session_factory(),
+                context_resolver=MagicMock(),
+                reranker=MagicMock(),  # Should NOT be called
+            )
+
+            result = await service.chat(
+                "Liệt kê tất cả các vị trí thực tập tại Hồ Chí Minh",
+                make_user(UserRole.CANDIDATE)
+            )
+
+            # Assertions
+            # 1. Exhaustive path selected (count was called)
+            # 2. Count == 0
+            # 3. get_matching_jobs() NOT called (empty result returned early)
+            assert mock_count.called
+            assert not mock_fetch.called
+
+            # 3. Qdrant is NOT called
+            # 4. Reranker is NOT called
+            # 5. Sources empty
+            assert result.sources == []
+
+            # 5. Assistant receives deterministic empty state
+            assert result.sources == []
+
+            # 6. No fabricated job appears
+            assert len(result.sources) == 0
+
+            # 7. Response indicates no matches
+            assert result.answer is not None
+
+
+class TestExhaustiveQueryTooMany:
+    """Test CASE 3: Too many results short-circuit"""
+
+    @pytest.mark.asyncio
+    async def test_exhaustive_more_than_50_jobs_returns_too_many(self):
+        """Test: More than EXHAUSTIVE_MAX_CONTEXT_JOBS matching jobs."""
+        import uuid
+        from unittest.mock import patch, AsyncMock
+        from app.repositories import JobRepository
+        from app.services.rag_chat_service import EXHAUSTIVE_MAX_CONTEXT_JOBS
+
+# Create more than 50 jobs (e.g., 60)
+        too_many_count = EXHAUSTIVE_MAX_CONTEXT_JOBS + 10  # 60 jobs
+        job_ids = [uuid.uuid4() for _ in range(too_many_count)]
+        too_many_jobs = []
+        for i, job_id in enumerate(job_ids):
+            job = MagicMock()
+            job.id = job_id
+            job.title = f"Internship Position {i+1}"
+            job.description = f"Internship role {i+1}"
+            job.job_type.value = "internship"
+            job.workplace_type.value = "on_site"
+            job.location = "Hồ Chí Minh"
+            job.company = MagicMock()
+            job.company.name = "Test Company"
+            skill_mock = MagicMock()
+            skill_mock.name = "Python"
+            job.skills = [skill_mock]
+            too_many_jobs.append(job)
+
+        # Mock LLM to return exhaustive intent
+        llm = make_exhaustive_intent_llm(
+            is_exhaustive=True,
+            employment_type="internship",
+            location="Hồ Chí Minh"
+        )
+
+        # Patch JobRepository methods
+        with patch.object(JobRepository, 'count_matching_jobs', new_callable=AsyncMock) as mock_count, \
+             patch.object(JobRepository, 'get_matching_jobs', new_callable=AsyncMock) as mock_fetch:
+
+            mock_count.return_value = too_many_count
+            mock_fetch.return_value = too_many_jobs  # Should NOT be called
+
+            embed = make_embedding_service()
+
+            service = RAGChatService(
+                embedding_service=embed,
+                vector_repository=MagicMock(),
+                llm_provider=llm,
+                session_factory=make_mock_session_factory(),
+                context_resolver=MagicMock(),
+                reranker=MagicMock(),
+            )
+
+            result = await service.chat(
+                "Liệt kê tất cả các vị trí thực tập tại Hồ Chí Minh",
+                make_user(UserRole.CANDIDATE)
+            )
+
+            # Assertions
+            # 1. count_matching_jobs() called once
+            mock_count.assert_called_once()
+
+            # 2. get_matching_jobs() is NOT called (short-circuited)
+            mock_fetch.assert_not_called()
+
+            # 3. Qdrant is NOT called
+            # 4. Reranker is NOT called
+
+            # 5. No oversized job list is constructed
+            # 6. too_many_results indicated
+            assert result.sources == []
+
+            # 7. total_count > EXHAUSTIVE_MAX_CONTEXT_JOBS
+            assert str(too_many_count) in result.answer or "60" in result.answer
+
+            # 8. LLM does not receive the full result set
+            assert len(result.sources) == 0
+
+            # 9. Response tells user to narrow filters
+            assert "vượt quá giới hạn" in result.answer or "thu hẹp" in result.answer
+
+
+class TestExhaustiveQueryLocationSynonym:
+    """Test CASE 4: Location synonym normalization"""
+
+    @pytest.mark.asyncio
+    async def test_exhaustive_hcm_synonym_normalized(self):
+        """Test: 'HCM' location synonym maps to 'Hồ Chí Minh' in repository call."""
+        import uuid
+        from unittest.mock import patch, AsyncMock
+        from app.repositories import JobRepository
+
+        # Create 1 internship job
+        job_id = uuid.uuid4()
+        job = MagicMock()
+        job.id = job_id
+        job.title = "Internship Position"
+        job.description = "Internship role"
+        job.job_type.value = "internship"
+        job.workplace_type.value = "on_site"
+        job.location = "Hồ Chí Minh"
+        job.company = MagicMock()
+        job.company.name = "Test Company"
+        skill_mock = MagicMock()
+        skill_mock.name = "Python"
+        job.skills = [skill_mock]
+
+        # Track what location is passed to repository
+        captured_args = {}
+
+        # Patch JobRepository methods
+        with patch.object(JobRepository, 'count_matching_jobs', new_callable=AsyncMock) as mock_count, \
+             patch.object(JobRepository, 'get_matching_jobs', new_callable=AsyncMock) as mock_fetch:
+
+            async def capture_count(*args, **kwargs):
+                captured_args['count_args'] = args
+                captured_args['count_kwargs'] = kwargs
+                return 1
+
+            async def capture_fetch(*args, **kwargs):
+                captured_args['fetch_args'] = args
+                captured_args['fetch_kwargs'] = kwargs
+                return [job]
+
+            mock_count.side_effect = capture_count
+            mock_fetch.side_effect = capture_fetch
+
+            # Mock LLM to return exhaustive intent with location="HCM"
+            llm = make_exhaustive_intent_llm(
+                is_exhaustive=True,
+                employment_type="internship",
+                location="HCM"  # Synonym
+            )
+
+            embed = make_embedding_service()
+
+            service = RAGChatService(
+                embedding_service=embed,
+                vector_repository=MagicMock(),
+                llm_provider=llm,
+                session_factory=make_mock_session_factory(),
+                context_resolver=MagicMock(),
+                reranker=MagicMock(),
+            )
+
+            # Execute query with HCM synonym
+            await service.chat(
+                "Liệt kê tất cả các vị trí thực tập tại HCM",
+                make_user(UserRole.CANDIDATE)
+            )
+
+            # Assert repository received normalized location "Hồ Chí Minh"
+            assert 'count_kwargs' in captured_args
+            assert captured_args['count_kwargs']['location'] == "Hồ Chí Minh"
+            assert 'fetch_kwargs' in captured_args
+            assert captured_args['fetch_kwargs']['location'] == "Hồ Chí Minh"
+
+    @pytest.mark.asyncio
+    async def test_exhaustive_tp_hcm_synonym_normalized(self):
+        """Test: 'TP.HCM' location synonym maps to 'Hồ Chí Minh'."""
+        import uuid
+        from unittest.mock import patch, AsyncMock
+        from app.repositories import JobRepository
+
+        job_id = uuid.uuid4()
+        job = MagicMock()
+        job.id = job_id
+        job.title = "Internship Position"
+        job.description = "Internship role"
+        job.job_type.value = "internship"
+        job.workplace_type.value = "on_site"
+        job.location = "Hồ Chí Minh"
+        job.company = MagicMock()
+        job.company.name = "Test Company"
+        skill_mock = MagicMock()
+        skill_mock.name = "Python"
+        job.skills = [skill_mock]
+
+        captured_args = {}
+
+        # Patch JobRepository methods
+        with patch.object(JobRepository, 'count_matching_jobs', new_callable=AsyncMock) as mock_count, \
+             patch.object(JobRepository, 'get_matching_jobs', new_callable=AsyncMock) as mock_fetch:
+
+            async def capture_count(*args, **kwargs):
+                captured_args['count_args'] = args
+                captured_args['count_kwargs'] = kwargs
+                return 1
+
+            async def capture_fetch(*args, **kwargs):
+                captured_args['fetch_args'] = args
+                captured_args['fetch_kwargs'] = kwargs
+                return [job]
+
+            mock_count.side_effect = capture_count
+            mock_fetch.side_effect = capture_fetch
+
+            # Mock LLM with location="TP.HCM"
+            llm = make_exhaustive_intent_llm(
+                is_exhaustive=True,
+                employment_type="internship",
+                location="TP.HCM"
+            )
+
+            embed = make_embedding_service()
+
+            service = RAGChatService(
+                embedding_service=embed,
+                vector_repository=MagicMock(),
+                llm_provider=llm,
+                session_factory=make_mock_session_factory(),
+                context_resolver=MagicMock(),
+                reranker=MagicMock(),
+            )
+
+            await service.chat(
+                "Liệt kê tất cả các vị trí thực tập tại TP.HCM",
+                make_user(UserRole.CANDIDATE)
+            )
+
+            # Assert repository received normalized location
+            assert captured_args['count_kwargs']['location'] == "Hồ Chí Minh"
+            assert captured_args['fetch_kwargs']['location'] == "Hồ Chí Minh"
+
+
+class TestSemanticRegression:
+    """Test CASE 5: Semantic query regression - existing behavior preserved"""
+
+    @pytest.mark.asyncio
+    async def test_semantic_query_still_uses_qdrant_and_reranker(self):
+        """Test: Non-exhaustive semantic query still uses Qdrant + reranking + FINAL_CONTEXT_LIMIT."""
+        import uuid
+
+        # Create a job point for Qdrant
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id, score=0.87, skills=["Python", "FastAPI"])
+        repo = make_vector_repo(jobs=[job_point])
+
+        # LLM that returns is_exhaustive=False (semantic query)
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse
+
+        provider = MagicMock()
+
+        async def mock_generate_structured_output(prompt, response_schema, system_instruction):
+            FactCheckResponse = _get_fact_check_response_cls()
+            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse
+
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ExhaustiveIntentResponse:
+                # Semantic query -> NOT exhaustive
+                return ExhaustiveIntentResponse(
+                    is_exhaustive=False,
+                    employment_type=None,
+                    location=None,
+                    remote_only=None,
+                )
+            elif response_schema is QueryRewriteResponse:
+                return type('obj', (object,), {'standalone_query': 'python job'})()
+            return make_llm_response(
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python", "FastAPI"]
+            )
+
+        provider.generate_structured_output = AsyncMock(side_effect=mock_generate_structured_output)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Test Job", required_skills=["Python", "FastAPI"])}
+        )
+
+        service = make_service(make_embedding_service(), repo, provider, context_resolver=mock_resolver)
+
+        result = await service.chat("Tìm việc python phù hợp", make_user(UserRole.CANDIDATE))
+
+        # Assertions - Semantic path used
+        # 1. is_exhaustive=False
+        # 2. Query rewrite occurs
+        # 2. Qdrant search_similar called
+        assert repo.search_similar.called or repo.search_similar.await_count > 0
+
+        # 3. Reranker called
+        # 4. FINAL_CONTEXT_LIMIT applied (max 5 sources)
+        assert len(result.sources) <= 5
+
+        # 5. Result is valid
+        assert result.answer is not None
+        assert result.confidence >= 0.0
+
+
+class TestFastPathExhaustiveDetection:
+    """TASK 6: Fast path exhaustive detection tests."""
+
+    def test_fast_path_vietnamese_internship_hcm(self):
+        """Test: 'Liệt kê tất cả các vị trí thực tập tại HCM' -> fast path, no LLM intent call."""
+        import uuid
+        from unittest.mock import patch, AsyncMock
+        from app.repositories import JobRepository
+
+        job_id = uuid.uuid4()
+        job = MagicMock()
+        job.id = job_id
+        job.title = "Internship Position"
+        job.description = "Internship role"
+        job.job_type.value = "internship"
+        job.workplace_type.value = "on_site"
+        job.location = "Hồ Chí Minh"
+        job.company = MagicMock()
+        job.company.name = "Test Company"
+        skill_mock = MagicMock()
+        skill_mock.name = "Python"
+        job.skills = [skill_mock]
+
+        with patch.object(JobRepository, 'count_matching_jobs', new_callable=AsyncMock) as mock_count, \
+             patch.object(JobRepository, 'get_matching_jobs', new_callable=AsyncMock) as mock_fetch:
+
+            mock_count.return_value = 1
+            mock_fetch.return_value = [job]
+
+            # Use make_llm for final answer generation
+            llm = make_llm()
+            service = RAGChatService(
+                embedding_service=make_embedding_service(),
+                vector_repository=MagicMock(),
+                llm_provider=llm,
+                session_factory=make_mock_session_factory(),
+                context_resolver=MagicMock(),
+                reranker=MagicMock(),
+            )
+
+            result = asyncio.run(service.chat(
+                "Liệt kê tất cả các vị trí thực tập tại HCM",
+                make_user(UserRole.CANDIDATE)
+            ))
+
+            # Assert: fast path taken
+            assert result.sources is not None
+            # LLM should NOT be called for exhaustive intent detection
+            # Only final answer + fact-check = 2 calls
+            assert llm.generate_structured_output.await_count == 2
+            # Exhaustive SQL path used (count and fetch called)
+            assert mock_count.called
+            assert mock_fetch.called
+
+    def test_fast_path_vietnamese_internship_ho_chi_minh(self):
+        """Test: 'Liệt kê tất cả internship ở Hồ Chí Minh' -> fast path, no LLM intent call."""
+        import uuid
+        from unittest.mock import patch, AsyncMock
+        from app.repositories import JobRepository
+
+        job_id = uuid.uuid4()
+        job = MagicMock()
+        job.id = job_id
+        job.title = "Internship Position"
+        job.description = "Internship role"
+        job.job_type.value = "internship"
+        job.workplace_type.value = "on_site"
+        job.location = "Hồ Chí Minh"
+        job.company = MagicMock()
+        job.company.name = "Test Company"
+        skill_mock = MagicMock()
+        skill_mock.name = "Python"
+        job.skills = [skill_mock]
+
+        with patch.object(JobRepository, 'count_matching_jobs', new_callable=AsyncMock) as mock_count, \
+             patch.object(JobRepository, 'get_matching_jobs', new_callable=AsyncMock) as mock_fetch:
+
+            mock_count.return_value = 1
+            mock_fetch.return_value = [job]
+
+            llm = make_llm()
+            service = RAGChatService(
+                embedding_service=make_embedding_service(),
+                vector_repository=MagicMock(),
+                llm_provider=llm,
+                session_factory=make_mock_session_factory(),
+                context_resolver=MagicMock(),
+                reranker=MagicMock(),
+            )
+
+            result = asyncio.run(service.chat(
+                "Liệt kê tất cả internship ở Hồ Chí Minh",
+                make_user(UserRole.CANDIDATE)
+            ))
+
+            assert result.sources is not None
+            assert llm.generate_structured_output.await_count == 2
+            assert mock_count.called
+            assert mock_fetch.called
+
+    def test_fast_path_vietnamese_all_positions_backend_hcm(self):
+        """Test: 'Tất cả các vị trí Backend ở HCM' -> fast path, no LLM intent call, location normalized."""
+        import uuid
+        from unittest.mock import patch, AsyncMock
+        from app.repositories import JobRepository
+
+        job_id = uuid.uuid4()
+        job = MagicMock()
+        job.id = job_id
+        job.title = "Backend Developer"
+        job.description = "Backend role"
+        job.job_type.value = "full_time"
+        job.workplace_type.value = "on_site"
+        job.location = "Hồ Chí Minh"
+        job.company = MagicMock()
+        job.company.name = "Test Company"
+        skill_mock = MagicMock()
+        skill_mock.name = "Python"
+        job.skills = [skill_mock]
+
+        with patch.object(JobRepository, 'count_matching_jobs', new_callable=AsyncMock) as mock_count, \
+             patch.object(JobRepository, 'get_matching_jobs', new_callable=AsyncMock) as mock_fetch:
+
+            mock_count.return_value = 1
+            mock_fetch.return_value = [job]
+
+            llm = make_llm()
+            service = RAGChatService(
+                embedding_service=make_embedding_service(),
+                vector_repository=MagicMock(),
+                llm_provider=llm,
+                session_factory=make_mock_session_factory(),
+                context_resolver=MagicMock(),
+                reranker=MagicMock(),
+            )
+
+            result = asyncio.run(service.chat(
+                "Tất cả các vị trí Backend ở HCM",
+                make_user(UserRole.CANDIDATE)
+            ))
+
+            assert result.sources is not None
+            assert llm.generate_structured_output.await_count == 2
+            assert mock_count.called
+            assert mock_fetch.called
+
+    def test_fast_path_english_list_all_internships(self):
+        """Test: 'List all internships in Ho Chi Minh City' -> fast path, no LLM intent call."""
+        import uuid
+        from unittest.mock import patch, AsyncMock
+        from app.repositories import JobRepository
+
+        job_id = uuid.uuid4()
+        job = MagicMock()
+        job.id = job_id
+        job.title = "Internship Position"
+        job.description = "Internship role"
+        job.job_type.value = "internship"
+        job.workplace_type.value = "on_site"
+        job.location = "Hồ Chí Minh"
+        job.company = MagicMock()
+        job.company.name = "Test Company"
+        skill_mock = MagicMock()
+        skill_mock.name = "Python"
+        job.skills = [skill_mock]
+
+        with patch.object(JobRepository, 'count_matching_jobs', new_callable=AsyncMock) as mock_count, \
+             patch.object(JobRepository, 'get_matching_jobs', new_callable=AsyncMock) as mock_fetch:
+
+            mock_count.return_value = 1
+            mock_fetch.return_value = [job]
+
+            llm = make_llm()
+            service = RAGChatService(
+                embedding_service=make_embedding_service(),
+                vector_repository=MagicMock(),
+                llm_provider=llm,
+                session_factory=make_mock_session_factory(),
+                context_resolver=MagicMock(),
+                reranker=MagicMock(),
+            )
+
+            result = asyncio.run(service.chat(
+                "List all internships in Ho Chi Minh City",
+                make_user(UserRole.CANDIDATE)
+            ))
+
+            assert result.sources is not None
+            assert llm.generate_structured_output.await_count == 2
+            assert mock_count.called
+            assert mock_fetch.called
+
+    def test_semantic_safety_nhung_cong_viec_nao_python(self):
+        """Test: 'Những công việc nào phù hợp với kỹ năng Python của tôi?' -> NOT fast path, semantic path."""
+        from unittest.mock import AsyncMock
+
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id)
+        repo = make_vector_repo(jobs=[job_point])
+
+        call_schemas = []
+
+        async def mock_generate(prompt, response_schema, system_instruction):
+            call_schemas.append(response_schema)
+            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(is_exhaustive=False, employment_type=None, location=None, remote_only=None)
+            elif response_schema is QueryRewriteResponse:
+                return type('obj', (object,), {'standalone_query': 'Python job'})()
+            return make_llm_response(cited_source_ids=[uuid.UUID(job_id)], evidence_quotes=["Python"])
+
+        llm = MagicMock()
+        llm.generate_structured_output = AsyncMock(side_effect=mock_generate)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+        )
+        service = make_service(make_embedding_service(), repo, llm, context_resolver=mock_resolver)
+
+        asyncio.run(service.chat(
+            "Những công việc nào phù hợp với kỹ năng Python của tôi?",
+            make_user(UserRole.CANDIDATE)
+        ))
+
+        # Assert: fast path NOT taken, ExhaustiveIntentResponse called via LLM
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+        assert ExhaustiveIntentResponse in call_schemas
+        # Query rewrite should be called (history is empty, so no rewrite, but exhaustive intent is called)
+        # Actually for first turn with empty history, only exhaustive intent + final answer are called
+
+    def test_semantic_safety_tim_viec_backend_cv(self):
+        """Test: 'Tìm việc Backend phù hợp với CV của tôi' -> NOT fast path."""
+        from unittest.mock import AsyncMock
+
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id)
+        repo = make_vector_repo(jobs=[job_point])
+
+        call_schemas = []
+
+        async def mock_generate(prompt, response_schema, system_instruction):
+            call_schemas.append(response_schema)
+            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(is_exhaustive=False, employment_type=None, location=None, remote_only=None)
+            elif response_schema is QueryRewriteResponse:
+                return type('obj', (object,), {'standalone_query': 'Backend job'})()
+            return make_llm_response(cited_source_ids=[uuid.UUID(job_id)], evidence_quotes=["Backend"])
+
+        llm = MagicMock()
+        llm.generate_structured_output = AsyncMock(side_effect=mock_generate)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Backend Dev", required_skills=["Backend"])}
+        )
+        service = make_service(make_embedding_service(), repo, llm, context_resolver=mock_resolver)
+
+        asyncio.run(service.chat(
+            "Tìm việc Backend phù hợp với CV của tôi",
+            make_user(UserRole.CANDIDATE)
+        ))
+
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+        assert ExhaustiveIntentResponse in call_schemas
+
+    def test_semantic_safety_co_bao_nhieu_nam_kinh_nghiem(self):
+        """Test: 'Có bao nhiêu năm kinh nghiệm cần thiết cho Backend Engineer?' -> NOT fast path, semantic path."""
+        from unittest.mock import AsyncMock
+
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id)
+        repo = make_vector_repo(jobs=[job_point])
+
+        call_schemas = []
+
+        async def mock_generate(prompt, response_schema, system_instruction):
+            call_schemas.append(response_schema)
+            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(is_exhaustive=False, employment_type=None, location=None, remote_only=None)
+            elif response_schema is QueryRewriteResponse:
+                return type('obj', (object,), {'standalone_query': 'Backend Engineer experience'})()
+            return make_llm_response(cited_source_ids=[uuid.UUID(job_id)], evidence_quotes=["Backend"])
+
+        llm = MagicMock()
+        llm.generate_structured_output = AsyncMock(side_effect=mock_generate)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Backend Engineer", required_skills=["Backend"])}
+        )
+        service = make_service(make_embedding_service(), repo, llm, context_resolver=mock_resolver)
+
+        asyncio.run(service.chat(
+            "Có bao nhiêu năm kinh nghiệm cần thiết cho Backend Engineer?",
+            make_user(UserRole.CANDIDATE)
+        ))
+
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+        assert ExhaustiveIntentResponse in call_schemas
+
+    def test_semantic_safety_co_bao_nhieu_ky_nang(self):
+        """Test: 'Có bao nhiêu kỹ năng cần cho vị trí này?' -> NOT fast path."""
+        from unittest.mock import AsyncMock
+
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id)
+        repo = make_vector_repo(jobs=[job_point])
+
+        call_schemas = []
+
+        async def mock_generate(prompt, response_schema, system_instruction):
+            call_schemas.append(response_schema)
+            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(is_exhaustive=False, employment_type=None, location=None, remote_only=None)
+            elif response_schema is QueryRewriteResponse:
+                return type('obj', (object,), {'standalone_query': 'job skills'})()
+            return make_llm_response(cited_source_ids=[uuid.UUID(job_id)], evidence_quotes=["Python"])
+
+        llm = MagicMock()
+        llm.generate_structured_output = AsyncMock(side_effect=mock_generate)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+        )
+        service = make_service(make_embedding_service(), repo, llm, context_resolver=mock_resolver)
+
+        asyncio.run(service.chat(
+            "Có bao nhiêu kỹ năng cần cho vị trí này?",
+            make_user(UserRole.CANDIDATE)
+        ))
+
+        from app.services.rag_chat_service import ExhaustiveIntentResponse
+        assert ExhaustiveIntentResponse in call_schemas
+
+
+class TestDeterministicFilterExtraction:
+    """TASK 7: Deterministic filter extraction tests."""
+
+    def test_filter_extraction_no_filters(self):
+        """Test: 'Liệt kê tất cả các vị trí' -> is_exhaustive=True, no filters."""
+        from app.services.rag_chat_service import _extract_deterministic_filters, _is_obviously_exhaustive_query
+
+        msg = "Liệt kê tất cả các vị trí"
+        assert _is_obviously_exhaustive_query(msg) is True
+        intent = _extract_deterministic_filters(msg)
+        assert intent.is_exhaustive is True
+        assert intent.employment_type is None
+        assert intent.location is None
+        assert intent.remote_only is None
+
+    def test_filter_extraction_internship(self):
+        """Test: 'Liệt kê tất cả internship' -> internship filter."""
+        from app.services.rag_chat_service import _extract_deterministic_filters, _is_obviously_exhaustive_query
+
+        msg = "Liệt kê tất cả internship"
+        assert _is_obviously_exhaustive_query(msg) is True
+        intent = _extract_deterministic_filters(msg)
+        assert intent.is_exhaustive is True
+        assert intent.employment_type == "internship"
+        assert intent.location is None
+        assert intent.remote_only is None
+
+    def test_filter_extraction_full_time_hcm(self):
+        """Test: 'Liệt kê tất cả việc toàn thời gian tại HCM' -> full_time + Hồ Chí Minh."""
+        from app.services.rag_chat_service import _extract_deterministic_filters, _is_obviously_exhaustive_query
+
+        msg = "Liệt kê tất cả việc toàn thời gian tại HCM"
+        assert _is_obviously_exhaustive_query(msg) is True
+        intent = _extract_deterministic_filters(msg)
+        assert intent.is_exhaustive is True
+        assert intent.employment_type == "full_time"
+        assert intent.location == "Hồ Chí Minh"
+        assert intent.remote_only is None
+
+    def test_filter_extraction_remote_jobs(self):
+        """Test: 'Liệt kê tất cả remote jobs' -> remote_only=True."""
+        from app.services.rag_chat_service import _extract_deterministic_filters, _is_obviously_exhaustive_query
+
+        msg = "Liệt kê tất cả remote jobs"
+        assert _is_obviously_exhaustive_query(msg) is True
+        intent = _extract_deterministic_filters(msg)
+        assert intent.is_exhaustive is True
+        assert intent.employment_type is None
+        assert intent.location is None
+        assert intent.remote_only is True
+
+
+class Test503ErrorMapping:
+    """TASK 8: 503 error mapping tests."""
+
+    @pytest.mark.asyncio
+    async def test_gemini_503_maps_to_503_not_400(self):
+        """Test that Gemini 503 maps to HTTP 503, not 400."""
+        from app.core.exceptions import AIProviderUnavailableError
+        from fastapi import HTTPException
+        from app.api.v1.endpoints.ai import ai_chat
+        from app.schemas.ai_chat import ChatRequest
+        from unittest.mock import MagicMock, AsyncMock
+
+        # Mock service that raises AIProviderUnavailableError
+        service = MagicMock()
+        service.chat = AsyncMock(side_effect=AIProviderUnavailableError("AI provider temporarily unavailable", retry_after=60))
+
+        current_user = MagicMock()
+        current_user.role = "CANDIDATE"
+
+        request = ChatRequest(message="test message", history=[])
+
+        # The endpoint should catch AIProviderUnavailableError and return 503
+        try:
+            await ai_chat(request, current_user, service)
+        except HTTPException as exc:
+            assert exc.status_code == 503
+            assert "temporarily unavailable" in exc.detail.lower()
+            assert exc.headers.get("Retry-After") == "60"
+        else:
+            pytest.fail("Expected HTTPException with status 503")
+
+    @pytest.mark.asyncio
+    async def test_gemini_429_maps_to_429(self):
+        """Test that Gemini 429 maps to HTTP 429."""
+        from app.core.exceptions import AIProviderQuotaExceededError
+        from fastapi import HTTPException
+        from app.api.v1.endpoints.ai import ai_chat
+        from app.schemas.ai_chat import ChatRequest
+        from unittest.mock import MagicMock, AsyncMock
+
+        service = MagicMock()
+        service.chat = AsyncMock(side_effect=AIProviderQuotaExceededError("AI provider quota exceeded", retry_after=60))
+
+        current_user = MagicMock()
+        current_user.role = "CANDIDATE"
+
+        request = ChatRequest(message="test message", history=[])
+
+        try:
+            await ai_chat(request, current_user, service)
+        except HTTPException as exc:
+            assert exc.status_code == 429
+            assert "quota exceeded" in exc.detail.lower()
+            assert exc.headers.get("Retry-After") == "60"
+        else:
+            pytest.fail("Expected HTTPException with status 429")
+
+    @pytest.mark.asyncio
+    async def test_invalid_document_error_still_400(self):
+        """Test that InvalidDocumentError still maps to HTTP 400."""
+        from app.core.exceptions import InvalidDocumentError
+        from fastapi import HTTPException
+        from app.api.v1.endpoints.ai import ai_chat
+        from app.schemas.ai_chat import ChatRequest
+        from unittest.mock import MagicMock, AsyncMock
+
+        service = MagicMock()
+        service.chat = AsyncMock(side_effect=InvalidDocumentError("Invalid document"))
+
+        current_user = MagicMock()
+        current_user.role = "CANDIDATE"
+
+        request = ChatRequest(message="test message", history=[])
+
+        try:
+            await ai_chat(request, current_user, service)
+        except HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            pytest.fail("Expected HTTPException with status 400")
+
+
+class TestTelemetryFastPath:
+    """TASK 9: Telemetry tests for fast path."""
+
+    @pytest.mark.asyncio
+    async def test_fast_path_zero_exhaustive_intent_llm_calls(self):
+        """Fast exhaustive: exhaustive intent LLM call = 0."""
+        import uuid
+        from unittest.mock import patch, AsyncMock
+        from app.repositories import JobRepository
+
+        job_id = uuid.uuid4()
+        job = MagicMock()
+        job.id = job_id
+        job.title = "Internship Position"
+        job.description = "Internship role"
+        job.job_type.value = "internship"
+        job.workplace_type.value = "on_site"
+        job.location = "Hồ Chí Minh"
+        job.company = MagicMock()
+        job.company.name = "Test Company"
+        skill_mock = MagicMock()
+        skill_mock.name = "Python"
+        job.skills = [skill_mock]
+
+        with patch.object(JobRepository, 'count_matching_jobs', new_callable=AsyncMock) as mock_count, \
+             patch.object(JobRepository, 'get_matching_jobs', new_callable=AsyncMock) as mock_fetch:
+
+            mock_count.return_value = 1
+            mock_fetch.return_value = [job]
+
+            # Track call schemas
+            call_schemas = []
+
+            async def mock_generate(prompt, response_schema, system_instruction):
+                call_schemas.append(response_schema)
+                from app.services.rag_chat_service import LLMChatResponse, FactCheckResponse, ExhaustiveIntentResponse
+                if response_schema is FactCheckResponse:
+                    return FactCheckResponse(is_faithful=True, contradictions=[])
+                elif response_schema is ExhaustiveIntentResponse:
+                    return ExhaustiveIntentResponse(is_exhaustive=True, employment_type="internship", location="Hồ Chí Minh", remote_only=None)
+                return make_llm_response(
+                    cited_source_ids=[job_id],
+                    evidence_quotes=["Python"],
+                    claims=["Test claim"]
+                )
+
+            llm = MagicMock()
+            llm.generate_structured_output = AsyncMock(side_effect=mock_generate)
+
+            service = RAGChatService(
+                embedding_service=make_embedding_service(),
+                vector_repository=MagicMock(),
+                llm_provider=llm,
+                session_factory=make_mock_session_factory(),
+                context_resolver=MagicMock(),
+                reranker=MagicMock(),
+            )
+
+            await service.chat(
+                "Liệt kê tất cả các vị trí thực tập tại HCM",
+                make_user(UserRole.CANDIDATE)
+            )
+
+            # Assert: No ExhaustiveIntentResponse call (fast path)
+            from app.services.rag_chat_service import ExhaustiveIntentResponse, LLMChatResponse, FactCheckResponse
+            assert ExhaustiveIntentResponse not in call_schemas
+            # Should still call final answer LLM and fact-check
+            assert call_schemas.count(LLMChatResponse) == 1
+            assert call_schemas.count(FactCheckResponse) == 1
+
+    @pytest.mark.asyncio
+    async def test_semantic_path_llm_calls_accounting(self):
+        """Semantic: existing intent/rewrite/final/fact-check call accounting remains correct."""
+        import uuid
+        from unittest.mock import AsyncMock
+
+        job_id = str(uuid.uuid4())
+        job_point = make_job_point(point_id=job_id)
+        repo = make_vector_repo(jobs=[job_point])
+
+        call_schemas = []
+
+        async def mock_generate(prompt, response_schema, system_instruction):
+            call_schemas.append(response_schema)
+            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
+            if response_schema is FactCheckResponse:
+                return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(is_exhaustive=False, employment_type=None, location=None, remote_only=None)
+            elif response_schema is QueryRewriteResponse:
+                return type('obj', (object,), {'standalone_query': 'python job', '_token_usage': {'prompt_tokens': 10, 'completion_tokens': 5}})()
+            return make_llm_response(
+                cited_source_ids=[uuid.UUID(job_id)],
+                evidence_quotes=["Python"],
+                claims=["Test claim"]
+            )
+
+        llm = MagicMock()
+        llm.generate_structured_output = AsyncMock(side_effect=mock_generate)
+
+        mock_resolver = make_mock_context_resolver(
+            jobs_dict={uuid.UUID(job_id): ParsedJobSchema(title="Python Dev", required_skills=["Python"])}
+        )
+        service = make_service(make_embedding_service(), repo, llm, context_resolver=mock_resolver)
+
+        # First turn (no history) - should have: exhaustive intent + final answer + fact-check = 3 calls
+        await service.chat("python job", make_user(UserRole.CANDIDATE))
+
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
+        assert call_schemas.count(ExhaustiveIntentResponse) == 1
+        assert call_schemas.count(QueryRewriteResponse) == 0  # No rewrite for empty history
+        assert call_schemas.count(LLMChatResponse) == 1
+        assert call_schemas.count(FactCheckResponse) == 1
+
+        # With history - should have: exhaustive intent + rewrite + final answer + fact-check = 4 calls
+        call_schemas.clear()
+        await service.chat(
+            "python job",
+            make_user(UserRole.CANDIDATE),
+            history=[ChatMessage(role="user", content="hello")]
+        )
+
+        assert call_schemas.count(ExhaustiveIntentResponse) == 1
+        assert call_schemas.count(QueryRewriteResponse) == 1
+        assert call_schemas.count(LLMChatResponse) == 1
+        assert call_schemas.count(FactCheckResponse) == 1

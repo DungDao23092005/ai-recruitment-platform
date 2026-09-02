@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.domain.enums import JobStatus, JobType, WorkplaceType
 from app.models import Company, Job
@@ -197,3 +197,117 @@ class JobRepository(BaseRepository[Job]):
         items = list(result.scalars().unique().all())
 
         return items, total
+
+    async def count_matching_jobs(
+        self,
+        user_role: str,
+        actor_user_id: Any,
+        employment_type: JobType | None = None,
+        location: str | None = None,
+        remote_only: bool = False,
+    ) -> int:
+        """Count jobs matching the given filters with authorization.
+
+        Args:
+            user_role: Role of the user (ADMIN, RECRUITER, CANDIDATE)
+            actor_user_id: ID of the user making the request
+            employment_type: Optional filter by job type
+            location: Optional location filter (normalized)
+            remote_only: Optional filter for remote-only jobs
+
+        Returns:
+            Total count of matching jobs
+        """
+        from app.models import RecruiterProfile
+
+        filters = [Job.is_deleted == False]  # noqa: E712
+
+        if user_role == "ADMIN":
+            pass
+        elif user_role == "RECRUITER":
+            stmt = select(RecruiterProfile.company_id).where(
+                RecruiterProfile.user_id == actor_user_id,
+                RecruiterProfile.is_deleted == False,  # noqa: E712
+            )
+            result = await self.session.execute(stmt)
+            recruiter_company_id = result.scalar_one_or_none()
+            if recruiter_company_id is None:
+                return 0
+            filters.append(Job.company_id == recruiter_company_id)
+        else:
+            filters.append(Job.status == JobStatus.PUBLISHED)
+
+        if employment_type:
+            filters.append(Job.job_type == employment_type)
+
+        if location:
+            filters.append(Job.location.ilike(f"%{location}%"))
+
+        if remote_only:
+            filters.append(Job.workplace_type == WorkplaceType.REMOTE)
+
+        count_stmt = select(func.count(Job.id)).where(*filters)
+        total_result = await self.session.execute(count_stmt)
+        return total_result.scalar_one()
+
+    async def get_matching_jobs(
+        self,
+        user_role: str,
+        actor_user_id: Any,
+        employment_type: JobType | None = None,
+        location: str | None = None,
+        remote_only: bool = False,
+        limit: int | None = None,
+    ) -> list[Job]:
+        """Get jobs matching the given filters with authorization.
+
+        Args:
+            user_role: Role of the user (ADMIN, RECRUITER, CANDIDATE)
+            actor_user_id: ID of the user making the request
+            employment_type: Optional filter by job type
+            location: Optional location filter (normalized)
+            remote_only: Optional filter for remote-only jobs
+            limit: Optional limit for number of jobs to fetch (None for no limit)
+
+        Returns:
+            List of matching jobs with skills and company loaded
+        """
+        from app.models import RecruiterProfile
+
+        filters = [Job.is_deleted == False]  # noqa: E712
+
+        if user_role == "ADMIN":
+            pass
+        elif user_role == "RECRUITER":
+            stmt = select(RecruiterProfile.company_id).where(
+                RecruiterProfile.user_id == actor_user_id,
+                RecruiterProfile.is_deleted == False,  # noqa: E712
+            )
+            result = await self.session.execute(stmt)
+            recruiter_company_id = result.scalar_one_or_none()
+            if recruiter_company_id is None:
+                return []
+            filters.append(Job.company_id == recruiter_company_id)
+        else:
+            filters.append(Job.status == JobStatus.PUBLISHED)
+
+        if employment_type:
+            filters.append(Job.job_type == employment_type)
+
+        if location:
+            filters.append(Job.location.ilike(f"%{location}%"))
+
+        if remote_only:
+            filters.append(Job.workplace_type == WorkplaceType.REMOTE)
+
+        stmt = (
+            select(Job)
+            .options(selectinload(Job.skills), selectinload(Job.company))
+            .where(*filters)
+            .order_by(Job.created_at.desc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+
+        result = await self.session.execute(stmt)
+        return list(result.scalars().unique().all())
