@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,7 +11,7 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidTransitionException,
 )
-from app.domain.enums import ApplicationStatus, UserRole
+from app.domain.enums import ApplicationStatus, InterviewStatus, InterviewType, UserRole
 from app.models import Application, Job
 from app.repositories import ApplicationRepository, JobRepository
 from app.services.application_service import ApplicationService
@@ -627,3 +628,130 @@ class TestListMyApplications:
 
         assert result == []
         service.applications.list_by_candidate_paginated.assert_not_awaited()
+
+
+class TestListMyApplicationsWithJobId:
+    """Regression tests for the /applications/mine?job_id endpoint with interviews."""
+
+    @staticmethod
+    def patch_user_service(user):
+        patch_user = patch("app.services.application_service.UserService")
+        mock = patch_user.start()
+        mock.return_value.get_user_with_profile = AsyncMock(return_value=user)
+        return patch_user
+
+    def test_list_my_applications_with_job_id_includes_interviews(self):
+        """Test that applications returned by /mine?job_id include interviews.
+
+        This regression test ensures that the MissingGreenletError is fixed
+        by eager-loading Application.interviews in get_by_candidate_and_job.
+        """
+        session = make_session()
+        service = make_service(session)
+
+        candidate_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+        interview_id = uuid.uuid4()
+
+        user = make_candidate_user(candidate_id)
+
+        # Create an application with interviews
+        application = make_application()
+        application.candidate_id = candidate_id
+        application.job_id = job_id
+
+        # Add interview to the application
+        interview = MagicMock()
+        interview.id = interview_id
+        interview.application_id = application.id
+        interview.is_deleted = False
+        interview.scheduled_at = datetime(2024, 1, 15, 10, 0)
+        interview.duration_minutes = 60
+        interview.interview_type = InterviewType.TECHNICAL
+        interview.meeting_url = "https://meet.example.com"
+        interview.location = None
+        interview.notes = "Technical interview"
+        interview.candidate_notes = None
+        interview.status = InterviewStatus.SCHEDULED
+
+        application.interviews = [interview]
+
+        # Setup job with company
+        job = make_job()
+        job.id = job_id
+        job.company = MagicMock()
+        job.company.name = "Test Company"
+        job.company.recruiters = [MagicMock(user_id=uuid.uuid4())]
+
+        # The application should have job with company
+        application.job = job
+
+        service.applications.get_by_candidate_and_job.return_value = application
+
+        patch_user = self.patch_user_service(user)
+        try:
+            result = asyncio.run(
+                service.list_my_applications(
+                    current_user=user, job_id=job_id, skip=0, limit=20
+                )
+            )
+        finally:
+            patch_user.stop()
+
+        # Verify the application is returned
+        assert len(result) == 1
+        returned_app = result[0]
+        assert returned_app.id == application.id
+        assert returned_app.job_id == job_id
+
+        # Verify interviews are included and serializable
+        # This would fail with MissingGreenletError if interviews not eager-loaded
+        assert hasattr(returned_app, 'interviews')
+        assert len(returned_app.interviews) == 1
+        assert returned_app.interviews[0].id == interview_id
+
+        # Verify the correct repository method was called
+        service.applications.get_by_candidate_and_job.assert_awaited_once_with(
+            candidate_id, job_id
+        )
+
+    def test_list_my_applications_with_job_id_no_interviews(self):
+        """Test that applications without interviews still work correctly."""
+        session = make_session()
+        service = make_service(session)
+
+        candidate_id = uuid.uuid4()
+        job_id = uuid.uuid4()
+
+        user = make_candidate_user(candidate_id)
+
+        application = make_application()
+        application.candidate_id = candidate_id
+        application.job_id = job_id
+        application.interviews = []  # No interviews
+
+        job = make_job()
+        job.id = job_id
+        job.company = MagicMock()
+        job.company.name = "Test Company"
+        job.company.recruiters = [MagicMock(user_id=uuid.uuid4())]
+        application.job = job
+
+        service.applications.get_by_candidate_and_job.return_value = application
+
+        patch_user = self.patch_user_service(user)
+        try:
+            result = asyncio.run(
+                service.list_my_applications(
+                    current_user=user, job_id=job_id, skip=0, limit=20
+                )
+            )
+        finally:
+            patch_user.stop()
+
+        assert len(result) == 1
+        assert result[0].interviews == []
+
+        service.applications.get_by_candidate_and_job.assert_awaited_once_with(
+            candidate_id, job_id
+        )

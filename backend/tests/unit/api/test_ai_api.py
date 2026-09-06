@@ -1154,3 +1154,50 @@ class TestGenerateInterviewQuestions:
         )
 
         assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+
+    def test_generate_questions_quota_exceeded_returns_429(
+        self, recruiter_client, mock_interview_generator_service
+    ):
+        from app.core.exceptions import AIProviderQuotaExceededError
+        mock_interview_generator_service.generate_questions.side_effect = (
+            AIProviderQuotaExceededError("AI provider quota exceeded", retry_after=60)
+        )
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/generate-interview-questions",
+            json=_interview_request_payload(),
+        )
+
+        assert resp.status_code == status.HTTP_429_TOO_MANY_REQUESTS
+        assert resp.headers.get("Retry-After") == "60"
+
+    def test_generate_questions_provider_unavailable_returns_503(
+        self, recruiter_client, mock_interview_generator_service
+    ):
+        from app.core.exceptions import AIProviderUnavailableError
+        mock_interview_generator_service.generate_questions.side_effect = (
+            AIProviderUnavailableError("AI provider temporarily unavailable", retry_after=30)
+        )
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/generate-interview-questions",
+            json=_interview_request_payload(),
+        )
+
+        assert resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert resp.headers.get("Retry-After") == "30"
+
+    def test_generate_questions_generic_ai_error_returns_502(
+        self, recruiter_client, mock_interview_generator_service
+    ):
+        from app.core.exceptions import AIError
+        mock_interview_generator_service.generate_questions.side_effect = AIError(
+            "Generic AI provider error"
+        )
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/generate-interview-questions",
+            json=_interview_request_payload(),
+        )
+
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY

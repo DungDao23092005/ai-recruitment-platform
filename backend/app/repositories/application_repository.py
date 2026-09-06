@@ -15,10 +15,17 @@ class ApplicationRepository(BaseRepository[Application]):
         candidate_id: Any,
         job_id: Any,
     ) -> Application | None:
-        stmt = select(Application).where(
-            Application.candidate_id == candidate_id,
-            Application.job_id == job_id,
-            Application.is_deleted == False,  # noqa: E712
+        stmt = (
+            select(Application)
+            .options(
+                selectinload(Application.job).selectinload(Job.company),
+                selectinload(Application.interviews),
+            )
+            .where(
+                Application.candidate_id == candidate_id,
+                Application.job_id == job_id,
+                Application.is_deleted == False,  # noqa: E712
+            )
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()

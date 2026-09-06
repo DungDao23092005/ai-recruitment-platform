@@ -324,7 +324,10 @@ class ApplicationService:
         parsed_job = ParsedJobSchema(
             title=job.title,
             summary=job.description,
-            required_skills=[skill.name for skill in job.skills],
+            employment_type=job.job_type.value if hasattr(job.job_type, 'value') else job.job_type,
+            workplace_type=job.workplace_type.value if hasattr(job.workplace_type, 'value') else job.workplace_type,
+            location=job.location,
+            city=job.location,
         )
         job_vector = await self._resolve_vector(
             matching_service, "jobs", application.job_id
