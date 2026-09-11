@@ -25,10 +25,22 @@ router = APIRouter()
 
 
 def to_job_read(job: Job) -> JobRead:
-    read = JobRead.model_validate(job)
-    read.company_name = job.company.name if job.company is not None else None
-    read.skills = [skill.name for skill in job.skills] if job.skills else []
-    return read
+    skills_list = [skill.name for skill in job.skills] if job.skills else []
+    company_name = job.company.name if job.company is not None else None
+    return JobRead(
+        id=job.id,
+        company_id=job.company_id,
+        company_name=company_name,
+        title=job.title,
+        description=job.description,
+        status=job.status,
+        job_type=job.job_type,
+        workplace_type=job.workplace_type,
+        location=job.location,
+        skills=skills_list,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+    )
 
 
 def _get_job_service(db: AsyncSession = Depends(get_db)) -> JobService:

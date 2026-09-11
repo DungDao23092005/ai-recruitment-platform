@@ -577,6 +577,13 @@ class TestJobCompanyName:
 class TestJobSkillsRegression:
     """Regression tests for Job skills in GET /jobs/{id} endpoint."""
 
+    @staticmethod
+    def create_company(client, run_async, slug, tax_code):
+        body = {**COMPANY_BODY, "slug": slug, "tax_code": tax_code}
+        resp = run_async(client.post(f"{API_V1}/companies", json=body))
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
     def test_get_job_returns_skills(self, client, recruiter_client, run_async):
         """Test that GET /jobs/{id} returns skills array."""
         company = self.create_company(
@@ -586,6 +593,7 @@ class TestJobSkillsRegression:
             **JOB_BODY,
             "company_id": company["id"],
             "status": "published",
+            "skills": ["Python", "FastAPI", "SQL Server"],
         }
         job = run_async(
             recruiter_client.post(f"{API_V1}/jobs", json=body)
@@ -597,8 +605,8 @@ class TestJobSkillsRegression:
         body = resp.json()
         assert "skills" in body
         assert isinstance(body["skills"], list)
-        # The job should have the skills from JOB_BODY
-        assert body["skills"] == ["Python", "FastAPI", "SQL Server"]
+        # The job should have the skills from the request (order may vary)
+        assert set(body["skills"]) == {"Python", "FastAPI", "SQL Server"}
 
 
 class TestMyJobDetail:

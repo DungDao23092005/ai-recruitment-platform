@@ -61,8 +61,9 @@ class JobService:
             await self._reindex_job(job)
             await self.session.commit()
             await self.session.refresh(job)
-            # Explicitly load company relationship AFTER refresh for response serialization
+            # Explicitly load relationships AFTER refresh for response serialization
             await job.awaitable_attrs.company
+            await job.awaitable_attrs.skills
         except Exception:
             await self.session.rollback()
             raise
