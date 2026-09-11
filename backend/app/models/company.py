@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import Index, String, Uuid, text
+from sqlalchemy.dialects.mssql import NVARCHAR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base_class import Base, SoftDeleteMixin, TimestampMixin
@@ -23,7 +24,9 @@ class Company(Base, TimestampMixin, SoftDeleteMixin):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(
+        String(255).with_variant(NVARCHAR(255), "mssql"), nullable=False
+    )
     slug: Mapped[str] = mapped_column(String(255), nullable=False)
     tax_code: Mapped[str] = mapped_column(String(50), nullable=False)
     size: Mapped[CompanySize] = mapped_column(StringEnum(CompanySize), nullable=False)

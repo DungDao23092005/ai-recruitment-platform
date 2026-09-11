@@ -62,7 +62,7 @@ function toParsedJob(job: Job): ParsedJob {
   return {
     title: job.title,
     summary: job.description,
-    required_skills: [],
+    required_skills: job.skills || [],
     preferred_skills: [],
     minimum_years_experience: null,
     education_level: null,

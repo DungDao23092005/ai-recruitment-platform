@@ -27,6 +27,7 @@ router = APIRouter()
 def to_job_read(job: Job) -> JobRead:
     read = JobRead.model_validate(job)
     read.company_name = job.company.name if job.company is not None else None
+    read.skills = [skill.name for skill in job.skills] if job.skills else []
     return read
 
 
@@ -243,7 +244,7 @@ async def get_job(
     id: uuid.UUID,
     service: JobService = Depends(_get_job_service),
 ) -> JobRead:
-    job = await service.jobs.get_job_with_company(id)
+    job = await service.jobs.get_job_with_company_and_skills(id)
     if job is None or job.is_deleted or job.status != JobStatus.PUBLISHED:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

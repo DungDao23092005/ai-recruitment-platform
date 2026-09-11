@@ -32,6 +32,7 @@ class JobRead(BaseModel):
     job_type: JobType
     workplace_type: WorkplaceType
     location: str
+    skills: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

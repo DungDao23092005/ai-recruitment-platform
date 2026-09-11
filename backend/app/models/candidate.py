@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import ForeignKey, String, Uuid
+from sqlalchemy.dialects.mssql import NVARCHAR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base_class import Base, SoftDeleteMixin, TimestampMixin
@@ -17,7 +18,9 @@ class CandidateProfile(Base, TimestampMixin, SoftDeleteMixin):
         unique=True,
         nullable=False,
     )
-    full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    full_name: Mapped[str | None] = mapped_column(
+        String(255).with_variant(NVARCHAR(255), "mssql"), nullable=True
+    )
     phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
 

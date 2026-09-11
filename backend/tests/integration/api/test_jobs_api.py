@@ -574,6 +574,33 @@ class TestJobCompanyName:
         assert resp.json()["company_name"] == company["name"]
 
 
+class TestJobSkillsRegression:
+    """Regression tests for Job skills in GET /jobs/{id} endpoint."""
+
+    def test_get_job_returns_skills(self, client, recruiter_client, run_async):
+        """Test that GET /jobs/{id} returns skills array."""
+        company = self.create_company(
+            recruiter_client, run_async, "acme-skills", "444444444"
+        )
+        body = {
+            **JOB_BODY,
+            "company_id": company["id"],
+            "status": "published",
+        }
+        job = run_async(
+            recruiter_client.post(f"{API_V1}/jobs", json=body)
+        ).json()
+
+        # Verify skills are returned in GET /jobs/{id}
+        resp = run_async(client.get(f"{API_V1}/jobs/{job['id']}"))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "skills" in body
+        assert isinstance(body["skills"], list)
+        # The job should have the skills from JOB_BODY
+        assert body["skills"] == ["Python", "FastAPI", "SQL Server"]
+
+
 class TestMyJobDetail:
     """GET /jobs/mine/{id} — recruiter-scoped job detail with ownership."""
 

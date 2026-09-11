@@ -19,7 +19,9 @@ class Job(Base, TimestampMixin, SoftDeleteMixin):
         ForeignKey("companies.id"),
         nullable=False,
     )
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(
+        String(255).with_variant(NVARCHAR(255), "mssql"), nullable=False
+    )
     description: Mapped[str] = mapped_column(
         Text().with_variant(NVARCHAR(), "mssql"),
         nullable=False,

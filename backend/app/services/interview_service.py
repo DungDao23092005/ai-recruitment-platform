@@ -71,6 +71,7 @@ class InterviewService:
             status=InterviewStatus.SCHEDULED,
         )
         self.session.add(interview)
+        await self.session.flush()
 
         # Transition application to INTERVIEWING if not already
         if application.status != ApplicationStatus.INTERVIEWING:

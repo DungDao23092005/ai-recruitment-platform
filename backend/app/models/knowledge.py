@@ -4,6 +4,7 @@ import uuid
 from enum import Enum
 
 from sqlalchemy import Enum as SQLEnum, Index, String, Uuid, text
+from sqlalchemy.dialects.mssql import NVARCHAR
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base_class import Base, SoftDeleteMixin, TimestampMixin
@@ -45,7 +46,9 @@ class KnowledgeDocument(Base, TimestampMixin, SoftDeleteMixin):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(
+        String(255).with_variant(NVARCHAR(255), "mssql"), nullable=False
+    )
     category: Mapped[KnowledgeCategory] = mapped_column(
         SQLEnum(KnowledgeCategory, values_callable=lambda x: [e.value for e in KnowledgeCategory]),
         nullable=False,
