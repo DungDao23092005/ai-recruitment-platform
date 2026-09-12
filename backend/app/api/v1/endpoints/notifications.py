@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_current_user
+from app.api.deps import get_db, get_current_active_user
 from app.core.exceptions import EntityNotFoundException
 from app.models import User
 from app.schemas.notification import NotificationRead, UnreadCountResponse
@@ -21,7 +21,7 @@ router = APIRouter()
 async def list_notifications(
     skip: int = 0,
     limit: int = 20,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[NotificationRead]:
     service = NotificationService(db)
@@ -35,7 +35,7 @@ async def list_notifications(
     response_model=UnreadCountResponse,
 )
 async def get_unread_count(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> UnreadCountResponse:
     service = NotificationService(db)
@@ -49,7 +49,7 @@ async def get_unread_count(
 )
 async def mark_notification_read(
     notification_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> NotificationRead:
     service = NotificationService(db)
@@ -72,7 +72,7 @@ async def mark_notification_read(
     response_model=dict,
 )
 async def mark_all_notifications_read(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     service = NotificationService(db)

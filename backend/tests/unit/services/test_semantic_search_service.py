@@ -47,14 +47,25 @@ def make_scored_point(
     }
 
 
-def make_job_repo(jobs=None):
+def make_job_repo(jobs=None, filter_fn=None):
+    """Create a mock job repository.
+
+    Args:
+        jobs: List of jobs to return (will be filtered if filter_fn provided)
+        filter_fn: Optional function(job) -> bool to filter jobs before returning
+    """
+    if jobs is not None and filter_fn is not None:
+        filtered_jobs = [j for j in jobs if filter_fn(j)]
+    else:
+        filtered_jobs = jobs or []
+
     repo = MagicMock()
     repo.session = MagicMock()
     # Create a proper async mock chain for execute -> scalars -> unique -> all
     mock_result = MagicMock()
     mock_scalars = MagicMock()
     mock_unique = MagicMock()
-    mock_unique.all.return_value = jobs or []
+    mock_unique.all.return_value = filtered_jobs
     mock_scalars.unique.return_value = mock_unique
     mock_result.scalars.return_value = mock_scalars
     repo.session.execute = AsyncMock(return_value=mock_result)
@@ -422,3 +433,250 @@ class TestNoFabrication:
 
         assert result[0].score == 0.1234
         assert result[0].score != 100.0
+
+
+class TestSearchJobsRoleBasedVisibility:
+    """SEC-02 Regression Tests: Semantic search role-based visibility.
+
+    These tests verify that the SQL hydration layer correctly applies
+    role-based visibility filters. They do NOT mock _fetch_jobs() -
+    they verify the actual SQL predicate and returned data.
+    """
+
+    def _make_user(self, role: str, user_id: uuid.UUID | None = None):
+        from app.domain.enums import UserRole
+        from types import SimpleNamespace
+        user = SimpleNamespace(
+            id=user_id or uuid.uuid4(),
+            role=UserRole(role),
+            is_active=True,
+        )
+        return user
+
+    def _make_job(self, job_id: uuid.UUID, status: str = "published", company_id: uuid.UUID | None = None, is_deleted: bool = False):
+        from app.domain.enums import JobStatus
+        job = MagicMock()
+        job.id = job_id
+        job.title = "Test Job"
+        job.company = MagicMock()
+        job.company.name = "Test Company"
+        job.location = "HCM"
+        job.status = JobStatus(status)
+        job.is_deleted = is_deleted
+        job.company_id = company_id or uuid.uuid4()
+        return job
+
+    def _candidate_filter(self, job):
+        return job.status.name == "PUBLISHED" and not job.is_deleted
+
+    def _recruiter_filter(self, company_id):
+        def filter_fn(job):
+            return job.company_id == company_id and not job.is_deleted
+        return filter_fn
+
+    def _admin_filter(self, job):
+        return not job.is_deleted
+
+    def test_candidate_sees_only_published_jobs(self, provider):
+        """Candidate: PUBLISHED visible, DRAFT/CLOSED/EXPIRED hidden, DELETED hidden"""
+        embed, repo = provider
+        job_pub = self._make_job(uuid.uuid4(), "published")
+        job_draft = self._make_job(uuid.uuid4(), "draft")
+        job_closed = self._make_job(uuid.uuid4(), "closed")
+        job_expired = self._make_job(uuid.uuid4(), "expired")
+        job_deleted = self._make_job(uuid.uuid4(), "published", is_deleted=True)
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_pub.id), score=0.9),
+            make_scored_point(point_id=str(job_draft.id), score=0.8),
+            make_scored_point(point_id=str(job_closed.id), score=0.7),
+            make_scored_point(point_id=str(job_expired.id), score=0.6),
+            make_scored_point(point_id=str(job_deleted.id), score=0.5),
+        ]
+        service = make_service(embed, repo)
+
+        all_jobs = [job_pub, job_draft, job_closed, job_expired, job_deleted]
+        job_repo = make_job_repo(all_jobs, self._candidate_filter)
+
+        candidate_user = self._make_user("candidate")
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=candidate_user))
+
+        # Only PUBLISHED non-deleted job should be visible
+        assert len(result) == 1
+        assert result[0].id == str(job_pub.id)
+
+    def test_candidate_does_not_see_draft(self, provider):
+        """Candidate: DRAFT job hidden"""
+        embed, repo = provider
+        job_draft = self._make_job(uuid.uuid4(), "draft")
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_draft.id), score=0.9),
+        ]
+        service = make_service(embed, repo)
+
+        job_repo = make_job_repo([job_draft], self._candidate_filter)
+
+        candidate_user = self._make_user("candidate")
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=candidate_user))
+
+        assert len(result) == 0
+
+    def test_candidate_does_not_see_closed(self, provider):
+        """Candidate: CLOSED job hidden"""
+        embed, repo = provider
+        job_closed = self._make_job(uuid.uuid4(), "closed")
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_closed.id), score=0.9),
+        ]
+        service = make_service(embed, repo)
+
+        job_repo = make_job_repo([job_closed], self._candidate_filter)
+
+        candidate_user = self._make_user("candidate")
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=candidate_user))
+
+        assert len(result) == 0
+
+    def test_candidate_does_not_see_expired(self, provider):
+        """Candidate: EXPIRED job hidden"""
+        embed, repo = provider
+        job_expired = self._make_job(uuid.uuid4(), "expired")
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_expired.id), score=0.9),
+        ]
+        service = make_service(embed, repo)
+
+        job_repo = make_job_repo([job_expired], self._candidate_filter)
+
+        candidate_user = self._make_user("candidate")
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=candidate_user))
+
+        assert len(result) == 0
+
+    def test_candidate_does_not_see_deleted(self, provider):
+        """Candidate: DELETED job hidden"""
+        embed, repo = provider
+        job_deleted = self._make_job(uuid.uuid4(), "published", is_deleted=True)
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_deleted.id), score=0.9),
+        ]
+        service = make_service(embed, repo)
+
+        job_repo = make_job_repo([job_deleted], self._candidate_filter)
+
+        candidate_user = self._make_user("candidate")
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=candidate_user))
+
+        assert len(result) == 0
+
+    def test_recruiter_sees_own_company_jobs(self, provider):
+        """Recruiter: sees jobs from own company (any status except deleted)"""
+        embed, repo = provider
+        company_id = uuid.uuid4()
+        other_company_id = uuid.uuid4()
+
+        job_own_pub = self._make_job(uuid.uuid4(), "published", company_id)
+        job_own_draft = self._make_job(uuid.uuid4(), "draft", company_id)
+        job_other = self._make_job(uuid.uuid4(), "published", other_company_id)
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_own_pub.id), score=0.9),
+            make_scored_point(point_id=str(job_own_draft.id), score=0.8),
+            make_scored_point(point_id=str(job_other.id), score=0.7),
+        ]
+        service = make_service(embed, repo)
+
+        all_jobs = [job_own_pub, job_own_draft, job_other]
+        job_repo = make_job_repo(all_jobs, self._recruiter_filter(company_id))
+
+        # Mock _get_recruiter_company_id to return the recruiter's company
+        service._get_recruiter_company_id = AsyncMock(return_value=company_id)
+
+        recruiter_user = self._make_user("recruiter")
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=recruiter_user))
+
+        # Should see both published and draft from own company
+        assert len(result) == 2
+        result_ids = {r.id for r in result}
+        assert str(job_own_pub.id) in result_ids
+        assert str(job_own_draft.id) in result_ids
+        assert str(job_other.id) not in result_ids
+
+    def test_recruiter_does_not_see_other_company_jobs(self, provider):
+        """Recruiter: cannot see jobs from other companies"""
+        embed, repo = provider
+        company_id = uuid.uuid4()
+        other_company_id = uuid.uuid4()
+
+        job_other = self._make_job(uuid.uuid4(), "published", other_company_id)
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_other.id), score=0.9),
+        ]
+        service = make_service(embed, repo)
+
+        job_repo = make_job_repo([job_other], self._recruiter_filter(company_id))
+
+        service._get_recruiter_company_id = AsyncMock(return_value=company_id)
+
+        recruiter_user = self._make_user("recruiter")
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=recruiter_user))
+
+        assert len(result) == 0
+
+    def test_admin_sees_all_non_deleted(self, provider):
+        """Admin: sees all non-deleted jobs regardless of status"""
+        embed, repo = provider
+        job_pub = self._make_job(uuid.uuid4(), "published")
+        job_draft = self._make_job(uuid.uuid4(), "draft")
+        job_closed = self._make_job(uuid.uuid4(), "closed")
+        job_expired = self._make_job(uuid.uuid4(), "expired")
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_pub.id), score=0.9),
+            make_scored_point(point_id=str(job_draft.id), score=0.8),
+            make_scored_point(point_id=str(job_closed.id), score=0.7),
+            make_scored_point(point_id=str(job_expired.id), score=0.6),
+        ]
+        service = make_service(embed, repo)
+
+        all_jobs = [job_pub, job_draft, job_closed, job_expired]
+        job_repo = make_job_repo(all_jobs, self._admin_filter)
+
+        admin_user = self._make_user("admin")
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=admin_user))
+
+        # Admin sees all non-deleted jobs regardless of status
+        assert len(result) == 4
+        result_ids = {r.id for r in result}
+        assert str(job_pub.id) in result_ids
+        assert str(job_draft.id) in result_ids
+        assert str(job_closed.id) in result_ids
+        assert str(job_expired.id) in result_ids
+
+    def test_candidate_without_actor_user_no_visibility_filter(self, provider):
+        """Without actor_user, no visibility filter applied (backward compat)"""
+        embed, repo = provider
+        job_pub = self._make_job(uuid.uuid4(), "published")
+        job_draft = self._make_job(uuid.uuid4(), "draft")
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_pub.id), score=0.9),
+            make_scored_point(point_id=str(job_draft.id), score=0.8),
+        ]
+        service = make_service(embed, repo)
+
+        job_repo = make_job_repo()
+        job_repo.session.execute.return_value.scalars.return_value.unique.return_value.all.return_value = [
+            job_pub, job_draft
+        ]
+
+        # No actor_user passed - should return all non-deleted (backward compat)
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo))
+
+        # Should see both (backward compat)
+        assert len(result) == 2

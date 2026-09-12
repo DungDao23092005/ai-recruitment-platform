@@ -360,6 +360,7 @@ async def semantic_search_jobs(
             limit=limit,
             score_threshold=score_threshold,
             job_repository=job_repo,
+            actor_user=current_user,
         )
     except EmptyDocumentError as exc:
         raise HTTPException(

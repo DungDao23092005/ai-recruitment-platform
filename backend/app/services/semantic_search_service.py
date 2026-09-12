@@ -43,6 +43,7 @@ class SemanticSearchService:
         limit: int = 10,
         score_threshold: float | None = None,
         job_repository: BaseRepository[Job] | None = None,
+        actor_user: Any | None = None,
     ) -> list[SemanticSearchResult]:
         """Search jobs and enrich with job metadata.
 
@@ -50,6 +51,11 @@ class SemanticSearchService:
         ``title``, ``company_name``, and ``location`` from ``Job`` using a single
         batch query. Ghost/deleted jobs are filtered out. Qdrant ranking
         order is preserved.
+
+        Role-based visibility is enforced at the SQL hydration layer:
+        - CANDIDATE: only PUBLISHED, non-deleted jobs
+        - RECRUITER: only jobs from their own company (non-deleted)
+        - ADMIN: all non-deleted jobs
         """
         raw_results = await self._search(
             collection_name="jobs",
@@ -65,8 +71,8 @@ class SemanticSearchService:
         # Extract job IDs from Qdrant results (preserving order)
         job_ids = [uuid.UUID(r.id) for r in raw_results]
 
-        # Batch query for jobs with company
-        jobs = await self._fetch_jobs(job_repository, job_ids)
+        # Batch query for jobs with company, applying role-based visibility
+        jobs = await self._fetch_jobs(job_repository, job_ids, actor_user)
 
         # Build lookup map
         job_map = {j.id: j for j in jobs}
@@ -169,12 +175,16 @@ class SemanticSearchService:
         self,
         repository: BaseRepository[Job],
         job_ids: list[uuid.UUID],
+        actor_user: Any | None = None,
     ) -> list[Job]:
-        """Batch fetch non-deleted jobs with company by IDs."""
+        """Batch fetch jobs with company by IDs, applying role-based visibility."""
         if not job_ids:
             return []
         from sqlalchemy import select
         from sqlalchemy.orm import joinedload
+        from app.domain.enums import JobStatus, UserRole
+        from app.models import RecruiterProfile
+
         stmt = (
             select(Job)
             .options(joinedload(Job.company))
@@ -183,8 +193,33 @@ class SemanticSearchService:
                 Job.is_deleted == False,  # noqa: E712
             )
         )
+
+        # Apply role-based visibility filters at SQL level
+        if actor_user is not None:
+            if actor_user.role == UserRole.CANDIDATE:
+                # Candidate: only PUBLISHED jobs
+                stmt = stmt.where(Job.status == JobStatus.PUBLISHED)
+            elif actor_user.role == UserRole.RECRUITER:
+                # Recruiter: only jobs from their company
+                recruiter_company_id = await self._get_recruiter_company_id(repository, actor_user.id)
+                if recruiter_company_id is None:
+                    return []
+                stmt = stmt.where(Job.company_id == recruiter_company_id)
+            # ADMIN: no additional filters (can see all non-deleted jobs)
+
         result = await repository.session.execute(stmt)
         return list(result.scalars().unique().all())
+
+    async def _get_recruiter_company_id(self, repository: BaseRepository[Job], user_id: uuid.UUID) -> uuid.UUID | None:
+        """Get the company ID for a recruiter user."""
+        from sqlalchemy import select
+        from app.models import RecruiterProfile
+        stmt = select(RecruiterProfile.company_id).where(
+            RecruiterProfile.user_id == user_id,
+            RecruiterProfile.is_deleted == False,  # noqa: E712
+        )
+        result = await repository.session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def _search(
         self,

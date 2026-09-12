@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_current_active_user
 from app.core.exceptions import EntityNotFoundException
 from app.domain.enums import UserRole
 from app.main import app
@@ -53,6 +53,44 @@ def recruiter_client(mock_notification_service):
         user.id = uuid.uuid4()
         user.role = UserRole.RECRUITER
         user.is_active = True
+        return user
+
+    app.dependency_overrides[get_current_user] = _override_user
+    with patch(
+        "app.api.v1.endpoints.notifications.NotificationService",
+        return_value=mock_notification_service,
+    ), TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def inactive_candidate_client(mock_notification_service):
+    """Inactive candidate client - should get 403 on all endpoints"""
+    async def _override_user():
+        user = MagicMock()
+        user.id = uuid.uuid4()
+        user.role = UserRole.CANDIDATE
+        user.is_active = False
+        return user
+
+    app.dependency_overrides[get_current_user] = _override_user
+    with patch(
+        "app.api.v1.endpoints.notifications.NotificationService",
+        return_value=mock_notification_service,
+    ), TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def inactive_recruiter_client(mock_notification_service):
+    """Inactive recruiter client - should get 403 on all endpoints"""
+    async def _override_user():
+        user = MagicMock()
+        user.id = uuid.uuid4()
+        user.role = UserRole.RECRUITER
+        user.is_active = False
         return user
 
     app.dependency_overrides[get_current_user] = _override_user
@@ -302,3 +340,40 @@ def test_duplicate_prevention():
 def test_transaction_safety():
     """Failed business transaction must not leave notification behind"""
     pass
+
+
+# SEC-01 Regression Tests: Inactive user enforcement
+
+def test_inactive_user_list_notifications_403(inactive_candidate_client):
+    """Inactive user -> GET notifications -> 403"""
+    resp = inactive_candidate_client.get("/api/v1/notifications")
+    assert resp.status_code == 403
+    assert "Inactive user" in resp.json()["detail"]
+
+
+def test_inactive_user_unread_count_403(inactive_candidate_client):
+    """Inactive user -> unread count -> 403"""
+    resp = inactive_candidate_client.get("/api/v1/notifications/unread-count")
+    assert resp.status_code == 403
+    assert "Inactive user" in resp.json()["detail"]
+
+
+def test_inactive_user_mark_notification_read_403(inactive_candidate_client):
+    """Inactive user -> mark notification read -> 403"""
+    resp = inactive_candidate_client.patch(f"/api/v1/notifications/{uuid.uuid4()}/read")
+    assert resp.status_code == 403
+    assert "Inactive user" in resp.json()["detail"]
+
+
+def test_inactive_user_mark_all_read_403(inactive_candidate_client):
+    """Inactive user -> mark all read -> 403"""
+    resp = inactive_candidate_client.patch("/api/v1/notifications/read-all")
+    assert resp.status_code == 403
+    assert "Inactive user" in resp.json()["detail"]
+
+
+def test_inactive_recruiter_list_notifications_403(inactive_recruiter_client):
+    """Inactive recruiter -> list notifications -> 403"""
+    resp = inactive_recruiter_client.get("/api/v1/notifications")
+    assert resp.status_code == 403
+    assert "Inactive user" in resp.json()["detail"]
