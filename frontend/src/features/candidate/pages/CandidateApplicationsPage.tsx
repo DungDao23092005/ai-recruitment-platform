@@ -12,6 +12,10 @@ export function CandidateApplicationsPage() {
   const { applications, isLoading, error, refresh, updateStatus } =
     useMyApplications()
 
+  const handleApplicationUpdated = () => {
+    refresh()
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -54,6 +58,7 @@ export function CandidateApplicationsPage() {
               onWithdrawn={(applicationId) =>
                 updateStatus(applicationId, 'withdrawn')
               }
+              onUpdated={handleApplicationUpdated}
             />
           ))}
         </div>

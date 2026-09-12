@@ -27,6 +27,7 @@ export interface ApplicationCardProps {
   application: ApplicationWithJob
   detailPath?: string
   onWithdrawn?: (applicationId: string) => void
+  onUpdated?: () => void
 }
 
 function formatAppliedDate(dateString: string): string {
@@ -100,6 +101,7 @@ export function ApplicationCard({
         action,
         candidateNotes
       )
+      onUpdated?.()
     } catch (err) {
       setInterviewError(prev => ({ ...prev, [interviewId]: getFriendlyErrorMessage(err) }))
     } finally {

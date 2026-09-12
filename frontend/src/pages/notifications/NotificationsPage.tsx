@@ -7,6 +7,7 @@ import {
   Loader2,
   Mail,
   MessageSquare,
+  Users,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { Button } from '@/components/ui/button';
@@ -18,7 +19,10 @@ import { ErrorBanner } from '@/components/ui/error-banner';
 import { PageHeader } from '@/components/common/PageHeader';
 import { useAuth } from '@/contexts/AuthContext';
 import { getNotifications, markNotificationRead, markAllNotificationsRead } from '@/api/notifications';
+import { getApplicationDetail } from '@/api/applications';
+import { getInterview } from '@/api/interviews';
 import type { Notification } from '@/types/notification';
+import type { UserRole } from '@/types/auth';
 
 const ITEMS_PER_PAGE = 20;
 
@@ -60,13 +64,25 @@ function formatDate(dateString: string): string {
   });
 }
 
-function getEntityRoute(entityType: string | null, entityId: string | null): string | null {
+function getEntityRoute(entityType: string | null, entityId: string | null, userRole: UserRole): string | null {
   if (!entityType || !entityId) return null;
 
   switch (entityType) {
     case 'application':
+      if (userRole === 'recruiter') {
+        return null;
+      }
+      if (userRole === 'admin') {
+        return null;
+      }
       return `/candidate/applications`;
     case 'interview':
+      if (userRole === 'recruiter') {
+        return null;
+      }
+      if (userRole === 'admin') {
+        return null;
+      }
       return `/candidate/applications`;
     default:
       return null;
@@ -74,7 +90,7 @@ function getEntityRoute(entityType: string | null, entityId: string | null): str
 }
 
 export function NotificationsPage() {
-  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, currentUser } = useAuth();
   const navigate = useNavigate();
 
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -126,10 +142,76 @@ export function NotificationsPage() {
       );
       setTotalUnread((prev) => Math.max(0, prev - 1));
 
-      // Navigate to entity route
-      const route = getEntityRoute(notification.entity_type, notification.entity_id);
-      if (route) {
-        navigate(route);
+      // Navigate to entity route based on user role
+      const userRole = currentUser?.role;
+
+      if (notification.entity_type === 'application' && notification.entity_id && userRole === 'recruiter') {
+        // For recruiters: fetch application to get job_id, then navigate to job applicants page
+        try {
+          const application = await getApplicationDetail(notification.entity_id);
+          if (application.job_id) {
+            navigate(`/recruiter/jobs/${application.job_id}/applicants`);
+          } else {
+            // Fallback if no job_id
+            navigate(`/recruiter/jobs`);
+          }
+        } catch {
+          // Fallback on error - use Recruiter safe fallback
+          navigate(`/recruiter/jobs`);
+        }
+      } else if (notification.entity_type === 'interview' && notification.entity_id && userRole === 'recruiter') {
+        // For recruiters with interview notification: fetch interview to get application, then get job
+        try {
+          const interview = await getInterview(notification.entity_id);
+          if (interview.application_id) {
+            const application = await getApplicationDetail(interview.application_id);
+            if (application.job_id) {
+              navigate(`/recruiter/jobs/${application.job_id}/applicants`);
+            } else {
+              navigate(`/recruiter/jobs`);
+            }
+          } else {
+            navigate(`/recruiter/jobs`);
+          }
+        } catch {
+          // Fallback on error - use Recruiter safe fallback
+          navigate(`/recruiter/jobs`);
+        }
+      } else if (notification.entity_type === 'application' && notification.entity_id && userRole === 'admin') {
+        // Admin with application notification: navigate to admin job applicants page
+        try {
+          const application = await getApplicationDetail(notification.entity_id);
+          if (application.job_id) {
+            navigate(`/admin/jobs/${application.job_id}/applicants`);
+          } else {
+            navigate(`/admin/jobs`);
+          }
+        } catch {
+          navigate(`/admin/jobs`);
+        }
+      } else if (notification.entity_type === 'interview' && notification.entity_id && userRole === 'admin') {
+        // Admin with interview notification: fetch interview to get application, then job
+        try {
+          const interview = await getInterview(notification.entity_id);
+          if (interview.application_id) {
+            const application = await getApplicationDetail(interview.application_id);
+            if (application.job_id) {
+              navigate(`/admin/jobs/${application.job_id}/applicants`);
+            } else {
+              navigate(`/admin/jobs`);
+            }
+          } else {
+            navigate(`/admin/jobs`);
+          }
+        } catch {
+          navigate(`/admin/jobs`);
+        }
+      } else {
+        // Candidate or other roles: use standard route
+        const route = getEntityRoute(notification.entity_type, notification.entity_id, userRole || 'candidate');
+        if (route) {
+          navigate(route);
+        }
       }
     } catch {
       setError('Không thể đánh dấu đã đọc. Vui lòng thử lại.');

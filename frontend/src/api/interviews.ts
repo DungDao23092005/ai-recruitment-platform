@@ -37,6 +37,12 @@ export async function cancelInterview(
   )
 }
 
+export async function getInterview(
+  interviewId: string,
+): Promise<Interview> {
+  return apiClient.get<Interview, Interview>(`/applications/interviews/${interviewId}`)
+}
+
 export async function candidateActionInterview(
   applicationId: string,
   interviewId: string,
@@ -50,5 +56,5 @@ export async function candidateActionInterview(
       candidate_notes: candidateNotes,
     }
   )
-  return response.data
+  return response
 }
