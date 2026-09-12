@@ -21,6 +21,9 @@ from app.services.rag_chat_service import (
     DEFAULT_SCORE_THRESHOLD,
     RETRIEVAL_LIMIT,
     LLMChatResponse,
+    FactCheckResponse,
+    ExhaustiveIntentResponse,
+    QueryRewriteResponse,
 )
 from app.schemas.ai_chat import (
     ChatMessage,
@@ -131,9 +134,30 @@ class MockLLMProvider:
         self.call_count += 1
         self.call_schemas.append(response_schema)
 
+        # ExhaustiveIntentResponse - for intent detection (Phase 1)
+        if response_schema is ExhaustiveIntentResponse:
+            return ExhaustiveIntentResponse(is_exhaustive=False)
+
+        # FactCheckResponse - for evaluator (Phase G)
+        if response_schema is FactCheckResponse:
+            if self.responses:
+                return self.responses.pop(0)
+            return type('obj', (object,), {
+                'is_faithful': True,
+                'contradictions': []
+            })()
+
+        # QueryRewriteResponse - for query rewriting (Phase D)
+        if response_schema is QueryRewriteResponse:
+            if self.responses:
+                return self.responses.pop(0)
+            return type('obj', (object,), {
+                'standalone_query': prompt
+            })()
+
+        # Default: LLMChatResponse for final answer generation
         if self.responses:
             return self.responses.pop(0)
-        # Default fallback
         return LLMChatResponse(
             answer="Default answer",
             cited_source_ids=[],
@@ -471,7 +495,7 @@ class TestRAGBenchmark:
         for _ in range(5):
             result = run_benchmark(
                 service,
-                "All jobs query",
+                "Find jobs",  # Avoid "all jobs" to skip exhaustive fast path
                 make_user(UserRole.CANDIDATE)
             )
             results.append(result)
@@ -486,17 +510,23 @@ class TestRAGBenchmark:
 
     def test_query_rewriting_latency(self):
         """Benchmark query rewriting overhead."""
-        llm_responses = [
-            # First call: rewrite response
-            type('obj', (object,), {'standalone_query': 'Python developer job'})(),
-            # Second call: final answer
-            LLMChatResponse(
-                answer="Python developer jobs available",
-                cited_source_ids=[uuid.UUID(self.job_ids[0])],
-                evidence_quotes=["Python"],
-                suggested_followups=[],
+        # Provide enough responses for 5 iterations (rewrite + answer per iteration)
+        # Note: Intent detection is handled by mock directly, doesn't consume from responses
+        llm_responses = []
+        for _ in range(5):
+            # Rewrite response
+            llm_responses.append(
+                type('obj', (object,), {'standalone_query': 'Python developer job'})()
             )
-        ]
+            # Final answer response
+            llm_responses.append(
+                LLMChatResponse(
+                    answer="Python developer jobs available",
+                    cited_source_ids=[uuid.UUID(self.job_ids[0])],
+                    evidence_quotes=["Python"],
+                    suggested_followups=[],
+                )
+            )
 
         service = make_benchmark_service(
             self.jobs_data,
@@ -743,18 +773,30 @@ class TestPhaseGBenchmarks:
     def _make_phase_g_service(self, jobs_data, jobs_dict, generator_responses, evaluator_responses):
         """Create a service with custom mock provider for Phase G benchmarks."""
         from unittest.mock import MagicMock, AsyncMock
-        from app.services.rag_chat_service import FactCheckResponse, LLMChatResponse
+        from app.services.rag_chat_service import FactCheckResponse, LLMChatResponse, ExhaustiveIntentResponse, QueryRewriteResponse
 
-        call_state = {"generator_calls": 0, "evaluator_calls": 0}
+        call_state = {"generator_calls": 0, "evaluator_calls": 0, "intent_calls": 0, "rewrite_calls": 0}
 
         async def mock_generate_structured_output(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
+            # ExhaustiveIntentResponse - for intent detection (Phase 1)
+            if response_schema is ExhaustiveIntentResponse:
+                call_state["intent_calls"] += 1
+                return ExhaustiveIntentResponse(is_exhaustive=False)
+            # FactCheckResponse - for evaluator (Phase G)
             if response_schema is FactCheckResponse:
                 call_state["evaluator_calls"] += 1
                 idx = call_state["evaluator_calls"] - 1
                 if idx < len(evaluator_responses):
                     return evaluator_responses[idx]
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            # QueryRewriteResponse - for query rewriting (Phase D)
+            if response_schema is QueryRewriteResponse:
+                call_state["rewrite_calls"] += 1
+                return type('obj', (object,), {
+                    'standalone_query': prompt
+                })()
+            # Default: LLMChatResponse for final answer generation
             else:
                 call_state["generator_calls"] += 1
                 idx = call_state["generator_calls"] - 1
@@ -1124,12 +1166,20 @@ class TestPhaseGBenchmarks:
 
         async def mock_generate_structured_output(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
+            # ExhaustiveIntentResponse - for intent detection (Phase 1)
+            if response_schema is ExhaustiveIntentResponse:
+                return ExhaustiveIntentResponse(is_exhaustive=False)
+            # QueryRewriteResponse - for query rewriting (Phase D)
+            if response_schema is QueryRewriteResponse:
+                return type('obj', (object,), {'standalone_query': prompt})()
+            # FactCheckResponse - for evaluator (Phase G)
             if response_schema is FactCheckResponse:
                 captured_evaluator_prompts.append(prompt)
                 return type('obj', (object,), {
                     'is_faithful': True,
                     'contradictions': []
                 })()
+            # Default: LLMChatResponse
             return LLMChatResponse(
                 answer="Test",
                 cited_source_ids=[uuid.UUID(job_id)],
