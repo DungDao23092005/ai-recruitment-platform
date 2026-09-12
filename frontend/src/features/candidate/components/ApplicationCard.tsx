@@ -64,6 +64,7 @@ export function ApplicationCard({
   application,
   detailPath = '/candidate/jobs',
   onWithdrawn,
+  onUpdated,
 }: ApplicationCardProps) {
   const { id, job_title, company_name, status, created_at } = application
   const [withdrawing, setWithdrawing] = useState(false)

@@ -49,7 +49,7 @@ export async function candidateActionInterview(
   action: 'confirm' | 'decline',
   candidateNotes?: string,
 ): Promise<Interview> {
-  const response = await apiClient.patch<Interview>(
+  const response = await apiClient.patch<Interview, Interview>(
     `/applications/${applicationId}/interviews/${interviewId}/action`,
     {
       action,

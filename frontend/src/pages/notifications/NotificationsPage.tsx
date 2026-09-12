@@ -7,7 +7,6 @@ import {
   Loader2,
   Mail,
   MessageSquare,
-  Users,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { Button } from '@/components/ui/button';
@@ -330,7 +329,7 @@ function NotificationCard({ notification, onClick }: NotificationCardProps) {
     ? ENTITY_LABELS[notification.entity_type] || 'Đối tượng'
     : 'Đối tượng';
 
-  const hasEntityRoute = !!getEntityRoute(notification.entity_type, notification.entity_id);
+  const hasEntityRoute = !!getEntityRoute(notification.entity_type, notification.entity_id, 'candidate');
 
   return (
     <Card
