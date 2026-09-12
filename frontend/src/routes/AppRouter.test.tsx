@@ -90,6 +90,7 @@ vi.mock('@/api/ai', () => ({
   searchCandidates: vi.fn(),
   sendChatMessage: vi.fn(),
   generateInterviewQuestions: vi.fn(),
+  getMyResume: vi.fn(),
 }))
 
 vi.mock('@/api/applications', () => ({
@@ -144,6 +145,7 @@ const mockedGetJobRecommendations = vi.mocked(aiApi.getJobRecommendations)
 const mockedGetCandidateRecommendations = vi.mocked(
   aiApi.getCandidateRecommendations,
 )
+const mockedGetMyResume = vi.mocked(aiApi.getMyResume)
 const mockedSendChatMessage = vi.mocked(aiApi.sendChatMessage)
 const mockedGenerateInterviewQuestions = vi.mocked(
   aiApi.generateInterviewQuestions,
@@ -193,6 +195,7 @@ beforeEach(() => {
   mockedSearchCandidates.mockResolvedValue([])
   mockedGetJobRecommendations.mockResolvedValue({ recommendations: [], hasCV: true })
   mockedGetCandidateRecommendations.mockResolvedValue([])
+  mockedGetMyResume.mockResolvedValue({ parsed_data: null })
   mockedSendChatMessage.mockRejectedValue(new Error('no chat'))
   mockedGenerateInterviewQuestions.mockResolvedValue(new Error('no interview'))
   mockedGetAdminStats.mockResolvedValue(mockStats)

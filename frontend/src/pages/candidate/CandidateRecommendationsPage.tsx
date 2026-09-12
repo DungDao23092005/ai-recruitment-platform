@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { FileUp, Sparkles } from 'lucide-react'
-import { getJobRecommendations } from '@/api/ai'
+import { getJobRecommendations, getMyResume } from '@/api/ai'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -9,14 +9,19 @@ import { ErrorBanner } from '@/components/ui/error-banner'
 import { EmptyState } from '@/components/ui/empty-state'
 import { JobRecommendationCard } from '@/features/ai/components/JobRecommendationCard'
 import { getFriendlyErrorMessage } from '@/utils/errors'
-import type { JobMatchRecommendation } from '@/types/ai'
+import type { JobMatchRecommendation, ParsedResume } from '@/types/ai'
 
 const DEFAULT_LIMIT = 10
 
 type PageState =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'success'; recommendations: JobMatchRecommendation[]; hasCV: boolean }
+  | {
+      kind: 'success'
+      recommendations: JobMatchRecommendation[]
+      hasCV: boolean
+      candidateResume: ParsedResume | null
+    }
 
 export function CandidateRecommendationsPage() {
   const [state, setState] = useState<PageState>({ kind: 'loading' })
@@ -24,12 +29,17 @@ export function CandidateRecommendationsPage() {
   const load = useCallback(() => {
     setState({ kind: 'loading' })
 
-    getJobRecommendations(DEFAULT_LIMIT)
-      .then((result) => {
+    Promise.all([getJobRecommendations(DEFAULT_LIMIT), getMyResume()])
+      .then(([result, resume]) => {
         const sorted = [...result.recommendations].sort(
           (a, b) => b.match_result.overall_score - a.match_result.overall_score,
         )
-        setState({ kind: 'success', recommendations: sorted, hasCV: result.hasCV })
+        setState({
+          kind: 'success',
+          recommendations: sorted,
+          hasCV: result.hasCV,
+          candidateResume: resume.parsed_data,
+        })
       })
       .catch((err) => {
         setState({
@@ -87,13 +97,14 @@ export function CandidateRecommendationsPage() {
           )
         ) : (
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {state.recommendations.map((recommendation) => (
-              <JobRecommendationCard
-                key={recommendation.job_id}
-                recommendation={recommendation}
-                detailPath="/candidate/jobs"
-              />
-            ))}
+{state.recommendations.map((recommendation) => (
+                <JobRecommendationCard
+                  key={recommendation.job_id}
+                  recommendation={recommendation}
+                  detailPath="/candidate/jobs"
+                  candidateResume={state.candidateResume}
+                />
+              ))}
           </div>
         )
       ) : null}

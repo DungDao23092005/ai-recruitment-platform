@@ -13,9 +13,12 @@ import {
 } from '@/features/ai/components/MatchScoreCard'
 import { cn } from '@/utils/cn'
 import type { CandidateMatchRecommendation } from '@/types/ai'
+import type { Job } from '@/types/job'
+import type { ParsedJob } from '@/types/ai'
 
 export interface CandidateRecommendationCardProps {
   recommendation: CandidateMatchRecommendation
+  jobContext?: Job | null
 }
 
 function formatYearsExperience(value: number | null): string | null {
@@ -27,6 +30,7 @@ function formatYearsExperience(value: number | null): string | null {
 
 export function CandidateRecommendationCard({
   recommendation,
+  jobContext,
 }: CandidateRecommendationCardProps) {
   const { candidate_id, parsed_resume, match_result } = recommendation
   const overall = Math.round(match_result.overall_score)
@@ -39,6 +43,18 @@ export function CandidateRecommendationCard({
     parsed_resume?.total_years_experience ?? null,
   )
   const skills = parsed_resume?.skills ?? []
+
+  // Map Job to ParsedJob for Explainable AI context
+  const parsedJob: ParsedJob | undefined = jobContext
+    ? {
+        title: jobContext.title,
+        summary: jobContext.description,
+        required_skills: jobContext.skills ?? [],
+        preferred_skills: [],
+        minimum_years_experience: null,
+        education_level: null,
+      }
+    : undefined
 
   return (
     <Card className="flex h-full flex-col border-border/70 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-soft">
@@ -103,6 +119,7 @@ export function CandidateRecommendationCard({
             <MatchScoreCard
               matchResult={match_result}
               candidate={parsed_resume}
+              job={parsedJob}
             />
           </div>
         </details>

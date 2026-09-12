@@ -8,9 +8,9 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { CandidateRecommendationCard } from '@/features/ai/components/CandidateRecommendationCard'
+import type { Job } from '@/types/job'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { CandidateMatchRecommendation } from '@/types/ai'
-import type { Job } from '@/types/job'
 
 const DEFAULT_LIMIT = 10
 
@@ -138,6 +138,7 @@ export function JobRecommendationsPage() {
             <CandidateRecommendationCard
               key={recommendation.candidate_id}
               recommendation={recommendation}
+              jobContext={job}
             />
           ))}
         </div>

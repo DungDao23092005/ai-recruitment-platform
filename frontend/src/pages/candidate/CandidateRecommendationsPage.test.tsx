@@ -54,9 +54,11 @@ vi.mock('@/api/ai', () => ({
   getCandidateRecommendations: vi.fn(),
   matchCandidateWithJob: vi.fn(),
   parseResume: vi.fn(),
+  getMyResume: vi.fn(),
 }))
 
 const mockedGetJobRecommendations = vi.mocked(aiApi.getJobRecommendations)
+const mockedGetMyResume = vi.mocked(aiApi.getMyResume)
 
 function renderPage() {
   return render(
@@ -74,6 +76,7 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockedGetMyResume.mockResolvedValue({ parsed_data: null })
 })
 
 describe('CandidateRecommendationsPage', () => {

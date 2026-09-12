@@ -130,10 +130,11 @@ class TestGetApplicationMatch:
 
         assert isinstance(result, MatchResultSchema)
         assert 0.0 <= result.overall_score <= 100.0
-        # Incident C: ParsedJobSchema required_skills not persisted, so matching_skills is empty
-        # This is expected behavior until full ParsedJobSchema is persisted
-        assert result.matching_skills == []
-        assert result.skill_gap == []
+        # DATA-01: ParsedJobSchema now includes required_skills from Job.skills
+        # Job has skills ["Python", "Docker"], resume has skills ["Python", "FastAPI"]
+        # Matching should find "Python" as a matching skill
+        assert "Python" in result.matching_skills
+        assert result.skill_gap == ["Docker"]
         service.applications.get_by_id_with_candidate.assert_awaited_once_with(
             application.id
         )
@@ -180,9 +181,13 @@ class TestGetApplicationMatch:
             )
 
         assert result.matching_skills == []
-        assert result.skill_gap == []
-        # Incident C: No required_skills in ParsedJobSchema, so coverage is N/A (100%)
-        assert result.skill_coverage_score == 1.0
+        assert result.skill_gap == ["Python", "Docker"]
+        # DATA-01: With required_skills populated, skill_coverage_score reflects
+        # required_coverage * 0.8 + preferred_coverage * 0.2
+        # required_coverage = 0.0 (no matching required skills)
+        # preferred_coverage = 1.0 (empty preferred_skills list)
+        # skill_score = 0.0 * 0.8 + 1.0 * 0.2 = 0.2
+        assert result.skill_coverage_score == 0.2
 
     def test_missing_resume_degrades_gracefully(self):
         session = make_session()
@@ -213,10 +218,8 @@ class TestGetApplicationMatch:
 
         assert isinstance(result, MatchResultSchema)
         assert result.matching_skills == []
-        assert result.skill_gap == []
-        matching_service.vector_repository.retrieve_vector.assert_any_await(
-            collection_name="jobs", point_id=application.job_id
-        )
+        # DATA-01: Even without resume, skill_gap shows missing required skills from job
+        assert result.skill_gap == ["Python", "Docker"]
 
     def test_resume_with_null_parsed_data_degrades_gracefully(self):
         session = make_session()

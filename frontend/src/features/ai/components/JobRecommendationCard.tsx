@@ -14,16 +14,18 @@ import {
   getScoreColor,
 } from '@/features/ai/components/MatchScoreCard'
 import { cn } from '@/utils/cn'
-import type { JobMatchRecommendation } from '@/types/ai'
+import type { JobMatchRecommendation, ParsedResume } from '@/types/ai'
 
 export interface JobRecommendationCardProps {
   recommendation: JobMatchRecommendation
   detailPath?: string
+  candidateResume?: ParsedResume | null
 }
 
 export function JobRecommendationCard({
   recommendation,
   detailPath = '/jobs',
+  candidateResume,
 }: JobRecommendationCardProps) {
   const { job_id, parsed_job, match_result } = recommendation
   const overall = Math.round(match_result.overall_score)
@@ -91,14 +93,18 @@ export function JobRecommendationCard({
             Xem chi tiết Match Score
           </summary>
           <div className="mt-3">
-            <MatchScoreCard matchResult={match_result} job={parsed_job} />
+            <MatchScoreCard
+              matchResult={match_result}
+              candidate={candidateResume}
+              job={parsed_job}
+            />
           </div>
         </details>
       </CardContent>
       <CardFooter>
         <Link to={`${detailPath}/${job_id}`} className="w-full">
           <Button className="w-full">
-            Xem chi tiết &amp; Nộp đơn
+            Xem chi tiết & Nộp đơn
           </Button>
         </Link>
       </CardFooter>
