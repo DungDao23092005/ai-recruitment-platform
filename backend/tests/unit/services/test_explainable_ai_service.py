@@ -195,8 +195,10 @@ class TestExplainMatchSuccess:
         )
 
         prompt = provider.generate_structured_output.await_args.kwargs["prompt"]
-        assert "không c" in prompt or "khA'ng" in prompt
-        assert "không c" in prompt or "khA'ng" in prompt
+        # With candidate=None, job=None, and match_reasons=["Strong skill overlap"] (non-empty),
+        # the prompt should contain "thông tin ứng viên không được cung cấp" and "thông tin tin tuyển dụng không được cung cấp"
+        assert "thông tin ứng viên không được cung cấp" in prompt
+        assert "thông tin tin tuyển dụng không được cung cấp" in prompt
 
     def test_prompt_passes_system_instruction(self, provider):
         service = make_service(provider)
@@ -338,3 +340,141 @@ class TestNoScoreRecalculation:
         assert "private@example.com" not in prompt
         assert "0000000000" not in prompt
         assert "api_key" not in prompt.lower()
+
+
+class TestUnicodePromptContent:
+    """Regression tests for UNICODE-01: verify Vietnamese prompt strings are valid UTF-8."""
+
+    def test_system_instruction_contains_valid_vietnamese(self):
+        from app.services.explainable_ai_service import _SYSTEM_INSTRUCTION
+
+        # Verify no mojibake - should contain valid Vietnamese characters
+        assert "Bạn" in _SYSTEM_INSTRUCTION
+        assert "trợ lý" in _SYSTEM_INSTRUCTION
+        assert "tuyển dụng" in _SYSTEM_INSTRUCTION
+        assert "ứng viên" in _SYSTEM_INSTRUCTION
+        assert "giải thích" in _SYSTEM_INSTRUCTION
+        assert "kết quả" in _SYSTEM_INSTRUCTION
+        assert "so sánh" in _SYSTEM_INSTRUCTION
+        assert "dữ kiện" in _SYSTEM_INSTRUCTION
+        assert "không" in _SYSTEM_INSTRUCTION
+        assert "suy đoán" in _SYSTEM_INSTRUCTION  # "suy đoán" with accents
+        assert "kĩ năng" in _SYSTEM_INSTRUCTION  # Note: uses "kĩ" (U+1E29) not "kỹ" (U+1EF9)
+        assert "bằng chứng" in _SYSTEM_INSTRUCTION
+        assert "Hồ sơ ứng viên" in _SYSTEM_INSTRUCTION
+        assert "Mô tả công việc" in _SYSTEM_INSTRUCTION
+
+    def test_system_instruction_no_mojibake(self):
+        from app.services.explainable_ai_service import _SYSTEM_INSTRUCTION
+
+        # Ensure no corruption patterns from previous mojibake
+        assert "Bn lA" not in _SYSTEM_INSTRUCTION
+        assert "tuyn dng" not in _SYSTEM_INSTRUCTION
+        assert "gii thA-ch" not in _SYSTEM_INSTRUCTION
+        assert "kt qu" not in _SYSTEM_INSTRUCTION
+        assert "cng viAn" not in _SYSTEM_INSTRUCTION
+        assert "khA'ng" not in _SYSTEM_INSTRUCTION
+        assert "thA'ng tin" not in _SYSTEM_INSTRUCTION
+        assert "cung cp" not in _SYSTEM_INSTRUCTION
+        assert "A3" not in _SYSTEM_INSTRUCTION
+        assert "bng ch>ng" not in _SYSTEM_INSTRUCTION
+        assert "H s cng viAn" not in _SYSTEM_INSTRUCTION
+        assert "MA' t cA'ng vic" not in _SYSTEM_INSTRUCTION
+
+    def test_build_prompt_contains_valid_vietnamese_strings(self):
+        from app.services.explainable_ai_service import ExplainableAIService
+        from app.schemas.ai_match import MatchResultSchema
+
+        service = ExplainableAIService()
+
+        # Test with empty match_reasons to trigger "không có thông tin"
+        match_result = MatchResultSchema(
+            overall_score=82.0,
+            cosine_similarity=0.85,
+            skill_coverage_score=0.8,
+            experience_match_score=0.75,
+            matching_skills=["React"],
+            skill_gap=["GraphQL"],
+            match_reasons=[],
+        )
+
+        prompt = service.build_prompt(match_result=match_result)
+
+        # Verify valid Vietnamese in prompt
+        assert "Dưới đây là kết quả so sánh và thông tin được cung cấp" in prompt
+        assert "MATCH RESULT" in prompt
+        assert "CANDIDATE" in prompt
+        assert "JOB" in prompt
+        assert "match_reasons: (không có thông tin)" in prompt
+        assert "thông tin ứng viên không được cung cấp" in prompt
+        assert "thông tin tin tuyển dụng không được cung cấp" in prompt
+        assert "không được cung cấp" in prompt
+        assert "Hãy giải thích theo schema ExplainMatchResponse" in prompt
+        assert "Chỉ sử dụng dữ kiện cung cấp" in prompt
+
+    def test_build_prompt_no_mojibake_in_output(self):
+        from app.services.explainable_ai_service import ExplainableAIService
+        from app.schemas.ai_match import MatchResultSchema
+
+        service = ExplainableAIService()
+        match_result = MatchResultSchema(
+            overall_score=82.0,
+            cosine_similarity=0.85,
+            skill_coverage_score=0.8,
+            experience_match_score=0.75,
+            matching_skills=["React"],
+            skill_gap=["GraphQL"],
+            match_reasons=["Strong skill overlap"],
+        )
+
+        prompt = service.build_prompt(match_result=match_result)
+
+        # Ensure no corruption patterns from previous mojibake
+        assert "D>i Ay" not in prompt
+        assert "kt qu" not in prompt
+        assert "thA'ng tin" not in prompt
+        assert "cng viAn" not in prompt
+        assert "khA'ng cA3" not in prompt
+        assert "khA'ng cung cp" not in prompt
+        assert "thA'ng tin" not in prompt
+        assert "tin tuyn dng" not in prompt
+        assert "HAy to" not in prompt
+        assert "gi thA-ch" not in prompt
+        assert "Ch% s- dng" not in prompt
+        assert "Y trAn" not in prompt
+
+    def test_format_optional_list_returns_valid_vietnamese(self):
+        from app.services.explainable_ai_service import ExplainableAIService
+
+        service = ExplainableAIService()
+
+        # Empty list should return "không có thông tin"
+        result = service._format_optional_list("skills", [])
+        assert "không có thông tin" in result
+        assert "khA'ng cA3" not in result
+
+        # Non-empty list should return comma-separated values
+        result = service._format_optional_list("skills", ["React", "TypeScript"])
+        assert "skills: React, TypeScript" in result
+
+    def test_prompt_handles_missing_candidate_and_job_vietnamese(self):
+        from app.services.explainable_ai_service import ExplainableAIService
+        from app.schemas.ai_match import MatchResultSchema
+
+        service = ExplainableAIService()
+        match_result = MatchResultSchema(
+            overall_score=82.0,
+            cosine_similarity=0.85,
+            skill_coverage_score=0.8,
+            experience_match_score=0.75,
+            matching_skills=["React"],
+            skill_gap=["GraphQL"],
+            match_reasons=[],
+        )
+
+        prompt = service.build_prompt(match_result=match_result)
+
+        # Should contain valid Vietnamese for missing candidate/job
+        assert "(thông tin ứng viên không được cung cấp)" in prompt
+        assert "(thông tin tin tuyển dụng không được cung cấp)" in prompt
+        assert "match_reasons: (không có thông tin)" in prompt

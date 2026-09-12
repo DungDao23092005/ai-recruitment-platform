@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -11,6 +11,7 @@ from app.models import CandidateProfile, Company, Job, RecruiterProfile, Resume,
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.context_resolver import ContextResolver
+from sqlalchemy import select
 
 
 def make_user(role: UserRole, user_id: uuid.UUID | None = None):
@@ -153,6 +154,41 @@ class TestContextResolverResolveResumes:
 
         assert candidate_id in result
         assert other_candidate_id not in result
+
+    @pytest.mark.asyncio
+    async def test_candidate_resume_query_uses_candidate_profile_id_not_user_id(self):
+        """Regression test: verify CANDIDATE resume query uses candidate_profile.id (CandidateProfile.id)
+        not actor_user.id (User.id). This prevents RAG-01/RAG-02 data isolation bug."""
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+
+        candidate_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+
+        resume = make_resume(candidate_id)
+
+        candidate_user = make_user(UserRole.CANDIDATE, user_id)
+        candidate_profile = MagicMock(spec=CandidateProfile)
+        candidate_profile.id = candidate_id
+        candidate_profile.user_id = user_id
+        candidate_profile.is_deleted = False
+
+        resolver._get_candidate_profile = AsyncMock(return_value=candidate_profile)
+
+        session.execute.return_value = make_mock_result([resume])
+
+        await resolver.resolve_resumes([candidate_id], candidate_user)
+
+        # Verify the query was executed with candidate_profile.id, NOT user_id
+        assert session.execute.call_count == 1
+        executed_stmt = session.execute.call_args[0][0]
+        # Compile the statement to check the WHERE clause
+        compiled = executed_stmt.compile(compile_kwargs={"literal_binds": True})
+        sql_str = str(compiled)
+        # The filter should use candidate_id (CandidateProfile.id), not user_id (User.id)
+        # UUID in SQL is without hyphens
+        assert str(candidate_id).replace("-", "") in sql_str
+        assert str(user_id).replace("-", "") not in sql_str
 
     @pytest.mark.asyncio
     async def test_candidate_cannot_access_other_candidate_resume(self):
@@ -315,6 +351,40 @@ class TestContextResolverResolveCandidateProfiles:
 
         assert candidate_id in result
         assert other_candidate_id not in result
+
+    @pytest.mark.asyncio
+    async def test_candidate_profile_query_uses_candidate_profile_id_not_user_id(self):
+        """Regression test: verify CANDIDATE profile query uses candidate_profile.id (CandidateProfile.id)
+        not actor_user.id (User.id). This prevents RAG-01/RAG-02 data isolation bug."""
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+
+        candidate_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+
+        profile = make_candidate_profile(candidate_id, user_id)
+
+        candidate_user = make_user(UserRole.CANDIDATE, user_id)
+        candidate_profile = MagicMock(spec=CandidateProfile)
+        candidate_profile.id = candidate_id
+        candidate_profile.user_id = user_id
+        candidate_profile.is_deleted = False
+
+        resolver._get_candidate_profile = AsyncMock(return_value=candidate_profile)
+
+        session.execute.return_value = make_mock_result([profile])
+
+        await resolver.resolve_candidate_profiles([candidate_id], candidate_user)
+
+        # Verify the query was executed with candidate_profile.id, NOT user_id
+        assert session.execute.call_count == 1
+        executed_stmt = session.execute.call_args[0][0]
+        compiled = executed_stmt.compile(compile_kwargs={"literal_binds": True})
+        sql_str = str(compiled)
+        # The filter should use candidate_id (CandidateProfile.id), not user_id (User.id)
+        # UUID in SQL is without hyphens
+        assert str(candidate_id).replace("-", "") in sql_str
+        assert str(user_id).replace("-", "") not in sql_str
 
 
 class TestContextResolverBatching:

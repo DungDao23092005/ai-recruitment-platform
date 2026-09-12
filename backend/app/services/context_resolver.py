@@ -87,7 +87,7 @@ class ContextResolver:
             candidate_profile = await self._get_candidate_profile(actor_user.id)
             if candidate_profile is None or candidate_profile.id not in candidate_ids:
                 return {}
-            filters = [Resume.candidate_id == actor_user.id]
+            filters = [Resume.candidate_id == candidate_profile.id]
 
         if include_primary_only:
             filters.append(Resume.is_primary == True)  # noqa: E712
@@ -219,7 +219,7 @@ class ContextResolver:
             candidate_profile = await self._get_candidate_profile(actor_user.id)
             if candidate_profile is None or candidate_profile.id not in candidate_ids:
                 return {}
-            filters = [CandidateProfile.id == actor_user.id]
+            filters = [CandidateProfile.id == candidate_profile.id]
 
         filters.append(CandidateProfile.is_deleted == False)  # noqa: E712
 
