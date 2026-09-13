@@ -430,12 +430,12 @@ class AIMatchingService:
         ]
 
         # Hydrate candidate profiles and resumes from SQL with authorization (Phase B)
-        profiles: dict[uuid.UUID, CandidateProfile] = {}
         full_resumes: dict[uuid.UUID, ParsedResumeSchema] = {}
+        profiles: dict[uuid.UUID, CandidateProfile] = {}
         if session is not None and actor_user is not None and candidate_ids:
             resolver = self._get_resolver(session)
-            profiles = await resolver.resolve_candidate_profiles(candidate_ids, actor_user)
-            full_resumes = await resolver.resolve_resumes(candidate_ids, actor_user)
+            profiles = await resolver.resolve_candidate_profiles(candidate_ids, actor_user, require_application=False)
+            full_resumes = await resolver.resolve_resumes(candidate_ids, actor_user, require_application=False)
         elif session is not None and candidate_ids:
             # Backward compatibility: use legacy resolution without authorization
             profiles = await self._resolve_candidate_profiles_legacy(session, candidate_ids)

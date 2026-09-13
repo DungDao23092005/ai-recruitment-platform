@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { getJobs } from '@/api/jobs'
 import type { Job, JobType, WorkplaceType } from '@/types/job'
 
@@ -29,11 +30,12 @@ export interface UseJobsResult {
 }
 
 export function useJobs(): UseJobsResult {
+  const [searchParams] = useSearchParams()
   const [jobs, setJobs] = useState<Job[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [filters, setFilters] = useState<JobFiltersState>({
-    keyword: '',
+    keyword: searchParams.get('q') || '',
     workplace_type: '',
     job_type: '',
     location: '',

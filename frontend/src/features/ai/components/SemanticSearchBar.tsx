@@ -11,6 +11,7 @@ import type { SemanticSearchResult } from '@/types/ai'
 export interface SemanticSearchBarProps {
   placeholder?: string
   searchFn: (query: string) => Promise<SemanticSearchResult[]>
+  onResultClick?: (result: SemanticSearchResult) => void
 }
 
 export function formatSearchScore(score: number): string {
@@ -60,6 +61,7 @@ function getSubtitle(result: SemanticSearchResult): string | null {
 export function SemanticSearchBar({
   placeholder = 'Nhập từ khóa tìm kiếm...',
   searchFn,
+  onResultClick,
 }: SemanticSearchBarProps) {
   const [query, setQuery] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -139,7 +141,16 @@ export function SemanticSearchBar({
             {results.map((result) => (
               <li
                 key={result.id}
-                className="flex items-start justify-between gap-3 rounded-lg border bg-card p-3.5 transition-shadow hover:shadow-soft"
+                className="flex items-start justify-between gap-3 rounded-lg border bg-card p-3.5 transition-shadow hover:shadow-soft cursor-pointer"
+                onClick={() => onResultClick?.(result)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onResultClick?.(result)
+                  }
+                }}
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{getDisplayName(result)}</p>

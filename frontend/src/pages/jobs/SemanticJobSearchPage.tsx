@@ -1,9 +1,12 @@
+import { useNavigate } from 'react-router-dom'
 import { Search } from 'lucide-react'
 import { SemanticSearchBar } from '@/features/ai/components/SemanticSearchBar'
 import { searchJobs } from '@/api/ai'
 import { PageHeader } from '@/components/common/PageHeader'
 
 export function SemanticJobSearchPage() {
+  const navigate = useNavigate()
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -14,6 +17,7 @@ export function SemanticJobSearchPage() {
       <SemanticSearchBar
         placeholder="Tìm kiếm bằng mô tả tự nhiên..."
         searchFn={(query) => searchJobs({ q: query })}
+        onResultClick={(result) => navigate(`/candidate/jobs/${result.id}`)}
       />
       <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <Search className="h-3.5 w-3.5" aria-hidden="true" />

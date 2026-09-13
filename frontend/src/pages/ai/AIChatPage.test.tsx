@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
+import userEvent from '@testing-library/user-event'
 
 import { AIChatPage } from './AIChatPage'
 import { sendChatMessage } from '@/api/ai'
@@ -344,5 +345,184 @@ describe('AIChatPage', () => {
     expect(scrollToSpy).toHaveBeenCalled()
 
     HTMLElement.prototype.scrollTo = originalScrollTo
+  })
+
+  // UI-04 Regression Tests: Retry logic with isRetry flag
+  describe('Retry logic (UI-04)', () => {
+    it('A. Send message successfully → exactly one user message', async () => {
+      const user = userEvent.setup()
+      render(<AIChatPage />)
+
+      await user.type(screen.getByLabelText('Tin nhắn chat'), 'Hello AI')
+      await user.click(screen.getByRole('button', { name: /Gửi/i }))
+
+      await waitFor(() => {
+        expect(screen.getByText('Hello AI')).toBeInTheDocument()
+      })
+
+      // Exactly one user message
+      const userMessages = screen.getAllByText('Hello AI')
+      expect(userMessages).toHaveLength(1)
+    })
+
+    it('B. Send message → API failure → user message remains exactly once', async () => {
+      const user = userEvent.setup()
+      const error = new Error('Bad Request')
+      Object.assign(error, {
+        response: { status: 502, data: { detail: 'Search failed' } },
+      })
+      mockedSendChatMessage.mockRejectedValueOnce(error)
+
+      render(<AIChatPage />)
+
+      await user.type(screen.getByLabelText('Tin nhắn chat'), 'Test failure')
+      await user.click(screen.getByRole('button', { name: /Gửi/i }))
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toBeInTheDocument()
+      })
+
+      // User message should appear exactly once
+      const userMessages = screen.getAllByText('Test failure')
+      expect(userMessages).toHaveLength(1)
+    })
+
+    it('C. Click Retry → retry request occurs', async () => {
+      const user = userEvent.setup()
+      const error = new Error('Bad Request')
+      Object.assign(error, {
+        response: { status: 502, data: { detail: 'Search failed' } },
+      })
+      mockedSendChatMessage
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(mockResponse)
+
+      render(<AIChatPage />)
+
+      await user.type(screen.getByLabelText('Tin nhắn chat'), 'Retry test')
+      await user.click(screen.getByRole('button', { name: /Gửi/i }))
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toBeInTheDocument()
+      })
+
+      // Click Retry
+      await user.click(screen.getByRole('button', { name: /Thử lại/i }))
+
+      // Retry request should occur
+      await waitFor(() => {
+        expect(mockedSendChatMessage).toHaveBeenCalledTimes(2)
+      })
+    })
+
+    it('D. After Retry → number of user messages remains unchanged', async () => {
+      const user = userEvent.setup()
+      const error = new Error('Bad Request')
+      Object.assign(error, {
+        response: { status: 502, data: { detail: 'Search failed' } },
+      })
+      mockedSendChatMessage
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(mockResponse)
+
+      render(<AIChatPage />)
+
+      await user.type(screen.getByLabelText('Tin nhắn chat'), 'Retry message')
+      await user.click(screen.getByRole('button', { name: /Gửi/i }))
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toBeInTheDocument()
+      })
+
+      // Count user messages before retry
+      const userMessagesBeforeRetry = screen.getAllByText('Retry message')
+      expect(userMessagesBeforeRetry).toHaveLength(1)
+
+      // Click Retry
+      await user.click(screen.getByRole('button', { name: /Thử lại/i }))
+
+      await waitFor(() => {
+        expect(screen.getByText('Python')).toBeInTheDocument()
+      })
+
+      // User messages should remain exactly 1 (no duplicate)
+      const userMessagesAfterRetry = screen.getAllByText('Retry message')
+      expect(userMessagesAfterRetry).toHaveLength(1)
+    })
+
+    it('E. Successful retry → exactly one assistant response', async () => {
+      const user = userEvent.setup()
+      const error = new Error('Bad Request')
+      Object.assign(error, {
+        response: { status: 502, data: { detail: 'Search failed' } },
+      })
+      mockedSendChatMessage
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(mockResponse)
+
+      render(<AIChatPage />)
+
+      await user.type(screen.getByLabelText('Tin nhắn chat'), 'Successful retry')
+      await user.click(screen.getByRole('button', { name: /Gửi/i }))
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toBeInTheDocument()
+      })
+
+      // Click Retry
+      await user.click(screen.getByRole('button', { name: /Thử lại/i }))
+
+      await waitFor(() => {
+        expect(screen.getByText('Python')).toBeInTheDocument()
+      })
+
+      // Exactly one assistant response (the successful retry)
+      const assistantResponses = screen.getAllByText(/Dựa trên dữ kiện, bạn nên học/)
+      expect(assistantResponses).toHaveLength(1)
+    })
+
+    it('F. Multiple retries → no duplicate user messages', async () => {
+      const user = userEvent.setup()
+      const error = new Error('Bad Request')
+      Object.assign(error, {
+        response: { status: 502, data: { detail: 'Search failed' } },
+      })
+      // Fail twice, then succeed on third attempt
+      mockedSendChatMessage
+        .mockRejectedValueOnce(error)
+        .mockRejectedValueOnce(error)
+        .mockResolvedValueOnce(mockResponse)
+
+      render(<AIChatPage />)
+
+      await user.type(screen.getByLabelText('Tin nhắn chat'), 'Multiple retries')
+      await user.click(screen.getByRole('button', { name: /Gửi/i }))
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toBeInTheDocument()
+      })
+
+      // First retry
+      await user.click(screen.getByRole('button', { name: /Thử lại/i }))
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toBeInTheDocument()
+      })
+
+      // Second retry
+      await user.click(screen.getByRole('button', { name: /Thử lại/i }))
+
+      await waitFor(() => {
+        expect(screen.getByText('Python')).toBeInTheDocument()
+      })
+
+      // User messages should remain exactly 1 (no duplicates from multiple retries)
+      const userMessages = screen.getAllByText('Multiple retries')
+      expect(userMessages).toHaveLength(1)
+
+      // Exactly one assistant response
+      const assistantResponses = screen.getAllByText(/Dựa trên dữ kiện, bạn nên học/)
+      expect(assistantResponses).toHaveLength(1)
+    })
   })
 })

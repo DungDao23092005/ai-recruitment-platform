@@ -456,5 +456,211 @@ class TestContextResolverEmptyInputs:
         assert result == {}
 
 
+class TestContextResolverRequireApplication:
+    """Regression tests for require_application parameter (AI-REC-01)."""
+
+    @pytest.mark.asyncio
+    async def test_recruiter_require_application_false_returns_candidates_without_applications(self):
+        """A. Candidate has Resume + Qdrant candidate ID + ZERO Applications.
+        Recommendation hydration MUST return candidate data when require_application=False."""
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+
+        candidate_id = uuid.uuid4()
+        recruiter_user_id = uuid.uuid4()
+        company_id = uuid.uuid4()
+
+        # Mock recruiter company
+        resolver._get_recruiter_company_id = AsyncMock(return_value=company_id)
+
+        # Mock candidate profile (exists but has NO applications)
+        profile = make_candidate_profile(candidate_id, uuid.uuid4())
+
+        # Create mock result for profile query
+        profile_result = MagicMock()
+        profile_scalars = MagicMock()
+        profile_scalars.all = MagicMock(return_value=[profile])
+        profile_result.scalars = MagicMock(return_value=profile_scalars)
+
+        session.execute.return_value = profile_result
+
+        recruiter_user = make_user(UserRole.RECRUITER, recruiter_user_id)
+
+        # With require_application=False, candidate should be returned even without applications
+        result = await resolver.resolve_candidate_profiles(
+            [candidate_id], recruiter_user, require_application=False
+        )
+
+        assert candidate_id in result
+        assert result[candidate_id].full_name == "Test Candidate"
+
+    @pytest.mark.asyncio
+    async def test_recruiter_require_application_false_returns_resumes_without_applications(self):
+        """A. Candidate has Resume + Qdrant candidate ID + ZERO Applications.
+        Recommendation hydration MUST return resume data when require_application=False."""
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+
+        candidate_id = uuid.uuid4()
+        recruiter_user_id = uuid.uuid4()
+        company_id = uuid.uuid4()
+
+        resolver._get_recruiter_company_id = AsyncMock(return_value=company_id)
+
+        resume = make_resume(candidate_id)
+
+        resume_result = MagicMock()
+        resume_scalars = MagicMock()
+        resume_scalars.all = MagicMock(return_value=[resume])
+        resume_result.scalars = MagicMock(return_value=resume_scalars)
+
+        session.execute.return_value = resume_result
+
+        recruiter_user = make_user(UserRole.RECRUITER, recruiter_user_id)
+
+        # With require_application=False, resume should be returned even without applications
+        result = await resolver.resolve_resumes(
+            [candidate_id], recruiter_user, require_application=False
+        )
+
+        assert candidate_id in result
+        assert isinstance(result[candidate_id], ParsedResumeSchema)
+
+    @pytest.mark.asyncio
+    async def test_recruiter_require_application_true_excludes_candidates_without_applications(self):
+        """C. Existing security filter: require_application=True (default) excludes candidates without applications."""
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+
+        candidate_id = uuid.uuid4()
+        recruiter_user_id = uuid.uuid4()
+        company_id = uuid.uuid4()
+
+        resolver._get_recruiter_company_id = AsyncMock(return_value=company_id)
+
+        # Mock Application query to return empty (no applications)
+        application_result = MagicMock()
+        application_scalars = MagicMock()
+        application_scalars.all = MagicMock(return_value=[])
+        application_result.scalars = MagicMock(return_value=application_scalars)
+
+        session.execute.return_value = application_result
+
+        recruiter_user = make_user(UserRole.RECRUITER, recruiter_user_id)
+
+        # With require_application=True (default), candidate should be EXCLUDED
+        result = await resolver.resolve_candidate_profiles([candidate_id], recruiter_user)
+
+        assert candidate_id not in result
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_recruiter_require_application_true_includes_candidates_with_applications(self):
+        """B. Candidate with Application still works with require_application=True."""
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+
+        candidate_id = uuid.uuid4()
+        recruiter_user_id = uuid.uuid4()
+        company_id = uuid.uuid4()
+
+        resolver._get_recruiter_company_id = AsyncMock(return_value=company_id)
+
+        # Mock Application query to return the candidate (has application)
+        # Application query uses result.all() directly (scalar select, synchronous)
+        application_result = MagicMock()
+        application_result.all = MagicMock(return_value=[(candidate_id,)])
+
+        # Mock profile query (uses result.scalars().all())
+        profile = make_candidate_profile(candidate_id, uuid.uuid4())
+        profile_result = MagicMock()
+        profile_scalars = MagicMock()
+        profile_scalars.all = MagicMock(return_value=[profile])
+        profile_result.scalars = MagicMock(return_value=profile_scalars)
+
+        # Execute will be called twice: once for Application check, once for profile query
+        session.execute.side_effect = [application_result, profile_result]
+
+        recruiter_user = make_user(UserRole.RECRUITER, recruiter_user_id)
+
+        # With require_application=True, candidate with application should be included
+        result = await resolver.resolve_candidate_profiles([candidate_id], recruiter_user)
+
+        assert candidate_id in result
+        assert result[candidate_id].full_name == "Test Candidate"
+
+    @pytest.mark.asyncio
+    async def test_recruiter_require_application_false_resume_query_uses_candidate_ids_directly(self):
+        """Verify SQL query uses candidate_ids directly when require_application=False (no Application join)."""
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+
+        candidate_id = uuid.uuid4()
+        recruiter_user_id = uuid.uuid4()
+        company_id = uuid.uuid4()
+
+        resolver._get_recruiter_company_id = AsyncMock(return_value=company_id)
+
+        resume = make_resume(candidate_id)
+
+        resume_result = MagicMock()
+        resume_scalars = MagicMock()
+        resume_scalars.all = MagicMock(return_value=[resume])
+        resume_result.scalars = MagicMock(return_value=resume_scalars)
+
+        session.execute.return_value = resume_result
+
+        recruiter_user = make_user(UserRole.RECRUITER, recruiter_user_id)
+
+        await resolver.resolve_resumes([candidate_id], recruiter_user, require_application=False)
+
+        # Verify the query was executed ONCE (no Application join)
+        assert session.execute.call_count == 1
+        executed_stmt = session.execute.call_args[0][0]
+        compiled = executed_stmt.compile(compile_kwargs={"literal_binds": True})
+        sql_str = str(compiled)
+        # Should filter by candidate_id directly, NOT join Application table
+        assert "Application" not in sql_str
+        assert str(candidate_id).replace("-", "") in sql_str
+
+    @pytest.mark.asyncio
+    async def test_recruiter_require_application_true_resume_query_joins_application(self):
+        """Verify SQL query joins Application table when require_application=True."""
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+
+        candidate_id = uuid.uuid4()
+        recruiter_user_id = uuid.uuid4()
+        company_id = uuid.uuid4()
+
+        resolver._get_recruiter_company_id = AsyncMock(return_value=company_id)
+
+        # Mock Application query returning the candidate (has application)
+        # Application query uses result.all() directly (scalar select, synchronous)
+        application_result = MagicMock()
+        application_result.all = MagicMock(return_value=[(candidate_id,)])
+
+        # Mock resume query (uses result.scalars().all())
+        resume = make_resume(candidate_id)
+        resume_result = MagicMock()
+        resume_scalars = MagicMock()
+        resume_scalars.all = MagicMock(return_value=[resume])
+        resume_result.scalars = MagicMock(return_value=resume_scalars)
+
+        session.execute.side_effect = [application_result, resume_result]
+
+        recruiter_user = make_user(UserRole.RECRUITER, recruiter_user_id)
+
+        await resolver.resolve_resumes([candidate_id], recruiter_user, require_application=True)
+
+        # Verify TWO queries executed: Application check + Resume query
+        assert session.execute.call_count == 2
+        # First call should be Application join
+        first_call_stmt = session.execute.call_args_list[0][0][0]
+        first_compiled = first_call_stmt.compile(compile_kwargs={"literal_binds": True})
+        first_sql = str(first_compiled)
+        assert "applications" in first_sql.lower()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

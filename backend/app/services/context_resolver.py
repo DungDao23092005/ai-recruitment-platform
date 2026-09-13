@@ -36,6 +36,7 @@ class ContextResolver:
         candidate_ids: list[uuid.UUID],
         actor_user: User,
         include_primary_only: bool = True,
+        require_application: bool = True,
     ) -> dict[uuid.UUID, ParsedResumeSchema]:
         """
         Resolve parsed resumes by candidate IDs with authorization.
@@ -49,6 +50,9 @@ class ContextResolver:
             candidate_ids: List of candidate IDs to resolve
             actor_user: The user making the request (for authorization)
             include_primary_only: Only return primary resumes (default True)
+            require_application: Whether to require application history (default True).
+                When False, candidates without applications are still returned.
+                Used for recommendation flows.
 
         Returns:
             Mapping of candidate_id -> ParsedResumeSchema for authorized records only
@@ -66,22 +70,26 @@ class ContextResolver:
             if recruiter_company_id is None:
                 return {}
 
-            # Get candidate IDs who applied to this recruiter's company jobs
-            from app.models import Application, Job
-            stmt = select(Application.candidate_id).join(
-                Job, Application.job_id == Job.id
-            ).where(
-                Job.company_id == recruiter_company_id,
-                Application.candidate_id.in_(candidate_ids),
-                Application.is_deleted == False,
-            )
-            result = await self.session.execute(stmt)
-            authorized_candidate_ids = [row[0] for row in result.all()]
+            if require_application:
+                # Get candidate IDs who applied to this recruiter's company jobs
+                from app.models import Application, Job
+                stmt = select(Application.candidate_id).join(
+                    Job, Application.job_id == Job.id
+                ).where(
+                    Job.company_id == recruiter_company_id,
+                    Application.candidate_id.in_(candidate_ids),
+                    Application.is_deleted == False,
+                )
+                result = await self.session.execute(stmt)
+                authorized_candidate_ids = [row[0] for row in result.all()]
 
-            if not authorized_candidate_ids:
-                return {}
+                if not authorized_candidate_ids:
+                    return {}
 
-            filters = [Resume.candidate_id.in_(authorized_candidate_ids)]
+                filters = [Resume.candidate_id.in_(authorized_candidate_ids)]
+            else:
+                # For recommendation flow: return all candidate resumes from company jobs
+                filters = [Resume.candidate_id.in_(candidate_ids)]
         else:
             # CANDIDATE - can only access their own resume
             candidate_profile = await self._get_candidate_profile(actor_user.id)
@@ -173,6 +181,7 @@ class ContextResolver:
         self,
         candidate_ids: list[uuid.UUID],
         actor_user: User,
+        require_application: bool = True,
     ) -> dict[uuid.UUID, CandidateProfile]:
         """
         Resolve candidate profiles by IDs with authorization.
@@ -185,6 +194,9 @@ class ContextResolver:
         Args:
             candidate_ids: List of candidate IDs to resolve
             actor_user: The user making the request (for authorization)
+            require_application: Whether to require application history (default True).
+                When False, candidates without applications are still returned.
+                Used for recommendation flows.
 
         Returns:
             Mapping of candidate_id -> CandidateProfile for authorized records only
@@ -199,21 +211,25 @@ class ContextResolver:
             if recruiter_company_id is None:
                 return {}
 
-            from app.models import Application, Job
-            stmt = select(Application.candidate_id).join(
-                Job, Application.job_id == Job.id
-            ).where(
-                Job.company_id == recruiter_company_id,
-                Application.candidate_id.in_(candidate_ids),
-                Application.is_deleted == False,
-            )
-            result = await self.session.execute(stmt)
-            authorized_candidate_ids = [row[0] for row in result.all()]
+            if require_application:
+                from app.models import Application, Job
+                stmt = select(Application.candidate_id).join(
+                    Job, Application.job_id == Job.id
+                ).where(
+                    Job.company_id == recruiter_company_id,
+                    Application.candidate_id.in_(candidate_ids),
+                    Application.is_deleted == False,
+                )
+                result = await self.session.execute(stmt)
+                authorized_candidate_ids = [row[0] for row in result.all()]
 
-            if not authorized_candidate_ids:
-                return {}
+                if not authorized_candidate_ids:
+                    return {}
 
-            filters = [CandidateProfile.id.in_(authorized_candidate_ids)]
+                filters = [CandidateProfile.id.in_(authorized_candidate_ids)]
+            else:
+                # For recommendation flow: return all candidate profiles from company jobs
+                filters = [CandidateProfile.id.in_(candidate_ids)]
         else:
             # CANDIDATE - can only access their own profile
             candidate_profile = await self._get_candidate_profile(actor_user.id)

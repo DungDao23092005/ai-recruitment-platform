@@ -226,7 +226,13 @@ function HeroSearchBar() {
       className="mt-8 flex w-full max-w-xl flex-col gap-2 sm:flex-row"
       onSubmit={(event) => {
         event.preventDefault()
-        navigate('/jobs')
+        const formData = new FormData(event.currentTarget)
+        const q = formData.get('q')?.toString().trim() || ''
+        if (q) {
+          navigate(`/jobs?q=${encodeURIComponent(q)}`)
+        } else {
+          navigate('/jobs')
+        }
       }}
     >
       <div className="relative flex-1">
