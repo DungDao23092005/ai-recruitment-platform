@@ -28,6 +28,7 @@ import { ErrorBanner } from '@/components/ui/error-banner'
 import { EmptyState } from '@/components/ui/empty-state'
 import { getRecruiterMetrics } from '@/api/metrics'
 import type { RecruiterMetrics, ApplicationStatusCount } from '@/types/metrics'
+import { isAxiosError } from 'axios'
 
 const PORTAL_CARDS = [
   {
@@ -197,32 +198,34 @@ function MetricsSkeleton() {
   )
 }
 
+type PageState =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'success'; metrics: RecruiterMetrics }
+  | { kind: 'empty'; metrics: RecruiterMetrics }
+  | { kind: 'no-company' }
+
 export function RecruiterPortalPage() {
-  const [state, setState] = useState<{
-    kind: 'loading' | 'error' | 'success' | 'empty'
-    metrics?: RecruiterMetrics
-    message?: string
-  }>({ kind: 'loading' })
+  const [state, setState] = useState<PageState>({ kind: 'loading' })
 
   const loadMetrics = async () => {
     setState({ kind: 'loading' })
     try {
       const metrics = await getRecruiterMetrics()
-      if (
-        metrics.total_jobs === 0 &&
-        metrics.total_applications === 0 &&
-        metrics.jobs_by_status.length === 0 &&
-        metrics.applications_by_status.length === 0
-      ) {
+      if (metrics.total_jobs === 0) {
         setState({ kind: 'empty', metrics })
       } else {
         setState({ kind: 'success', metrics })
       }
     } catch (err) {
-      setState({
-        kind: 'error',
-        message: err instanceof Error ? err.message : 'Không thể tải dữ liệu',
-      })
+      if (isAxiosError(err) && err.response?.status === 404) {
+        setState({ kind: 'no-company' })
+      } else {
+        setState({
+          kind: 'error',
+          message: err instanceof Error ? err.message : 'Không thể tải dữ liệu',
+        })
+      }
     }
   }
 
@@ -247,10 +250,138 @@ export function RecruiterPortalPage() {
     )
   }
 
-  const metrics = state.metrics!
-  const pendingCount = metrics.applications_by_status
+  if (state.kind === 'no-company') {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          eyebrow="Nhà tuyển dụng"
+          title="Tổng quan tuyển dụng"
+          description="Quản lý công ty, tin tuyển dụng và ứng viên với sự hỗ trợ của AI."
+        />
+        <EmptyState
+          icon={<Building className="h-8 w-8" />}
+          title="Chưa có công ty"
+          description="Hãy tạo công ty để bắt đầu tuyển dụng."
+          children={
+            <Link to="/recruiter/company">
+              <Button>
+                <PlusCircle className="h-4 w-4 mr-2" aria-hidden="true" />
+                Tạo công ty
+              </Button>
+            </Link>
+          }
+        />
+        <Card className="border-border/70">
+          <CardHeader>
+            <CardTitle className="font-display text-lg font-semibold">Thao tác nhanh</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {PORTAL_CARDS.map((card) => (
+                <Card
+                  key={card.to}
+                  className="group border-border/70 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-soft"
+                >
+                  <CardHeader className="gap-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                        <card.icon className="h-5 w-5" aria-hidden="true" />
+                      </div>
+                      {card.ai ? <Badge variant="ai-gradient">AI</Badge> : null}
+                    </div>
+                    <CardTitle className="font-display text-lg font-semibold">
+                      {card.title}
+                    </CardTitle>
+                    <CardDescription>{card.description}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Link to={card.to}>
+                      <Button
+                        variant={card.ai ? 'default' : 'outline'}
+                        className="w-full"
+                      >
+                        {card.cta}
+                        <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                      </Button>
+                    </Link>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  const metrics = state.kind === 'success' || state.kind === 'empty' ? state.metrics : undefined
+  const pendingCount = metrics?.applications_by_status
     .filter((s) => ['applied', 'under_review'].includes(s.status))
-    .reduce((sum, s) => sum + s.count, 0)
+    .reduce((sum, s) => sum + s.count, 0) ?? 0
+
+  if (state.kind === 'empty') {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          eyebrow="Nhà tuyển dụng"
+          title="Tổng quan tuyển dụng"
+          description="Quản lý công ty, tin tuyển dụng và ứng viên với sự hỗ trợ của AI."
+        />
+        <EmptyState
+          icon={<Briefcase className="h-8 w-8" />}
+          title="Chưa có tin tuyển dụng"
+          description="Hãy tạo tin tuyển dụng đầu tiên."
+          children={
+            <Link to="/recruiter/jobs/new">
+              <Button>
+                <PlusCircle className="h-4 w-4 mr-2" aria-hidden="true" />
+                Tạo tin tuyển dụng
+              </Button>
+            </Link>
+          }
+        />
+        <Card className="border-border/70">
+          <CardHeader>
+            <CardTitle className="font-display text-lg font-semibold">Thao tác nhanh</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {PORTAL_CARDS.map((card) => (
+                <Card
+                  key={card.to}
+                  className="group border-border/70 transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-soft"
+                >
+                  <CardHeader className="gap-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                        <card.icon className="h-5 w-5" aria-hidden="true" />
+                      </div>
+                      {card.ai ? <Badge variant="ai-gradient">AI</Badge> : null}
+                    </div>
+                    <CardTitle className="font-display text-lg font-semibold">
+                      {card.title}
+                    </CardTitle>
+                    <CardDescription>{card.description}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Link to={card.to}>
+                      <Button
+                        variant={card.ai ? 'default' : 'outline'}
+                        className="w-full"
+                      >
+                        {card.cta}
+                        <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                      </Button>
+                    </Link>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -272,14 +403,14 @@ export function RecruiterPortalPage() {
         <MetricCard
           icon={<Briefcase className="h-5 w-5" />}
           title="Tổng tin tuyển dụng"
-          value={metrics.total_jobs}
+          value={metrics!.total_jobs}
           variant="primary"
         />
         <MetricCard
           icon={<Briefcase className="h-5 w-5" />}
           title="Đang tuyển"
           value={
-            metrics.jobs_by_status
+            metrics!.jobs_by_status
               .filter((s) => s.status === 'published')
               .reduce((sum, s) => sum + s.count, 0)
           }
@@ -288,7 +419,7 @@ export function RecruiterPortalPage() {
         <MetricCard
           icon={<FileText className="h-5 w-5" />}
           title="Tổng ứng tuyển"
-          value={metrics.total_applications}
+          value={metrics!.total_applications}
           variant="warning"
         />
         <MetricCard
@@ -306,9 +437,9 @@ export function RecruiterPortalPage() {
             <CardTitle className="font-display text-lg font-semibold">Tin tuyển dụng theo trạng thái</CardTitle>
           </CardHeader>
           <CardContent>
-            {metrics.jobs_by_status.length > 0 ? (
+            {metrics!.jobs_by_status.length > 0 ? (
               <div className="space-y-3">
-                {metrics.jobs_by_status.map((item) => (
+                {metrics!.jobs_by_status.map((item) => (
                   <div key={item.status} className="flex items-center justify-between text-sm">
                     <Badge variant="outline-ai" className="w-32 shrink-0">
                       {item.status}
@@ -330,9 +461,9 @@ export function RecruiterPortalPage() {
             <CardTitle className="font-display text-lg font-semibold">Ứng tuyển theo trạng thái</CardTitle>
           </CardHeader>
           <CardContent>
-            {metrics.applications_by_status.length > 0 ? (
+            {metrics!.applications_by_status.length > 0 ? (
               <div className="space-y-3">
-                {metrics.applications_by_status.map((item) => (
+                {metrics!.applications_by_status.map((item) => (
                   <div key={item.status} className="flex items-center justify-between text-sm">
                     <Badge variant="outline-ai" className="w-32 shrink-0">
                       {item.status}
@@ -355,10 +486,10 @@ export function RecruiterPortalPage() {
           <CardTitle className="font-display text-lg font-semibold">Quy trình ứng tuyển</CardTitle>
         </CardHeader>
         <CardContent>
-          {metrics.total_applications > 0 ? (
+          {metrics!.total_applications > 0 ? (
             <div className="space-y-3">
               {FUNNEL_STAGES.map((stage) => {
-                const stageData = metrics.applications_by_status.find(
+                const stageData = metrics!.applications_by_status.find(
                   (s) => s.status === stage.key
                 )
                 const count = stageData?.count ?? 0
@@ -367,7 +498,7 @@ export function RecruiterPortalPage() {
                     key={stage.key}
                     label={stage.label}
                     count={count}
-                    total={metrics.total_applications}
+                    total={metrics!.total_applications}
                     variant={stage.variant}
                     icon={stage.icon}
                   />
