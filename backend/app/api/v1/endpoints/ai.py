@@ -433,7 +433,10 @@ async def recommend_candidates_for_job(
     parsed_job = ParsedJobSchema(
         title=job.title,
         summary=job.description,
-        required_skills=[skill.name for skill in job.skills],
+        required_skills=[skill.name for skill in job.required_skills] if job.required_skills else [],
+        preferred_skills=[skill.name for skill in job.preferred_skills] if job.preferred_skills else [],
+        minimum_years_experience=job.minimum_years_experience,
+        education_level=job.education_level,
     )
 
     try:
