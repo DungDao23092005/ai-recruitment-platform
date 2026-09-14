@@ -609,6 +609,116 @@ class TestJobSkillsRegression:
         assert set(body["skills"]) == {"Python", "FastAPI", "SQL Server"}
 
 
+class TestJobListSkillsRegression:
+    """Regression tests for Job skills in list endpoints (GET /jobs, GET /jobs/mine).
+    
+    These tests verify that MissingGreenlet is not raised when serializing
+    jobs with skills in list endpoints that use to_job_read().
+    """
+
+    @staticmethod
+    def create_company(client, run_async, slug, tax_code):
+        body = {**COMPANY_BODY, "slug": slug, "tax_code": tax_code}
+        resp = run_async(client.post(f"{API_V1}/companies", json=body))
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    def test_public_list_job_with_skills(self, client, recruiter_client, run_async):
+        """PUBLIC LIST — JOB WITH SKILLS
+        
+        Create a published job with explicit skills, call GET /api/v1/jobs,
+        assert HTTP 200 and that the returned job contains the expected skills.
+        """
+        company = self.create_company(
+            recruiter_client, run_async, "acme-list-skills", "555555555"
+        )
+        body = {
+            **JOB_BODY,
+            "company_id": company["id"],
+            "status": "published",
+            "skills": ["Python", "FastAPI", "PostgreSQL"],
+        }
+        job = run_async(
+            recruiter_client.post(f"{API_V1}/jobs", json=body)
+        ).json()
+
+        # Call the public list endpoint
+        resp = run_async(client.get(f"{API_V1}/jobs"))
+        assert resp.status_code == 200
+        
+        # Find our job in the list
+        items = resp.json()
+        match = next(item for item in items if item["id"] == job["id"])
+        
+        # Assert skills are correctly serialized
+        assert "skills" in match
+        assert isinstance(match["skills"], list)
+        assert set(match["skills"]) == {"Python", "FastAPI", "PostgreSQL"}
+
+    def test_public_list_job_without_skills(self, client, recruiter_client, run_async):
+        """PUBLIC LIST — JOB WITHOUT SKILLS
+        
+        Create a published job without skills, call GET /api/v1/jobs,
+        assert HTTP 200 and skills == [].
+        """
+        company = self.create_company(
+            recruiter_client, run_async, "acme-no-skills", "666666666"
+        )
+        body = {
+            **JOB_BODY,
+            "company_id": company["id"],
+            "status": "published",
+            # No skills field - should default to empty
+        }
+        job = run_async(
+            recruiter_client.post(f"{API_V1}/jobs", json=body)
+        ).json()
+
+        # Call the public list endpoint
+        resp = run_async(client.get(f"{API_V1}/jobs"))
+        assert resp.status_code == 200
+        
+        # Find our job in the list
+        items = resp.json()
+        match = next(item for item in items if item["id"] == job["id"])
+        
+        # Assert skills is an empty list
+        assert "skills" in match
+        assert match["skills"] == []
+
+    def test_recruiter_list_job_with_skills(self, recruiter_client, run_async):
+        """RECRUITER LIST — JOB WITH SKILLS
+        
+        Create recruiter/company/job with skills, call GET /api/v1/jobs/mine as recruiter,
+        assert HTTP 200 and skills serialize correctly.
+        """
+        company = self.create_company(
+            recruiter_client, run_async, "acme-recruiter-skills", "777777777"
+        )
+        body = {
+            **JOB_BODY,
+            "company_id": company["id"],
+            "status": "published",
+            "skills": ["React", "TypeScript", "Node.js"],
+        }
+        job = run_async(
+            recruiter_client.post(f"{API_V1}/jobs", json=body)
+        ).json()
+
+        # Call the recruiter list endpoint
+        resp = run_async(recruiter_client.get(f"{API_V1}/jobs/mine"))
+        assert resp.status_code == 200
+        
+        # Find our job in the list
+        items = resp.json()
+        match = next(item for item in items if item["id"] == job["id"])
+        
+        # Assert skills are correctly serialized
+        assert "skills" in match
+        assert isinstance(match["skills"], list)
+        assert set(match["skills"]) == {"React", "TypeScript", "Node.js"}
+
+
 class TestMyJobDetail:
     """GET /jobs/mine/{id} — recruiter-scoped job detail with ownership."""
 

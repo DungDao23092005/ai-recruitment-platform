@@ -39,7 +39,7 @@ class JobRepository(BaseRepository[Job]):
         # Build the base query with filters
         base_stmt = (
             select(Job)
-            .options(joinedload(Job.company))
+            .options(joinedload(Job.company), selectinload(Job.skills))
             .where(
                 Job.status == JobStatus.PUBLISHED,
                 Job.is_deleted == False,  # noqa: E712
@@ -87,7 +87,7 @@ class JobRepository(BaseRepository[Job]):
     ) -> list[Job]:
         stmt = (
             select(Job)
-            .options(joinedload(Job.company))
+            .options(joinedload(Job.company), selectinload(Job.skills))
             .where(
                 Job.company_id == company_id,
                 Job.is_deleted == False,  # noqa: E712
@@ -97,19 +97,19 @@ class JobRepository(BaseRepository[Job]):
             .limit(limit)
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        return list(result.scalars().unique().all())
 
     async def list_all_jobs(self, skip: int = 0, limit: int = 10) -> list[Job]:
         stmt = (
             select(Job)
-            .options(joinedload(Job.company))
+            .options(joinedload(Job.company), selectinload(Job.skills))
             .where(Job.is_deleted == False)  # noqa: E712
             .order_by(Job.created_at.desc())
             .offset(skip)
             .limit(limit)
         )
         result = await self.session.execute(stmt)
-        return list(result.scalars().all())
+        return list(result.scalars().unique().all())
 
     async def get_job_with_company(self, job_id: Any) -> Job | None:
         stmt = (
