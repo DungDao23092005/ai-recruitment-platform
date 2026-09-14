@@ -664,9 +664,7 @@ class TestContextResolverRequireApplication:
 
         # Mock Application query to return empty (no applications)
         application_result = MagicMock()
-        application_scalars = MagicMock()
-        application_scalars.all = MagicMock(return_value=[])
-        application_result.scalars = MagicMock(return_value=application_scalars)
+        application_result.all = MagicMock(return_value=[])
 
         session.execute.return_value = application_result
 
@@ -692,9 +690,7 @@ class TestContextResolverRequireApplication:
 
         # Mock Application query to return the candidate (has application)
         application_result = MagicMock()
-        application_scalars = MagicMock()
-        application_scalars.all = MagicMock(return_value=[(candidate_id,)])
-        application_result.scalars = MagicMock(return_value=application_scalars)
+        application_result.all = MagicMock(return_value=[(candidate_id,)])
 
         # Mock profile query
         profile = make_candidate_profile(candidate_id, uuid.uuid4())
@@ -770,9 +766,7 @@ class TestContextResolverRequireApplication:
 
         # Mock Application query returning the candidate (has application)
         application_result = MagicMock()
-        application_scalars = MagicMock()
-        application_scalars.all = MagicMock(return_value=[(candidate_id,)])
-        application_result.scalars = MagicMock(return_value=application_scalars)
+        application_result.all = MagicMock(return_value=[(candidate_id,)])
 
         # Mock resume query
         resume = make_resume(candidate_id)
