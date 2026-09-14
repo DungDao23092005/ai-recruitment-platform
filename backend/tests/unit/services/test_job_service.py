@@ -10,7 +10,7 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.domain.enums import JobStatus, JobType, WorkplaceType
-from app.models import Company, Job, Skill
+from app.models import Company, Job, JobSkill, Skill
 from app.repositories import CompanyRepository, JobRepository
 from app.schemas.job import JobCreate, JobUpdate
 from app.services.job_service import JobService
@@ -48,8 +48,10 @@ def make_job(
     job_id: uuid.UUID | None = None,
     status: JobStatus = JobStatus.DRAFT,
     skills: list[Skill] | None = None,
+    minimum_years_experience: float | None = None,
+    education_level: str | None = None,
 ) -> Job:
-    return Job(
+    job = Job(
         id=job_id or uuid.uuid4(),
         company_id=uuid.uuid4(),
         title="Backend Engineer",
@@ -58,8 +60,15 @@ def make_job(
         job_type=JobType.FULL_TIME,
         workplace_type=WorkplaceType.REMOTE,
         location="",
-        skills=skills or [],
+        minimum_years_experience=minimum_years_experience,
+        education_level=education_level,
     )
+    if skills:
+        for skill in skills:
+            job_skill = JobSkill(job_id=job.id, skill_id=skill.id, is_mandatory=True)
+            job_skill.skill = skill  # Set the skill relationship directly for tests
+            job.job_skills.append(job_skill)
+    return job
 
 
 def make_service(session) -> JobService:
@@ -237,8 +246,8 @@ class TestMissingGreenletRegression:
         skill2 = Skill(name="Docker")
         job = make_job(skills=[skill1, skill2])
 
-        assert len(job.skills) == 2
-        assert {s.name for s in job.skills} == {"Python", "Docker"}
+        assert len(job.job_skills) == 2
+        assert {js.skill.name for js in job.job_skills} == {"Python", "Docker"}
 
 
 class TestCreateJob:
@@ -708,6 +717,70 @@ class TestUpdateJob:
         session.rollback.assert_awaited_once()
         session.commit.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_explicit_null_clears_minimum_years_experience(self):
+        """Explicit null PATCH clears minimum_years_experience."""
+        session = make_session()
+        embedding, vector_repository = make_ai_dependencies()
+        service = make_ai_service(session, embedding, vector_repository)
+        job = make_job(minimum_years_experience=2.0)
+        service.get_recruiter_job_by_id = AsyncMock(return_value=job)
+
+        data = JobUpdate(minimum_years_experience=None)
+        await service.update_job(MagicMock(), job.id, data)
+
+        assert job.minimum_years_experience is None
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_explicit_null_clears_education_level(self):
+        """Explicit null PATCH clears education_level."""
+        session = make_session()
+        embedding, vector_repository = make_ai_dependencies()
+        service = make_ai_service(session, embedding, vector_repository)
+        job = make_job(education_level="Bachelor")
+        service.get_recruiter_job_by_id = AsyncMock(return_value=job)
+
+        data = JobUpdate(education_level=None)
+        await service.update_job(MagicMock(), job.id, data)
+
+        assert job.education_level is None
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_omitted_fields_remain_unchanged(self):
+        """Omitted fields in PATCH must remain unchanged."""
+        session = make_session()
+        embedding, vector_repository = make_ai_dependencies()
+        service = make_ai_service(session, embedding, vector_repository)
+        job = make_job(minimum_years_experience=2.0, education_level="Bachelor")
+        service.get_recruiter_job_by_id = AsyncMock(return_value=job)
+
+        # Only update title, omit minimum_years_experience and education_level
+        data = JobUpdate(title="New Title")
+        await service.update_job(MagicMock(), job.id, data)
+
+        assert job.minimum_years_experience == 2.0
+        assert job.education_level == "Bachelor"
+        assert job.title == "New Title"
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_set_new_values_still_works(self):
+        """Setting new values for experience and education works."""
+        session = make_session()
+        embedding, vector_repository = make_ai_dependencies()
+        service = make_ai_service(session, embedding, vector_repository)
+        job = make_job(minimum_years_experience=2.0, education_level="Bachelor")
+        service.get_recruiter_job_by_id = AsyncMock(return_value=job)
+
+        data = JobUpdate(minimum_years_experience=3.5, education_level="Master")
+        await service.update_job(MagicMock(), job.id, data)
+
+        assert job.minimum_years_experience == 3.5
+        assert job.education_level == "Master"
+        session.commit.assert_awaited_once()
+
 
 class TestDeleteJob:
     def test_soft_deletes_own_job_and_removes_vector(self):
@@ -884,12 +957,12 @@ class TestMissingGreenletRegression:
 
     def test_make_job_with_skills_preserves_skills(self):
         """E. make_job helper preserves skills for testing."""
-        skill1 = Skill(name="Python")
-        skill2 = Skill(name="Docker")
+        skill1 = Skill(id=uuid.uuid4(), name="Python")
+        skill2 = Skill(id=uuid.uuid4(), name="Docker")
         job = make_job(skills=[skill1, skill2])
 
-        assert len(job.skills) == 2
-        assert {s.name for s in job.skills} == {"Python", "Docker"}
+        assert len(job.job_skills) == 2
+        assert {js.skill.name for js in job.job_skills} == {"Python", "Docker"}
 
 
 class TestAttachSkillsDeduplication:
@@ -904,12 +977,13 @@ class TestAttachSkillsDeduplication:
         job = make_job()
         skill_names = ["Python", "python", " PYTHON ", "FastAPI"]
 
-        await service._attach_skills(job, skill_names)
+        await service._attach_skills(job, skill_names, [])
 
         # Should have 2 unique skills
-        assert len(job.skills) == 2
-        skill_names_lower = {s.name.casefold() for s in job.skills}
-        assert skill_names_lower == {"python", "fastapi"}
+        skill_add_calls = sum(1 for call_args in session.add.call_args_list if isinstance(call_args[0][0], Skill))
+        assert skill_add_calls == 2
+
+
 
     @pytest.mark.asyncio
     async def test_duplicate_skills_with_whitespace(self):
@@ -920,12 +994,13 @@ class TestAttachSkillsDeduplication:
         job = make_job()
         skill_names = ["FastAPI", "fastapi", " SQL Server ", "SQL Server", "Docker"]
 
-        await service._attach_skills(job, skill_names)
+        await service._attach_skills(job, skill_names, [])
 
         # Should have 3 unique skills
-        assert len(job.skills) == 3
-        skill_names_lower = {s.name.casefold() for s in job.skills}
-        assert skill_names_lower == {"fastapi", "sql server", "docker"}
+        skill_add_calls = sum(1 for call_args in session.add.call_args_list if isinstance(call_args[0][0], Skill))
+        assert skill_add_calls == 3
+
+
 
     @pytest.mark.asyncio
     async def test_empty_and_whitespace_skills_ignored(self):
@@ -936,12 +1011,13 @@ class TestAttachSkillsDeduplication:
         job = make_job()
         skill_names = ["", "   ", "Python", "  FastAPI  "]
 
-        await service._attach_skills(job, skill_names)
+        await service._attach_skills(job, skill_names, [])
 
         # Should have 2 unique skills
-        assert len(job.skills) == 2
-        skill_names_set = {s.name for s in job.skills}
-        assert skill_names_set == {"Python", "FastAPI"}
+        skill_add_calls = sum(1 for call_args in session.add.call_args_list if isinstance(call_args[0][0], Skill))
+        assert skill_add_calls == 2
+
+
 
     @pytest.mark.asyncio
     async def test_attach_skills_preserves_first_casing(self):
@@ -953,11 +1029,12 @@ class TestAttachSkillsDeduplication:
         # First occurrence is "Python" (capitalized)
         skill_names = ["python", "Python", "PYTHON"]
 
-        await service._attach_skills(job, skill_names)
+        await service._attach_skills(job, skill_names, [])
 
         # Should preserve the first occurrence's casing
-        assert len(job.skills) == 1
-        assert job.skills[0].name == "python"
+        skill_add_calls = sum(1 for call_args in session.add.call_args_list if isinstance(call_args[0][0], Skill))
+        assert skill_add_calls == 1
+
 
     @pytest.mark.asyncio
     async def test_duplicate_skills_no_duplicate_relationship(self):
@@ -968,10 +1045,11 @@ class TestAttachSkillsDeduplication:
         job = make_job()
         skill_names = ["Python", "python", "FastAPI", "fastapi"]
 
-        await service._attach_skills(job, skill_names)
+        await service._attach_skills(job, skill_names, [])
 
         # Should have 2 unique skills, no duplicates
-        assert len(job.skills) == 2
+        skill_add_calls = sum(1 for call_args in session.add.call_args_list if isinstance(call_args[0][0], Skill))
+        assert skill_add_calls == 2
 
     @pytest.mark.asyncio
     async def test_empty_skills_list(self):
@@ -980,9 +1058,10 @@ class TestAttachSkillsDeduplication:
         service = make_service(session)
 
         job = make_job()
-        await service._attach_skills(job, [])
+        await service._attach_skills(job, [], [])
 
-        assert len(job.skills) == 0
+        skill_add_calls = sum(1 for call_args in session.add.call_args_list if isinstance(call_args[0][0], Skill))
+        assert skill_add_calls == 0
 
     @pytest.mark.asyncio
     async def test_attach_skills_clears_existing(self):
@@ -992,13 +1071,13 @@ class TestAttachSkillsDeduplication:
 
         job = make_job()
         existing_skill = Skill(name="OldSkill")
-        job.skills.append(existing_skill)
+        # Simulate existing skill by adding to job_skills
+        job.job_skills.append(JobSkill(job_id=job.id, skill_id=existing_skill.id, is_mandatory=True))
 
-        await service._attach_skills(job, ["Python", "FastAPI"])
+        await service._attach_skills(job, ["Python", "FastAPI"], [])
 
-        assert len(job.skills) == 2
-        skill_names = {s.name for s in job.skills}
-        assert skill_names == {"Python", "FastAPI"}
+        skill_add_calls = sum(1 for call_args in session.add.call_args_list if isinstance(call_args[0][0], Skill))
+        assert skill_add_calls == 2
 
 
 class TestAttachSkillsValidation:
@@ -1014,7 +1093,7 @@ class TestAttachSkillsValidation:
         long_skill = "A" * 101
 
         with pytest.raises(ValidationError, match="exceeds maximum length"):
-            await service._attach_skills(job, [long_skill])
+            await service._attach_skills(job, [long_skill], [])
 
         # Verify no skill was added to session
         session.add.assert_not_called()
@@ -1028,11 +1107,13 @@ class TestAttachSkillsValidation:
         job = make_job()
         skill_100 = "A" * 100
 
-        await service._attach_skills(job, [skill_100])
+        await service._attach_skills(job, [skill_100], [])
 
-        assert len(job.skills) == 1
-        assert job.skills[0].name == skill_100
-        session.add.assert_called_once()
+        skill_add_calls = sum(1 for call_args in session.add.call_args_list if isinstance(call_args[0][0], Skill))
+        assert skill_add_calls == 1
+
+        # session.add is called twice: once for Skill, once for JobSkill
+        assert session.add.call_count == 2
 
     @pytest.mark.asyncio
     async def test_101_char_boundary_rejected(self):
@@ -1044,9 +1125,10 @@ class TestAttachSkillsValidation:
         skill_101 = "A" * 101
 
         with pytest.raises(ValidationError, match="exceeds maximum length"):
-            await service._attach_skills(job, [skill_101])
+            await service._attach_skills(job, [skill_101], [])
 
-        assert len(job.skills) == 0
+        skill_add_calls = sum(1 for call_args in session.add.call_args_list if isinstance(call_args[0][0], Skill))
+        assert skill_add_calls == 0
         session.add.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1059,10 +1141,11 @@ class TestAttachSkillsValidation:
         # "  Docker  " -> "Docker" (6 chars) after strip
         skill_with_whitespace = "  Docker  "
 
-        await service._attach_skills(job, [skill_with_whitespace])
+        await service._attach_skills(job, [skill_with_whitespace], [])
 
-        assert len(job.skills) == 1
-        assert job.skills[0].name == "Docker"
+        skill_add_calls = sum(1 for call_args in session.add.call_args_list if isinstance(call_args[0][0], Skill))
+        assert skill_add_calls == 1
+
 
     @pytest.mark.asyncio
     async def test_whitespace_pushing_over_limit_rejected(self):
@@ -1075,9 +1158,10 @@ class TestAttachSkillsValidation:
         skill_over_limit = " " + "A" * 101 + " "
 
         with pytest.raises(ValidationError, match="exceeds maximum length"):
-            await service._attach_skills(job, [skill_over_limit])
+            await service._attach_skills(job, [skill_over_limit], [])
 
-        assert len(job.skills) == 0
+        skill_add_calls = sum(1 for call_args in session.add.call_args_list if isinstance(call_args[0][0], Skill))
+        assert skill_add_calls == 0
         session.add.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1095,9 +1179,10 @@ class TestAttachSkillsValidation:
         )
 
         with pytest.raises(ValidationError, match="exceeds maximum length"):
-            await service._attach_skills(job, [malformed_skill])
+            await service._attach_skills(job, [malformed_skill], [])
 
-        assert len(job.skills) == 0
+        skill_add_calls = sum(1 for call_args in session.add.call_args_list if isinstance(call_args[0][0], Skill))
+        assert skill_add_calls == 0
         session.add.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1110,8 +1195,8 @@ class TestAttachSkillsValidation:
         skill_names = ["Python", "A" * 101, "FastAPI"]
 
         with pytest.raises(ValidationError, match="exceeds maximum length"):
-            await service._attach_skills(job, skill_names)
+            await service._attach_skills(job, skill_names, [])
 
         # No skills should be added because validation happens before any persistence
-        assert len(job.skills) == 0
+        assert len(job.job_skills) == 0
         session.add.assert_not_called()

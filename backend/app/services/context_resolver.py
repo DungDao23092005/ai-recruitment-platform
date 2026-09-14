@@ -156,17 +156,26 @@ class ContextResolver:
             # CANDIDATE - only published jobs
             filters.append(Job.status == JobStatus.PUBLISHED)
 
-        stmt = select(Job).options(selectinload(Job.skills)).where(*filters)
+        stmt = select(Job).options(
+            selectinload(Job.skills),
+            selectinload(Job.required_skills),
+            selectinload(Job.preferred_skills),
+        ).where(*filters)
         result = await self.session.execute(stmt)
 
         jobs: dict[uuid.UUID, ParsedJobSchema] = {}
         for j in result.scalars().all():
             skills = [skill.name for skill in j.skills] if j.skills else []
+            required_skills = [skill.name for skill in j.required_skills] if j.required_skills else []
+            preferred_skills = [skill.name for skill in j.preferred_skills] if j.preferred_skills else []
             try:
                 jobs[j.id] = ParsedJobSchema(
                     title=j.title,
                     summary=j.description,
-                    required_skills=skills,
+                    required_skills=required_skills,
+                    preferred_skills=preferred_skills,
+                    minimum_years_experience=j.minimum_years_experience,
+                    education_level=j.education_level,
                     location=j.location,
                     city=j.location,  # Using location as city since Job model only has location
                     employment_type=j.job_type.value if j.job_type else None,

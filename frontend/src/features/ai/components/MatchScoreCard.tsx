@@ -105,7 +105,7 @@ export function MatchScoreCard({
       hasRequirement: matchResult.has_education_requirement,
     },
     {
-      label: 'Độ phù hợp dự án',
+      label: 'Dẫn chứng kỹ năng dự án',
       value: formatPercent(matchResult.project_score ?? 0),
       raw: matchResult.project_score ?? 0,
       hasRequirement: matchResult.has_required_skills, // Project depends on required skills

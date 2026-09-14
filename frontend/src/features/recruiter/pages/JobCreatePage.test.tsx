@@ -201,7 +201,10 @@ describe('JobCreatePage', () => {
           workplace_type: 'on_site',
           location: null,
           status: 'draft',
-          skills: [],
+          required_skills: [],
+          preferred_skills: [],
+          minimum_years_experience: null,
+          education_level: null,
         },
         { timeout: 45000 }
       )
@@ -263,7 +266,7 @@ describe('JobCreatePage', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Tiêu đề công việc')).toHaveValue('Senior Frontend Engineer')
       expect(screen.getByLabelText('Mô tả công việc')).toHaveValue('Build modern web applications with React.')
-      expect(screen.getByLabelText('Kỹ năng yêu cầu')).toHaveValue('React, TypeScript')
+      expect(screen.getByLabelText('Kỹ năng bắt buộc')).toHaveValue('React, TypeScript')
     })
 
     fireEvent.click(screen.getByRole('button', { name: /Tạo tin tuyển dụng/i }))
@@ -279,7 +282,10 @@ describe('JobCreatePage', () => {
           workplace_type: 'on_site',
           location: null,
           status: 'draft',
-          skills: ['React', 'TypeScript'],
+          required_skills: ['React', 'TypeScript'],
+          preferred_skills: ['Next.js'],
+          minimum_years_experience: 3,
+          education_level: 'Bachelor degree',
         },
         { timeout: 45000 }
       )
@@ -350,7 +356,7 @@ describe('JobCreatePage', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Tiêu đề công việc')).toHaveValue('Software Engineer')
       expect(screen.getByLabelText('Mô tả công việc')).toHaveValue('Frontend role with React.')
-      expect(screen.getByLabelText('Kỹ năng yêu cầu')).toHaveValue('React, TypeScript')
+      expect(screen.getByLabelText('Kỹ năng bắt buộc')).toHaveValue('React, TypeScript')
     })
 
     // Second AI parse with SAME title but different skills
@@ -384,7 +390,7 @@ describe('JobCreatePage', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Tiêu đề công việc')).toHaveValue('Software Engineer')
       expect(screen.getByLabelText('Mô tả công việc')).toHaveValue('Backend role with Python.')
-      expect(screen.getByLabelText('Kỹ năng yêu cầu')).toHaveValue('Python, FastAPI')
+      expect(screen.getByLabelText('Kỹ năng bắt buộc')).toHaveValue('Python, FastAPI')
     })
 
     // Submit second result
@@ -401,7 +407,10 @@ describe('JobCreatePage', () => {
           workplace_type: 'on_site',
           location: null,
           status: 'draft',
-          skills: ['Python', 'FastAPI'],
+          required_skills: ['Python', 'FastAPI'],
+          preferred_skills: ['Docker'],
+          minimum_years_experience: 5,
+          education_level: 'Master degree',
         },
         { timeout: 45000 }
       )

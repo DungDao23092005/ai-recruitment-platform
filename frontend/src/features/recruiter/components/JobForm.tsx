@@ -32,7 +32,10 @@ interface FormValues {
   workplace_type: WorkplaceType
   location: string
   status: JobStatus
-  skills: string
+  required_skills: string
+  preferred_skills: string
+  minimum_years_experience: string
+  education_level: string
 }
 
 interface FormErrors {
@@ -90,7 +93,10 @@ export function JobForm({
       job?.workplace_type ?? initialValues?.workplace_type ?? 'on_site',
     location: job?.location ?? initialValues?.location ?? '',
     status: initialValues?.status ?? job?.status ?? 'draft',
-    skills: initialValues?.skills ?? job?.skills?.join(', ') ?? '',
+    required_skills: initialValues?.required_skills ?? job?.required_skills?.join(', ') ?? '',
+    preferred_skills: initialValues?.preferred_skills ?? job?.preferred_skills?.join(', ') ?? '',
+    minimum_years_experience: initialValues?.minimum_years_experience ?? job?.minimum_years_experience?.toString() ?? '',
+    education_level: initialValues?.education_level ?? job?.education_level ?? '',
   })
   const [errors, setErrors] = useState<FormErrors>({})
   const [apiError, setApiError] = useState<string | null>(null)
@@ -110,7 +116,12 @@ export function JobForm({
 
     setSubmitting(true)
     try {
-      const skills = parseSkills(values.skills)
+      const requiredSkills = parseSkills(values.required_skills)
+      const preferredSkills = parseSkills(values.preferred_skills)
+      const minimumYearsExperience = values.minimum_years_experience
+        ? parseFloat(values.minimum_years_experience)
+        : null
+      const educationLevel = values.education_level.trim() || null
 
       if (isEditing && job) {
         const updated = await apiClient.patch<Job, Job>(`/jobs/mine/${job.id}`, {
@@ -119,7 +130,10 @@ export function JobForm({
           job_type: values.job_type,
           workplace_type: values.workplace_type,
           location: values.location.trim() || null,
-          skills,
+          required_skills: requiredSkills,
+          preferred_skills: preferredSkills,
+          minimum_years_experience: minimumYearsExperience,
+          education_level: educationLevel,
         })
         setSuccess(true)
         onSaved?.(updated)
@@ -136,7 +150,10 @@ export function JobForm({
           workplace_type: values.workplace_type,
           location: values.location.trim() || null,
           status: values.status,
-          skills,
+          required_skills: requiredSkills,
+          preferred_skills: preferredSkills,
+          minimum_years_experience: minimumYearsExperience,
+          education_level: educationLevel,
         },
         { timeout: 45000 }
       )
@@ -237,12 +254,42 @@ export function JobForm({
         ) : null}
 
         <Input
-          name="skills"
-          label="Kỹ năng yêu cầu"
+          name="required_skills"
+          label="Kỹ năng bắt buộc"
           placeholder="Python, FastAPI, SQL, Docker"
-          value={values.skills}
-          onChange={(e) => updateField('skills', e.target.value)}
-          helperText="Nhập các kỹ năng cách nhau bằng dấu phẩy"
+          value={values.required_skills}
+          onChange={(e) => updateField('required_skills', e.target.value)}
+          helperText="Nhập các kỹ năng bắt buộc cách nhau bằng dấu phẩy"
+        />
+
+        <Input
+          name="preferred_skills"
+          label="Kỹ năng ưu tiên"
+          placeholder="React, TypeScript, AWS"
+          value={values.preferred_skills}
+          onChange={(e) => updateField('preferred_skills', e.target.value)}
+          helperText="Nhập các kỹ năng ưu tiên (tùy chọn), cách nhau bằng dấu phẩy"
+        />
+
+        <Input
+          name="minimum_years_experience"
+          label="Kinh nghiệm tối thiểu (năm)"
+          placeholder="3"
+          value={values.minimum_years_experience}
+          onChange={(e) => updateField('minimum_years_experience', e.target.value)}
+          type="number"
+          min="0"
+          step="0.5"
+          helperText="Số năm kinh nghiệm tối thiểu (tùy chọn)"
+        />
+
+        <Input
+          name="education_level"
+          label="Yêu cầu học vấn"
+          placeholder="Bachelor, Master, etc."
+          value={values.education_level}
+          onChange={(e) => updateField('education_level', e.target.value)}
+          helperText="Yêu cầu trình độ học vấn (tùy chọn)"
         />
       </div>
 

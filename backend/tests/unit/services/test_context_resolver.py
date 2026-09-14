@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import uuid
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -14,12 +13,174 @@ from app.services.context_resolver import ContextResolver
 from sqlalchemy import select
 
 
+class MockScalars:
+    """Mock for result.scalars().all()"""
+    def __init__(self, items):
+        self._items = items
+
+    def all(self):
+        return self._items
+
+
+def make_mock_result(items):
+    """Create a mock result for sync pattern: result.all() and result.scalars().all()"""
+    class MockResult:
+        def __init__(self, items):
+            self._items = items
+
+        def all(self):
+            return self._items
+
+        def scalars(self):
+            class MockScalars:
+                def __init__(self, items):
+                    self._items = items
+                def all(self):
+                    return self._items
+            return type('MockScalars', (), {'_items': self._items, 'all': lambda self: self._items})()
+
+    return MockResult(items)
+
+
 def make_user(role: UserRole, user_id: uuid.UUID | None = None):
     """Create a mock User object with the specified role."""
     user = MagicMock(spec=User)
     user.role = role
     user.id = user_id or uuid.uuid4()
     return user
+
+
+def make_resume(candidate_id: uuid.UUID, parsed_data: dict | None = None, is_primary: bool = True, is_deleted: bool = False):
+    """Create a mock Resume object."""
+    resume = MagicMock(spec=Resume)
+    resume.candidate_id = candidate_id
+    resume.parsed_data = parsed_data or {"skills": ["Python"], "full_name": "Test User"}
+    resume.is_primary = is_primary
+    resume.is_deleted = is_deleted
+    return resume
+
+
+def make_job(job_id: uuid.UUID, company_id: uuid.UUID, skills: list | None = None, is_deleted: bool = False, status: str = "PUBLISHED", location: str = "Hanoi", job_type=None, workplace_type=None):
+    """Create a mock Job object."""
+    from app.domain.enums import JobType, WorkplaceType
+    job = MagicMock(spec=Job)
+    job.id = job_id
+    job.company_id = company_id
+    job.title = "Test Job"
+    job.description = "Test job description"
+    job.is_deleted = is_deleted
+    job.status = status
+    job.location = location
+    job.city = location
+    job.job_type = job_type or JobType.FULL_TIME
+    job.workplace_type = workplace_type or WorkplaceType.ON_SITE
+    job.skills = skills or []
+    job.required_skills = skills or []
+    job.preferred_skills = []
+    job.minimum_years_experience = None
+    job.education_level = None
+    return job
+
+
+def make_candidate_profile(candidate_id: uuid.UUID, user_id: uuid.UUID, is_deleted: bool = False):
+    """Create a mock CandidateProfile object."""
+    profile = MagicMock(spec=CandidateProfile)
+    profile.id = candidate_id
+    profile.user_id = user_id
+    profile.full_name = "Test Candidate"
+    profile.title = "Software Engineer"
+    profile.is_deleted = is_deleted
+    return profile
+
+
+def make_mock_session():
+    """Create a mock async session with a working execute method."""
+    session = MagicMock()
+
+    async def mock_execute(stmt):
+        return make_mock_result([])
+
+    session.execute = AsyncMock(side_effect=lambda *args, **kwargs: mock_execute_result([]))
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    session.close = AsyncMock()
+    return session
+
+
+async def mock_execute_result(items):
+    """Async function that returns a mock result."""
+    return make_mock_result(items)
+
+
+def make_mock_result(items):
+    """Create a mock result for sync pattern: result.all() and result.scalars().all()"""
+    class MockResult:
+        def __init__(self, items):
+            self._items = items
+
+        def all(self):
+            return self._items
+
+        def scalars(self):
+            class MockScalars:
+                def __init__(self, items):
+                    self._items = items
+                def all(self):
+                    return self._items
+            return type('MockScalars', (), {'_items': self._items, 'all': lambda self: self._items})()
+
+    return MockResult(items)
+
+
+def make_user(role: UserRole, user_id: uuid.UUID | None = None):
+    """Create a mock User object with the specified role."""
+    user = MagicMock(spec=User)
+    user.role = role
+    user.id = user_id or uuid.uuid4()
+    return user
+
+
+def make_resume(candidate_id: uuid.UUID, parsed_data: dict | None = None, is_primary: bool = True, is_deleted: bool = False):
+    """Create a mock Resume object."""
+    resume = MagicMock(spec=Resume)
+    resume.candidate_id = candidate_id
+    resume.parsed_data = parsed_data or {"skills": ["Python"], "full_name": "Test User"}
+    resume.is_primary = is_primary
+    resume.is_deleted = is_deleted
+    return resume
+
+
+def make_job(job_id: uuid.UUID, company_id: uuid.UUID, skills: list | None = None, is_deleted: bool = False, status: str = "PUBLISHED", location: str = "Hanoi", job_type=None, workplace_type=None):
+    """Create a mock Job object."""
+    from app.domain.enums import JobType, WorkplaceType
+    job = MagicMock(spec=Job)
+    job.id = job_id
+    job.company_id = company_id
+    job.title = "Test Job"
+    job.description = "Test job description"
+    job.is_deleted = is_deleted
+    job.status = status
+    job.location = location
+    job.city = location
+    job.job_type = job_type or JobType.FULL_TIME
+    job.workplace_type = workplace_type or WorkplaceType.ON_SITE
+    job.skills = skills or []
+    job.required_skills = skills or []
+    job.preferred_skills = []
+    job.minimum_years_experience = None
+    job.education_level = None
+    return job
+
+
+def make_candidate_profile(candidate_id: uuid.UUID, user_id: uuid.UUID, is_deleted: bool = False):
+    """Create a mock CandidateProfile object."""
+    profile = MagicMock(spec=CandidateProfile)
+    profile.id = candidate_id
+    profile.user_id = user_id
+    profile.full_name = "Test Candidate"
+    profile.title = "Software Engineer"
+    profile.is_deleted = is_deleted
+    return profile
 
 
 def make_mock_session():
@@ -70,44 +231,6 @@ def make_mock_result_async(items):
     return result
 
 
-def make_resume(candidate_id: uuid.UUID, parsed_data: dict | None = None, is_primary: bool = True, is_deleted: bool = False):
-    """Create a mock Resume object."""
-    resume = MagicMock(spec=Resume)
-    resume.candidate_id = candidate_id
-    resume.parsed_data = parsed_data or {"skills": ["Python"], "full_name": "Test User"}
-    resume.is_primary = is_primary
-    resume.is_deleted = is_deleted
-    return resume
-
-
-def make_job(job_id: uuid.UUID, company_id: uuid.UUID, skills: list | None = None, is_deleted: bool = False, status: str = "PUBLISHED", location: str = "Hanoi", job_type=None, workplace_type=None):
-    """Create a mock Job object."""
-    from app.domain.enums import JobType, WorkplaceType
-    job = MagicMock(spec=Job)
-    job.id = job_id
-    job.company_id = company_id
-    job.title = "Test Job"
-    job.description = "Test job description"
-    job.is_deleted = is_deleted
-    job.status = status
-    job.location = location
-    job.city = location  # Using location as city as well
-    job.job_type = job_type or JobType.FULL_TIME
-    job.workplace_type = workplace_type or WorkplaceType.ON_SITE
-    job.skills = skills or []
-    return job
-
-
-def make_candidate_profile(candidate_id: uuid.UUID, user_id: uuid.UUID, is_deleted: bool = False):
-    """Create a mock CandidateProfile object."""
-    profile = MagicMock(spec=CandidateProfile)
-    profile.id = candidate_id
-    profile.user_id = user_id
-    profile.full_name = "Test Candidate"
-    profile.title = "Software Engineer"
-    profile.is_deleted = is_deleted
-    return profile
-
 
 class TestContextResolverResolveResumes:
     @pytest.mark.asyncio
@@ -118,7 +241,7 @@ class TestContextResolverResolveResumes:
         candidate_id = uuid.uuid4()
         resume = make_resume(candidate_id)
 
-        session.execute.return_value = make_mock_result([resume])
+        session.execute.return_value = make_mock_result_async([resume])
 
         admin_user = make_user(UserRole.ADMIN)
         result = await resolver.resolve_resumes([candidate_id], admin_user)
@@ -148,7 +271,7 @@ class TestContextResolverResolveResumes:
         resolver._get_candidate_profile = AsyncMock(return_value=candidate_profile)
 
         # Mock session.execute to return only the authorized resume
-        session.execute.return_value = make_mock_result([resume])
+        session.execute.return_value = make_mock_result_async([resume])
 
         result = await resolver.resolve_resumes([candidate_id, other_candidate_id], candidate_user)
 
@@ -175,7 +298,7 @@ class TestContextResolverResolveResumes:
 
         resolver._get_candidate_profile = AsyncMock(return_value=candidate_profile)
 
-        session.execute.return_value = make_mock_result([resume])
+        session.execute.return_value = make_mock_result_async([resume])
 
         await resolver.resolve_resumes([candidate_id], candidate_user)
 
@@ -200,7 +323,7 @@ class TestContextResolverResolveResumes:
 
         resume = make_resume(candidate_id)
 
-        session.execute.return_value = make_mock_result([resume])
+        session.execute.return_value = make_mock_result_async([resume])
 
         candidate_user = make_user(UserRole.CANDIDATE, user_id)
         candidate_profile = MagicMock(spec=CandidateProfile)
@@ -315,7 +438,7 @@ class TestContextResolverResolveCandidateProfiles:
         user_id = uuid.uuid4()
         profile = make_candidate_profile(candidate_id, user_id)
 
-        session.execute.return_value = make_mock_result([profile])
+        session.execute.return_value = make_mock_result_async([profile])
 
         admin_user = make_user(UserRole.ADMIN)
         result = await resolver.resolve_candidate_profiles([candidate_id], admin_user)
@@ -345,7 +468,7 @@ class TestContextResolverResolveCandidateProfiles:
         resolver._get_candidate_profile = AsyncMock(return_value=candidate_profile)
 
         # Mock session to return only the authorized profile
-        session.execute.return_value = make_mock_result([profile])
+        session.execute.return_value = make_mock_result_async([profile])
 
         result = await resolver.resolve_candidate_profiles([candidate_id, other_candidate_id], candidate_user)
 
@@ -372,13 +495,14 @@ class TestContextResolverResolveCandidateProfiles:
 
         resolver._get_candidate_profile = AsyncMock(return_value=candidate_profile)
 
-        session.execute.return_value = make_mock_result([profile])
+        session.execute.return_value = make_mock_result_async([profile])
 
         await resolver.resolve_candidate_profiles([candidate_id], candidate_user)
 
         # Verify the query was executed with candidate_profile.id, NOT user_id
         assert session.execute.call_count == 1
         executed_stmt = session.execute.call_args[0][0]
+        # Compile the statement to check the WHERE clause
         compiled = executed_stmt.compile(compile_kwargs={"literal_binds": True})
         sql_str = str(compiled)
         # The filter should use candidate_id (CandidateProfile.id), not user_id (User.id)
@@ -396,7 +520,7 @@ class TestContextResolverBatching:
         candidate_ids = [uuid.uuid4() for _ in range(5)]
         resumes = [make_resume(cid) for cid in candidate_ids]
 
-        session.execute.return_value = make_mock_result(resumes)
+        session.execute.return_value = make_mock_result_async(resumes)
 
         admin_user = make_user(UserRole.ADMIN)
         result = await resolver.resolve_resumes(candidate_ids, admin_user)
@@ -567,11 +691,12 @@ class TestContextResolverRequireApplication:
         resolver._get_recruiter_company_id = AsyncMock(return_value=company_id)
 
         # Mock Application query to return the candidate (has application)
-        # Application query uses result.all() directly (scalar select, synchronous)
         application_result = MagicMock()
-        application_result.all = MagicMock(return_value=[(candidate_id,)])
+        application_scalars = MagicMock()
+        application_scalars.all = MagicMock(return_value=[(candidate_id,)])
+        application_result.scalars = MagicMock(return_value=application_scalars)
 
-        # Mock profile query (uses result.scalars().all())
+        # Mock profile query
         profile = make_candidate_profile(candidate_id, uuid.uuid4())
         profile_result = MagicMock()
         profile_scalars = MagicMock()
@@ -579,7 +704,15 @@ class TestContextResolverRequireApplication:
         profile_result.scalars = MagicMock(return_value=profile_scalars)
 
         # Execute will be called twice: once for Application check, once for profile query
-        session.execute.side_effect = [application_result, profile_result]
+        # Use a simple side_effect with a list that yields the two results
+        call_count = [0]
+        async def mock_execute_side_effect(*args, **kwargs):
+            if call_count[0] == 0:
+                call_count[0] += 1
+                return application_result
+            return profile_result
+
+        session.execute.side_effect = mock_execute_side_effect
 
         recruiter_user = make_user(UserRole.RECRUITER, recruiter_user_id)
 
@@ -636,18 +769,26 @@ class TestContextResolverRequireApplication:
         resolver._get_recruiter_company_id = AsyncMock(return_value=company_id)
 
         # Mock Application query returning the candidate (has application)
-        # Application query uses result.all() directly (scalar select, synchronous)
         application_result = MagicMock()
-        application_result.all = MagicMock(return_value=[(candidate_id,)])
+        application_scalars = MagicMock()
+        application_scalars.all = MagicMock(return_value=[(candidate_id,)])
+        application_result.scalars = MagicMock(return_value=application_scalars)
 
-        # Mock resume query (uses result.scalars().all())
+        # Mock resume query
         resume = make_resume(candidate_id)
         resume_result = MagicMock()
         resume_scalars = MagicMock()
         resume_scalars.all = MagicMock(return_value=[resume])
         resume_result.scalars = MagicMock(return_value=resume_scalars)
 
-        session.execute.side_effect = [application_result, resume_result]
+        call_count = [0]
+        async def mock_execute_side_effect(*args, **kwargs):
+            if call_count[0] == 0:
+                call_count[0] += 1
+                return application_result
+            return resume_result
+
+        session.execute.side_effect = mock_execute_side_effect
 
         recruiter_user = make_user(UserRole.RECRUITER, recruiter_user_id)
 

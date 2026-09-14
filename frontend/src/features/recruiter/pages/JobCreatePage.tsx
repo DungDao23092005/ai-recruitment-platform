@@ -205,7 +205,11 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
                         appliedParsed.summary ??
                         appliedParsed.title ??
                         '',
-                      skills: appliedParsed.required_skills?.join(', ') ?? '',
+                      required_skills: appliedParsed.required_skills?.join(', ') ?? '',
+                      preferred_skills: appliedParsed.preferred_skills?.join(', ') ?? '',
+                      minimum_years_experience:
+                        appliedParsed.minimum_years_experience?.toString() ?? '',
+                      education_level: appliedParsed.education_level ?? '',
                     }
                   : undefined
               }

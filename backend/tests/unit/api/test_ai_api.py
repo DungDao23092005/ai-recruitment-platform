@@ -62,6 +62,10 @@ def _make_db_job() -> MagicMock:
     job.is_deleted = False
     job.company = SimpleNamespace(id=KNOWN_COMPANY_ID, name="TechNova AI")
     job.skills = []
+    job.required_skills = []
+    job.preferred_skills = []
+    job.minimum_years_experience = None
+    job.education_level = None
     return job
 
 

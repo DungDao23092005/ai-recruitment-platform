@@ -15,6 +15,10 @@ export interface Job {
   workplace_type: WorkplaceType
   location: string
   skills: string[]
+  required_skills: string[]
+  preferred_skills: string[]
+  minimum_years_experience: number | null
+  education_level: string | null
   created_at: string
   updated_at: string
 }

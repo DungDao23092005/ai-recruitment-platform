@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import EntityNotFoundException, InvalidTransitionException
 from app.domain.enums import JobStatus, UserRole
-from app.models import Company, Job, User
+from app.models import Company, Job, JobSkill, Skill, User
 from app.repositories import CompanyRepository, JobRepository
 from app.schemas.job import JobCreate, JobUpdate
 from app.services.user_service import UserService
@@ -45,6 +46,12 @@ class JobService:
         if company is None:
             raise EntityNotFoundException(f"Company {data.company_id} not found")
 
+        # Handle backward compatibility: if skills is provided but required_skills is not,
+        # use skills as required_skills
+        required_skills = data.required_skills
+        if required_skills is None:
+            required_skills = data.skills or []
+
         job = Job(
             company_id=data.company_id,
             title=data.title,
@@ -53,11 +60,13 @@ class JobService:
             job_type=data.job_type,
             workplace_type=data.workplace_type,
             location=data.location or "",
+            minimum_years_experience=data.minimum_years_experience,
+            education_level=data.education_level,
         )
         self.session.add(job)
         try:
             await self.session.flush()  # Get the job ID before adding skills
-            await self._attach_skills(job, data.skills)
+            await self._attach_skills(job, required_skills, data.preferred_skills)
             await self._reindex_job(job)
             await self.session.commit()
             await self.session.refresh(job)
@@ -126,11 +135,33 @@ class JobService:
         if data.location is not None and data.location.strip() != job.location:
             job.location = data.location.strip()
             has_changes = True
-        if not has_changes and data.skills is None:
+        if "minimum_years_experience" in data.model_fields_set:
+            if data.minimum_years_experience != job.minimum_years_experience:
+                job.minimum_years_experience = data.minimum_years_experience
+                has_changes = True
+        if "education_level" in data.model_fields_set:
+            if data.education_level != job.education_level:
+                job.education_level = data.education_level
+                has_changes = True
+
+        # Handle skills update - check both required_skills and preferred_skills
+        skills_changed = (
+            "required_skills" in data.model_fields_set
+            or "preferred_skills" in data.model_fields_set
+            or "skills" in data.model_fields_set
+        )
+
+        if not has_changes and not skills_changed:
             return job
+
         try:
-            if data.skills is not None:
-                await self._attach_skills(job, data.skills)
+            if skills_changed:
+                # Handle backward compatibility: if skills is provided but required_skills is not,
+                # use skills as required_skills
+                required_skills = data.required_skills
+                if required_skills is None:
+                    required_skills = data.skills
+                await self._attach_skills(job, required_skills, data.preferred_skills)
             if has_changes:
                 await self._reindex_job(job)
             await self._commit_and_refresh(job)
@@ -160,11 +191,23 @@ class JobService:
 
     @staticmethod
     def _canonical_job_text(job: Job) -> str:
-        return (
-            f"Job Title: {job.title}\n"
-            f"Description: {job.description}\n"
-            f"Location: {job.location}"
-        )
+        parts = [
+            f"Job Title: {job.title}",
+            f"Description: {job.description}",
+            f"Location: {job.location}",
+        ]
+        if job.minimum_years_experience is not None:
+            parts.append(f"Minimum Experience: {job.minimum_years_experience} years")
+        if job.education_level:
+            parts.append(f"Education Level: {job.education_level}")
+        # Include required and preferred skills
+        required_skills = [skill.name for skill in job.required_skills] if job.required_skills else []
+        preferred_skills = [skill.name for skill in job.preferred_skills] if job.preferred_skills else []
+        if required_skills:
+            parts.append(f"Required Skills: {', '.join(required_skills)}")
+        if preferred_skills:
+            parts.append(f"Preferred Skills: {', '.join(preferred_skills)}")
+        return "\n".join(parts)
 
     async def _reindex_job(self, job: Job) -> None:
         text = self._canonical_job_text(job)
@@ -172,6 +215,8 @@ class JobService:
         # Explicitly load skills relationship to avoid implicit lazy loading
         skills = await job.awaitable_attrs.skills
         skills_list = [skill.name for skill in skills] if skills else []
+        required_skills = [skill.name for skill in job.required_skills] if job.required_skills else []
+        preferred_skills = [skill.name for skill in job.preferred_skills] if job.preferred_skills else []
         await self.vector_repository.upsert_job_vector(
             job_id=job.id,
             vector=vector,
@@ -270,16 +315,24 @@ class JobService:
             await self.session.rollback()
             raise
 
-    async def _attach_skills(self, job: Job, skill_names: list[str]) -> None:
-        """Attach skills to a job, creating new skills if they don't exist.
+    async def _attach_skills(
+        self,
+        job: Job,
+        required_skill_names: list[str] | None,
+        preferred_skill_names: list[str] | None,
+    ) -> None:
+        """Attach required and preferred skills to a job.
 
         Deduplicates skill names case-insensitively before attaching to prevent
         duplicate Skill relationships and SQL Server IntegrityError.
 
         Validates skill name length (max 100 chars) to prevent SQL truncation errors.
+
+        If the same skill appears in both required and preferred lists, it will be
+        persisted as required (is_mandatory=True) to prioritize required skills.
         """
         from app.core.exceptions import ValidationError
-        from app.models import Skill
+        from app.models import JobSkill, Skill
         from sqlalchemy import select
 
         MAX_SKILL_NAME_LENGTH = 100
@@ -287,14 +340,23 @@ class JobService:
         # Explicitly load skills relationship to avoid implicit lazy loading
         await job.awaitable_attrs.skills
 
-        # Clear existing skills
+        # Clear existing job skills
         job.skills.clear()
+        # Also clear the job_skills collection to remove old JobSkill records
+        job.job_skills.clear()
 
-        # Deduplicate skills case-insensitively, preserving first occurrence's canonical spelling
+        # Process required skills first (is_mandatory=True)
+        required_skills = required_skill_names or []
+        preferred_skills = preferred_skill_names or []
+
+        # Combine all skill names for deduplication across both lists
+        # Required skills take priority if the same skill appears in both
+        all_skill_names: list[tuple[str, bool]] = []  # (skill_name, is_mandatory)
+
         seen: set[str] = set()
-        unique_skill_names: list[str] = []
 
-        for skill_name in skill_names:
+        # Process required skills first
+        for skill_name in required_skills:
             stripped = skill_name.strip()
             if not stripped:
                 continue
@@ -306,9 +368,25 @@ class JobService:
             if key in seen:
                 continue
             seen.add(key)
-            unique_skill_names.append(stripped)
+            all_skill_names.append((stripped, True))  # is_mandatory=True
 
-        for skill_name in unique_skill_names:
+        # Process preferred skills
+        for skill_name in preferred_skills:
+            stripped = skill_name.strip()
+            if not stripped:
+                continue
+            if len(stripped) > MAX_SKILL_NAME_LENGTH:
+                raise ValidationError(
+                    f"Skill name exceeds maximum length of {MAX_SKILL_NAME_LENGTH} characters: {stripped!r}"
+                )
+            key = stripped.casefold()
+            if key in seen:
+                # If already in required skills, skip (required takes priority)
+                continue
+            seen.add(key)
+            all_skill_names.append((stripped, False))  # is_mandatory=False
+
+        for skill_name, is_mandatory in all_skill_names:
             # Find existing skill (case-insensitive)
             stmt = select(Skill).where(Skill.name.ilike(skill_name))
             result = await self.session.execute(stmt)
@@ -318,4 +396,7 @@ class JobService:
                 skill = Skill(name=skill_name)
                 self.session.add(skill)
                 await self.session.flush()
-            job.skills.append(skill)
+
+            # Create JobSkill association with is_mandatory flag
+            job_skill = JobSkill(job_id=job.id, skill_id=skill.id, is_mandatory=is_mandatory)
+            self.session.add(job_skill)

@@ -90,7 +90,10 @@ describe('JobForm', () => {
           workplace_type: 'remote',
           location: null,
           status: 'draft',
-          skills: [],
+          required_skills: [],
+          preferred_skills: [],
+          minimum_years_experience: null,
+          education_level: null,
         },
         { timeout: 45000 }
       )
@@ -214,7 +217,10 @@ describe('JobForm', () => {
         job_type: 'full_time',
         workplace_type: 'remote',
         location: 'Ho Chi Minh City',
-        skills: [],
+        required_skills: [],
+        preferred_skills: [],
+        minimum_years_experience: null,
+        education_level: null,
       })
       expect(
         screen.getByText('Cập nhật tin tuyển dụng thành công.'),
