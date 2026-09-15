@@ -210,11 +210,23 @@ class JobService:
         return "\n".join(parts)
 
     async def _reindex_job(self, job: Job) -> None:
+        # Ensure any pending JobSkill changes are flushed so viewonly relationships see them
+        await self.session.flush()
+        # Force refresh the skill relationships to get fresh data from DB
+        # This is critical after _attach_skills() modifies JobSkill records
+        await self.session.refresh(
+            job,
+            attribute_names=[
+                "skills",
+                "required_skills",
+                "preferred_skills",
+            ],
+        )
+
         text = self._canonical_job_text(job)
         vector = await self.embedding_service.embed_text(text)
-        # Explicitly load skills relationship to avoid implicit lazy loading
-        skills = await job.awaitable_attrs.skills
-        skills_list = [skill.name for skill in skills] if skills else []
+        # Skills already loaded above
+        skills_list = [skill.name for skill in job.skills] if job.skills else []
         required_skills = [skill.name for skill in job.required_skills] if job.required_skills else []
         preferred_skills = [skill.name for skill in job.preferred_skills] if job.preferred_skills else []
         await self.vector_repository.upsert_job_vector(
@@ -337,8 +349,9 @@ class JobService:
 
         MAX_SKILL_NAME_LENGTH = 100
 
-        # Explicitly load skills relationship to avoid implicit lazy loading
+        # Explicitly load relationships to avoid implicit lazy loading in AsyncSession
         await job.awaitable_attrs.skills
+        await job.awaitable_attrs.job_skills
 
         # Clear existing job skills
         job.skills.clear()

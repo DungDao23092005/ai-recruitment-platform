@@ -51,8 +51,16 @@ def make_job() -> Job:
         job_type="full_time",
         workplace_type="remote",
         location="",
+        minimum_years_experience=None,
+        education_level=None,
     )
-    job.skills = [Skill(name="Python"), Skill(name="Docker")]
+    skill_python = Skill(name="Python")
+    skill_docker = Skill(name="Docker")
+    # Set skills for backward compatibility
+    job.skills = [skill_python, skill_docker]
+    # Set required_skills and preferred_skills for new structured criteria
+    job.required_skills = [skill_python, skill_docker]
+    job.preferred_skills = []
     return job
 
 

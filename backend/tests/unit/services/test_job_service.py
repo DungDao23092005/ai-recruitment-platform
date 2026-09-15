@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 
@@ -273,7 +273,8 @@ class TestCreateJob:
         assert job.location == "Ho Chi Minh"
         session.add.assert_called_once_with(job)
         session.commit.assert_awaited_once()
-        session.refresh.assert_awaited_once_with(job)
+        # session.refresh is called twice: once in _reindex_job, once in create_job
+        assert session.refresh.await_count == 2
 
     def test_defaults_location_to_empty_string(self):
         session = make_session()
@@ -631,7 +632,8 @@ class TestUpdateJob:
             created_at=job.created_at,
         )
         session.commit.assert_awaited_once()
-        session.refresh.assert_awaited_once_with(job)
+        # session.refresh is called twice: once in _reindex_job, once in update_job
+        assert session.refresh.await_count == 2
 
     def test_ignores_status_field(self):
         session = make_session()
@@ -834,15 +836,18 @@ class TestMissingGreenletRegression:
         skill1 = Skill(name="Python")
         skill2 = Skill(name="FastAPI")
 
-        # Create proper awaitable mock for awaitable_attrs.skills using async function
-        async def mock_skills():
-            return [skill1, skill2]
+        job = make_job(skills=[skill1, skill2])
+        # Set the skills directly on the job object for the test
+        # The _reindex_job method loads skills via awaitable_attrs then reads job.skills
+        job.skills = [skill1, skill2]
+        # Mock awaitable_attrs to return the skills for the async load
+        mock_awaitable = MagicMock()
+        mock_awaitable.skills = AsyncMock(return_value=[skill1, skill2])
+        mock_awaitable.required_skills = AsyncMock(return_value=[skill1])
+        mock_awaitable.preferred_skills = AsyncMock(return_value=[skill2])
+        job.__dict__['awaitable_attrs'] = mock_awaitable
 
-        with patch.object(Job, 'awaitable_attrs', new_callable=MagicMock) as mock_awaitable:
-            mock_awaitable.skills = mock_skills()
-            job = make_job(skills=[skill1, skill2])
-
-            await service._reindex_job(job)
+        await service._reindex_job(job)
 
         embedding.embed_text.assert_awaited_once()
         embedded_text = embedding.embed_text.call_args.args[0]
@@ -864,14 +869,16 @@ class TestMissingGreenletRegression:
         service = make_ai_service(make_session(), embedding, vector_repository)
 
         job = make_job(skills=[])
+        # Set empty skills
+        job.skills = []
+        # Mock awaitable_attrs to return empty for the async load
+        mock_awaitable = MagicMock()
+        mock_awaitable.skills = AsyncMock(return_value=[])
+        mock_awaitable.required_skills = AsyncMock(return_value=[])
+        mock_awaitable.preferred_skills = AsyncMock(return_value=[])
+        job.__dict__['awaitable_attrs'] = mock_awaitable
 
-        # Create proper awaitable mock that returns empty list
-        async def mock_empty_skills():
-            return []
-
-        with patch.object(Job, 'awaitable_attrs', new_callable=MagicMock) as mock_awaitable:
-            mock_awaitable.skills = mock_empty_skills()
-            await service._reindex_job(job)
+        await service._reindex_job(job)
 
         embedding.embed_text.assert_awaited_once()
         vector_repository.upsert_job_vector.assert_awaited_once()
@@ -887,17 +894,18 @@ class TestMissingGreenletRegression:
 
         skill = Skill(name="Python")
         job = make_job(status=JobStatus.DRAFT, skills=[skill])
+        job.skills = [skill]
+        # Mock awaitable_attrs for the async load
+        mock_awaitable = MagicMock()
+        mock_awaitable.skills = AsyncMock(return_value=[skill])
+        mock_awaitable.required_skills = AsyncMock(return_value=[skill])
+        mock_awaitable.preferred_skills = AsyncMock(return_value=[])
+        job.__dict__['awaitable_attrs'] = mock_awaitable
 
-        # Create proper awaitable mock for skills
-        async def mock_skills():
-            return [skill]
+        service.get_recruiter_job_by_id = AsyncMock(return_value=job)
 
-        with patch.object(Job, 'awaitable_attrs', new_callable=MagicMock) as mock_awaitable:
-            mock_awaitable.skills = mock_skills()
-            service.get_recruiter_job_by_id = AsyncMock(return_value=job)
-
-            data = JobUpdate(title="Updated Title")
-            result = await service.update_job(MagicMock(), job.id, JobUpdate(title="Updated Title"))
+        data = JobUpdate(title="Updated Title")
+        result = await service.update_job(MagicMock(), job.id, JobUpdate(title="Updated Title"))
 
         assert result is job
         embedding.embed_text.assert_awaited_once()
@@ -912,17 +920,18 @@ class TestMissingGreenletRegression:
 
         skill = Skill(name="FastAPI")
         job = make_job(status=JobStatus.DRAFT, skills=[skill])
+        job.skills = [skill]
+        # Mock awaitable_attrs for the async load
+        mock_awaitable = MagicMock()
+        mock_awaitable.skills = AsyncMock(return_value=[skill])
+        mock_awaitable.required_skills = AsyncMock(return_value=[skill])
+        mock_awaitable.preferred_skills = AsyncMock(return_value=[])
+        job.__dict__['awaitable_attrs'] = mock_awaitable
 
-        # Create proper awaitable mock for skills
-        async def mock_skills():
-            return [skill]
+        service.get_recruiter_job_by_id = AsyncMock(return_value=job)
 
-        with patch.object(Job, 'awaitable_attrs', new_callable=MagicMock) as mock_awaitable:
-            mock_awaitable.skills = mock_skills()
-            service.get_recruiter_job_by_id = AsyncMock(return_value=job)
-
-            data = JobUpdate(title="Updated Title", description="New description")
-            result = await service.update_job(MagicMock(), job.id, data)
+        data = JobUpdate(title="Updated Title", description="New description")
+        result = await service.update_job(MagicMock(), job.id, data)
 
         assert result is job
         embedding.embed_text.assert_awaited_once()
@@ -943,14 +952,15 @@ class TestMissingGreenletRegression:
 
         skills = [Skill(name="Python"), Skill(name="FastAPI"), Skill(name="Docker")]
         job = make_job(skills=skills)
+        job.skills = skills
+        # Mock awaitable_attrs for the async load
+        mock_awaitable = MagicMock()
+        mock_awaitable.skills = AsyncMock(return_value=skills)
+        mock_awaitable.required_skills = AsyncMock(return_value=skills)
+        mock_awaitable.preferred_skills = AsyncMock(return_value=[])
+        job.__dict__['awaitable_attrs'] = mock_awaitable
 
-        # Create proper awaitable mock for skills
-        async def mock_skills():
-            return skills
-
-        with patch.object(Job, 'awaitable_attrs', new_callable=MagicMock) as mock_awaitable:
-            mock_awaitable.skills = mock_skills()
-            await service._reindex_job(job)
+        await service._reindex_job(job)
 
         call_kwargs = vector_repository.upsert_job_vector.call_args.kwargs
         assert set(call_kwargs["skills"]) == {"Python", "FastAPI", "Docker"}

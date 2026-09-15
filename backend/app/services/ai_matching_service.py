@@ -197,10 +197,24 @@ class AIMatchingService:
                         "not found in vector repository"
                     )
                 candidate_vector = retrieved["vector"]
-                skills = retrieved.get("payload", {}).get("skills", [])
-                parsed_resume = parsed_resume or ParsedResumeSchema(
-                    skills=skills
-                )
+                # Hydrate full resume from SQL (includes education, projects, experiences)
+                # instead of building minimal schema from Qdrant payload
+                if session is not None and actor_user is not None:
+                    resolver = self._get_resolver(session)
+                    resumes_dict = await resolver.resolve_resumes(
+                        [candidate_id], actor_user
+                    )
+                    if candidate_id in resumes_dict:
+                        parsed_resume = resumes_dict[candidate_id]
+                    else:
+                        # Fallback to minimal schema if hydration fails
+                        skills = retrieved.get("payload", {}).get("skills", [])
+                        parsed_resume = ParsedResumeSchema(skills=skills)
+                else:
+                    skills = retrieved.get("payload", {}).get("skills", [])
+                    parsed_resume = parsed_resume or ParsedResumeSchema(
+                        skills=skills
+                    )
 
         recommendations: list[JobMatchRecommendation] = []
 
