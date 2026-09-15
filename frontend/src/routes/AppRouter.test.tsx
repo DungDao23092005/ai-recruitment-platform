@@ -70,6 +70,7 @@ vi.mock('@/api/auth', () => ({
   login: vi.fn(),
   register: vi.fn(),
   getCurrentUser: vi.fn(),
+  getCandidateProfile: vi.fn(),
   createCandidateProfile: vi.fn(),
   createRecruiterProfile: vi.fn(),
 }))
@@ -136,6 +137,7 @@ vi.mock('@/api/notifications', () => ({
 }))
 
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
+const mockedGetCandidateProfile = vi.mocked(authApi.getCandidateProfile)
 const mockedGetJobs = vi.mocked(jobsApi.getJobs)
 const mockedGetJobById = vi.mocked(jobsApi.getJobById)
 const mockedGetMyJobById = vi.mocked(jobsApi.getMyJobById)
@@ -205,6 +207,13 @@ beforeEach(() => {
     total: 0,
     skip: 0,
     limit: 10,
+  })
+  mockedGetCandidateProfile.mockResolvedValue({
+    id: 'candidate-1',
+    user_id: 'user-1',
+    full_name: 'Jane Doe',
+    phone: null,
+    title: 'Software Engineer',
   })
   mockedGetAdminCompanies.mockResolvedValue({
     items: [],

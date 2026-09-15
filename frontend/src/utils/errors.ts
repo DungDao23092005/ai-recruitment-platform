@@ -18,6 +18,10 @@ function isResponseError(error: unknown): error is HttpResponseError {
   )
 }
 
+export function isNotFoundError(error: unknown): boolean {
+  return isResponseError(error) && error.response?.status === 404
+}
+
 export function getFriendlyErrorMessage(error: unknown): string {
   if (!isResponseError(error)) {
     return 'Không thể kết nối tới máy chủ. Vui lòng kiểm tra kết nối và thử lại.'

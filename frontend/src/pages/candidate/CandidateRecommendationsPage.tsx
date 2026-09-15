@@ -1,20 +1,22 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { FileUp, Sparkles } from 'lucide-react'
+import { FileUp, Sparkles, User } from 'lucide-react'
 import { getJobRecommendations, getMyResume } from '@/api/ai'
+import { getCandidateProfile } from '@/api/auth'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorBanner } from '@/components/ui/error-banner'
 import { EmptyState } from '@/components/ui/empty-state'
 import { JobRecommendationCard } from '@/features/ai/components/JobRecommendationCard'
-import { getFriendlyErrorMessage } from '@/utils/errors'
+import { getFriendlyErrorMessage, isNotFoundError } from '@/utils/errors'
 import type { JobMatchRecommendation, ParsedResume } from '@/types/ai'
 
 const DEFAULT_LIMIT = 10
 
 type PageState =
   | { kind: 'loading' }
+  | { kind: 'missing_profile' }
   | { kind: 'error'; message: string }
   | {
       kind: 'success'
@@ -26,27 +28,50 @@ type PageState =
 export function CandidateRecommendationsPage() {
   const [state, setState] = useState<PageState>({ kind: 'loading' })
 
-  const load = useCallback(() => {
+  const load = useCallback(async () => {
     setState({ kind: 'loading' })
 
-    Promise.all([getJobRecommendations(DEFAULT_LIMIT), getMyResume()])
-      .then(([result, resume]) => {
-        const sorted = [...result.recommendations].sort(
-          (a, b) => b.match_result.overall_score - a.match_result.overall_score,
-        )
-        setState({
-          kind: 'success',
-          recommendations: sorted,
-          hasCV: result.hasCV,
-          candidateResume: resume.parsed_data,
-        })
+    try {
+      await getCandidateProfile()
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        setState({ kind: 'missing_profile' })
+        return
+      }
+
+      setState({
+        kind: 'error',
+        message: getFriendlyErrorMessage(error),
       })
-      .catch((err) => {
-        setState({
-          kind: 'error',
-          message: getFriendlyErrorMessage(err),
-        })
+      return
+    }
+
+    try {
+      const [result, resume] = await Promise.all([
+        getJobRecommendations(DEFAULT_LIMIT),
+        getMyResume().catch((error) => {
+          if (isNotFoundError(error)) {
+            return null
+          }
+          throw error
+        }),
+      ])
+
+      const sorted = [...result.recommendations].sort(
+        (a, b) => b.match_result.overall_score - a.match_result.overall_score,
+      )
+      setState({
+        kind: 'success',
+        recommendations: sorted,
+        hasCV: result.hasCV,
+        candidateResume: resume?.parsed_data ?? null,
       })
+    } catch (error) {
+      setState({
+        kind: 'error',
+        message: getFriendlyErrorMessage(error),
+      })
+    }
   }, [])
 
   useEffect(() => {
@@ -69,6 +94,21 @@ export function CandidateRecommendationsPage() {
         </div>
       ) : null}
 
+      {state.kind === 'missing_profile' ? (
+        <EmptyState
+          icon={<User className="h-6 w-6" aria-hidden="true" />}
+          title="Hồ sơ ứng viên chưa được tạo"
+          description="Vui lòng tạo hồ sơ ứng viên trước khi xem AI gợi ý việc làm."
+        >
+          <Link to="/candidate/profile">
+            <Button>
+              <User className="h-4 w-4" aria-hidden="true" />
+              Tạo hồ sơ ứng viên
+            </Button>
+          </Link>
+        </EmptyState>
+      ) : null}
+
       {state.kind === 'error' ? (
         <ErrorBanner message={state.message} onRetry={load} />
       ) : null}
@@ -83,7 +123,7 @@ export function CandidateRecommendationsPage() {
             />
           ) : (
             <EmptyState
-              icon={<FileUp className="h-6 w-6" aria-hidden="true" />}
+              icon={<Sparkles className="h-6 w-6" aria-hidden="true" />}
               title="Chưa có CV"
               description="Bạn cần tải lên CV để AI có thể gợi ý việc làm phù hợp."
             >
@@ -97,14 +137,14 @@ export function CandidateRecommendationsPage() {
           )
         ) : (
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-{state.recommendations.map((recommendation) => (
-                <JobRecommendationCard
-                  key={recommendation.job_id}
-                  recommendation={recommendation}
-                  detailPath="/candidate/jobs"
-                  candidateResume={state.candidateResume}
-                />
-              ))}
+            {state.recommendations.map((recommendation) => (
+              <JobRecommendationCard
+                key={recommendation.job_id}
+                recommendation={recommendation}
+                detailPath="/candidate/jobs"
+                candidateResume={state.candidateResume}
+              />
+            ))}
           </div>
         )
       ) : null}

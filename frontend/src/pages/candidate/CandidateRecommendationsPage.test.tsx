@@ -4,7 +4,9 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { CandidateRecommendationsPage } from './CandidateRecommendationsPage'
 import * as aiApi from '@/api/ai'
+import * as authApi from '@/api/auth'
 import type { JobMatchRecommendation } from '@/types/ai'
+import type { CandidateProfileRead } from '@/types/auth'
 
 const mockRecommendations: JobMatchRecommendation[] = [
   {
@@ -49,6 +51,14 @@ const mockRecommendations: JobMatchRecommendation[] = [
   },
 ]
 
+const mockCandidateProfile: CandidateProfileRead = {
+  id: 'candidate-1',
+  user_id: 'user-1',
+  full_name: 'Jane Doe',
+  phone: null,
+  title: 'Software Engineer',
+}
+
 vi.mock('@/api/ai', () => ({
   getJobRecommendations: vi.fn(),
   getCandidateRecommendations: vi.fn(),
@@ -57,8 +67,13 @@ vi.mock('@/api/ai', () => ({
   getMyResume: vi.fn(),
 }))
 
+vi.mock('@/api/auth', () => ({
+  getCandidateProfile: vi.fn(),
+}))
+
 const mockedGetJobRecommendations = vi.mocked(aiApi.getJobRecommendations)
 const mockedGetMyResume = vi.mocked(aiApi.getMyResume)
+const mockedGetCandidateProfile = vi.mocked(authApi.getCandidateProfile)
 
 function renderPage() {
   return render(
@@ -69,6 +84,7 @@ function renderPage() {
           element={<CandidateRecommendationsPage />}
         />
         <Route path="/candidate/cv-upload" element={<div>CV Upload</div>} />
+        <Route path="/candidate/profile" element={<div>Profile</div>} />
       </Routes>
     </MemoryRouter>,
   )
@@ -81,6 +97,13 @@ beforeEach(() => {
 
 describe('CandidateRecommendationsPage', () => {
   it('calls getJobRecommendations on mount', async () => {
+    mockedGetCandidateProfile.mockResolvedValue({
+      id: 'candidate-1',
+      user_id: 'user-1',
+      full_name: 'Jane Doe',
+      phone: null,
+      title: 'Software Engineer',
+    })
     mockedGetJobRecommendations.mockResolvedValue({ recommendations: mockRecommendations, hasCV: true })
 
     renderPage()
@@ -92,6 +115,13 @@ describe('CandidateRecommendationsPage', () => {
 
   it('shows the loading state while fetching', async () => {
     let resolve!: (value: { recommendations: JobMatchRecommendation[]; hasCV: boolean }) => void
+    mockedGetCandidateProfile.mockResolvedValue({
+      id: 'candidate-1',
+      user_id: 'user-1',
+      full_name: 'Jane Doe',
+      phone: null,
+      title: 'Software Engineer',
+    })
     mockedGetJobRecommendations.mockReturnValue(
       new Promise((r) => {
         resolve = r
@@ -108,6 +138,13 @@ describe('CandidateRecommendationsPage', () => {
   })
 
   it('renders recommendation cards on success', async () => {
+    mockedGetCandidateProfile.mockResolvedValue({
+      id: 'candidate-1',
+      user_id: 'user-1',
+      full_name: 'Jane Doe',
+      phone: null,
+      title: 'Software Engineer',
+    })
     mockedGetJobRecommendations.mockResolvedValue({ recommendations: mockRecommendations, hasCV: true })
 
     renderPage()
@@ -121,6 +158,13 @@ describe('CandidateRecommendationsPage', () => {
   })
 
   it('sorts recommendations by score descending', async () => {
+    mockedGetCandidateProfile.mockResolvedValue({
+      id: 'candidate-1',
+      user_id: 'user-1',
+      full_name: 'Jane Doe',
+      phone: null,
+      title: 'Software Engineer',
+    })
     mockedGetJobRecommendations.mockResolvedValue({ recommendations: mockRecommendations, hasCV: true })
 
     renderPage()
@@ -134,6 +178,13 @@ describe('CandidateRecommendationsPage', () => {
   })
 
   it('links recommendation cards to the candidate job detail route', async () => {
+    mockedGetCandidateProfile.mockResolvedValue({
+      id: 'candidate-1',
+      user_id: 'user-1',
+      full_name: 'Jane Doe',
+      phone: null,
+      title: 'Software Engineer',
+    })
     mockedGetJobRecommendations.mockResolvedValue({ recommendations: mockRecommendations, hasCV: true })
 
     renderPage()
@@ -151,7 +202,14 @@ describe('CandidateRecommendationsPage', () => {
     expect(detailLinks[1]).toHaveAttribute('href', '/candidate/jobs/job-1')
   })
 
-  it('shows the empty state with a CV upload CTA', async () => {
+  it('shows the empty state with a CV upload CTA when hasCV is false', async () => {
+    mockedGetCandidateProfile.mockResolvedValue({
+      id: 'candidate-1',
+      user_id: 'user-1',
+      full_name: 'Jane Doe',
+      phone: null,
+      title: 'Software Engineer',
+    })
     mockedGetJobRecommendations.mockResolvedValue({ recommendations: [], hasCV: false })
 
     renderPage()
@@ -168,7 +226,133 @@ describe('CandidateRecommendationsPage', () => {
     expect(link).toHaveAttribute('href', '/candidate/cv-upload')
   })
 
-  it('shows a friendly error and retries', async () => {
+  it('shows missing profile state when candidate profile not found', async () => {
+    const error = new Error('Not Found')
+    Object.assign(error, {
+      response: { status: 404, data: { detail: 'Candidate profile not found' } },
+    })
+    mockedGetCandidateProfile.mockRejectedValue(error)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Hồ sơ ứng viên chưa được tạo'),
+      ).toBeInTheDocument()
+    })
+
+    // Should NOT call getJobRecommendations or getMyResume when profile is missing
+    expect(mockedGetJobRecommendations).not.toHaveBeenCalled()
+    expect(mockedGetMyResume).not.toHaveBeenCalled()
+
+    const link = screen.getByRole('link', { name: /Tạo hồ sơ ứng viên/i })
+    expect(link).toHaveAttribute('href', '/candidate/profile')
+  })
+
+  it('shows recommendations when profile exists but resume is missing (404)', async () => {
+    mockedGetCandidateProfile.mockResolvedValue({
+      id: 'candidate-1',
+      user_id: 'user-1',
+      full_name: 'Jane Doe',
+      phone: null,
+      title: 'Software Engineer',
+    })
+    mockedGetJobRecommendations.mockResolvedValue({ recommendations: mockRecommendations, hasCV: true })
+    const error = new Error('Not Found')
+    Object.assign(error, {
+      response: { status: 404, data: { detail: 'Resume not found' } },
+    })
+    mockedGetMyResume.mockRejectedValue(error)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+    })
+
+    // Should NOT show generic error state
+    expect(screen.queryByText(/Server error/i)).not.toBeInTheDocument()
+    // Should NOT show error banner
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('shows recommendations when profile and resume exist', async () => {
+    mockedGetCandidateProfile.mockResolvedValue({
+      id: 'candidate-1',
+      user_id: 'user-1',
+      full_name: 'Jane Doe',
+      phone: null,
+      title: 'Software Engineer',
+    })
+    mockedGetJobRecommendations.mockResolvedValue({ recommendations: mockRecommendations, hasCV: true })
+    mockedGetMyResume.mockResolvedValue({ parsed_data: { skills: ['React'] } })
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+    })
+  })
+
+  it('shows error banner when recommendation API returns 500', async () => {
+    mockedGetCandidateProfile.mockResolvedValue({
+      id: 'candidate-1',
+      user_id: 'user-1',
+      full_name: 'Jane Doe',
+      phone: null,
+      title: 'Software Engineer',
+    })
+    const error = new Error('Server Error')
+    Object.assign(error, {
+      response: { status: 500, data: { detail: 'Server error' } },
+    })
+    mockedGetJobRecommendations.mockRejectedValue(error)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Server error')).toBeInTheDocument()
+    })
+
+    // Should NOT be treated as missing profile
+    expect(screen.queryByText('Hồ sơ ứng viên chưa được tạo')).not.toBeInTheDocument()
+  })
+
+  it('shows error banner when resume API returns 500', async () => {
+    mockedGetCandidateProfile.mockResolvedValue({
+      id: 'candidate-1',
+      user_id: 'user-1',
+      full_name: 'Jane Doe',
+      phone: null,
+      title: 'Software Engineer',
+    })
+    mockedGetJobRecommendations.mockResolvedValue({ recommendations: mockRecommendations, hasCV: true })
+    const error = new Error('Server Error')
+    Object.assign(error, {
+      response: { status: 500, data: { detail: 'Resume server error' } },
+    })
+    mockedGetMyResume.mockRejectedValue(error)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Resume server error')).toBeInTheDocument()
+    })
+
+    // Should NOT be treated as missing profile
+    expect(screen.queryByText('Hồ sơ ứng viên chưa được tạo')).not.toBeInTheDocument()
+    // Should NOT treat resume 500 as missing CV
+    expect(screen.queryByText(/Chưa có CV/i)).not.toBeInTheDocument()
+  })
+
+  it('shows a friendly error and retries on 500', async () => {
+    mockedGetCandidateProfile.mockResolvedValue({
+      id: 'candidate-1',
+      user_id: 'user-1',
+      full_name: 'Jane Doe',
+      phone: null,
+      title: 'Software Engineer',
+    })
     const error = new Error('Bad Request')
     Object.assign(error, {
       response: { status: 500, data: { detail: 'Server error' } },
@@ -189,6 +373,42 @@ describe('CandidateRecommendationsPage', () => {
       expect(
         screen.getByText('Senior Frontend Engineer'),
       ).toBeInTheDocument()
+    })
+  })
+
+  it('requests stop after profile 404 - no recommendation or resume requests', async () => {
+    const error = new Error('Not Found')
+    Object.assign(error, {
+      response: { status: 404, data: { detail: 'Candidate profile not found' } },
+    })
+    mockedGetCandidateProfile.mockRejectedValue(error)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(mockedGetCandidateProfile).toHaveBeenCalledTimes(1)
+      expect(mockedGetJobRecommendations).not.toHaveBeenCalled()
+      expect(mockedGetMyResume).not.toHaveBeenCalled()
+    })
+  })
+
+  it('requests recommendation and resume after profile success', async () => {
+    mockedGetCandidateProfile.mockResolvedValue({
+      id: 'candidate-1',
+      user_id: 'user-1',
+      full_name: 'Jane Doe',
+      phone: null,
+      title: 'Software Engineer',
+    })
+    mockedGetJobRecommendations.mockResolvedValue({ recommendations: mockRecommendations, hasCV: true })
+    mockedGetMyResume.mockResolvedValue({ parsed_data: null })
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(mockedGetCandidateProfile).toHaveBeenCalledTimes(1)
+      expect(mockedGetJobRecommendations).toHaveBeenCalledTimes(1)
+      expect(mockedGetMyResume).toHaveBeenCalledTimes(1)
     })
   })
 })
