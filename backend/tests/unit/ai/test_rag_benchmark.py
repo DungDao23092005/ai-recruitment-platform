@@ -24,6 +24,8 @@ from app.services.rag_chat_service import (
     FactCheckResponse,
     ExhaustiveIntentResponse,
     QueryRewriteResponse,
+    ChatIntentResponse,
+    ChatIntent,
 )
 from app.schemas.ai_chat import (
     ChatMessage,
@@ -133,6 +135,10 @@ class MockLLMProvider:
     ) -> Any:
         self.call_count += 1
         self.call_schemas.append(response_schema)
+
+        # ChatIntentResponse - for unified intent classification (first call)
+        if response_schema is ChatIntentResponse:
+            return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
 
         # ExhaustiveIntentResponse - for intent detection (Phase 1)
         if response_schema is ExhaustiveIntentResponse:
@@ -773,12 +779,16 @@ class TestPhaseGBenchmarks:
     def _make_phase_g_service(self, jobs_data, jobs_dict, generator_responses, evaluator_responses):
         """Create a service with custom mock provider for Phase G benchmarks."""
         from unittest.mock import MagicMock, AsyncMock
-        from app.services.rag_chat_service import FactCheckResponse, LLMChatResponse, ExhaustiveIntentResponse, QueryRewriteResponse
+        from app.services.rag_chat_service import FactCheckResponse, LLMChatResponse, ExhaustiveIntentResponse, QueryRewriteResponse, ChatIntentResponse, ChatIntent
 
-        call_state = {"generator_calls": 0, "evaluator_calls": 0, "intent_calls": 0, "rewrite_calls": 0}
+        call_state = {"generator_calls": 0, "evaluator_calls": 0, "intent_calls": 0, "rewrite_calls": 0, "classification_calls": 0}
 
         async def mock_generate_structured_output(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
+            # ChatIntentResponse - for unified intent classification (first call)
+            if response_schema is ChatIntentResponse:
+                call_state["classification_calls"] += 1
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             # ExhaustiveIntentResponse - for intent detection (Phase 1)
             if response_schema is ExhaustiveIntentResponse:
                 call_state["intent_calls"] += 1
@@ -1166,6 +1176,9 @@ class TestPhaseGBenchmarks:
 
         async def mock_generate_structured_output(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
+            # ChatIntentResponse - for unified intent classification (first call)
+            if response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             # ExhaustiveIntentResponse - for intent detection (Phase 1)
             if response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(is_exhaustive=False)
