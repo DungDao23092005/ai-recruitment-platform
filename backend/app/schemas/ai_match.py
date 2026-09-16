@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import uuid
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class MatchResultSchema(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    entity_id: uuid.UUID | None = Field(
+        default=None, description="Entity ID (Job UUID or Candidate UUID) this match result corresponds to"
+    )
     overall_score: float = Field(
         description="Final match score from 0.0 to 100.0"
     )

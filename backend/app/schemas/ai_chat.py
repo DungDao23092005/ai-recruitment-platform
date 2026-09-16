@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import uuid
+from enum import Enum
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class ChatIntent(str, Enum):
+    EXHAUSTIVE = "exhaustive"
+    RECOMMENDATION = "recommendation"
+    KNOWLEDGE = "knowledge"
+    SEMANTIC = "semantic"
 
 
 class ExhaustiveJobFilter(BaseModel):
@@ -28,6 +36,16 @@ class ExhaustiveJobFilter(BaseModel):
     remote_only: Optional[bool] = Field(
         default=None,
         description="Filter for remote-only positions",
+    )
+
+
+class ChatIntentResponse(BaseModel):
+    """Internal LLM response schema for unified chat intent classification."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    intent: ChatIntent = Field(
+        ..., description="Classified intent of the user query"
     )
 
 

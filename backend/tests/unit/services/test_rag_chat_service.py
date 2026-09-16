@@ -109,22 +109,45 @@ def make_llm(response=None):
     async def mock_generate_structured_output(prompt, response_schema, system_instruction):
         # Check which schema is requested
         FactCheckResponse = _get_fact_check_response_cls()
-        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, ChatIntentResponse, ChatIntent
 
-        if response_schema is FactCheckResponse:
+        # Check schema by identity first (exact match), then by name as fallback
+        schema_name = response_schema.__name__ if hasattr(response_schema, '__name__') else str(response_schema)
+
+        if response_schema is FactCheckResponse or 'FactCheckResponse' in schema_name:
             # Return a faithful FactCheckResponse for evaluator
             return FactCheckResponse(is_faithful=True, contradictions=[])
-        elif response_schema is ExhaustiveIntentResponse:
-            # Default: not exhaustive for most tests
+        elif response_schema is ChatIntentResponse or 'ChatIntentResponse' in schema_name:
+            # First call: unified intent classification
+            return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
+        elif response_schema is LLMChatResponse or 'LLMChatResponse' in schema_name:
+            # Return the provided response or a default LLMChatResponse for chat
+            if response is not None:
+                return response
+            return LLMChatResponse(
+                answer="Test answer",
+                cited_source_ids=[],
+                evidence_quotes=[],
+                claims=[],
+                suggested_followups=[]
+            )
+        elif response_schema is ExhaustiveIntentResponse or 'ExhaustiveIntentResponse' in schema_name:
+            # Exhaustive filter extraction (only called for EXHAUSTIVE intent)
+            # Check if the prompt/message indicates exhaustive intent
+            prompt_text = str(prompt).lower()
+            exhaustive_keywords = [
+                'liệt kê tất cả', 'tất cả các vị trí', 'tất cả internship',
+                'có bao nhiêu', 'những công việc nào', 'tất cả',
+                'list all', 'all jobs', 'all internships', 'how many', 'có bao nhiêu'
+            ]
+            is_exhaustive = any(kw in prompt_text for kw in exhaustive_keywords)
+
             return ExhaustiveIntentResponse(
-                is_exhaustive=False,
+                is_exhaustive=is_exhaustive,
                 employment_type=None,
                 location=None,
                 remote_only=None,
             )
-        elif response_schema is QueryRewriteResponse:
-            # Return a standalone query for rewrite
-            return type('obj', (object,), {'standalone_query': 'python job'})()
         # Default: return the provided response or default LLMChatResponse
         return response or make_llm_response()
 
@@ -1032,17 +1055,12 @@ class TestQueryRewriting:
             nonlocal call_count, call_schemas
             call_count += 1
             call_schemas.append(response_schema)
-            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent, QueryRewriteResponse, LLMChatResponse
 
-            if response_schema is ExhaustiveIntentResponse:
-                # First call is for exhaustive intent detection
-                return ExhaustiveIntentResponse(
-                    is_exhaustive=False,
-                    employment_type=None,
-                    location=None,
-                    remote_only=None,
-                )
-            elif call_count == 2:
+            if response_schema is ChatIntentResponse:
+                # First call: unified intent classification
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
+            elif response_schema is QueryRewriteResponse and call_count == 2:
                 # Second call is for query rewrite (when history exists)
                 from app.services.rag_chat_service import QueryRewriteResponse
                 assert response_schema is QueryRewriteResponse
@@ -1079,11 +1097,11 @@ class TestQueryRewriting:
             )
         )
 
-        # Should call generate_structured_output three times: exhaustive intent + rewrite + final answer
+        # Should call generate_structured_output three times: intent classification + rewrite + final answer
         assert call_count == 3
-        # First call should use ExhaustiveIntentResponse schema
-        from app.services.rag_chat_service import ExhaustiveIntentResponse
-        assert call_schemas[0] is ExhaustiveIntentResponse
+        # First call should use ChatIntentResponse schema
+        from app.services.rag_chat_service import ChatIntentResponse
+        assert call_schemas[0] is ChatIntentResponse
         # Second call should use QueryRewriteResponse schema
         from app.services.rag_chat_service import QueryRewriteResponse
         assert call_schemas[1] is QueryRewriteResponse
@@ -1098,16 +1116,11 @@ class TestQueryRewriting:
         job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse
+        from app.services.rag_chat_service import ChatIntentResponse, ChatIntent, QueryRewriteResponse
         llm = MagicMock()
         llm.generate_structured_output = AsyncMock(
             side_effect=[
-                ExhaustiveIntentResponse(
-                    is_exhaustive=False,
-                    employment_type=None,
-                    location=None,
-                    remote_only=None,
-                ),
+                ChatIntentResponse(intent=ChatIntent.SEMANTIC),
                 type('obj', (object,), {'standalone_query': 'ứng viên Python Docker'})(),
                 make_llm_response(
                     cited_source_ids=[uuid.UUID(job_id)],
@@ -1133,7 +1146,7 @@ class TestQueryRewriting:
         )
 
         # Check that the final prompt contains the ORIGINAL message, not the rewritten query
-        # Note: args_list[0] = exhaustive intent, args_list[1] = rewrite, args_list[2] = final answer
+        # Note: args_list[0] = intent classification, args_list[1] = rewrite, args_list[2] = final answer
         prompt = llm.generate_structured_output.await_args_list[2].kwargs["prompt"]
         assert "Còn ai biết Docker?" in prompt
         # History should also be in the prompt
@@ -1147,16 +1160,11 @@ class TestQueryRewriting:
         job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse
+        from app.services.rag_chat_service import ChatIntentResponse, ChatIntent, QueryRewriteResponse
         llm = MagicMock()
         llm.generate_structured_output = AsyncMock(
             side_effect=[
-                ExhaustiveIntentResponse(
-                    is_exhaustive=False,
-                    employment_type=None,
-                    location=None,
-                    remote_only=None,
-                ),
+                ChatIntentResponse(intent=ChatIntent.SEMANTIC),
                 type('obj', (object,), {'standalone_query': 'ứng viên Python Docker'})(),
                 make_llm_response(
                     cited_source_ids=[uuid.UUID(job_id)],
@@ -1191,16 +1199,11 @@ class TestQueryRewriting:
         job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse
+        from app.services.rag_chat_service import ChatIntentResponse, ChatIntent, QueryRewriteResponse
         llm = MagicMock()
         llm.generate_structured_output = AsyncMock(
             side_effect=[
-                ExhaustiveIntentResponse(
-                    is_exhaustive=False,
-                    employment_type=None,
-                    location=None,
-                    remote_only=None,
-                ),
+                ChatIntentResponse(intent=ChatIntent.SEMANTIC),
                 type('obj', (object,), {'standalone_query': 'ứng viên Python'})(),
                 make_llm_response(
                     cited_source_ids=[uuid.UUID(job_id)],
@@ -1229,7 +1232,7 @@ class TestQueryRewriting:
 
         # Should not crash, should handle gracefully
         # The rewrite should not have followed the injection instruction
-        # Note: args_list[0] = exhaustive intent, args_list[1] = rewrite
+        # Note: args_list[0] = intent classification, args_list[1] = rewrite
         rewrite_call = llm.generate_structured_output.await_args_list[1]
         rewrite_prompt = rewrite_call.kwargs["prompt"]
         # The rewrite prompt should contain the malicious text as data, not instruction
@@ -1246,16 +1249,11 @@ class TestQueryRewriting:
         job_point = make_job_point(point_id=job_id)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse
+        from app.services.rag_chat_service import ChatIntentResponse, ChatIntent, QueryRewriteResponse
         llm = MagicMock()
         llm.generate_structured_output = AsyncMock(
             side_effect=[
-                ExhaustiveIntentResponse(
-                    is_exhaustive=False,
-                    employment_type=None,
-                    location=None,
-                    remote_only=None,
-                ),
+                ChatIntentResponse(intent=ChatIntent.SEMANTIC),
                 type('obj', (object,), {'standalone_query': 'ứng viên Python Docker'})(),
                 make_llm_response(
                     cited_source_ids=[uuid.UUID(job_id)],
@@ -1665,7 +1663,7 @@ class TestPhaseGFaithfulness:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import LLMChatResponse, FactCheckResponse, ExhaustiveIntentResponse
+        from app.services.rag_chat_service import LLMChatResponse, FactCheckResponse, ExhaustiveIntentResponse, ChatIntentResponse, ChatIntent
 
         # Mock evaluator to detect the numerical contradiction
         async def mock_evaluator(prompt, response_schema, system_instruction):
@@ -1675,6 +1673,8 @@ class TestPhaseGFaithfulness:
                     is_faithful=False,
                     contradictions=["Claim '7 years Python experience' contradicts evidence '2 years Python experience'"]
                 )
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(
                     is_exhaustive=False,
@@ -1711,15 +1711,18 @@ class TestPhaseGFaithfulness:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, ChatIntentResponse, ChatIntent
 
         async def mock_evaluator(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(
                     is_faithful=False,
                     contradictions=["Claim 'Expert in Kubernetes' has no supporting evidence"]
                 )
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(
                     is_exhaustive=False,
@@ -1760,8 +1763,11 @@ class TestPhaseGFaithfulness:
 
         async def mock_evaluator(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(
                     is_exhaustive=False,
@@ -1799,15 +1805,18 @@ class TestPhaseGFaithfulness:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, ChatIntentResponse, ChatIntent
 
         async def mock_evaluator(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(
                     is_faithful=False,
                     contradictions=["Evidence about 'Nguyen Van A' cannot support claim about 'Nguyen Van B'"]
                 )
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(
                     is_exhaustive=False,
@@ -1844,15 +1853,18 @@ class TestPhaseGFaithfulness:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, ChatIntentResponse, ChatIntent
 
         async def mock_evaluator(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(
                     is_faithful=False,
                     contradictions=["Claim 'knows Java' contradicts evidence 'does not know Java'"]
                 )
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(
                     is_exhaustive=False,
@@ -1893,7 +1905,7 @@ class TestPhaseGRetry:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, ChatIntentResponse, ChatIntent
 
         call_count = 0
 
@@ -1911,6 +1923,8 @@ class TestPhaseGRetry:
                 else:
                     # Second attempt: succeed
                     return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(
                     is_exhaustive=False,
@@ -1959,7 +1973,7 @@ class TestPhaseGRetry:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, ChatIntentResponse, ChatIntent
 
         # Track call counts for both evaluator and generator
         gen_call_count = 0
@@ -1975,6 +1989,8 @@ class TestPhaseGRetry:
                     is_faithful=False,
                     contradictions=["Claim 'expert in Kubernetes' has no supporting evidence"]
                 )
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(
                     is_exhaustive=False,
@@ -2033,8 +2049,11 @@ class TestPhaseGTelemetry:
 
         async def mock_evaluator(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(
                     is_exhaustive=False,
@@ -2071,7 +2090,7 @@ class TestPhaseGTelemetry:
         job_point = make_job_point(point_id=job_id, score=0.87)
         repo = make_vector_repo(jobs=[job_point])
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse
+        from app.services.rag_chat_service import ExhaustiveIntentResponse, ChatIntentResponse, ChatIntent
 
         captured_prompts = []
 
@@ -2080,6 +2099,8 @@ class TestPhaseGTelemetry:
             if response_schema is FactCheckResponse:
                 captured_prompts.append(prompt)
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(
                     is_exhaustive=False,
@@ -2128,8 +2149,11 @@ class TestPhaseGRegression:
 
         async def mock_evaluator(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(
                     is_exhaustive=False,
@@ -2514,14 +2538,12 @@ class TestPhaseIEvaluationIntegration:
         async def mock_generate_structured_output(prompt, response_schema, system_instruction):
             call_schemas.append(response_schema)
             if len(call_schemas) == 1:
-                from app.services.rag_chat_service import ExhaustiveIntentResponse
-                assert response_schema is ExhaustiveIntentResponse
-                class MockRewriteResponse:
-                    is_exhaustive = False
-                    employment_type = None
-                    location = None
-                    remote_only = None
-                return MockRewriteResponse()
+                from app.services.rag_chat_service import ChatIntentResponse
+                assert response_schema is ChatIntentResponse
+                from app.services.rag_chat_service import ChatIntent
+                class MockIntentResponse:
+                    intent = ChatIntent.SEMANTIC
+                return MockIntentResponse()
             elif len(call_schemas) == 2:
                 from app.services.rag_chat_service import QueryRewriteResponse
                 assert response_schema is QueryRewriteResponse
@@ -2552,10 +2574,10 @@ class TestPhaseIEvaluationIntegration:
 
         result = asyncio.run(service.chat("Còn ai biết Docker?", make_user(UserRole.RECRUITER), history=history))
 
-        # Should have 3 calls: 1 for exhaustive intent, 1 for rewrite, 1 for final answer
+        # Should have 3 calls: 1 for intent classification, 1 for rewrite, 1 for final answer
         assert len(call_schemas) == 3
-        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse
-        assert call_schemas[0] is ExhaustiveIntentResponse
+        from app.services.rag_chat_service import ChatIntentResponse, QueryRewriteResponse, LLMChatResponse
+        assert call_schemas[0] is ChatIntentResponse
         assert call_schemas[1] is QueryRewriteResponse
         assert call_schemas[2] is LLMChatResponse
 
@@ -3353,6 +3375,9 @@ class TestSecurityAwareAuthorization:
             if "FactCheckResponse" in str(response_schema):
                 from app.services.rag_chat_service import FactCheckResponse
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif "ChatIntentResponse" in str(response_schema):
+                from app.services.rag_chat_service import ChatIntentResponse, ChatIntent
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif "ExhaustiveIntentResponse" in str(response_schema):
                 from app.services.rag_chat_service import ExhaustiveIntentResponse
                 return ExhaustiveIntentResponse(
@@ -5644,19 +5669,22 @@ class TestSemanticRegression:
         job_point = make_job_point(point_id=job_id, score=0.87, skills=["Python", "FastAPI"])
         repo = make_vector_repo(jobs=[job_point])
 
-        # LLM that returns is_exhaustive=False (semantic query)
-        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse
+        # LLM that returns SEMANTIC intent (semantic query)
+        from app.services.rag_chat_service import ChatIntentResponse, ChatIntent, QueryRewriteResponse
 
         provider = MagicMock()
 
         async def mock_generate_structured_output(prompt, response_schema, system_instruction):
             FactCheckResponse = _get_fact_check_response_cls()
-            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent, QueryRewriteResponse, LLMChatResponse, ExhaustiveIntentResponse
 
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ChatIntentResponse:
+                # First call: unified intent classification
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
-                # Semantic query -> NOT exhaustive
+                # Exhaustive filter extraction (only called for EXHAUSTIVE intent)
                 return ExhaustiveIntentResponse(
                     is_exhaustive=False,
                     employment_type=None,
@@ -5899,9 +5927,11 @@ class TestFastPathExhaustiveDetection:
 
         async def mock_generate(prompt, response_schema, system_instruction):
             call_schemas.append(response_schema)
-            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent, ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(is_exhaustive=False, employment_type=None, location=None, remote_only=None)
             elif response_schema is QueryRewriteResponse:
@@ -5921,11 +5951,11 @@ class TestFastPathExhaustiveDetection:
             make_user(UserRole.CANDIDATE)
         ))
 
-        # Assert: fast path NOT taken, ExhaustiveIntentResponse called via LLM
-        from app.services.rag_chat_service import ExhaustiveIntentResponse
-        assert ExhaustiveIntentResponse in call_schemas
-        # Query rewrite should be called (history is empty, so no rewrite, but exhaustive intent is called)
-        # Actually for first turn with empty history, only exhaustive intent + final answer are called
+        # Assert: fast path NOT taken, ChatIntentResponse called via LLM
+        from app.services.rag_chat_service import ChatIntentResponse
+        assert ChatIntentResponse in call_schemas
+        # Query rewrite should be called (history is empty, so no rewrite, but intent classification is called)
+        # Actually for first turn with empty history, only intent classification + final answer are called
 
     def test_semantic_safety_tim_viec_backend_cv(self):
         """Test: 'Tìm việc Backend phù hợp với CV của tôi' -> NOT fast path."""
@@ -5939,9 +5969,11 @@ class TestFastPathExhaustiveDetection:
 
         async def mock_generate(prompt, response_schema, system_instruction):
             call_schemas.append(response_schema)
-            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent, ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(is_exhaustive=False, employment_type=None, location=None, remote_only=None)
             elif response_schema is QueryRewriteResponse:
@@ -5961,8 +5993,8 @@ class TestFastPathExhaustiveDetection:
             make_user(UserRole.CANDIDATE)
         ))
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse
-        assert ExhaustiveIntentResponse in call_schemas
+        from app.services.rag_chat_service import ChatIntentResponse
+        assert ChatIntentResponse in call_schemas
 
     def test_semantic_safety_co_bao_nhieu_nam_kinh_nghiem(self):
         """Test: 'Có bao nhiêu năm kinh nghiệm cần thiết cho Backend Engineer?' -> NOT fast path, semantic path."""
@@ -5976,9 +6008,11 @@ class TestFastPathExhaustiveDetection:
 
         async def mock_generate(prompt, response_schema, system_instruction):
             call_schemas.append(response_schema)
-            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent, ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(is_exhaustive=False, employment_type=None, location=None, remote_only=None)
             elif response_schema is QueryRewriteResponse:
@@ -5998,8 +6032,8 @@ class TestFastPathExhaustiveDetection:
             make_user(UserRole.CANDIDATE)
         ))
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse
-        assert ExhaustiveIntentResponse in call_schemas
+        from app.services.rag_chat_service import ChatIntentResponse
+        assert ChatIntentResponse in call_schemas
 
     def test_semantic_safety_co_bao_nhieu_ky_nang(self):
         """Test: 'Có bao nhiêu kỹ năng cần cho vị trí này?' -> NOT fast path."""
@@ -6013,9 +6047,11 @@ class TestFastPathExhaustiveDetection:
 
         async def mock_generate(prompt, response_schema, system_instruction):
             call_schemas.append(response_schema)
-            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent, ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(is_exhaustive=False, employment_type=None, location=None, remote_only=None)
             elif response_schema is QueryRewriteResponse:
@@ -6035,8 +6071,8 @@ class TestFastPathExhaustiveDetection:
             make_user(UserRole.CANDIDATE)
         ))
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse
-        assert ExhaustiveIntentResponse in call_schemas
+        from app.services.rag_chat_service import ChatIntentResponse
+        assert ChatIntentResponse in call_schemas
 
 
 class TestDeterministicFilterExtraction:
@@ -6108,7 +6144,7 @@ class Test503ErrorMapping:
         service.chat = AsyncMock(side_effect=AIProviderUnavailableError("AI provider temporarily unavailable", retry_after=60))
 
         current_user = MagicMock()
-        current_user.role = "CANDIDATE"
+        current_user.role = UserRole.CANDIDATE
 
         request = ChatRequest(message="test message", history=[])
 
@@ -6135,7 +6171,7 @@ class Test503ErrorMapping:
         service.chat = AsyncMock(side_effect=AIProviderQuotaExceededError("AI provider quota exceeded", retry_after=60))
 
         current_user = MagicMock()
-        current_user.role = "CANDIDATE"
+        current_user.role = UserRole.CANDIDATE
 
         request = ChatRequest(message="test message", history=[])
 
@@ -6161,7 +6197,7 @@ class Test503ErrorMapping:
         service.chat = AsyncMock(side_effect=InvalidDocumentError("Invalid document"))
 
         current_user = MagicMock()
-        current_user.role = "CANDIDATE"
+        current_user.role = UserRole.CANDIDATE
 
         request = ChatRequest(message="test message", history=[])
 
@@ -6257,9 +6293,11 @@ class TestTelemetryFastPath:
 
         async def mock_generate(prompt, response_schema, system_instruction):
             call_schemas.append(response_schema)
-            from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
+            from app.services.rag_chat_service import ChatIntentResponse, ChatIntent, ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
             if response_schema is FactCheckResponse:
                 return FactCheckResponse(is_faithful=True, contradictions=[])
+            elif response_schema is ChatIntentResponse:
+                return ChatIntentResponse(intent=ChatIntent.SEMANTIC)
             elif response_schema is ExhaustiveIntentResponse:
                 return ExhaustiveIntentResponse(is_exhaustive=False, employment_type=None, location=None, remote_only=None)
             elif response_schema is QueryRewriteResponse:
@@ -6278,16 +6316,16 @@ class TestTelemetryFastPath:
         )
         service = make_service(make_embedding_service(), repo, llm, context_resolver=mock_resolver)
 
-        # First turn (no history) - should have: exhaustive intent + final answer + fact-check = 3 calls
+        # First turn (no history) - should have: intent classification + final answer + fact-check = 3 calls
         await service.chat("python job", make_user(UserRole.CANDIDATE))
 
-        from app.services.rag_chat_service import ExhaustiveIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
-        assert call_schemas.count(ExhaustiveIntentResponse) == 1
+        from app.services.rag_chat_service import ChatIntentResponse, QueryRewriteResponse, LLMChatResponse, FactCheckResponse
+        assert call_schemas.count(ChatIntentResponse) == 1
         assert call_schemas.count(QueryRewriteResponse) == 0  # No rewrite for empty history
         assert call_schemas.count(LLMChatResponse) == 1
         assert call_schemas.count(FactCheckResponse) == 1
 
-        # With history - should have: exhaustive intent + rewrite + final answer + fact-check = 4 calls
+        # With history - should have: intent classification + rewrite + final answer + fact-check = 4 calls
         call_schemas.clear()
         await service.chat(
             "python job",
@@ -6295,7 +6333,7 @@ class TestTelemetryFastPath:
             history=[ChatMessage(role="user", content="hello")]
         )
 
-        assert call_schemas.count(ExhaustiveIntentResponse) == 1
+        assert call_schemas.count(ChatIntentResponse) == 1
         assert call_schemas.count(QueryRewriteResponse) == 1
         assert call_schemas.count(LLMChatResponse) == 1
         assert call_schemas.count(FactCheckResponse) == 1
