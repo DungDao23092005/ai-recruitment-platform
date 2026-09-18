@@ -21,7 +21,11 @@ from app.schemas.admin import (
 )
 from app.services.admin_service import AdminService
 
-router = APIRouter()
+router = APIRouter(
+    prefix="/admin",
+    tags=["Admin"],
+    dependencies=[Depends(require_admin)],
+)
 
 
 def _get_admin_service(db: AsyncSession = Depends(get_db)) -> AdminService:

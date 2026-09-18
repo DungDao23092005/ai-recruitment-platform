@@ -167,8 +167,6 @@ class InterviewService:
             interview.location = data.location
         if data.notes is not None:
             interview.notes = data.notes
-        if data.status is not None:
-            interview.status = InterviewStatus(data.status)
 
         try:
             # Notify candidate about interview update BEFORE commit

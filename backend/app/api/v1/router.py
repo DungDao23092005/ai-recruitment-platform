@@ -27,4 +27,4 @@ api_router.include_router(
     notifications.router, prefix="/notifications", tags=["Notifications"]
 )
 api_router.include_router(ai.router, prefix="/ai", tags=["AI Engine"])
-api_router.include_router(admin.router, prefix="/admin", tags=["Admin"])
+api_router.include_router(admin.router, tags=["Admin"])

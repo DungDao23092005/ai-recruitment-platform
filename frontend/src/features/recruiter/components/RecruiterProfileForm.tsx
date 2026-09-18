@@ -12,7 +12,6 @@ import { getFriendlyErrorMessage } from '@/utils/errors'
 interface FormValues {
   full_name: string
   position: string
-  company_id: string
 }
 
 function isNotFoundError(error: unknown): boolean {
@@ -24,34 +23,16 @@ function isNotFoundError(error: unknown): boolean {
   )
 }
 
-function isForbiddenError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'response' in error &&
-    (error as { response?: { status?: number } }).response?.status === 403
-  )
-}
-
-function getProfileSaveErrorMessage(error: unknown): string {
-  if (isForbiddenError(error)) {
-    return 'Bạn không có quyền liên kết với công ty này.'
-  }
-  return getFriendlyErrorMessage(error)
-}
-
 export function RecruiterProfileForm() {
   const [values, setValues] = useState<FormValues>({
     full_name: '',
     position: '',
-    company_id: '',
   })
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [apiError, setApiError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const [hasExistingCompany, setHasExistingCompany] = useState(false)
 
   const loadProfile = async () => {
     setIsLoading(true)
@@ -61,9 +42,7 @@ export function RecruiterProfileForm() {
       setValues({
         full_name: profile.full_name ?? '',
         position: profile.position ?? '',
-        company_id: profile.company_id ?? '',
       })
-      setHasExistingCompany(!!profile.company_id)
     } catch (error) {
       if (!isNotFoundError(error)) {
         setLoadError(getFriendlyErrorMessage(error))
@@ -87,11 +66,10 @@ export function RecruiterProfileForm() {
       await updateRecruiterProfile({
         full_name: values.full_name.trim() || null,
         position: values.position.trim() || null,
-        company_id: values.company_id.trim() || null,
       })
       setSuccess(true)
     } catch (error) {
-      setApiError(getProfileSaveErrorMessage(error))
+      setApiError(getFriendlyErrorMessage(error))
     } finally {
       setSubmitting(false)
     }
@@ -134,21 +112,6 @@ export function RecruiterProfileForm() {
         placeholder="Trưởng phòng Tuyển dụng"
         value={values.position}
         onChange={(e) => setValues((v) => ({ ...v, position: e.target.value }))}
-      />
-      <Input
-        name="company_id"
-        label="Mã công ty"
-        placeholder="vd: 3fa85f64-5717-4562-b3fc-2c963f66afa6"
-        helperText={
-          hasExistingCompany
-            ? 'Đã liên kết với công ty. Không thể xóa liên kết này.'
-            : 'Có thể liên kết tài khoản với công ty đã tạo trên nền tảng.'
-        }
-        value={values.company_id}
-        onChange={(e) =>
-          setValues((v) => ({ ...v, company_id: e.target.value }))
-        }
-        disabled={hasExistingCompany}
       />
 
       {apiError ? (

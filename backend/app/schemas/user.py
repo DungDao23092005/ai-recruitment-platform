@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -9,7 +10,7 @@ from app.domain.enums import UserRole
 class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)
-    role: UserRole = UserRole.CANDIDATE
+    role: Literal[UserRole.CANDIDATE, UserRole.RECRUITER] = UserRole.CANDIDATE
 
 
 class UserRead(BaseModel):
@@ -48,13 +49,11 @@ class CandidateProfileRead(BaseModel):
 class RecruiterProfileCreate(BaseModel):
     full_name: str | None = None
     position: str | None = None
-    company_id: uuid.UUID | None = None
 
 
 class RecruiterProfileUpdate(BaseModel):
     full_name: str | None = None
     position: str | None = None
-    company_id: uuid.UUID | None = None
 
 
 class RecruiterProfileRead(BaseModel):

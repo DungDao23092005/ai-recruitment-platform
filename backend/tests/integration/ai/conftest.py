@@ -17,6 +17,7 @@ from app.ai.interfaces.base_provider import (
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 from app.core.config import settings
 from app.core.exceptions import InvalidDocumentError
+from app.database.session import async_session_factory
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 
@@ -53,13 +54,31 @@ SKIP_REASON_QDRANT = "BLOCKED BY ENVIRONMENT — Qdrant is not reachable"
 SKIP_REASON_SQL = "BLOCKED BY ENVIRONMENT — SQL Server is not reachable"
 
 
+@pytest.fixture
+def session():
+    """Provide a database session for the test. Created lazily in the test's event loop."""
+    session_holder = {"session": None}
+
+    def _get_session():
+        if session_holder["session"] is None:
+            session_holder["session"] = async_session_factory()
+        return session_holder["session"]
+
+    try:
+        yield _get_session
+    finally:
+        # Don't close the session here - let the database reset fixture handle cleanup
+        # Closing causes event loop mismatch issues
+        pass
+
+
 class FakeEmbeddingProvider(BaseEmbeddingProvider):
     """Deterministic 384-dimensional embedding provider (offline)."""
 
-    def embed_text(self, text: str) -> list[float]:
+    async def embed_text(self, text: str) -> list[float]:
         return self._hash_vector(text)
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [self._hash_vector(text) for text in texts]
 
     @staticmethod

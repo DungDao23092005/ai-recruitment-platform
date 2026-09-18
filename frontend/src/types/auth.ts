@@ -64,7 +64,6 @@ export interface RecruiterProfile {
 export interface RecruiterProfileData {
   full_name: string | null
   position: string | null
-  company_id: string | null
 }
 
 export const USER_ROLE_LABELS: Record<UserRole, string> = {

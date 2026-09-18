@@ -54,7 +54,6 @@ class JobRead(BaseModel):
 class JobUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
-    status: JobStatus | None = None
     job_type: JobType | None = None
     workplace_type: WorkplaceType | None = None
     location: str | None = None

@@ -54,8 +54,6 @@ class InterviewUpdate(BaseModel):
     meeting_url: HttpUrl | None = None
     location: str | None = None
     notes: str | None = None
-    candidate_notes: str | None = None
-    status: str | None = None
 
 
 class InterviewRead(BaseModel):

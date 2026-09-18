@@ -135,11 +135,9 @@ class TestCreateRecruiterProfile:
         user = make_user()
         user.recruiter_profile = None
         service.users.get_with_profile.return_value = user
-        company_id = uuid.uuid4()
         data = RecruiterProfileCreate(
             full_name="John Doe",
             position="Hiring Manager",
-            company_id=company_id,
         )
 
         profile = asyncio.run(
@@ -148,7 +146,7 @@ class TestCreateRecruiterProfile:
 
         assert isinstance(profile, RecruiterProfile)
         assert profile.user_id == user.id
-        assert profile.company_id == company_id
+        assert profile.company_id is None  # Company association is server-side only
         assert profile.full_name == "John Doe"
         assert profile.position == "Hiring Manager"
         session.add.assert_called_once_with(profile)
@@ -410,7 +408,6 @@ class TestUpsertRecruiterProfile:
         data = RecruiterProfileUpdate(
             full_name="John Doe",
             position="Hiring Manager",
-            company_id=None,
         )
 
         profile = asyncio.run(
@@ -419,7 +416,7 @@ class TestUpsertRecruiterProfile:
 
         assert isinstance(profile, RecruiterProfile)
         assert profile.user_id == user.id
-        assert profile.company_id is None
+        assert profile.company_id is None  # Company association is server-side only
         assert profile.full_name == "John Doe"
         assert profile.position == "Hiring Manager"
         session.add.assert_called_once_with(profile)
@@ -430,13 +427,12 @@ class TestUpsertRecruiterProfile:
         session = make_session()
         service = make_service(session)
         user = make_user()
-        profile = RecruiterProfile(user_id=user.id)
+        profile = RecruiterProfile(user_id=user.id, company_id=uuid.uuid4())
         user.recruiter_profile = profile
         service.users.get_with_profile.return_value = user
         data = RecruiterProfileUpdate(
             full_name="Jane Doe",
             position="Talent Lead",
-            company_id=None,
         )
 
         result = asyncio.run(
@@ -446,6 +442,7 @@ class TestUpsertRecruiterProfile:
         assert result is profile
         assert profile.full_name == "Jane Doe"
         assert profile.position == "Talent Lead"
+        assert profile.company_id is not None  # Preserves existing company_id
         session.add.assert_not_called()
         session.commit.assert_awaited_once()
 
@@ -478,7 +475,8 @@ class TestUpsertRecruiterProfile:
 
         session.rollback.assert_awaited_once()
 
-    def test_links_owned_company(self):
+    def test_preserves_existing_company_id_when_not_provided(self):
+        """Company association is managed server-side; client cannot change it."""
         session = make_session()
         service = make_service(session)
         user = make_user()
@@ -486,11 +484,9 @@ class TestUpsertRecruiterProfile:
         profile = RecruiterProfile(user_id=user.id, company_id=company_id)
         user.recruiter_profile = profile
         service.users.get_with_profile.return_value = user
-        service.companies.get_by_id.return_value = Company(id=company_id)
         data = RecruiterProfileUpdate(
             full_name="John Doe",
             position="Hiring Manager",
-            company_id=company_id,
         )
 
         result = asyncio.run(
@@ -498,59 +494,6 @@ class TestUpsertRecruiterProfile:
         )
 
         assert result is profile
-        assert profile.company_id == company_id
-        service.companies.get_by_id.assert_awaited_once_with(company_id)
-
-    def test_rejects_other_recruiters_company(self):
-        session = make_session()
-        service = make_service(session)
-        user = make_user()
-        owned_company_id = uuid.uuid4()
-        other_company_id = uuid.uuid4()
-        profile = RecruiterProfile(
-            user_id=user.id, company_id=owned_company_id
-        )
-        user.recruiter_profile = profile
-        service.users.get_with_profile.return_value = user
-        service.companies.get_by_id.return_value = Company(id=other_company_id)
-        data = RecruiterProfileUpdate(company_id=other_company_id)
-
-        with pytest.raises(ForbiddenException):
-            asyncio.run(
-                service.upsert_recruiter_profile(user_id=user.id, data=data)
-            )
-
-        session.commit.assert_not_awaited()
-
-    def test_rejects_company_when_recruiter_owns_none(self):
-        session = make_session()
-        service = make_service(session)
-        user = make_user()
-        user.recruiter_profile = None
-        service.users.get_with_profile.return_value = user
-        company_id = uuid.uuid4()
-        service.companies.get_by_id.return_value = Company(id=company_id)
-        data = RecruiterProfileUpdate(company_id=company_id)
-
-        with pytest.raises(ForbiddenException):
-            asyncio.run(
-                service.upsert_recruiter_profile(user_id=user.id, data=data)
-            )
-
-        session.commit.assert_not_awaited()
-
-    def test_nonexistent_company_raises_not_found(self):
-        session = make_session()
-        service = make_service(session)
-        user = make_user()
-        user.recruiter_profile = None
-        service.users.get_with_profile.return_value = user
-        service.companies.get_by_id.return_value = None
-        data = RecruiterProfileUpdate(company_id=uuid.uuid4())
-
-        with pytest.raises(EntityNotFoundException):
-            asyncio.run(
-                service.upsert_recruiter_profile(user_id=user.id, data=data)
-            )
-
-        session.commit.assert_not_awaited()
+        assert profile.company_id == company_id  # Preserved
+        # Company service should NOT be called since company_id is not in request
+        service.companies.get_by_id.assert_not_awaited()

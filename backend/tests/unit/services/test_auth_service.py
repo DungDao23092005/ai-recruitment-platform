@@ -86,18 +86,15 @@ class TestRegisterUser:
         session = make_session()
         service = make_service(session)
         service.users.get_by_email_including_inactive.return_value = None
-        data = UserCreate(
-            email="attacker@example.com",
-            password="password123",
-            role=UserRole.ADMIN,
-        )
-
-        with pytest.raises(ForbiddenException) as exc_info:
-            asyncio.run(service.register_user(data))
-
-        assert "Admin role cannot be assigned" in str(exc_info.value)
+        # Admin role is now rejected at schema level (Pydantic validation)
+        with pytest.raises(ValueError):
+            UserCreate(
+                email="attacker@example.com",
+                password="password123",
+                role=UserRole.ADMIN,
+            )
+        # Service should never be called since validation fails first
         session.commit.assert_not_awaited()
-        session.rollback.assert_not_awaited()
 
 
 class TestAuthenticateUser:
