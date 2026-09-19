@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.embeddings.embedding_service import (
@@ -53,6 +53,14 @@ from app.services.semantic_search_service import SemanticSearchService
 
 router = APIRouter()
 
+# Constants for file upload hardening
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_FILENAME_LENGTH = 255
+ALLOWED_EXTENSIONS = {".pdf"}
+PDF_MAGIC_HEADER = b"%PDF"
+MAX_EXTRACTED_TEXT_CHARS = 30000
+MAX_PDF_PAGES = 15
+
 
 def _get_ai_service(
     vector_repository: BaseVectorRepository = Depends(
@@ -95,7 +103,49 @@ async def parse_resume(
     service: AIMatchingService = Depends(_get_ai_service),
     _: RateLimitResult = Depends(parse_resume_rate_limit),
 ) -> ParsedResumeSchema:
+    # Filename validation
+    filename = file.filename or ""
+    if len(filename) > MAX_FILENAME_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Filename exceeds maximum length of {MAX_FILENAME_LENGTH} characters",
+        )
+
+    # Extension validation (case-insensitive)
+    if not any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only .pdf files are allowed",
+        )
+
+    # Pre-read size validation to prevent memory DoS
+    # Check file size using the underlying file object BEFORE reading into memory
+    try:
+        file.file.seek(0, 2)  # Seek to end
+        actual_size = file.file.tell()
+        file.file.seek(0)  # Reset to beginning
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to determine file size",
+        ) from exc
+
+    if actual_size > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File size exceeds maximum limit of {MAX_FILE_SIZE_BYTES // (1024 * 1024)}MB",
+        )
+
+    # Read file and validate magic header
     pdf_bytes = await file.read()
+
+    # Validate PDF magic header
+    if len(pdf_bytes) < len(PDF_MAGIC_HEADER) or not pdf_bytes.startswith(PDF_MAGIC_HEADER):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid PDF header: missing '%PDF' magic header",
+        )
+
     candidate_profile = await current_user.awaitable_attrs.candidate_profile
     if candidate_profile is None:
         raise HTTPException(
@@ -134,7 +184,7 @@ async def parse_resume(
 
 class ParseJDRequest(BaseModel):
     job_title: str
-    job_description: str
+    job_description: str = Field(..., max_length=MAX_EXTRACTED_TEXT_CHARS)
     job_id: uuid.UUID | None = None
 
 

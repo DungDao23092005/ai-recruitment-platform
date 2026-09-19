@@ -1205,3 +1205,68 @@ class TestGenerateInterviewQuestions:
         )
 
         assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+
+
+class TestParseJDValidation:
+    """Tests for ParseJDRequest validation (SECURITY-06)."""
+
+    def test_valid_job_description_accepted(self, recruiter_client, mock_service):
+        """Valid job description under 30k chars is accepted."""
+        mock_service.process_and_index_job.return_value = _parsed_job()
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/parse-jd",
+            json={
+                "job_title": "Backend Engineer",
+                "job_description": "Build robust APIs with Python and FastAPI",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["title"] == "Backend Engineer"
+
+    def test_job_description_exactly_30000_chars_accepted(self, recruiter_client, mock_service):
+        """Job description at exactly 30,000 characters is accepted."""
+        mock_service.process_and_index_job.return_value = _parsed_job()
+
+        desc = "A" * 30000
+        resp = recruiter_client.post(
+            "/api/v1/ai/parse-jd",
+            json={
+                "job_title": "Backend Engineer",
+                "job_description": desc,
+            },
+        )
+
+        assert resp.status_code == 200
+
+    def test_job_description_over_30000_chars_rejected(self, recruiter_client, mock_service):
+        """Job description over 30,000 characters is rejected with 422."""
+        mock_service.process_and_index_job.return_value = _parsed_job()
+
+        desc = "A" * 30001
+        resp = recruiter_client.post(
+            "/api/v1/ai/parse-jd",
+            json={
+                "job_title": "Backend Engineer",
+                "job_description": desc,
+            },
+        )
+
+        assert resp.status_code == 422
+
+    def test_ai_service_not_called_for_oversized_job_description(self, recruiter_client, mock_service):
+        """AI service is not called for oversized job description."""
+        mock_service.process_and_index_job.return_value = _parsed_job()
+
+        desc = "A" * 30001
+        resp = recruiter_client.post(
+            "/api/v1/ai/parse-jd",
+            json={
+                "job_title": "Backend Engineer",
+                "job_description": desc,
+            },
+        )
+
+        assert resp.status_code == 422
+        mock_service.process_and_index_job.assert_not_called()

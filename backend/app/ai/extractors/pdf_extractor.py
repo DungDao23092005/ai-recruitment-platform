@@ -11,6 +11,8 @@ import pdfplumber
 from app.core.exceptions import EmptyDocumentError, InvalidDocumentError
 
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_PDF_PAGES = 15
+MAX_EXTRACTED_TEXT_CHARS = 30000
 PDF_MAGIC_HEADER = b"%PDF"
 
 
@@ -25,11 +27,11 @@ class PDFTextExtractor:
             source: PDF data as bytes, file path (str/PathLike), or BinaryIO stream.
 
         Returns:
-            Normalized extracted text string.
+            Normalized extracted text string (limited to MAX_EXTRACTED_TEXT_CHARS).
 
         Raises:
             InvalidDocumentError: If file size exceeds 10MB, source is not a valid PDF,
-                magic header is missing, or PDF is corrupted.
+                magic header is missing, PDF is corrupted, or page count exceeds limit.
             EmptyDocumentError: If PDF has no extractable text (e.g. image-only/blank).
         """
         pdf_bytes = PDFTextExtractor._read_and_validate_bytes(source)
@@ -37,7 +39,9 @@ class PDFTextExtractor:
         try:
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
                 extracted_pages: list[str] = []
-                for page in pdf.pages:
+                # Enforce maximum page limit to prevent CPU DoS
+                pages_to_process = pdf.pages[:MAX_PDF_PAGES]
+                for page in pages_to_process:
                     text = page.extract_text()
                     if text:
                         extracted_pages.append(text)
@@ -51,6 +55,10 @@ class PDFTextExtractor:
 
         if not normalized_text:
             raise EmptyDocumentError("No extractable text found in PDF document")
+
+        # Enforce character limit to prevent AI token/cost exhaustion
+        if len(normalized_text) > MAX_EXTRACTED_TEXT_CHARS:
+            normalized_text = normalized_text[:MAX_EXTRACTED_TEXT_CHARS]
 
         return normalized_text
 
