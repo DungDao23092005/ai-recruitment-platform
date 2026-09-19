@@ -19,6 +19,9 @@ passlib[bcrypt]>=1.7.4
 bcrypt==4.0.1
 python-jose[cryptography]>=3.3.0
 
+# Redis
+redis>=5.0.0
+
 # AI & Vector Search Engine
 google-genai>=0.1.1
 qdrant-client>=1.8.0

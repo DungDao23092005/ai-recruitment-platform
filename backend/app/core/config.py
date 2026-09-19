@@ -1,5 +1,5 @@
 import json
-from typing import Annotated
+from typing import Annotated, Optional
 from urllib.parse import quote_plus
 
 from pydantic import ValidationInfo, field_validator
@@ -43,6 +43,29 @@ class Settings(BaseSettings):
     CROSS_ENCODER_MODEL_NAME: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     FINAL_SCORE_THRESHOLD: float = 0.3
 
+    # Redis Configuration
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    REDIS_PASSWORD: Optional[str] = None
+
+    # Rate Limiting Configuration
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_LOGIN_IP_PER_MINUTE: int = 20
+    RATE_LIMIT_LOGIN_EMAIL_PER_MINUTE: int = 5
+    RATE_LIMIT_REGISTER_IP_PER_MINUTE: int = 10
+    RATE_LIMIT_FORGOT_PASSWORD_IP_PER_MINUTE: int = 5
+    RATE_LIMIT_FORGOT_PASSWORD_EMAIL_PER_MINUTE: int = 3
+    RATE_LIMIT_VERIFY_OTP_IP_PER_MINUTE: int = 10
+    RATE_LIMIT_AI_CHAT_PER_MINUTE: int = 10
+    RATE_LIMIT_PARSE_RESUME_PER_MINUTE: int = 5
+    RATE_LIMIT_PARSE_JD_PER_MINUTE: int = 5
+    RATE_LIMIT_MATCH_PER_MINUTE: int = 10
+    RATE_LIMIT_RECOMMENDATIONS_PER_MINUTE: int = 10
+
+    # Trusted Proxies for safe client IP extraction
+    TRUSTED_PROXIES: Annotated[list[str], NoDecode] = []
+
     EMAIL_PROVIDER: str = "mailpit"
     EMAIL_FROM: str = "AI Recruitment Platform <noreply@example.com>"
     RESEND_API_KEY: str = ""
@@ -52,7 +75,6 @@ class Settings(BaseSettings):
     GMAIL_APP_PASSWORD: str = ""
     GMAIL_HOST: str = "smtp.gmail.com"
     GMAIL_PORT: int = 587
-
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -27,6 +27,7 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidDocumentError,
 )
+from app.core.rate_limit import RateLimitResult, ai_chat_rate_limit, parse_resume_rate_limit, parse_jd_rate_limit, match_rate_limit, recommendations_rate_limit
 from app.models import User
 from app.schemas.ai_chat import ChatRequest, ChatResponse
 from app.schemas.ai_explanation import ExplainMatchRequest, ExplainMatchResponse
@@ -92,6 +93,7 @@ async def parse_resume(
     current_user: User = Depends(require_candidate),
     db: AsyncSession = Depends(get_db),
     service: AIMatchingService = Depends(_get_ai_service),
+    _: RateLimitResult = Depends(parse_resume_rate_limit),
 ) -> ParsedResumeSchema:
     pdf_bytes = await file.read()
     candidate_profile = await current_user.awaitable_attrs.candidate_profile
@@ -152,6 +154,7 @@ async def parse_jd(
     data: ParseJDRequest,
     current_user: User = Depends(require_recruiter),
     service: AIMatchingService = Depends(_get_ai_service),
+    _: RateLimitResult = Depends(parse_jd_rate_limit),
 ) -> ParsedJobSchema:
     try:
         return await service.process_and_index_job(
@@ -180,6 +183,7 @@ async def match_candidate_and_job(
     data: MatchRequest,
     current_user: User = Depends(get_current_active_user),
     service: AIMatchingService = Depends(_get_ai_service),
+    _: RateLimitResult = Depends(match_rate_limit),
 ) -> MatchResultSchema:
     return await service.match_candidate_with_job(
         parsed_resume=data.parsed_resume,
@@ -270,6 +274,7 @@ async def recommend_jobs_for_candidate(
     db: AsyncSession = Depends(get_db),
     service: AIMatchingService = Depends(_get_ai_service),
     limit: int = Query(default=10, ge=1, le=100),
+    _: RateLimitResult = Depends(recommendations_rate_limit),
 ) -> list[JobMatchRecommendation]:
     candidate_profile = await current_user.awaitable_attrs.candidate_profile
     if candidate_profile is None:
@@ -301,6 +306,7 @@ async def ai_chat(
     data: ChatRequest,
     current_user: User = Depends(get_current_active_user),
     service: RAGChatService = Depends(_get_rag_chat_service),
+    _: RateLimitResult = Depends(ai_chat_rate_limit),
 ) -> ChatResponse:
     try:
         return await service.chat(
@@ -421,6 +427,7 @@ async def recommend_candidates_for_job(
     db: AsyncSession = Depends(get_db),
     job_id: uuid.UUID = Query(...),
     limit: int = Query(default=10, ge=1, le=100),
+    _: RateLimitResult = Depends(recommendations_rate_limit),
 ) -> list[CandidateMatchRecommendation]:
     try:
         job = await JobService(db).get_recruiter_job_by_id(current_user, job_id)

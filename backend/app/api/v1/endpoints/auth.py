@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_active_user, get_db
 from app.core.exceptions import ConflictException, ForbiddenException, LockedAccountException
+from app.core.rate_limit import login_rate_limit, register_rate_limit, forgot_password_rate_limit, verify_otp_rate_limit
 from app.core.security import create_access_token
 from app.models import User
 from app.schemas.password_reset import (
@@ -27,6 +28,7 @@ router = APIRouter()
     "/register",
     response_model=UserRead,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(register_rate_limit)],
 )
 async def register(
     data: UserCreate,
@@ -47,7 +49,7 @@ async def register(
     return UserRead.model_validate(user)
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=Token, dependencies=[Depends(login_rate_limit)])
 async def login_form(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
@@ -72,7 +74,7 @@ async def login_form(
     return Token(access_token=access_token, token_type="bearer")
 
 
-@router.post("/login/json", response_model=Token)
+@router.post("/login/json", response_model=Token, dependencies=[Depends(login_rate_limit)])
 async def login_json(
     data: UserCreate,
     db: AsyncSession = Depends(get_db),
@@ -106,6 +108,7 @@ async def get_me(
 @router.post(
     "/forgot-password",
     response_model=ForgotPasswordResponse,
+    dependencies=[Depends(forgot_password_rate_limit)],
 )
 async def forgot_password(
     data: ForgotPasswordRequest,
@@ -124,6 +127,7 @@ async def forgot_password(
 @router.post(
     "/verify-reset-otp",
     response_model=VerifyResetOtpResponse,
+    dependencies=[Depends(verify_otp_rate_limit)],
 )
 async def verify_reset_otp(
     data: VerifyResetOtpRequest,
