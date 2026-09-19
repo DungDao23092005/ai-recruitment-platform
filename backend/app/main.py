@@ -1,9 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis, ConnectionPool
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import settings
@@ -11,6 +12,31 @@ from app.core.rate_limit import RateLimiter, set_rate_limiter
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 
 logger = logging.getLogger(__name__)
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Minimal security headers middleware for API responses.
+
+    Adds safe headers without assuming TLS or proxy infrastructure.
+    Does not add HSTS, HTTPS redirects, or proxy-header trust.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+
+        # Safe headers for all responses (including errors)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+
+        # CSP for API: no browser resources expected from API endpoints.
+        # Skip restrictive CSP for development documentation routes (/docs, /redoc)
+        # to allow Swagger UI / ReDoc to load scripts and styles.
+        if not request.url.path.startswith(("/docs", "/redoc")):
+            response.headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+
+        # Do NOT add HSTS, HTTPS redirects, or proxy-header trust
+        return response
 
 
 @asynccontextmanager
@@ -90,6 +116,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Set up Security Headers middleware (after CORS to preserve CORS headers)
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Include API Router
 app.include_router(api_router, prefix=settings.API_V1_STR)
