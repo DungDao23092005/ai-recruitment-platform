@@ -12,6 +12,7 @@ import {
   getStoredToken,
   LOGOUT_EVENT,
   storeToken,
+  TOKEN_STORAGE_KEY,
 } from '@/api/client'
 import { getCurrentUser, login as loginApi } from '@/api/auth'
 import type { LoginCredentials, User } from '@/types/auth'
@@ -83,6 +84,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.addEventListener(LOGOUT_EVENT, handleLogoutEvent)
     return () => {
       window.removeEventListener(LOGOUT_EVENT, handleLogoutEvent)
+    }
+  }, [applyLogout])
+
+  // Cross-tab logout synchronization via storage event
+  useEffect(() => {
+    const handleStorageEvent = (event: StorageEvent) => {
+      // Only react to changes in the auth token key
+      if (event.key !== TOKEN_STORAGE_KEY) {
+        return
+      }
+
+      // Only handle token removal (logout), not token addition (login)
+      // Login is handled by the existing startup flow
+      if (event.newValue === null && event.oldValue !== null) {
+        // Token was removed in another tab - apply logout
+        applyLogout()
+      }
+    }
+
+    window.addEventListener('storage', handleStorageEvent)
+    return () => {
+      window.removeEventListener('storage', handleStorageEvent)
     }
   }, [applyLogout])
 

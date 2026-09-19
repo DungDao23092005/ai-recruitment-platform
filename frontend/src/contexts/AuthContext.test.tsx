@@ -154,4 +154,101 @@ describe('AuthContext', () => {
     expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull()
     expect(screen.getByTestId('authenticated')).toHaveTextContent('false')
   })
+
+  describe('cross-tab logout synchronization via storage event', () => {
+    it('does not clear auth state for unrelated storage key changes', async () => {
+      localStorage.setItem(TOKEN_STORAGE_KEY, 'stored-token')
+      mockedGetCurrentUser.mockResolvedValue(mockUser)
+
+      renderProvider()
+      await waitFor(() =>
+        expect(screen.getByTestId('user')).toHaveTextContent('candidate@example.com'),
+      )
+
+      // Simulate storage event for unrelated key
+      act(() => {
+        window.dispatchEvent(
+          new StorageEvent('storage', {
+            key: 'some_other_key',
+            oldValue: 'old',
+            newValue: 'new',
+            storageArea: localStorage,
+          })
+        )
+      })
+
+      // Auth state should remain unchanged
+      expect(screen.getByTestId('authenticated')).toHaveTextContent('true')
+      expect(screen.getByTestId('user')).toHaveTextContent('candidate@example.com')
+    })
+
+    it('clears auth state when token is removed in another tab', async () => {
+      localStorage.setItem(TOKEN_STORAGE_KEY, 'stored-token')
+      mockedGetCurrentUser.mockResolvedValue(mockUser)
+
+      renderProvider()
+      await waitFor(() =>
+        expect(screen.getByTestId('user')).toHaveTextContent('candidate@example.com'),
+      )
+
+      // Simulate storage event for token removal in another tab
+      act(() => {
+        window.dispatchEvent(
+          new StorageEvent('storage', {
+            key: TOKEN_STORAGE_KEY,
+            oldValue: 'stored-token',
+            newValue: null,
+            storageArea: localStorage,
+          })
+        )
+      })
+
+      // Auth state should be cleared
+      expect(screen.getByTestId('authenticated')).toHaveTextContent('false')
+      expect(screen.getByTestId('user')).toHaveTextContent('none')
+      expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull()
+    })
+
+    it('does not log out when token is added in another tab', async () => {
+      mockedGetCurrentUser.mockResolvedValue(mockUser)
+
+      renderProvider()
+      await waitFor(() =>
+        expect(screen.getByTestId('loading')).toHaveTextContent('false'),
+      )
+      expect(screen.getByTestId('authenticated')).toHaveTextContent('false')
+
+      // Simulate storage event for token addition in another tab
+      act(() => {
+        window.dispatchEvent(
+          new StorageEvent('storage', {
+            key: TOKEN_STORAGE_KEY,
+            oldValue: null,
+            newValue: 'new-token-from-another-tab',
+            storageArea: localStorage,
+          })
+        )
+      })
+
+      // Should not automatically log in - login is handled by startup flow
+      expect(screen.getByTestId('authenticated')).toHaveTextContent('false')
 })
+  })
+})
+
+  it('cleans up storage event listener on unmount', async () => {
+    const removeEventListenerSpy = vi.spyOn(window, 'removeEventListener')
+
+    const { unmount } = renderProvider()
+    await waitFor(() =>
+      expect(screen.getByTestId('loading')).toHaveTextContent('false'),
+    )
+
+    unmount()
+
+    // Should have removed the storage event listener
+    expect(removeEventListenerSpy).toHaveBeenCalledWith(
+      'storage',
+      expect.any(Function)
+    )
+  })
