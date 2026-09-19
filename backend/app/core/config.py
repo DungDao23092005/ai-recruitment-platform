@@ -1,6 +1,6 @@
 import json
 from typing import Annotated, Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -115,11 +115,43 @@ class Settings(BaseSettings):
 
     @field_validator("BACKEND_CORS_ORIGINS")
     @classmethod
-    def validate_cors_origins(cls, value: list[str]) -> list[str]:
+    def validate_cors_origins(cls, value: list[str], info: ValidationInfo) -> list[str]:
         for origin in value:
+            # Handle wildcard first
+            if origin == "*":
+                env = info.data.get("ENVIRONMENT", "development") if info.data else "development"
+                if env == "production":
+                    raise ValueError("Unsafe CORS origin '*' not allowed in production")
+                continue
+
             if not origin.startswith(("http://", "https://")):
                 raise ValueError(f"Invalid CORS origin, must be an HTTP(S) URL: {origin!r}")
+
+        # Production CORS hardening
+        env = info.data.get("ENVIRONMENT", "development") if info.data else "development"
+        if env == "production":
+            cls._validate_production_cors_origins(value)
         return value
+
+    @classmethod
+    def _validate_production_cors_origins(cls, origins: list[str]) -> None:
+        """Validate CORS origins for production environment."""
+        for origin in origins:
+            # Parse URL to check host
+            try:
+                parsed = urlparse(origin)
+                host = parsed.hostname or ""
+                port = parsed.port
+
+                # Check for localhost/loopback
+                if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+                    raise ValueError(
+                        f"Development origin '{origin}' not allowed in production"
+                    )
+            except Exception as e:
+                if "not allowed in production" in str(e):
+                    raise
+                raise ValueError(f"Invalid CORS origin format: {origin!r}")
 
     @field_validator("SECRET_KEY")
     @classmethod
@@ -131,22 +163,30 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "SECRET_KEY must be a custom non-empty secret in production"
                 )
+            # Minimum 32 bytes UTF-8 encoded length
+            if len(value.encode("utf-8")) < 32:
+                raise ValueError(
+                    "SECRET_KEY must be at least 32 bytes (UTF-8) in production"
+                )
         return value
 
-    @field_validator("DATABASE_PORT", "QDRANT_PORT")
+    @field_validator("DATABASE_PASSWORD")
     @classmethod
-    def validate_port_range(cls, value: int, info: ValidationInfo) -> int:
-        if not 1 <= value <= 65535:
-            raise ValueError(f"{info.field_name} must be in range 1-65535")
+    def validate_database_password(cls, value: str, info: ValidationInfo) -> str:
+        env = info.data.get("ENVIRONMENT", "development") if info.data else "development"
+        if env == "production":
+            if not value or not value.strip():
+                raise ValueError("DATABASE_PASSWORD is required in production")
         return value
 
-    @field_validator("VECTOR_DIMENSION")
+    @field_validator("GEMINI_API_KEY")
     @classmethod
-    def validate_vector_dimension(cls, value: int) -> int:
-        if value <= 0:
-            raise ValueError("VECTOR_DIMENSION must be a positive integer")
+    def validate_gemini_api_key(cls, value: str, info: ValidationInfo) -> str:
+        env = info.data.get("ENVIRONMENT", "development") if info.data else "development"
+        if env == "production":
+            if not value or not value.strip():
+                raise ValueError("GEMINI_API_KEY is required in production")
         return value
-
 
     @property
     def database_uri(self) -> str:
