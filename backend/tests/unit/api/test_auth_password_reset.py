@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.core.exceptions import EntityNotFoundException
 from app.domain.enums import UserRole
 from app.main import app
@@ -16,6 +17,12 @@ from app.schemas.password_reset import (
     VerifyResetOtpResponse,
     ResetPasswordResponse,
 )
+
+
+@pytest.fixture(autouse=True)
+def disable_rate_limit_for_password_reset_tests(monkeypatch):
+    """Disable Security-02 rate limiting for password-reset domain unit tests."""
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False)
 
 
 def _now() -> datetime:

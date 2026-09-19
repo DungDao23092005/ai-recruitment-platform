@@ -13,6 +13,17 @@ from app.core.config import settings
 from app.main import app
 
 
+@pytest.fixture(autouse=True)
+def force_rate_limit_enabled(monkeypatch):
+    """Isolate unit tests from global state mutations caused by other tests.
+
+    The FastAPI lifespan in app/main.py mutates settings.RATE_LIMIT_ENABLED = False
+    when Redis is unavailable. This fixture ensures unit tests always see
+    RATE_LIMIT_ENABLED=True so they test the mocked Redis path.
+    """
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+
+
 class TestRateLimiterUnit:
     """Unit tests for RateLimiter class."""
 
