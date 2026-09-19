@@ -11,30 +11,6 @@ from app.domain.enums import JobStatus, JobType, WorkplaceType
 from app.models import Company, Job, User
 
 
-def _make_auth_client(client: httpx.AsyncClient, role: str) -> httpx.AsyncClient:
-    email = f"{role}-{uuid.uuid4()}@example.com"
-    register = run(
-        client.post(
-            f"{API_V1}/auth/register",
-            json={"email": email, "password": PASSWORD, "role": role},
-        )
-    )
-    assert register.status_code == 201, register.text
-    login = run(
-        client.post(
-            f"{API_V1}/auth/login",
-            data={"username": email, "password": PASSWORD},
-        )
-    )
-    assert login.status_code == 200, login.text
-    token = login.json()["access_token"]
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://testserver",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-
 @pytest.fixture
 def company(admin_client):
     # Create a company for the admin

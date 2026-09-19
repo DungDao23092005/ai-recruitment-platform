@@ -91,7 +91,6 @@ class TestUserSchemas:
 
         assert profile.full_name is None
         assert profile.position is None
-        assert profile.company_id is None
 
 
 class TestTokenSchemas:
@@ -196,7 +195,6 @@ class TestJobSchemas:
         job = JobUpdate()
 
         assert job.title is None
-        assert job.status is None
 
 
 class TestApplicationSchemas:

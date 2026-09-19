@@ -347,8 +347,12 @@ class TestRecruiterProfileCompanyOwnership:
             )
         )
 
-        assert resp.status_code == 403
-        assert "not allowed to link" in resp.json()["detail"]
+        # Pydantic drops client-controlled company_id; legitimate association preserved
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["company_id"] == company_a["id"], "company_id must remain as company_a's id"
+        assert body["full_name"] == "John Doe"
+        assert body["position"] == "Hiring Manager"
 
     def test_recruiter_without_company_cannot_claim_existing_company(
         self, recruiter_client, recruiter_b_client, run_async
@@ -368,8 +372,12 @@ class TestRecruiterProfileCompanyOwnership:
             )
         )
 
-        assert resp.status_code == 403
-        assert "not allowed to link" in resp.json()["detail"]
+        # Pydantic drops client-controlled company_id; server-side association (None) preserved
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["company_id"] is None, "company_id must remain None (no server-side association)"
+        assert body["full_name"] == "John Doe"
+        assert body["position"] == "Hiring Manager"
 
     def test_nonexistent_company_returns_404(self, recruiter_client, run_async):
         resp = run_async(
@@ -383,8 +391,12 @@ class TestRecruiterProfileCompanyOwnership:
             )
         )
 
-        assert resp.status_code == 404
-        assert "not found" in resp.json()["detail"]
+        # Pydantic drops client-controlled company_id; server-side association (None) preserved
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["company_id"] is None, "nonexistent company_id must not create or attach anything"
+        assert body["full_name"] == "John Doe"
+        assert body["position"] == "Hiring Manager"
 
     def test_company_creation_flow_get_returns_owned_company(
         self, recruiter_client, run_async

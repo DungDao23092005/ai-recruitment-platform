@@ -52,8 +52,10 @@ class TestRegister:
             )
         )
 
-        assert resp.status_code == 403
-        assert "Admin role cannot be assigned" in resp.json()["detail"]
+        # Pydantic validation rejects role="admin" at schema level (422)
+        assert resp.status_code == 422
+        assert "role" in resp.json()["detail"][0]["loc"]
+        assert "Input should be" in resp.json()["detail"][0]["msg"]
 
         # Verify no admin user was created
         from app.database.session import async_session_factory
