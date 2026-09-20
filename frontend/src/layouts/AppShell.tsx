@@ -154,18 +154,6 @@ function SidebarNav({ role }: { role?: UserRole }) {
               Trợ lý AI
             </NavLink>
           </li>
-          <li>
-            <NavLink to="/jobs" end className={sectionClass}>
-              <Briefcase className="h-4 w-4" aria-hidden="true" />
-              Việc làm công khai
-            </NavLink>
-          </li>
-          <li>
-            <NavLink to="/health" className={sectionClass}>
-              <FileText className="h-4 w-4" aria-hidden="true" />
-              Sức khỏe hệ thống
-            </NavLink>
-          </li>
         </ul>
       </div>
     </nav>

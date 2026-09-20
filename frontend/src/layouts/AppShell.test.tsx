@@ -76,6 +76,18 @@ describe('AppShell sidebar', () => {
     expect(screen.getByText('App Content')).toBeInTheDocument()
   })
 
+  it('does not render removed public items in private candidate sidebar', async () => {
+    renderShell('candidate', '/candidate/portal')
+
+    await waitFor(() => {
+      expect(getAppNav()).toBeInTheDocument()
+    })
+
+    const nav = getAppNav()
+    expect(within(nav).queryByText('Việc làm công khai')).not.toBeInTheDocument()
+    expect(within(nav).queryByText('Sức khỏe hệ thống')).not.toBeInTheDocument()
+  })
+
   it('marks the active route in the sidebar', async () => {
     renderShell('candidate', '/candidate/portal')
 
@@ -168,18 +180,6 @@ describe('AppShell sidebar', () => {
     expect(
       screen.getByRole('link', { name: 'Đơn ứng tuyển' }),
     ).toHaveAttribute('href', '/candidate/applications')
-  })
-
-  it('keeps "Việc làm công khai" pointing at the public /jobs route', async () => {
-    renderShell('candidate', '/candidate/portal')
-
-    await waitFor(() => {
-      expect(screen.getByText('Tổng quan')).toBeInTheDocument()
-    })
-
-    expect(
-      screen.getByRole('link', { name: 'Việc làm công khai' }),
-    ).toHaveAttribute('href', '/jobs')
   })
 
   it('opens the mobile drawer with the same sidebar navigation', async () => {
