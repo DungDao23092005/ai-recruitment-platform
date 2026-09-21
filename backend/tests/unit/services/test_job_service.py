@@ -439,7 +439,8 @@ class TestCreateJob:
         assert result is job
         assert job.status == JobStatus.PUBLISHED
         session.commit.assert_awaited_once()
-        session.refresh.assert_awaited_once_with(job)
+        # refresh called twice: once in _reindex_job, once in _commit_and_refresh
+        assert session.refresh.await_count == 2
 
     def test_job_not_found_raises(self):
         session = make_session()
@@ -475,7 +476,8 @@ class TestCloseJob:
         assert result is job
         assert job.status == JobStatus.CLOSED
         session.commit.assert_awaited_once()
-        session.refresh.assert_awaited_once_with(job)
+        # refresh called twice: once in _reindex_job, once in _commit_and_refresh
+        assert session.refresh.await_count == 2
 
     def test_job_not_found_raises(self):
         session = make_session()
@@ -526,7 +528,8 @@ class TestUpdateJobStatus:
         assert result is job
         assert job.status == JobStatus.PUBLISHED
         session.commit.assert_awaited_once()
-        session.refresh.assert_awaited_once_with(job)
+        # refresh called twice: once in _reindex_job, once in _commit_and_refresh
+        assert session.refresh.await_count == 2
 
     def test_published_to_closed(self):
         session = make_session()
@@ -630,6 +633,7 @@ class TestUpdateJob:
             vector=[0.0] * 4,
             skills=[],
             created_at=job.created_at,
+            status=job.status.value,
         )
         session.commit.assert_awaited_once()
         # session.refresh is called twice: once in _reindex_job, once in update_job

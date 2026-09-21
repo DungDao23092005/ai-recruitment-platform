@@ -114,12 +114,16 @@ class TestSearchJobs:
         embed, repo = provider
         service = make_service(embed, repo)
 
+        # Actor user defaults to None (public), so status=published filter is applied
         asyncio.run(service.search_jobs("python"))
 
         repo.search_similar.assert_awaited_once_with(
             collection_name="jobs",
             query_vector=[0.1, 0.2, 0.3],
-            limit=10,
+            limit=50,
+            filters={"status": "published"},
+            score_threshold=None,
+            exclude_ids=None,
         )
 
     def test_embedding_called(self, provider):
@@ -164,14 +168,21 @@ class TestSearchJobs:
         repo.search_similar.assert_awaited_once_with(
             collection_name="jobs",
             query_vector=[0.1, 0.2, 0.3],
-            limit=1,
+            limit=50,
+            filters={"status": "published"},
+            score_threshold=None,
+            exclude_ids=None,
         )
 
         asyncio.run(service.search_jobs("react", limit=500))
+        # Dynamic retrieval uses PAGE_SIZE (50) per page, effective_limit used for final slicing
         repo.search_similar.assert_awaited_with(
             collection_name="jobs",
             query_vector=[0.1, 0.2, 0.3],
-            limit=100,
+            limit=50,
+            filters={"status": "published"},
+            score_threshold=None,
+            exclude_ids=None,
         )
 
     def test_empty_result(self, provider):
@@ -353,7 +364,7 @@ class TestSearchCandidates:
         repo.search_similar.assert_awaited_once_with(
             collection_name="resumes",
             query_vector=[0.1, 0.2, 0.3],
-            limit=10,
+            limit=50,
         )
 
     def test_payload_candidate_id_fallback(self, provider):

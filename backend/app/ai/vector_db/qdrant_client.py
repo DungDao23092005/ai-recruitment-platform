@@ -9,6 +9,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    HasIdCondition,
     MatchValue,
     PayloadSchemaType,
     PointStruct,
@@ -91,6 +92,13 @@ class QdrantVectorRepository(BaseVectorRepository):
                 field_name="is_deleted",
                 field_schema=PayloadSchemaType.BOOL,
             )
+            # Create payload index for status on jobs collection (idempotent)
+            if collection_name == self.JOB_COLLECTION:
+                await self.client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="status",
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
 
     def _validate_vector(self, vector: list[float]) -> None:
         if len(vector) != settings.VECTOR_DIMENSION:
@@ -150,6 +158,7 @@ class QdrantVectorRepository(BaseVectorRepository):
         vector: list[float],
         skills: list[str] | None = None,
         created_at: datetime | None = None,
+        status: str | None = None,
     ) -> None:
         await self.upsert_vector(
             collection_name=self.JOB_COLLECTION,
@@ -160,6 +169,7 @@ class QdrantVectorRepository(BaseVectorRepository):
                 "skills": skills or [],
                 "created_at": self._serialize_timestamp(created_at),
                 "is_deleted": False,
+                "status": status,
             },
         )
 
@@ -220,9 +230,10 @@ class QdrantVectorRepository(BaseVectorRepository):
         limit: int = 10,
         filters: dict[str, Any] | None = None,
         score_threshold: float | None = None,
+        exclude_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         self._validate_vector(query_vector)
-        query_filter = self._build_query_filter(filters)
+        query_filter = self._build_query_filter(filters, exclude_ids)
         try:
             response = await self.client.query_points(
                 collection_name=collection_name,
@@ -245,18 +256,27 @@ class QdrantVectorRepository(BaseVectorRepository):
     @staticmethod
     def _build_query_filter(
         filters: dict[str, Any] | None = None,
+        exclude_ids: list[str] | None = None,
     ) -> Filter:
-        if not filters:
-            return SOFT_DELETE_FILTER
-        return Filter(
-            must=[
+        must_conditions = []
+        if filters:
+            must_conditions = [
                 FieldCondition(
                     key=str(key),
                     match=MatchValue(value=value),
                 )
                 for key, value in filters.items()
-            ],
-            must_not=SOFT_DELETE_FILTER.must_not,
+            ]
+
+        must_not_conditions = list(SOFT_DELETE_FILTER.must_not)
+        if exclude_ids:
+            must_not_conditions.append(
+                HasIdCondition(has_id=exclude_ids)
+            )
+
+        return Filter(
+            must=must_conditions if must_conditions else None,
+            must_not=must_not_conditions if must_not_conditions else None,
         )
 
     async def delete_vectors_by_filter(

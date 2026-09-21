@@ -419,7 +419,10 @@ async def test_recommend_jobs_qdrant_vector_repository_fallback(
     mock_dependencies[
         "vector_repository"
     ].search_similar.assert_awaited_once_with(
-        collection_name="jobs", query_vector=[0.1] * 384, limit=50
+        collection_name="jobs",
+        query_vector=[0.1] * 384,
+        limit=50,
+        filters={"status": "published"},
     )
 
 
@@ -521,6 +524,7 @@ async def test_recommend_jobs_explicit_vector_skips_retrieve(
         collection_name="jobs",
         query_vector=[0.7] * 384,
         limit=50,
+        filters={"status": "published"},
     )
 
 

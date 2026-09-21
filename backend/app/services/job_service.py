@@ -99,6 +99,8 @@ class JobService:
                 f"to {new_status.value!r}"
             )
         job.status = new_status
+        # Qdrant upsert BEFORE SQL commit (Architecture v3.2: Qdrant-First Dependency)
+        await self._reindex_job(job)
         await self._commit_and_refresh(job)
         return job
 
@@ -234,6 +236,7 @@ class JobService:
             vector=vector,
             skills=skills_list,
             created_at=job.created_at,
+            status=job.status.value,
         )
 
     async def list_jobs(

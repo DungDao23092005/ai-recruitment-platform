@@ -16,6 +16,7 @@ from app.ai.parsers.job_parser import JobParser
 from app.ai.parsers.resume_parser import ResumeParser
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 from app.core.exceptions import EmptyDocumentError, EntityNotFoundException
+from app.domain.enums import JobStatus
 from app.models import CandidateProfile, Job, Resume, User
 from app.repositories import ResumeRepository
 from app.schemas.ai_job import ParsedJobSchema
@@ -242,10 +243,13 @@ class AIMatchingService:
 
         # Qdrant Vector Repository Search with enlarged retrieval pool for reranking
         search_limit = max(50, effective_limit * 2)
+        # Candidate recommendations: only published jobs
+        filters = {"status": JobStatus.PUBLISHED.value}
         qdrant_results = await self.vector_repository.search_similar(
             collection_name="jobs",
             query_vector=candidate_vector,
             limit=search_limit,
+            filters=filters,
         )
 
         job_ids = [
