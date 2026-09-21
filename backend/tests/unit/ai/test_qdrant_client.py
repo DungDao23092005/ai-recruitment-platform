@@ -532,7 +532,7 @@ class TestInitCollectionsPayloadIndex:
 
     @pytest.mark.asyncio
     async def test_payload_index_created_for_existing_collection(self):
-        """Existing collection: init_collections calls create_payload_index for is_deleted."""
+        """Existing collection: init_collections calls create_payload_index for is_deleted and status."""
         mock_client = AsyncMock(spec=AsyncQdrantClient)
         mock_client.collection_exists.return_value = True
 
@@ -542,18 +542,32 @@ class TestInitCollectionsPayloadIndex:
         # Verify collection_exists called for all 3 collections
         assert mock_client.collection_exists.call_count == 3
 
-        # Verify create_payload_index called for all 3 collections with is_deleted
-        assert mock_client.create_payload_index.call_count == 3
+        # Verify create_payload_index called: 1 per collection (resumes, knowledge) + 2 for jobs (is_deleted + status)
+        assert mock_client.create_payload_index.call_count == 4
 
+        # Collect all index calls
+        index_calls = []
         for call in mock_client.create_payload_index.call_args_list:
             kwargs = call.kwargs
-            assert kwargs["field_name"] == "is_deleted"
-            assert kwargs["field_schema"] == PayloadSchemaType.BOOL
-            assert kwargs["collection_name"] in (
+            index_calls.append((kwargs["collection_name"], kwargs["field_name"], kwargs["field_schema"]))
+
+        # Verify is_deleted index exists for all 3 collections
+        is_deleted_indexes = [(coll, schema) for coll, field, schema in index_calls if field == "is_deleted"]
+        assert len(is_deleted_indexes) == 3
+        for coll, schema in is_deleted_indexes:
+            assert schema == PayloadSchemaType.BOOL
+            assert coll in (
                 QdrantVectorRepository.RESUME_COLLECTION,
                 QdrantVectorRepository.JOB_COLLECTION,
                 QdrantVectorRepository.KNOWLEDGE_COLLECTION,
             )
+
+        # Verify status index exists ONLY for jobs collection
+        status_indexes = [(coll, schema) for coll, field, schema in index_calls if field == "status"]
+        assert len(status_indexes) == 1
+        coll, schema = status_indexes[0]
+        assert coll == QdrantVectorRepository.JOB_COLLECTION
+        assert schema == PayloadSchemaType.KEYWORD
 
     @pytest.mark.asyncio
     async def test_payload_index_created_for_new_collection(self):
@@ -567,13 +581,27 @@ class TestInitCollectionsPayloadIndex:
         # Verify collection created for all 3 collections
         assert mock_client.create_collection.call_count == 3
 
-        # Verify create_payload_index called for all 3 collections
-        assert mock_client.create_payload_index.call_count == 3
+        # Verify create_payload_index called: 1 per collection (resumes, knowledge) + 2 for jobs (is_deleted + status)
+        assert mock_client.create_payload_index.call_count == 4
 
+        # Collect all index calls
+        index_calls = []
         for call in mock_client.create_payload_index.call_args_list:
             kwargs = call.kwargs
-            assert kwargs["field_name"] == "is_deleted"
-            assert kwargs["field_schema"] == PayloadSchemaType.BOOL
+            index_calls.append((kwargs["collection_name"], kwargs["field_name"], kwargs["field_schema"]))
+
+        # Verify is_deleted index exists for all 3 collections
+        is_deleted_indexes = [(coll, schema) for coll, field, schema in index_calls if field == "is_deleted"]
+        assert len(is_deleted_indexes) == 3
+        for coll, schema in is_deleted_indexes:
+            assert schema == PayloadSchemaType.BOOL
+
+        # Verify status index exists ONLY for jobs collection
+        status_indexes = [(coll, schema) for coll, field, schema in index_calls if field == "status"]
+        assert len(status_indexes) == 1
+        coll, schema = status_indexes[0]
+        assert coll == QdrantVectorRepository.JOB_COLLECTION
+        assert schema == PayloadSchemaType.KEYWORD
 
         # Verify call order: for each collection, create_collection must be called before create_payload_index
         calls = mock_client.mock_calls
@@ -593,6 +621,7 @@ class TestInitCollectionsPayloadIndex:
         for coll in collections:
             create_idx = next(i for i, (method, name) in enumerate(collection_order)
                               if method == "create_collection" and name == coll)
+            # For jobs, there are 2 index calls; ensure at least the first index comes after create_collection
             index_idx = next(i for i, (method, name) in enumerate(collection_order)
                              if method == "create_payload_index" and name == coll)
             assert create_idx < index_idx, f"create_collection must precede create_payload_index for {coll}"
@@ -606,16 +635,28 @@ class TestInitCollectionsPayloadIndex:
         repo = QdrantVectorRepository(client=mock_client)
         await repo.init_collections()
 
-        # Verify all 3 collections have the index
-        collections_with_index = {
+        # Verify all 3 collections have is_deleted index
+        collections_with_deleted_index = {
             call.kwargs["collection_name"]
             for call in mock_client.create_payload_index.call_args_list
+            if call.kwargs["field_name"] == "is_deleted"
         }
 
-        assert collections_with_index == {
+        assert collections_with_deleted_index == {
             QdrantVectorRepository.RESUME_COLLECTION,
             QdrantVectorRepository.JOB_COLLECTION,
             QdrantVectorRepository.KNOWLEDGE_COLLECTION,
+        }
+
+        # Verify jobs collection has status index
+        collections_with_status_index = {
+            call.kwargs["collection_name"]
+            for call in mock_client.create_payload_index.call_args_list
+            if call.kwargs["field_name"] == "status"
+        }
+
+        assert collections_with_status_index == {
+            QdrantVectorRepository.JOB_COLLECTION,
         }
 
     @pytest.mark.asyncio
@@ -631,5 +672,6 @@ class TestInitCollectionsPayloadIndex:
         await repo.init_collections()
         await repo.init_collections()
 
-        # Should call create_payload_index 3 times per call (9 total)
-        assert mock_client.create_payload_index.call_count == 9
+        # Should call create_payload_index 4 times per call (12 total): 
+        # 1 is_deleted for each of 3 collections + 1 status for jobs
+        assert mock_client.create_payload_index.call_count == 12
