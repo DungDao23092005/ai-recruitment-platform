@@ -1,29 +1,30 @@
-FROM python:3.12-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     gnupg2 \
     unixodbc-dev \
     libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+    && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && curl -fsSL https://packages.microsoft.com/config/debian/12/prod.list > /etc/apt/sources.list.d/mssql-release.list \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/
+
+
+# Pre-install pinned CPU-only PyTorch.
+# Official PyTorch CPU package index.
+RUN pip install --no-cache-dir torch==2.4.0+cpu --index-url https://download.pytorch.org/whl/cpu
 
 COPY backend/requirements.txt ./requirements.txt
 
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Microsoft ODBC Driver 18 for SQL Server (required by pyodbc/aioodbc)
-# Kept after the pip layer so dependency changes do not invalidate the heavy pip cache.
-RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
-        | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
-    && curl -fsSL https://packages.microsoft.com/config/debian/12/prod.list \
-        | tee /etc/apt/sources.list.d/mssql-release.list > /dev/null \
-    && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
-    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir --timeout 300 --retries 10 -r requirements.txt
+
 
 COPY backend/ .
 

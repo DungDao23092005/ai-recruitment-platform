@@ -27,12 +27,17 @@ services:
     depends_on:
       mssql:
         condition: service_healthy
+        required: true
       redis:
         condition: service_healthy
+        required: true
       qdrant:
         condition: service_healthy
+        required: true
     networks:
       - recruitment-net
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
 
   frontend:
     build:
@@ -125,6 +130,7 @@ volumes:
   mssql_data:
   redis_data:
   qdrant_data:
+  huggingface_cache:
 
 networks:
   recruitment-net:
