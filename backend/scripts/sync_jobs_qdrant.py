@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Synchronize published SQL Server jobs to Qdrant jobs collection.
+"""Synchronize non-deleted SQL Server jobs (published + draft) to Qdrant jobs collection.
 
-This script indexes current valid (PUBLISHED, non-deleted) jobs from SQL Server
+This script indexes current valid (non-deleted) jobs from SQL Server
 into the Qdrant 'jobs' collection using the project's existing embedding and
 indexing architecture. It does NOT delete orphan Qdrant vectors.
 
@@ -93,18 +93,18 @@ async def run_sync(dry_run: bool = False) -> dict:
     logger.info(f"Qdrant jobs collection: {qdrant_points_count} points, {qdrant_dimension} dimensions")
     logger.info(f"Qdrant valid job IDs (non-deleted): {len(qdrant_job_ids)}")
 
-    # Fetch published, non-deleted jobs from SQL Server (for planning)
-    logger.info("Fetching published jobs from SQL Server...")
+    # Fetch non-deleted jobs from SQL Server (for planning)
+    # Include both PUBLISHED and DRAFT per canonical indexing path
+    logger.info("Fetching non-deleted jobs from SQL Server...")
     async with async_session_factory() as session:
         stmt = select(Job).where(
-            Job.status == JobStatus.PUBLISHED,
             Job.is_deleted == False,  # noqa: E712
         )
         result = await session.execute(stmt)
         sql_jobs = list(result.scalars().all())
 
     sql_job_ids = {job.id for job in sql_jobs}
-    logger.info(f"SQL Server published jobs (non-deleted): {len(sql_jobs)}")
+    logger.info(f"SQL Server non-deleted jobs (published + draft): {len(sql_jobs)}")
 
     # Compute reconciliation stats
     already_indexed = sql_job_ids & qdrant_job_ids
@@ -112,21 +112,21 @@ async def run_sync(dry_run: bool = False) -> dict:
     orphans = qdrant_job_ids - sql_job_ids
 
     logger.info("\n=== Synchronization Plan ===")
-    logger.info(f"SQL published jobs:           {len(sql_jobs)}")
-    logger.info(f"Qdrant points (total):        {qdrant_points_count}")
-    logger.info(f"Qdrant valid job IDs:         {len(qdrant_job_ids)}")
-    logger.info(f"Already indexed (intersection): {len(already_indexed)}")
-    logger.info(f"Missing (need upsert):        {len(missing)}")
-    logger.info(f"Orphan Qdrant IDs (detected): {len(orphans)}")
+    logger.info(f"SQL non-deleted jobs (pub+draft): {len(sql_jobs)}")
+    logger.info(f"Qdrant points (total):              {qdrant_points_count}")
+    logger.info(f"Qdrant valid job IDs:               {len(qdrant_job_ids)}")
+    logger.info(f"Already indexed (intersection):     {len(already_indexed)}")
+    logger.info(f"Missing (need upsert):              {len(missing)}")
+    logger.info(f"Orphan Qdrant IDs (detected):       {len(orphans)}")
 
     if dry_run:
         if missing:
             logger.info("\nJobs that would be indexed:")
             for job in sql_jobs:
                 if job.id in missing:
-                    logger.info(f"  - {job.id} - {job.title}")
+                    logger.info(f"  - {job.id} - {job.title} ({job.status.value})")
         else:
-            logger.info("\nAll SQL published jobs already indexed in Qdrant.")
+            logger.info("\nAll SQL non-deleted jobs already indexed in Qdrant.")
         logger.info("\nDRY RUN completed. No vectors were written.")
         logger.info("Orphan Qdrant vectors were NOT deleted (preserved per policy).")
 
@@ -143,7 +143,7 @@ async def run_sync(dry_run: bool = False) -> dict:
 
     # Execute synchronization: upsert missing jobs
     if not missing:
-        logger.info("\nAll SQL published jobs already indexed. Nothing to do.")
+        logger.info("\nAll SQL non-deleted jobs already indexed. Nothing to do.")
         return {
             "sql_jobs": len(sql_jobs),
             "qdrant_points_total": qdrant_points_count,
@@ -174,7 +174,6 @@ async def run_sync(dry_run: bool = False) -> dict:
             )
             .where(
                 Job.id.in_(missing),
-                Job.status == JobStatus.PUBLISHED,
                 Job.is_deleted == False,  # noqa: E712
             )
         )
@@ -197,13 +196,13 @@ async def run_sync(dry_run: bool = False) -> dict:
                 logger.error(f"Failed to index job {job.id} ({job.title}): {e}")
 
     logger.info("\n=== Synchronization Summary ===")
-    logger.info(f"SQL published jobs:           {len(sql_jobs)}")
-    logger.info(f"Qdrant points before:         {qdrant_points_count}")
-    logger.info(f"Already indexed:              {len(already_indexed)}")
-    logger.info(f"Missing (targeted):           {len(missing)}")
-    logger.info(f"Successfully upserted:        {success}")
-    logger.info(f"Failed:                       {failed}")
-    logger.info(f"Orphan Qdrant IDs (preserved): {len(orphans)}")
+    logger.info(f"SQL non-deleted jobs (pub+draft): {len(sql_jobs)}")
+    logger.info(f"Qdrant points before:              {qdrant_points_count}")
+    logger.info(f"Already indexed:                    {len(already_indexed)}")
+    logger.info(f"Missing (targeted):                 {len(missing)}")
+    logger.info(f"Successfully upserted:              {success}")
+    logger.info(f"Failed:                             {failed}")
+    logger.info(f"Orphan Qdrant IDs (preserved):      {len(orphans)}")
 
     if failed_jobs:
         logger.info("\nFailed jobs:")
@@ -226,7 +225,7 @@ async def run_sync(dry_run: bool = False) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Sync published SQL Server jobs to Qdrant jobs collection"
+        description="Sync non-deleted SQL Server jobs (published + draft) to Qdrant jobs collection"
     )
     parser.add_argument(
         "--dry-run",
