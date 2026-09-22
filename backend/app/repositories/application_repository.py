@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
+from app.domain.enums import ApplicationStatus
 from app.models import Application, Company, Job
 from app.repositories.base import BaseRepository
 
@@ -134,3 +135,28 @@ class ApplicationRepository(BaseRepository[Application]):
         )
         result = await self.session.execute(stmt)
         return [{"status": row[0].value, "count": row[1]} for row in result.all()]
+
+    async def try_update_status(
+        self,
+        application_id: Any,
+        expected_status: ApplicationStatus,
+        new_status: ApplicationStatus,
+    ) -> bool:
+        """
+        Atomically update application status only if current status matches expected.
+
+        Uses SQL Server-compatible conditional UPDATE with WHERE clause on status.
+        Returns True if the update was applied (exactly 1 row affected),
+        False if no rows were updated (status changed concurrently).
+        """
+        stmt = (
+            update(Application)
+            .where(
+                Application.id == application_id,
+                Application.status == expected_status,
+                Application.is_deleted == False,  # noqa: E712
+            )
+            .values(status=new_status)
+        )
+        result = await self.session.execute(stmt)
+        return result.rowcount == 1

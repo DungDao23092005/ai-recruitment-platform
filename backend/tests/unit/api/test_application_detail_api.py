@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user
-from app.core.exceptions import EntityNotFoundException
+from app.core.exceptions import ConflictException, EntityNotFoundException
 from app.domain.enums import ApplicationStatus, UserRole
 from app.main import app
 
@@ -200,3 +200,26 @@ def test_get_detail_anonymous_returns_401(anonymous_client, mock_service):
 
     assert resp.status_code == 401
     mock_service.get_application_detail.assert_not_awaited()
+
+
+def test_update_status_conflict_returns_409(recruiter_client, mock_service):
+    """Test that concurrent stale update raises HTTP 409 Conflict."""
+    application = _fake_application()
+    mock_service.update_application_status = AsyncMock()
+    mock_service.update_application_status.side_effect = ConflictException(
+        "Application was modified concurrently. Expected status under_review, but it has changed. Please refresh and try again."
+    )
+
+    resp = recruiter_client.patch(
+        f"/api/v1/applications/{application.id}/status",
+        json={"status": "rejected"},
+    )
+
+    assert resp.status_code == 409
+    body = resp.json()
+    assert "concurrently" in body["detail"].lower()
+    mock_service.update_application_status.assert_awaited_once_with(
+        current_user=mock_service.update_application_status.call_args[1]["current_user"],
+        application_id=application.id,
+        new_status=ApplicationStatus.REJECTED,
+    )

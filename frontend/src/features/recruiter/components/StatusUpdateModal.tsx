@@ -22,9 +22,9 @@ export const RECRUITER_STATUS_TRANSITIONS: Record<
   ApplicationStatus,
   ApplicationStatus[]
 > = {
-  applied: ['under_review'],
-  under_review: ['shortlisted'],
-  shortlisted: ['interviewing'],
+  applied: ['under_review', 'rejected'],
+  under_review: ['shortlisted', 'rejected'],
+  shortlisted: ['interviewing', 'rejected'],
   interviewing: ['accepted', 'rejected'],
   accepted: [],
   rejected: [],

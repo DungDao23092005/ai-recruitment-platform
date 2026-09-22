@@ -17,14 +17,17 @@ class Application(BaseDomainEntity):
     _ALLOWED_TRANSITIONS: ClassVar[dict[ApplicationStatus, set[ApplicationStatus]]] = {
         ApplicationStatus.APPLIED: {
             ApplicationStatus.UNDER_REVIEW,
+            ApplicationStatus.REJECTED,
             ApplicationStatus.WITHDRAWN,
         },
         ApplicationStatus.UNDER_REVIEW: {
             ApplicationStatus.SHORTLISTED,
+            ApplicationStatus.REJECTED,
             ApplicationStatus.WITHDRAWN,
         },
         ApplicationStatus.SHORTLISTED: {
             ApplicationStatus.INTERVIEWING,
+            ApplicationStatus.REJECTED,
             ApplicationStatus.WITHDRAWN,
         },
         ApplicationStatus.INTERVIEWING: {

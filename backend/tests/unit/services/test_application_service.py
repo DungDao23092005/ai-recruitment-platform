@@ -290,6 +290,184 @@ class TestUpdateApplicationStatus:
         assert application.status == ApplicationStatus.APPLIED
 
     @patch("app.services.application_service.NotificationService")
+    def test_early_rejection_from_applied(self, mock_notification_service):
+        """Test APPLIED -> REJECTED is now a valid transition."""
+        session = make_session()
+        service = make_service(session)
+        application = make_application(status=ApplicationStatus.APPLIED)
+        service.applications.get_by_id_with_candidate.return_value = application
+        job = make_job()
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=job
+            )
+            # Mock the atomic update to succeed
+            service.applications.try_update_status = AsyncMock(return_value=True)
+
+            result = asyncio.run(
+                service.update_application_status(
+                    current_user=make_user(),
+                    application_id=application.id,
+                    new_status=ApplicationStatus.REJECTED,
+                )
+            )
+
+        assert result is application
+        assert application.status == ApplicationStatus.REJECTED
+        session.commit.assert_awaited_once()
+        service.applications.try_update_status.assert_awaited_once_with(
+            application_id=application.id,
+            expected_status=ApplicationStatus.APPLIED,
+            new_status=ApplicationStatus.REJECTED,
+        )
+
+    @patch("app.services.application_service.NotificationService")
+    def test_early_rejection_from_under_review(self, mock_notification_service):
+        """Test UNDER_REVIEW -> REJECTED is now a valid transition."""
+        session = make_session()
+        service = make_service(session)
+        application = make_application(status=ApplicationStatus.UNDER_REVIEW)
+        service.applications.get_by_id_with_candidate.return_value = application
+        job = make_job()
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=job
+            )
+            service.applications.try_update_status = AsyncMock(return_value=True)
+
+            result = asyncio.run(
+                service.update_application_status(
+                    current_user=make_user(),
+                    application_id=application.id,
+                    new_status=ApplicationStatus.REJECTED,
+                )
+            )
+
+        assert result is application
+        assert application.status == ApplicationStatus.REJECTED
+        session.commit.assert_awaited_once()
+        service.applications.try_update_status.assert_awaited_once_with(
+            application_id=application.id,
+            expected_status=ApplicationStatus.UNDER_REVIEW,
+            new_status=ApplicationStatus.REJECTED,
+        )
+
+    @patch("app.services.application_service.NotificationService")
+    def test_early_rejection_from_shortlisted(self, mock_notification_service):
+        """Test SHORTLISTED -> REJECTED is now a valid transition."""
+        session = make_session()
+        service = make_service(session)
+        application = make_application(status=ApplicationStatus.SHORTLISTED)
+        service.applications.get_by_id_with_candidate.return_value = application
+        job = make_job()
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=job
+            )
+            service.applications.try_update_status = AsyncMock(return_value=True)
+
+            result = asyncio.run(
+                service.update_application_status(
+                    current_user=make_user(),
+                    application_id=application.id,
+                    new_status=ApplicationStatus.REJECTED,
+                )
+            )
+
+        assert result is application
+        assert application.status == ApplicationStatus.REJECTED
+        session.commit.assert_awaited_once()
+        service.applications.try_update_status.assert_awaited_once_with(
+            application_id=application.id,
+            expected_status=ApplicationStatus.SHORTLISTED,
+            new_status=ApplicationStatus.REJECTED,
+        )
+
+    @patch("app.services.application_service.NotificationService")
+    def test_rejection_from_interviewing_still_works(self, mock_notification_service):
+        """Test INTERVIEWING -> REJECTED remains valid."""
+        session = make_session()
+        service = make_service(session)
+        application = make_application(status=ApplicationStatus.INTERVIEWING)
+        service.applications.get_by_id_with_candidate.return_value = application
+        job = make_job()
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=job
+            )
+            service.applications.try_update_status = AsyncMock(return_value=True)
+
+            result = asyncio.run(
+                service.update_application_status(
+                    current_user=make_user(),
+                    application_id=application.id,
+                    new_status=ApplicationStatus.REJECTED,
+                )
+            )
+
+        assert result is application
+        assert application.status == ApplicationStatus.REJECTED
+        session.commit.assert_awaited_once()
+        service.applications.try_update_status.assert_awaited_once_with(
+            application_id=application.id,
+            expected_status=ApplicationStatus.INTERVIEWING,
+            new_status=ApplicationStatus.REJECTED,
+        )
+
+    @patch("app.services.application_service.NotificationService")
+    def test_concurrent_update_raises_conflict(self, mock_notification_service):
+        """Test that concurrent status updates are detected and raise ConflictException."""
+        session = make_session()
+        service = make_service(session)
+        application = make_application(status=ApplicationStatus.UNDER_REVIEW)
+        service.applications.get_by_id_with_candidate.return_value = application
+        job = make_job()
+
+        mock_notification_service.return_value.create_notification = AsyncMock()
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=job
+            )
+            # Simulate concurrent modification: atomic update returns False
+            service.applications.try_update_status = AsyncMock(return_value=False)
+
+            with pytest.raises(ConflictException):
+                asyncio.run(
+                    service.update_application_status(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        new_status=ApplicationStatus.REJECTED,
+                    )
+                )
+
+        # Status should not have been changed
+        assert application.status == ApplicationStatus.UNDER_REVIEW
+        session.commit.assert_not_awaited()
+
+    @patch("app.services.application_service.NotificationService")
     def test_commit_failure_rolls_back(self, mock_notification_service):
         session = make_session()
         service = make_service(session)

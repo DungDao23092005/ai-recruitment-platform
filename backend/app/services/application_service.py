@@ -132,7 +132,24 @@ class ApplicationService:
         except DomainException as exc:
             raise InvalidTransitionException(str(exc)) from exc
 
-        application.status = domain.status
+        # Atomic conditional update to prevent lost updates
+        # Only proceed if the status is still what we validated
+        updated = await self.applications.try_update_status(
+            application_id=application_id,
+            expected_status=old_status,
+            new_status=new_status,
+        )
+        if not updated:
+            # Concurrent modification detected - the application status changed
+            # after we read it but before we could update it
+            raise ConflictException(
+                f"Application {application_id} was modified concurrently. "
+                f"Expected status {old_status.value}, but it has changed. "
+                f"Please refresh and try again."
+            )
+
+        # Update local object and send notification
+        application.status = new_status
         try:
             # Notify candidate about status change BEFORE commit
             notification_service = NotificationService(self.session)

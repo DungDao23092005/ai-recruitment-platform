@@ -19,10 +19,13 @@ def make_application(status: ApplicationStatus = ApplicationStatus.APPLIED) -> A
     "initial,next_status",
     [
         (ApplicationStatus.APPLIED, ApplicationStatus.UNDER_REVIEW),
+        (ApplicationStatus.APPLIED, ApplicationStatus.REJECTED),
         (ApplicationStatus.APPLIED, ApplicationStatus.WITHDRAWN),
         (ApplicationStatus.UNDER_REVIEW, ApplicationStatus.SHORTLISTED),
+        (ApplicationStatus.UNDER_REVIEW, ApplicationStatus.REJECTED),
         (ApplicationStatus.UNDER_REVIEW, ApplicationStatus.WITHDRAWN),
         (ApplicationStatus.SHORTLISTED, ApplicationStatus.INTERVIEWING),
+        (ApplicationStatus.SHORTLISTED, ApplicationStatus.REJECTED),
         (ApplicationStatus.SHORTLISTED, ApplicationStatus.WITHDRAWN),
         (ApplicationStatus.INTERVIEWING, ApplicationStatus.ACCEPTED),
         (ApplicationStatus.INTERVIEWING, ApplicationStatus.REJECTED),
@@ -41,7 +44,6 @@ def test_valid_transitions(initial, next_status):
     "initial,next_status",
     [
         (ApplicationStatus.APPLIED, ApplicationStatus.ACCEPTED),
-        (ApplicationStatus.APPLIED, ApplicationStatus.REJECTED),
         (ApplicationStatus.UNDER_REVIEW, ApplicationStatus.INTERVIEWING),
         (ApplicationStatus.UNDER_REVIEW, ApplicationStatus.ACCEPTED),
         (ApplicationStatus.SHORTLISTED, ApplicationStatus.ACCEPTED),
