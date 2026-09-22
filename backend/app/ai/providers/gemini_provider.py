@@ -19,6 +19,17 @@ GEMINI_REQUEST_FAILED_MESSAGE = (
     "Không thể xử lý yêu cầu AI. Vui lòng thử lại sau."
 )
 
+# Native HTTP retry configuration for google-genai SDK
+# This enables bounded HTTP-level retries for transient errors
+_GEMINI_HTTP_RETRY_OPTIONS = {
+    "attempts": 4,              # Total attempts = 1 initial + up to 3 retries
+    "initial_delay": 1.0,       # 1 second initial delay
+    "max_delay": 10.0,          # Maximum 10 seconds delay
+    "exp_base": 2.0,            # Exponential base 2
+    "jitter": 1.0,              # Full jitter
+    "http_status_codes": [408, 429, 500, 502, 503, 504],  # Only retry these codes
+}
+
 try:
     from google import genai
     from google.genai import types
@@ -73,7 +84,12 @@ class GeminiLLMProvider(BaseLLMProvider):
                 "Please install google-genai and restart the service."
             )
 
-        client = genai.Client(api_key=self.api_key)
+        client = genai.Client(
+            api_key=self.api_key,
+            http_options=types.HttpOptions(
+                retry_options=types.HttpRetryOptions(**_GEMINI_HTTP_RETRY_OPTIONS)
+            ),
+        )
 
         config_args: dict[str, Any] = {
             "response_mime_type": "application/json",
