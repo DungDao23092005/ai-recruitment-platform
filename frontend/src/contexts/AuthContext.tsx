@@ -1,12 +1,4 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from 'react'
+import apiClient from '@/api/client'
 import {
   clearToken,
   getStoredToken,
@@ -14,7 +6,7 @@ import {
   storeToken,
   TOKEN_STORAGE_KEY,
 } from '@/api/client'
-import { getCurrentUser, login as loginApi } from '@/api/auth'
+import { getCurrentUser, login as loginApi, logout as logoutApi } from '@/api/auth'
 import type { LoginCredentials, User } from '@/types/auth'
 
 interface AuthContextValue {
@@ -39,9 +31,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null)
   }, [])
 
-  const logout = useCallback(() => {
-    applyLogout()
-    window.dispatchEvent(new CustomEvent(LOGOUT_EVENT))
+  const logout = useCallback(async () => {
+    try {
+      // Attempt server-side token revocation
+      await logoutApi()
+    } catch (error) {
+      // Even if backend fails, we still clear local state
+      console.warn('Backend logout failed, clearing local state anyway:', error)
+    } finally {
+      // Always clear local auth state regardless of backend success/failure
+      applyLogout()
+      window.dispatchEvent(new CustomEvent(LOGOUT_EVENT))
+    }
   }, [applyLogout])
 
   useEffect(() => {

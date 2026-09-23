@@ -1,17 +1,45 @@
 import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException, status
+from redis.asyncio import Redis
 
 from app.api import deps
+from app.core.config import settings
+from app.core.rate_limit import set_rate_limiter
+from app.core.rate_limit import RateLimiter
 from app.core.security import create_access_token
 from app.domain.enums import UserRole
 from app.models import User
-from app.services import UserService
+from app.services import UserService, AuthService
 
 ALGORITHM = "HS256"
+
+
+@pytest.fixture
+def mock_redis():
+    """Mock Redis client for testing."""
+    mock_redis = AsyncMock()
+    mock_redis.exists = AsyncMock(return_value=0)  # Not revoked
+    mock_redis.set = AsyncMock(return_value=True)
+
+    # Create a RateLimiter with the mocked Redis
+    from app.core.rate_limit import RateLimiter, set_rate_limiter
+    from app.main import app
+    limiter = RateLimiter(mock_redis)
+    set_rate_limiter(limiter)
+    # Also set app.state.redis for AuthService
+    app.state.redis = mock_redis
+
+    yield mock_redis
+
+    # Cleanup
+    import app.core.rate_limit as rate_limit_module
+    rate_limit_module._rate_limiter = None
+    app.state.redis = None
 
 
 def make_user(
@@ -43,7 +71,7 @@ def stub_get_user_by_id(monkeypatch, user):
 
 
 class TestGetCurrentUser:
-    def test_valid_token_returns_user(self, monkeypatch):
+    def test_valid_token_returns_user(self, monkeypatch, mock_redis):
         user = make_user()
         stub_get_user_by_id(monkeypatch, user)
         token = create_access_token(subject=str(user.id))
@@ -52,7 +80,7 @@ class TestGetCurrentUser:
 
         assert result is user
 
-    def test_expired_token(self, monkeypatch):
+    def test_expired_token(self, monkeypatch, mock_redis):
         user = make_user()
         stub_get_user_by_id(monkeypatch, user)
         token = create_access_token(
@@ -64,14 +92,14 @@ class TestGetCurrentUser:
             asyncio.run(deps.get_current_user(token=token, db=None))
         assert_unauthorized(exc.value)
 
-    def test_malformed_token(self, monkeypatch):
+    def test_malformed_token(self, monkeypatch, mock_redis):
         stub_get_user_by_id(monkeypatch, make_user())
 
         with pytest.raises(HTTPException) as exc:
             asyncio.run(deps.get_current_user(token="not.a.jwt", db=None))
         assert_unauthorized(exc.value)
 
-    def test_invalid_signature_token(self, monkeypatch):
+    def test_invalid_signature_token(self, monkeypatch, mock_redis):
         from jose import jwt as jose_jwt
 
         from app.core.config import settings
@@ -88,7 +116,7 @@ class TestGetCurrentUser:
             asyncio.run(deps.get_current_user(token=token, db=None))
         assert_unauthorized(exc.value)
 
-    def test_missing_sub(self, monkeypatch):
+    def test_missing_sub(self, monkeypatch, mock_redis):
         from jose import jwt as jose_jwt
 
         from app.core.config import settings
@@ -100,7 +128,7 @@ class TestGetCurrentUser:
             asyncio.run(deps.get_current_user(token=token, db=None))
         assert_unauthorized(exc.value)
 
-    def test_invalid_uuid_sub(self, monkeypatch):
+    def test_invalid_uuid_sub(self, monkeypatch, mock_redis):
         stub_get_user_by_id(monkeypatch, make_user())
         token = create_access_token(subject="not-a-uuid")
 
@@ -108,7 +136,7 @@ class TestGetCurrentUser:
             asyncio.run(deps.get_current_user(token=token, db=None))
         assert_unauthorized(exc.value)
 
-    def test_user_not_found(self, monkeypatch):
+    def test_user_not_found(self, monkeypatch, mock_redis):
         async def fake_get_user_by_id(self, user_id):
             return None
 

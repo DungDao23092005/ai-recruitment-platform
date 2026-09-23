@@ -1,10 +1,13 @@
 import asyncio
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redis.exceptions import RedisError
 
 from app.core.exceptions import ConflictException, ForbiddenException
+from app.core.rate_limit import RateLimiter, set_rate_limiter
 from app.domain.enums import UserRole
 from app.models import User
 from app.repositories import UserRepository
@@ -250,3 +253,220 @@ class TestRegisterUserEmailUniqueness:
             asyncio.run(service.register_user(data))
 
         session.commit.assert_not_awaited()
+
+
+class TestRevokeToken:
+    def make_service_with_redis(self, session, redis_client=None):
+        """Create AuthService with optional mocked Redis client."""
+        from app.core.rate_limit import set_rate_limiter
+        from app.core.rate_limit import RateLimiter
+        from app.main import app
+        from redis.asyncio import Redis
+
+        service = AuthService(session)
+        service.users = AsyncMock(spec=UserRepository)
+
+        if redis_client is not None:
+            # Create a RateLimiter with the mocked Redis
+            limiter = RateLimiter(redis_client)
+            set_rate_limiter(limiter)
+            # Also set app.state.redis for AuthService
+            app.state.redis = redis_client
+        else:
+            set_rate_limiter(None)
+            app.state.redis = None
+
+        return service
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_success(self):
+        """Test revoke_token successfully adds jti to Redis blocklist with TTL."""
+        from redis.asyncio import Redis
+
+        session = make_session()
+        mock_redis = AsyncMock(spec=Redis)
+        mock_redis.set = AsyncMock(return_value=True)
+
+        service = self.make_service_with_redis(None, mock_redis)
+
+        jti = "test-jti-123"
+        exp = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        result = await service.revoke_token(jti, exp)
+
+        assert result is True
+        mock_redis.set.assert_awaited_once()
+        call_args = mock_redis.set.call_args
+        assert call_args.args[0] == f"auth:blocklist:{jti}"
+        assert call_args.args[1] == "1"
+        assert call_args.kwargs["ex"] > 0
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_expired_token_returns_false(self):
+        """Test revoke_token returns False for already expired tokens."""
+        session = make_session()
+        mock_redis = AsyncMock()
+
+        service = self.make_service_with_redis(None, mock_redis)
+
+        jti = "test-jti-expired"
+        exp = datetime.now(timezone.utc) - timedelta(seconds=10)
+
+        result = await service.revoke_token(jti, exp)
+
+        assert result is False
+        mock_redis.set.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_no_redis_returns_false(self):
+        """Test revoke_token returns False when Redis is unavailable."""
+        session = make_session()
+        service = self.make_service_with_redis(None, None)
+
+        jti = "test-jti-no-redis"
+        exp = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        result = await service.revoke_token(jti, exp)
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_redis_error_returns_false_and_logs(self, caplog):
+        """Test revoke_token returns False and logs warning on Redis error."""
+        from redis.exceptions import RedisError
+
+        session = make_session()
+        mock_redis = AsyncMock()
+        mock_redis.set.side_effect = RedisError("Connection failed")
+
+        service = self.make_service_with_redis(None, mock_redis)
+
+        jti = "test-jti-error"
+        exp = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        result = await service.revoke_token(jti, exp)
+
+        assert result is False
+        assert "Failed to revoke token in Redis" in caplog.text
+
+
+class TestIsTokenRevoked:
+    def make_service_with_redis(self, session, redis_client=None):
+        from app.core.rate_limit import set_rate_limiter
+        from app.core.rate_limit import RateLimiter
+        from app.main import app
+
+        service = AuthService(session)
+        service.users = AsyncMock(spec=UserRepository)
+
+        if redis_client is not None:
+            from app.core.rate_limit import RateLimiter
+            limiter = RateLimiter(redis_client)
+            set_rate_limiter(limiter)
+            # Also set app.state.redis for AuthService
+            app.state.redis = redis_client
+        else:
+            set_rate_limiter(None)
+            app.state.redis = None
+
+        return service
+
+    @pytest.mark.asyncio
+    async def test_is_token_revoked_true_when_key_exists(self):
+        """Test is_token_revoked returns True when key exists in Redis."""
+        from redis.asyncio import Redis
+
+        session = make_session()
+        mock_redis = AsyncMock()
+        mock_redis.exists = AsyncMock(return_value=1)
+
+        service = self.make_service_with_redis(None, mock_redis)
+
+        jti = "test-jti-revoked"
+        result = await service.is_token_revoked(jti)
+
+        assert result is True
+        mock_redis.exists.assert_awaited_once_with("auth:blocklist:test-jti-revoked")
+
+    @pytest.mark.asyncio
+    async def test_is_token_revoked_false_when_key_absent(self):
+        """Test is_token_revoked returns False when key does not exist."""
+        from redis.asyncio import Redis
+
+        session = make_session()
+        mock_redis = AsyncMock()
+        mock_redis.exists = AsyncMock(return_value=0)
+
+        service = self.make_service_with_redis(None, mock_redis)
+
+        jti = "test-jti-not-revoked"
+        result = await service.is_token_revoked(jti)
+
+        assert result is False
+        mock_redis.exists.assert_awaited_once_with("auth:blocklist:test-jti-not-revoked")
+
+    @pytest.mark.asyncio
+    async def test_is_token_revoked_false_when_no_redis(self):
+        """Test is_token_revoked returns False when Redis is unavailable."""
+        session = make_session()
+        service = self.make_service_with_redis(None, None)
+
+        result = await service.is_token_revoked("any-jti")
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_is_token_revoked_false_on_redis_error(self, caplog):
+        """Test is_token_revoked returns False and logs warning on Redis error."""
+        from redis.exceptions import RedisError
+
+        session = make_session()
+        mock_redis = AsyncMock()
+        mock_redis.exists.side_effect = RedisError("Connection failed")
+
+        service = self.make_service_with_redis(None, mock_redis)
+
+        result = await service.is_token_revoked("test-jti-error")
+
+        assert result is False
+        assert "Redis blocklist lookup failed (fail-open)" in caplog.text
+
+
+class TestLogout:
+    def make_service_with_redis(self, session, redis_client=None):
+        from app.core.rate_limit import set_rate_limiter
+        from app.core.rate_limit import RateLimiter
+        from app.main import app
+
+        service = AuthService(session)
+        service.users = AsyncMock(spec=UserRepository)
+
+        if redis_client is not None:
+            from app.core.rate_limit import RateLimiter
+            limiter = RateLimiter(redis_client)
+            set_rate_limiter(limiter)
+            # Also set app.state.redis for AuthService
+            app.state.redis = redis_client
+        else:
+            set_rate_limiter(None)
+            app.state.redis = None
+
+        return service
+
+    @pytest.mark.asyncio
+    async def test_logout_calls_revoke_token(self):
+        """Test logout calls revoke_token with correct parameters."""
+        from redis.asyncio import Redis
+
+        session = make_session()
+        mock_redis = AsyncMock()
+        mock_redis.set = AsyncMock(return_value=True)
+
+        service = self.make_service_with_redis(None, mock_redis)
+
+        jti = "test-jti-logout"
+        exp = datetime.now(timezone.utc) + timedelta(hours=1)
+
+        result = await service.logout(jti, exp)
+
+        assert result is True

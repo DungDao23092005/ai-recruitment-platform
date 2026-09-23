@@ -1,3 +1,4 @@
+import os
 import uuid
 
 import pytest
@@ -14,6 +15,93 @@ def register(client, run_async, role="candidate", email=None):
         )
     )
     return email, resp
+
+
+class TestLogoutRateLimitDisabled:
+    """Test JWT revocation when RATE_LIMIT_ENABLED=false.
+
+    This verifies that token revocation works independently of rate limiting.
+    """
+
+    def test_logout_revokes_token_when_rate_limit_disabled(self, client, run_async):
+        """Test that token is revoked after logout even when rate limiting is disabled."""
+        # Temporarily disable rate limiting for this test
+        from app.core.config import settings
+        original_setting = settings.RATE_LIMIT_ENABLED
+        settings.RATE_LIMIT_ENABLED = False
+        try:
+            email, _ = register(client, run_async)
+            token = run_async(
+                client.post(
+                    f"{API_V1}/auth/login/json",
+                    json={"email": email, "password": PASSWORD},
+                )
+            ).json()["access_token"]
+
+            # Verify token works before logout
+            resp = run_async(
+                client.get(
+                    f"{API_V1}/auth/me",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            )
+            assert resp.status_code == 200
+
+            # Logout
+            resp = run_async(
+                client.post(
+                    f"{API_V1}/auth/logout",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            )
+            assert resp.status_code == 200
+
+            # Try to use the same token - should be revoked
+            resp = run_async(
+                client.get(
+                    f"{API_V1}/auth/me",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            )
+            assert resp.status_code == 401
+            assert "thu hồi" in resp.json()["detail"].lower()
+        finally:
+            settings.RATE_LIMIT_ENABLED = original_setting
+
+    def test_logout_idempotent_when_rate_limit_disabled(self, client, run_async):
+        """Test that calling logout twice with same token is safe when rate limiting is disabled."""
+        from app.core.config import settings
+        original_setting = settings.RATE_LIMIT_ENABLED
+        settings.RATE_LIMIT_ENABLED = False
+        try:
+            email, _ = register(client, run_async)
+            token = run_async(
+                client.post(
+                    f"{API_V1}/auth/login/json",
+                    json={"email": email, "password": PASSWORD},
+                )
+            ).json()["access_token"]
+
+            # First logout
+            resp = run_async(
+                client.post(
+                    f"{API_V1}/auth/logout",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            )
+            assert resp.status_code == 200
+
+            # Second logout with same (now invalid) token
+            resp = run_async(
+                client.post(
+                    f"{API_V1}/auth/logout",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            )
+            assert resp.status_code == 200
+            assert resp.json()["message"] == "Đăng xuất thành công"
+        finally:
+            settings.RATE_LIMIT_ENABLED = original_setting
 
 
 class TestRegister:
@@ -78,7 +166,7 @@ class TestRegister:
         _, resp = register(client, run_async, email=email)
 
         assert resp.status_code == 400
-        assert "already exists" in resp.json()["detail"]
+        assert "đã được sử dụng" in resp.json()["detail"]
 
     def test_short_password_rejected(self, client, run_async):
         resp = run_async(
@@ -219,3 +307,132 @@ class TestGetMe:
         )
 
         assert resp.status_code == 401
+
+
+class TestLogout:
+    def test_logout_success(self, client, run_async):
+        """Test successful logout with valid token."""
+        email, _ = register(client, run_async)
+        token = run_async(
+            client.post(
+                f"{API_V1}/auth/login/json",
+                json={"email": email, "password": PASSWORD},
+            )
+        ).json()["access_token"]
+
+        # Verify token works before logout
+        resp = run_async(
+            client.get(
+                f"{API_V1}/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        )
+        assert resp.status_code == 200
+
+        # Logout
+        resp = run_async(
+            client.post(
+                f"{API_V1}/auth/logout",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        )
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "Đăng xuất thành công"
+
+    def test_logout_revokes_token(self, client, run_async):
+        """Test that token is revoked after logout."""
+        email, _ = register(client, run_async)
+        token = run_async(
+            client.post(
+                f"{API_V1}/auth/login/json",
+                json={"email": email, "password": PASSWORD},
+            )
+        ).json()["access_token"]
+
+        # Logout
+        resp = run_async(
+            client.post(
+                f"{API_V1}/auth/logout",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        )
+        assert resp.status_code == 200
+
+        # Try to use the same token - should be revoked
+        resp = run_async(
+            client.get(
+                f"{API_V1}/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        )
+        assert resp.status_code == 401
+        assert "thu hồi" in resp.json()["detail"].lower()
+
+    def test_logout_idempotent(self, client, run_async):
+        """Test that calling logout twice with same token is safe."""
+        email, _ = register(client, run_async)
+        token = run_async(
+            client.post(
+                f"{API_V1}/auth/login/json",
+                json={"email": email, "password": PASSWORD},
+            )
+        ).json()["access_token"]
+
+        # First logout
+        resp = run_async(
+            client.post(
+                f"{API_V1}/auth/logout",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        )
+        assert resp.status_code == 200
+
+        # Second logout with same (now invalid) token
+        resp = run_async(
+            client.post(
+                f"{API_V1}/auth/logout",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        )
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "Đăng xuất thành công"
+
+    def test_logout_expired_token_idempotent(self, client, run_async):
+        """Test logout with already expired token returns success (idempotent)."""
+        from datetime import timedelta
+        from app.core.security import create_access_token
+
+        email, reg = register(client, run_async)
+        user_id = reg.json()["id"]
+        expired_token = create_access_token(
+            subject=str(user_id),
+            expires_delta=timedelta(seconds=-1),
+        )
+
+        # Logout with expired token should still return 200 (idempotent)
+        resp = run_async(
+            client.post(
+                f"{API_V1}/auth/logout",
+                headers={"Authorization": f"Bearer {expired_token}"},
+            )
+        )
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "Đăng xuất thành công"
+
+    def test_logout_missing_token_returns_401(self, client, run_async):
+        """Test logout without token returns 401."""
+        resp = run_async(
+            client.post(f"{API_V1}/auth/logout")
+        )
+        assert resp.status_code == 401
+
+    def test_logout_invalid_token_returns_200(self, client, run_async):
+        """Test logout with invalid token returns 200 (idempotent)."""
+        resp = run_async(
+            client.post(
+                f"{API_V1}/auth/logout",
+                headers={"Authorization": "Bearer not.a.valid.jwt"},
+            )
+        )
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "Đăng xuất thành công"

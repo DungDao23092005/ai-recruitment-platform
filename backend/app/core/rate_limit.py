@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from fastapi import Request, HTTPException, status, Depends
-from redis.asyncio import Redis, ConnectionPool
-from redis.exceptions import RedisError, ConnectionError, TimeoutError
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 
 from app.core.config import settings
 from app.models import User
@@ -71,8 +71,12 @@ class RateLimiter:
     - Return allow/deny decision with metadata
     """
 
-    def __init__(self, redis_client: Redis):
-        self.redis = redis_client
+    def __init__(self, redis_client: Optional[Redis] = None):
+        if redis_client is not None:
+            self.redis = redis_client
+        else:
+            from app.main import app
+            self.redis = getattr(app.state, "redis", None)
         self._script = None
 
     async def _get_script(self):

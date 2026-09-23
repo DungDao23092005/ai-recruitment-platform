@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Any
+import uuid
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -27,14 +28,19 @@ def create_access_token(
     subject: str | Any,
     expires_delta: timedelta | None = None,
 ) -> str:
-    """Create a signed JWT access token (HS256) containing `sub`, `exp`, and `iat`."""
+    """Create a signed JWT access token (HS256) containing `sub`, `exp`, `iat`, and `jti`."""
     now = datetime.now(timezone.utc)
     expire = now + (
         expires_delta
         if expires_delta is not None
         else timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    payload = {"sub": str(subject), "exp": expire, "iat": int(now.timestamp())}
+    payload = {
+        "sub": str(subject),
+        "exp": expire,
+        "iat": int(now.timestamp()),
+        "jti": str(uuid.uuid4()),
+    }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 

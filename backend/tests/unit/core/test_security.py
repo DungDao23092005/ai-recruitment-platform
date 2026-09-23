@@ -77,8 +77,21 @@ def test_decode_valid_token_returns_payload():
     payload = decode_access_token(token)
 
     assert payload is not None
-    assert set(payload.keys()) == {"sub", "exp", "iat"}
+    assert set(payload.keys()) == {"sub", "exp", "iat", "jti"}
     assert payload["sub"] == "user-123"
+
+
+def test_access_token_contains_unique_jti():
+    token1 = create_access_token(subject="user-123")
+    token2 = create_access_token(subject="user-123")
+    payload1 = decode_access_token(token1)
+    payload2 = decode_access_token(token2)
+
+    assert payload1 is not None
+    assert payload2 is not None
+    assert "jti" in payload1
+    assert "jti" in payload2
+    assert payload1["jti"] != payload2["jti"]
 
 
 def test_decode_invalid_signature_returns_none():

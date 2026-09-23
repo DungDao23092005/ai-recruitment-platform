@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.exceptions import ConflictException, ForbiddenException, LockedAccountException
 from app.core.password_reset import (
     generate_otp,
@@ -227,3 +230,82 @@ class AuthService:
             otp.is_used = True
             otp.used_at = datetime.now(timezone.utc)
         await self.session.flush()
+
+    # ===== Redis JWT Blocklist =====
+
+    def _get_redis_client(self) -> Optional[Redis]:
+        """Get Redis client from app state."""
+        from app.main import app
+        return getattr(app.state, "redis", None)
+
+    async def revoke_token(self, jti: str, exp: datetime) -> bool:
+        """
+        Add a JWT ID to the Redis blocklist.
+
+        Args:
+            jti: The JWT ID to revoke
+            exp: The token expiration timestamp
+
+        Returns:
+            True if revoked successfully, False if token already expired or Redis unavailable
+        """
+        redis_client = self._get_redis_client()
+        if redis_client is None:
+            return False
+
+        # Calculate remaining TTL
+        now = datetime.now(timezone.utc)
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        remaining_ttl = int((exp - datetime.now(timezone.utc)).total_seconds())
+
+        if remaining_ttl <= 0:
+            # Token already expired, no need to blocklist
+            return False
+
+        key = f"auth:blocklist:{jti}"
+        try:
+            await redis_client.set(key, "1", ex=remaining_ttl)
+            return True
+        except RedisError as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to revoke token in Redis: {e}")
+            return False
+
+    async def is_token_revoked(self, jti: str) -> bool:
+        """
+        Check if a JWT ID is in the Redis blocklist.
+
+        Uses fail-open policy: if Redis is unavailable, return False (allow token).
+
+        Args:
+            jti: The JWT ID to check
+
+        Returns:
+            True if revoked, False if not revoked or Redis unavailable
+        """
+        redis_client = self._get_redis_client()
+        if redis_client is None:
+            return False
+
+        key = f"auth:blocklist:{jti}"
+        try:
+            result = await redis_client.exists(key)
+            return result > 0
+        except RedisError as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Redis blocklist lookup failed (fail-open): {e}")
+            return False
+
+    async def logout(self, jti: str, exp: datetime) -> bool:
+        """
+        Revoke a token on logout.
+
+        Args:
+            jti: The JWT ID to revoke
+            exp: The token expiration timestamp
+
+        Returns:
+            True if revoked successfully, False if token already expired or Redis unavailable
+        """
+        return await self.revoke_token(jti, exp)

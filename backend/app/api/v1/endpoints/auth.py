@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_active_user, get_db
+from app.api.deps import get_current_active_user, get_db, oauth2_scheme
 from app.core.exceptions import ConflictException, ForbiddenException, LockedAccountException
 from app.core.rate_limit import login_rate_limit, register_rate_limit, forgot_password_rate_limit, verify_otp_rate_limit
-from app.core.security import create_access_token
+from app.core.security import create_access_token, decode_access_token
 from app.models import User
 from app.schemas.password_reset import (
     ForgotPasswordRequest,
@@ -103,6 +104,42 @@ async def get_me(
     current_user: User = Depends(get_current_active_user),
 ) -> UserRead:
     return UserRead.model_validate(current_user)
+
+
+class LogoutResponse(BaseModel):
+    message: str
+
+
+@router.post(
+    "/logout",
+    response_model=LogoutResponse,
+)
+async def logout(
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> LogoutResponse:
+    """Revoke the current access token on logout.
+
+    The token's jti is added to the Redis blocklist with TTL matching
+    the token's remaining lifetime. Subsequent requests with the same
+    token will be rejected with 401.
+    """
+    payload = decode_access_token(token)
+    if payload is None:
+        # Token is invalid/expired, but we still return success to avoid
+        # leaking information and to maintain idempotency
+        return LogoutResponse(message="Đăng xuất thành công")
+
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+
+    if jti is not None and exp is not None:
+        from datetime import datetime, timezone
+        exp_dt = datetime.fromtimestamp(exp, tz=timezone.utc)
+        auth_service = AuthService(db)
+        await auth_service.revoke_token(jti, exp_dt)
+
+    return LogoutResponse(message="Đăng xuất thành công")
 
 
 @router.post(

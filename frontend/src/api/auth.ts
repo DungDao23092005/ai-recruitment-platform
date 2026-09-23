@@ -38,6 +38,10 @@ export async function resetPassword(email: string, reset_token: string, new_pass
   return apiClient.post<{ message: string }, { message: string }>('/auth/reset-password', { email, reset_token, new_password, confirm_password: new_password })
 }
 
+export async function logout(): Promise<void> {
+  await apiClient.post<void, { message: string }>('/auth/logout', {})
+}
+
 export async function createCandidateProfile(
   data: CandidateProfileData,
 ): Promise<CandidateProfile> {

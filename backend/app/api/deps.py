@@ -12,7 +12,7 @@ from app.core.security import decode_access_token, is_token_valid_after_password
 from app.database.session import get_db_session
 from app.domain.enums import UserRole
 from app.models import User
-from app.services import UserService
+from app.services import UserService, AuthService
 
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/auth/login"
@@ -60,6 +60,17 @@ async def get_current_user(
             detail=_UNAUTHORIZED_DETAIL,
             headers=_UNAUTHORIZED_HEADERS,
         ) from None
+
+    # Check if token is revoked in Redis blocklist
+    jti = payload.get("jti")
+    if jti is not None:
+        auth_service = AuthService(db)
+        if await auth_service.is_token_revoked(jti):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token đã bị thu hồi. Vui lòng đăng nhập lại.",
+                headers=_UNAUTHORIZED_HEADERS,
+            )
 
     user = await UserService(db).get_user_by_id(user_id)
     if user is None:
