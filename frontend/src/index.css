@@ -134,6 +134,132 @@
   .card-hover {
     transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
   }
+
+  /* Animation utilities */
+  .animate-fade-in-up {
+    animation: fadeInUp 0.7s ease-out forwards;
+  }
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-out forwards;
+  }
+  .animate-slide-up {
+    animation: slideUp 0.6s ease-out forwards;
+  }
+  .animate-scale-in {
+    animation: scaleIn 0.4s ease-out forwards;
+  }
+  .animate-pulse-subtle {
+    animation: pulseSubtle 3s ease-in-out infinite;
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes pulseSubtle {
+  0%, 100% {
+    opacity: 0.05;
+  }
+  50% {
+    opacity: 0.15;
+  }
+}
+
+/* Float animation for 3D card stack */
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+/* Ambient glow for hero */
+.hero-glow {
+  position: absolute;
+  inset: -8rem;
+  border-radius: 9999px;
+  background: linear-gradient(
+    135deg,
+    hsl(236 72% 47% / 0.1) 0%,
+    hsl(252 75% 52% / 0.1) 100%
+  );
+  filter: blur(100px);
+  animation: pulseSubtle 4s ease-in-out infinite;
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* SVG stroke animation for score ring */
+@keyframes strokeDraw {
+  from {
+    stroke-dashoffset: var(--circumference, 0);
+  }
+  to {
+    stroke-dashoffset: var(--target-offset, 0);
+  }
+}
+
+.animate-stroke-draw {
+  animation: strokeDraw 1s ease-out forwards;
+}
+
+/* Count-up animation */
+@keyframes countUp {
+  from {
+    --display-value: 0;
+  }
+  to {
+    --display-value: var(--target-value, 100);
+  }
+}
+
+.animate-count-up {
+  animation: countUp 1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {

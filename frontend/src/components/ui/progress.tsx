@@ -4,6 +4,7 @@ import { cn } from '@/utils/cn'
 export interface ProgressProps extends React.HTMLAttributes<HTMLDivElement> {
   value: number
   variant?: 'primary' | 'success' | 'warning' | 'danger' | 'ai'
+  animate?: boolean
 }
 
 const variantClasses: Record<NonNullable<ProgressProps['variant']>, string> = {
@@ -18,9 +19,53 @@ export function Progress({
   value,
   variant = 'primary',
   className,
+  animate = true,
   ...props
 }: ProgressProps) {
+  const [displayValue, setDisplayValue] = React.useState(0)
   const clamped = Math.max(0, Math.min(100, value))
+  const shouldAnimate = animate
+
+  React.useEffect(() => {
+    if (!shouldAnimate) {
+      setDisplayValue(clamped)
+      return
+    }
+
+    if (typeof window === 'undefined' || !window.IntersectionObserver) {
+      setDisplayValue(clamped)
+      return
+    }
+
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (prefersReducedMotion) {
+      setDisplayValue(clamped)
+      return
+    }
+
+    let animationFrame: number
+    const startTime = Date.now()
+    const duration = 1000
+
+    const runAnimation = () => {
+      const elapsed = Date.now() - startTime
+      const progress = Math.min(elapsed / duration, 1)
+      const easedProgress = 1 - Math.pow(1 - progress, 3)
+      setDisplayValue(Math.round(clamped * easedProgress))
+
+      if (progress < 1) {
+        animationFrame = requestAnimationFrame(runAnimation)
+      } else {
+        setDisplayValue(clamped)
+      }
+    }
+
+    animationFrame = requestAnimationFrame(runAnimation)
+
+    return () => {
+      cancelAnimationFrame(animationFrame)
+    }
+  }, [clamped, shouldAnimate])
 
   return (
     <div
@@ -33,7 +78,7 @@ export function Progress({
     >
       <div
         className={cn('h-full rounded-full transition-all duration-500', variantClasses[variant])}
-        style={{ width: `${clamped}%` }}
+        style={{ width: `${displayValue}%` }}
       />
     </div>
   )

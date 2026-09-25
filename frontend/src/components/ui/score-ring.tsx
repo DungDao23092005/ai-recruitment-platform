@@ -7,6 +7,7 @@ export interface ScoreRingProps {
   strokeWidth?: number
   className?: string
   label?: string
+  animate?: boolean
 }
 
 export function ScoreRing({
@@ -15,13 +16,58 @@ export function ScoreRing({
   strokeWidth = 6,
   className,
   label,
+  animate = true,
 }: ScoreRingProps) {
   const id = React.useId()
+  const [displayValue, setDisplayValue] = React.useState(0)
   const clamped = Math.max(0, Math.min(100, Math.round(value)))
   const radius = (size - strokeWidth) / 2
   const circumference = 2 * Math.PI * radius
-  const offset = circumference - (clamped / 100) * circumference
   const gradientId = `score-ring-${id.replace(/[:]/g, '')}`
+  const shouldAnimate = animate
+
+  React.useEffect(() => {
+    if (!shouldAnimate) {
+      setDisplayValue(clamped)
+      return
+    }
+
+    if (typeof window === 'undefined' || !window.IntersectionObserver) {
+      setDisplayValue(clamped)
+      return
+    }
+
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (prefersReducedMotion) {
+      setDisplayValue(clamped)
+      return
+    }
+
+    let animationFrame: number
+    const startTime = Date.now()
+    const duration = 1000
+
+    const runAnimation = () => {
+      const elapsed = Date.now() - startTime
+      const progress = Math.min(elapsed / duration, 1)
+      const easedProgress = 1 - Math.pow(1 - progress, 3)
+      setDisplayValue(Math.round(clamped * easedProgress))
+
+      if (progress < 1) {
+        animationFrame = requestAnimationFrame(runAnimation)
+      } else {
+        setDisplayValue(clamped)
+      }
+    }
+
+    animationFrame = requestAnimationFrame(runAnimation)
+
+    return () => {
+      cancelAnimationFrame(animationFrame)
+    }
+  }, [clamped, shouldAnimate])
+
+  const displayOffset = circumference - (displayValue / 100) * circumference
 
   return (
     <div
@@ -60,14 +106,17 @@ export function ScoreRing({
           strokeWidth={strokeWidth}
           strokeLinecap="round"
           strokeDasharray={circumference}
-          strokeDashoffset={offset}
+          strokeDashoffset={displayOffset}
+          style={{
+            transition: 'stroke-dashoffset 200ms ease-out',
+          }}
         />
       </svg>
       <span
         className="absolute font-display font-bold text-foreground"
         style={{ fontSize: size / 3.6 }}
       >
-        {clamped}
+        {displayValue}
         <span className="text-[0.55em] font-semibold text-muted-foreground">
           %
         </span>
