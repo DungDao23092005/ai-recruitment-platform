@@ -475,8 +475,8 @@ class TestQdrantVectorRepositoryInitialization:
 
                     mock_client_class.assert_called_once()
                     call_kwargs = mock_client_class.call_args.kwargs
-                    assert call_kwargs["host"] == "localhost"
-                    assert call_kwargs["port"] == 6333
+                    assert call_kwargs["host"] == settings.QDRANT_HOST
+                    assert call_kwargs["port"] == settings.QDRANT_PORT
                     assert "url" not in call_kwargs
                     assert "api_key" not in call_kwargs
 
@@ -492,8 +492,8 @@ class TestQdrantVectorRepositoryInitialization:
 
                     mock_client_class.assert_called_once()
                     call_kwargs = mock_client_class.call_args.kwargs
-                    assert call_kwargs["host"] == "localhost"
-                    assert call_kwargs["port"] == 6333
+                    assert call_kwargs["host"] == settings.QDRANT_HOST
+                    assert call_kwargs["port"] == settings.QDRANT_PORT
                     assert "url" not in call_kwargs
                     assert "api_key" not in call_kwargs
 
@@ -509,8 +509,8 @@ class TestQdrantVectorRepositoryInitialization:
 
                     mock_client_class.assert_called_once()
                     call_kwargs = mock_client_class.call_args.kwargs
-                    assert call_kwargs["host"] == "localhost"
-                    assert call_kwargs["port"] == 6333
+                    assert call_kwargs["host"] == settings.QDRANT_HOST
+                    assert call_kwargs["port"] == settings.QDRANT_PORT
                     assert "url" not in call_kwargs
                     assert "api_key" not in call_kwargs
 
