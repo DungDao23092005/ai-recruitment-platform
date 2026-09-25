@@ -1,23 +1,9 @@
-import os
-
-# Set test-specific environment BEFORE any imports that might load settings
-# Use Docker Compose service names when running in container, localhost otherwise
-# The container environment is set via docker-compose.yml
-# RATE_LIMIT_ENABLED is intentionally NOT set here - tests will verify both configurations
-
-import asyncio
-import importlib
-
-# Force reload settings after environment variables are set
-import app.core.config as config_module
-import importlib
-importlib.reload(config_module)
-
 import asyncio
 import pytest
 from app.core.config import settings
 from app.database.base_class import Base
 from app.database.session import engine
+
 
 # Ensure that tests never run against development database
 DEVELOPMENT_DATABASE = "ai_recruitment_platform"
@@ -59,7 +45,6 @@ async def _create_schema() -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def _manage_engine():
-    run(engine.dispose())
     yield
     # Don't dispose engine at teardown - let pytest-asyncio handle it
 

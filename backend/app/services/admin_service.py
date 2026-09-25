@@ -19,8 +19,11 @@ from app.schemas.admin import (
     AdminJobListResponse,
     AdminJobRead,
     AdminStatsResponse,
+    AdminUserListResponse,
+    AdminUserRead,
     ApplicationStatusCounts,
 )
+from app.services.ai_matching_service import AIMatchingService
 
 
 class AdminService:
@@ -157,10 +160,23 @@ class AdminService:
         - Preserves relational data according to existing architecture
         - Ensures deleted account cannot authenticate
         - Ensures PII is no longer exposed in normal admin/user flows
+        - Cleans up Qdrant resume vector if the user is a candidate
         """
         user = await self.users.get_admin_user(user_id)
         if user is None:
             raise EntityNotFoundException(f"User {user_id} not found")
+
+        # Check if user is a candidate with a primary resume before deletion
+        candidate_id = None
+        if user.candidate_profile is not None:
+            # Check for primary resume
+            from app.repositories import ResumeRepository
+            from app.models import Resume
+            from sqlalchemy import select
+            resume_repo = ResumeRepository(self.session, Resume)
+            primary_resume = await resume_repo.get_primary_by_candidate(user.candidate_profile.id)
+            if primary_resume is not None:
+                candidate_id = user.candidate_profile.id
 
         # Anonymize email
         user.email = f"deleted_{user.id}@anonymized.local"
@@ -168,6 +184,19 @@ class AdminService:
         await self.users.soft_delete(user)
         await self.session.commit()
         await self.session.refresh(user)
+
+        # Clean up Qdrant resume vector if user was a candidate with primary resume
+        if candidate_id is not None:
+            try:
+                matching_service = AIMatchingService()
+                await matching_service.delete_resume_vector(candidate_id)
+            except Exception as e:
+                # Log but don't fail the user deletion if Qdrant cleanup fails
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Failed to delete Qdrant resume vector for candidate {candidate_id}: {e}"
+                )
+
         return user
 
     async def list_companies(

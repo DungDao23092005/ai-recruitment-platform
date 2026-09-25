@@ -65,6 +65,17 @@ class AIMatchingService:
         extracted_text = PDFTextExtractor.extract(pdf_source)
         parsed_resume = await self.resume_parser.parse(extracted_text)
 
+        # SQL-first transaction order: persist to SQL before Qdrant upsert
+        # This prevents orphan vectors if SQL commit fails
+        if session is not None:
+            await self._persist_resume(
+                session=session,
+                candidate_id=candidate_id,
+                source_name=source_name,
+                parsed_resume=parsed_resume,
+            )
+
+        # Qdrant upsert after successful SQL commit
         vector = await self.embedding_service.embed_resume(parsed_resume)
         payload = {
             "candidate_id": str(candidate_id),
@@ -77,14 +88,6 @@ class AIMatchingService:
             vector=vector,
             payload=payload,
         )
-
-        if session is not None:
-            await self._persist_resume(
-                session=session,
-                candidate_id=candidate_id,
-                source_name=source_name,
-                parsed_resume=parsed_resume,
-            )
 
         return parsed_resume
 
@@ -113,6 +116,45 @@ class AIMatchingService:
         except Exception:
             await session.rollback()
             raise
+
+    async def _reindex_resume(
+        self,
+        candidate_id: uuid.UUID,
+        parsed_resume: ParsedResumeSchema,
+        is_deleted: bool = False,
+    ) -> None:
+        """Canonical reindex method for a resume.
+
+        This is the single source of truth for resume Qdrant indexing.
+        It handles both active and deleted resumes.
+
+        Args:
+            candidate_id: The candidate's UUID
+            parsed_resume: Parsed resume data
+            is_deleted: Whether the resume is deleted/inactive
+        """
+        vector = await self.embedding_service.embed_resume(parsed_resume)
+        payload = {
+            "candidate_id": str(candidate_id),
+            "skills": parsed_resume.skills,
+            "is_deleted": is_deleted,
+        }
+        await self.vector_repository.upsert_vector(
+            collection_name="resumes",
+            point_id=candidate_id,
+            vector=vector,
+            payload=payload,
+        )
+
+    async def delete_resume_vector(self, candidate_id: uuid.UUID) -> None:
+        """Delete a resume vector from Qdrant.
+
+        Used when a candidate's resume is soft-deleted or the candidate is removed.
+        """
+        await self.vector_repository.delete_vector(
+            collection_name="resumes",
+            point_id=candidate_id,
+        )
 
     async def process_and_index_job(
         self,

@@ -198,7 +198,7 @@ async def _seed_job_vectors(vector_repository, job_ids: list[uuid.UUID], skills_
     for job_id, skills in zip(job_ids, skills_list):
         vector = FakeEmbeddingProvider._hash_vector(" ".join(skills))
         await vector_repository.upsert_job_vector(
-            job_id=job_id, vector=vector, skills=skills
+            job_id=job_id, vector=vector, skills=skills, status="published"
         )
 
 
@@ -501,7 +501,7 @@ class TestRecommendationsApi:
             for job_id, skills in zip(job_ids, [["Python", "FastAPI"], ["Java", "Spring"]]):
                 await _create_job(db_session, job_id, company_id, skills)
                 await vector_repository.upsert_job_vector(
-                    job_id=job_id, vector=FakeEmbeddingProvider._hash_vector(" ".join(skills)), skills=skills
+                    job_id=job_id, vector=FakeEmbeddingProvider._hash_vector(" ".join(skills)), skills=skills, status="published"
                 )
                 tracked("jobs", job_id)
 
@@ -560,6 +560,7 @@ class TestRecommendationsApi:
                 job_id=job_id,
                 vector=FakeEmbeddingProvider._hash_vector("Python FastAPI"),
                 skills=["Python", "FastAPI"],
+                status="published",
             )
 
             # Create candidates directly in SQL with known IDs and upsert vectors

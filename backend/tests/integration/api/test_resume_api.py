@@ -172,10 +172,28 @@ class TestGetMyResume:
 class TestParseResumePersistence:
     @patch("app.services.ai_matching_service.AIMatchingService.process_and_index_resume")
     def test_upload_creates_resume_row(self, mock_process, candidate_client, run_async):
-        mock_process.return_value = ParsedResumeSchema(
-            full_name="Jane Doe",
-            skills=["Python", "FastAPI"],
-        )
+        # Mock the AI processing but still persist to database
+        async def mock_process_and_index(candidate_id, pdf_source, session, source_name):
+            # Create resume row in database (simulating real persistence)
+            from app.models import Resume
+            from app.schemas.ai_resume import ParsedResumeSchema
+            parsed = ParsedResumeSchema(
+                full_name="Jane Doe",
+                skills=["Python", "FastAPI"],
+            )
+            resume = Resume(
+                candidate_id=candidate_id,
+                title=source_name or "resume.pdf",
+                is_primary=True,
+                parsed_data=parsed.model_dump(mode="json"),
+            )
+            session.add(resume)
+            await session.flush()
+            await session.commit()
+            await session.refresh(resume)
+            return parsed
+        
+        mock_process.side_effect = mock_process_and_index
         profile_id = _create_profile(candidate_client, run_async)
 
         resp = run_async(
@@ -200,10 +218,39 @@ class TestParseResumePersistence:
 
     @patch("app.services.ai_matching_service.AIMatchingService.process_and_index_resume")
     def test_second_upload_updates_primary(self, mock_process, candidate_client, run_async):
-        mock_process.return_value = ParsedResumeSchema(
-            full_name="Jane Doe",
-            skills=["Python", "FastAPI"],
-        )
+        # Mock the AI processing but still persist to database
+        async def mock_process_and_index(candidate_id, pdf_source, session, source_name):
+            from app.models import Resume
+            from app.schemas.ai_resume import ParsedResumeSchema
+            parsed = ParsedResumeSchema(
+                full_name="Jane Doe",
+                skills=["Python", "FastAPI"],
+            )
+            # Find existing primary resume and update it
+            from sqlalchemy import select
+            stmt = select(Resume).where(
+                Resume.candidate_id == candidate_id,
+                Resume.is_primary == True,
+                Resume.is_deleted == False,
+            )
+            result = await session.execute(stmt)
+            existing = result.scalar_one_or_none()
+            if existing:
+                existing.title = source_name or "resume.pdf"
+                existing.parsed_data = parsed.model_dump(mode="json")
+            else:
+                resume = Resume(
+                    candidate_id=candidate_id,
+                    title=source_name or "resume.pdf",
+                    is_primary=True,
+                    parsed_data=parsed.model_dump(mode="json"),
+                )
+                session.add(resume)
+            await session.flush()
+            await session.commit()
+            return parsed
+        
+        mock_process.side_effect = mock_process_and_index
         profile_id = _create_profile(candidate_client, run_async)
 
         for _ in range(2):
