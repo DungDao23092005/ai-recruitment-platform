@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 
 import pytest
@@ -1212,3 +1213,302 @@ class TestGetMyApplications:
         assert len(second.json()) == 1
         titles = [app["job_title"] for app in first.json() + second.json()]
         assert titles == ["Job 2", "Job 1", "Job 0"]
+
+
+class TestApplicationStatusConcurrency:
+    """Real SQL Server concurrency regression test for application status updates.
+
+    Proves that concurrent status transitions from the same initial state
+    are correctly serialized by the atomic conditional UPDATE.
+    """
+
+    def _create_test_data(
+        self,
+        recruiter_client, candidate_client, run_async
+    ):
+        """Create company, job, candidate profile, and application."""
+        company = run_async(
+            recruiter_client.post(f"{API_V1}/companies", json=COMPANY_BODY)
+        ).json()
+        job = run_async(
+            recruiter_client.post(
+                f"{API_V1}/jobs",
+                json={**JOB_BODY, "company_id": company["id"]},
+            )
+        ).json()
+        run_async(
+            candidate_client.post(
+                f"{API_V1}/users/me/candidate-profile",
+                json={"full_name": "Jane Doe", "title": "Engineer"},
+            )
+        )
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications", json={"job_id": job["id"]}
+            )
+        ).json()
+        return application, job, company
+
+    @staticmethod
+    async def _update_status_via_service(
+        session, current_user, application_id, new_status
+    ):
+        """Update application status using the real ApplicationService with a given session."""
+        from app.core.exceptions import ConflictException
+        from app.domain.enums import ApplicationStatus
+        from app.services.application_service import ApplicationService
+        from app.repositories import ApplicationRepository, JobRepository
+        from app.models import Application
+
+        service = ApplicationService(session)
+        try:
+            result = await service.update_application_status(
+                current_user=current_user,
+                application_id=application_id,
+                new_status=ApplicationStatus(new_status),
+            )
+            return ("success", result.status.value)
+        except ConflictException:
+            return ("conflict", None)
+        except Exception as e:
+            return ("error", str(e))
+
+    def test_concurrent_status_updates_from_applied(
+        self,
+        recruiter_a_client,
+        recruiter_b_client,
+        candidate_client,
+        run_async,
+    ):
+        """Two recruiters concurrently update APPLIED -> UNDER_REVIEW and APPLIED -> REJECTED.
+
+        Uses two independent database sessions to prove real database-level
+        concurrency control via atomic conditional UPDATE.
+        """
+        # Create test data: application in APPLIED state
+        application, job, company = self._create_test_data(
+            recruiter_a_client, candidate_client, run_async
+        )
+        application_id = application["id"]
+
+        # Get current user IDs for the two recruiters
+        # We need to extract the user from the authenticated clients
+        # Since the clients are already authenticated, we'll use the service directly
+        # with independent sessions
+
+        # Create two independent sessions
+        from app.database.session import async_session_factory
+        from app.models import User, RecruiterProfile
+
+        # Get the recruiter user IDs
+        async def get_recruiter_user_ids():
+            async with async_session_factory() as session:
+                # Get users associated with the recruiter profiles for this company
+                from sqlalchemy import select
+                from app.models import RecruiterProfile
+
+                result = await session.execute(
+                    select(User.id)
+                    .join(RecruiterProfile, User.id == RecruiterProfile.user_id)
+                    .where(RecruiterProfile.company_id == company["id"])
+                )
+                return list(result.scalars().all())
+
+        recruiter_user_ids = run_async(get_recruiter_user_ids())
+        assert len(recruiter_user_ids) >= 1, "At least one recruiter needed"
+
+        # For the test, we'll use the same recruiter (owner of the job) but with
+        # two independent sessions to simulate concurrent access
+        # The key is independent database connections, not different users
+        primary_recruiter_id = recruiter_user_ids[0]
+
+        # Barrier to synchronize the two concurrent operations
+        barrier = asyncio.Barrier(2)
+        results = {}
+
+        async def actor_a():
+            """Actor A: APPLIED -> UNDER_REVIEW"""
+            from app.database.session import async_session_factory
+            from app.models import User
+            from sqlalchemy import select
+
+            async with async_session_factory() as session:
+                # Get user object
+                user_result = await session.execute(
+                    select(User).where(User.id == primary_recruiter_id)
+                )
+                user = user_result.scalar_one()
+
+                # Synchronize: both actors reach the barrier before proceeding
+                await barrier.wait()
+
+                # Attempt update
+                result = await self._update_status_via_service(
+                    session, user, application_id, "under_review"
+                )
+                results["actor_a"] = result
+
+        async def actor_b():
+            """Actor B: APPLIED -> REJECTED"""
+            from app.database.session import async_session_factory
+            from app.models import User
+            from sqlalchemy import select
+
+            async with async_session_factory() as session:
+                # Get user object
+                user_result = await session.execute(
+                    select(User).where(User.id == primary_recruiter_id)
+                )
+                user = user_result.scalar_one()
+
+                # Synchronize: both actors reach the barrier before proceeding
+                await barrier.wait()
+
+                # Attempt update
+                result = await self._update_status_via_service(
+                    session, user, application_id, "rejected"
+                )
+                results["actor_b"] = result
+
+        # Run both actors concurrently
+        run_async(asyncio.gather(actor_a(), actor_b()))
+
+        # Verify exactly one success and one conflict
+        statuses = [results["actor_a"][0], results["actor_b"][0]]
+        assert statuses.count("success") == 1, f"Expected exactly one success, got: {results}"
+        assert statuses.count("conflict") == 1, f"Expected exactly one conflict, got: {results}"
+
+        # Verify final database state matches the successful transition
+        successful_status = (
+            results["actor_a"][1] if results["actor_a"][0] == "success"
+            else results["actor_b"][1]
+        )
+        assert successful_status in ("under_review", "rejected")
+
+        # Read final state from a fresh session
+        async def get_final_status():
+            from app.database.session import async_session_factory
+            from app.models import Application
+            from sqlalchemy import select
+
+            async with async_session_factory() as session:
+                result = await session.execute(
+                    select(Application.status).where(Application.id == application_id)
+                )
+                status = result.scalar_one()
+                return status.value
+
+        final_status = run_async(get_final_status())
+        assert final_status == successful_status, (
+            f"Final DB status {final_status} != successful transition {successful_status}"
+        )
+
+    def test_concurrent_status_updates_from_under_review(
+        self,
+        recruiter_a_client,
+        recruiter_b_client,
+        candidate_client,
+        run_async,
+    ):
+        """Two recruiters concurrently update UNDER_REVIEW -> SHORTLISTED and UNDER_REVIEW -> REJECTED.
+
+        Tests concurrency from a non-initial state.
+        """
+        # Create test data and advance to UNDER_REVIEW
+        application, job, company = self._create_test_data(
+            recruiter_a_client, candidate_client, run_async
+        )
+        application_id = application["id"]
+
+        # Advance to UNDER_REVIEW first
+        run_async(
+            recruiter_a_client.patch(
+                f"{API_V1}/applications/{application_id}/status",
+                json={"status": "under_review"},
+            )
+        )
+
+        # Get recruiter user ID
+        async def get_recruiter_user_ids():
+            from app.database.session import async_session_factory
+            from app.models import User, RecruiterProfile
+            from sqlalchemy import select
+
+            async with async_session_factory() as session:
+                result = await session.execute(
+                    select(User.id)
+                    .join(RecruiterProfile, User.id == RecruiterProfile.user_id)
+                    .where(RecruiterProfile.company_id == company["id"])
+                )
+                return list(result.scalars().all())
+
+        recruiter_user_ids = run_async(get_recruiter_user_ids())
+        primary_recruiter_id = recruiter_user_ids[0]
+
+        barrier = asyncio.Barrier(2)
+        results = {}
+
+        async def actor_a():
+            """Actor A: UNDER_REVIEW -> SHORTLISTED"""
+            from app.database.session import async_session_factory
+            from app.models import User
+            from sqlalchemy import select
+
+            async with async_session_factory() as session:
+                user_result = await session.execute(
+                    select(User).where(User.id == primary_recruiter_id)
+                )
+                user = user_result.scalar_one()
+
+                await barrier.wait()
+
+                result = await self._update_status_via_service(
+                    session, user, application_id, "shortlisted"
+                )
+                results["actor_a"] = result
+
+        async def actor_b():
+            """Actor B: UNDER_REVIEW -> REJECTED"""
+            from app.database.session import async_session_factory
+            from app.models import User
+            from sqlalchemy import select
+
+            async with async_session_factory() as session:
+                user_result = await session.execute(
+                    select(User).where(User.id == primary_recruiter_id)
+                )
+                user = user_result.scalar_one()
+
+                await barrier.wait()
+
+                result = await self._update_status_via_service(
+                    session, user, application_id, "rejected"
+                )
+                results["actor_b"] = result
+
+        run_async(asyncio.gather(actor_a(), actor_b()))
+
+        statuses = [results["actor_a"][0], results["actor_b"][0]]
+        assert statuses.count("success") == 1
+        assert statuses.count("conflict") == 1
+
+        successful_status = (
+            results["actor_a"][1] if results["actor_a"][0] == "success"
+            else results["actor_b"][1]
+        )
+        assert successful_status in ("shortlisted", "rejected")
+
+        async def get_final_status():
+            from app.database.session import async_session_factory
+            from app.models import Application
+            from sqlalchemy import select
+
+            async with async_session_factory() as session:
+                result = await session.execute(
+                    select(Application.status).where(Application.id == application_id)
+                )
+                status = result.scalar_one()
+                return status.value
+
+        final_status = run_async(get_final_status())
+        assert final_status == successful_status
