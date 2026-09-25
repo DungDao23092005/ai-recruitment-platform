@@ -10,27 +10,6 @@ from app.domain.enums import ProficiencyLevel
 from app.models.user import StringEnum
 
 
-class CandidateSkill(Base):
-    __tablename__ = "candidate_skills"
-
-    candidate_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("candidate_profiles.id"),
-        primary_key=True,
-    )
-    skill_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("skills.id"),
-        primary_key=True,
-    )
-    experience_years: Mapped[float | None] = mapped_column(Float, nullable=True)
-    proficiency_level: Mapped[ProficiencyLevel] = mapped_column(
-        StringEnum(ProficiencyLevel),
-        nullable=False,
-    )
-
-    candidate: Mapped[CandidateProfile] = relationship(back_populates="candidate_skills", overlaps="skills,candidates")
-    skill: Mapped[Skill] = relationship(back_populates="candidate_skills", overlaps="skills,candidates")
-
-
 class JobSkill(Base):
     __tablename__ = "job_skills"
 

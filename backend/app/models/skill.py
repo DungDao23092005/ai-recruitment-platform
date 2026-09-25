@@ -17,16 +17,6 @@ class Skill(Base, TimestampMixin, SoftDeleteMixin):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
 
-    candidate_skills: Mapped[list[CandidateSkill]] = relationship(
-        back_populates="skill",
-        cascade="all, delete-orphan",
-        overlaps="candidates,skills",
-    )
-    candidates: Mapped[list[CandidateProfile]] = relationship(
-        secondary="candidate_skills",
-        back_populates="skills",
-        overlaps="candidate_skills,skill",
-    )
     job_skills: Mapped[list[JobSkill]] = relationship(
         back_populates="skill",
         cascade="all, delete-orphan",
