@@ -10,7 +10,7 @@ python-dotenv>=1.0.0
 email-validator>=2.0.0
 
 # Database (Microsoft SQL Server)
-SQLAlchemy>=2.0.30
+SQLAlchemy[asyncio]>=2.0.30
 aioodbc>=0.5.0
 alembic>=1.13.0
 
