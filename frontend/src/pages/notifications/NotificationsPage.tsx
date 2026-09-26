@@ -20,6 +20,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { getNotifications, markNotificationRead, markAllNotificationsRead } from '@/api/notifications';
 import { getApplicationDetail } from '@/api/applications';
 import { getInterview } from '@/api/interviews';
+import { useUnreadCountStore } from '@/stores/useUnreadCountStore';
 import type { Notification } from '@/types/notification';
 import type { UserRole } from '@/types/auth';
 
@@ -91,13 +92,13 @@ function getEntityRoute(entityType: string | null, entityId: string | null, user
 export function NotificationsPage() {
   const { isAuthenticated, isLoading: authLoading, currentUser } = useAuth();
   const navigate = useNavigate();
+  const { unreadCount, decrement, setUnreadCount } = useUnreadCountStore();
 
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
-  const [totalUnread, setTotalUnread] = useState(0);
 
   const fetchNotifications = async (pageNum: number = 1, append = false) => {
     try {
@@ -111,12 +112,6 @@ export function NotificationsPage() {
       }
       setHasMore(newNotifications.length === ITEMS_PER_PAGE);
       setPage(pageNum);
-
-      // Calculate total unread from first page only (or we could fetch unread count separately)
-      if (pageNum === 1) {
-        const unreadCount = newNotifications.filter((n) => !n.is_read).length;
-        setTotalUnread(unreadCount);
-      }
     } catch (err) {
       setError('Không thể tải danh sách thông báo. Vui lòng thử lại.');
     } finally {
@@ -139,7 +134,7 @@ export function NotificationsPage() {
       setNotifications((prev) =>
         prev.map((n) => (n.id === notification.id ? { ...n, is_read: true } : n))
       );
-      setTotalUnread((prev) => Math.max(0, prev - 1));
+      decrement();
 
       // Navigate to entity route based on user role
       const userRole = currentUser?.role;
@@ -221,7 +216,7 @@ export function NotificationsPage() {
     try {
       await markAllNotificationsRead();
       setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
-      setTotalUnread(0);
+      setUnreadCount(0);
     } catch {
       setError('Không thể đánh dấu tất cả đã đọc. Vui lòng thử lại.');
     }
@@ -257,9 +252,9 @@ export function NotificationsPage() {
     <div className="container py-6 sm:py-8">
       <PageHeader
         title="Thông báo"
-        description={`Bạn có ${totalUnread} thông báo chưa đọc`}
+        description={`Bạn có ${unreadCount} thông báo chưa đọc`}
         actions={
-          totalUnread > 0 ? (
+          unreadCount > 0 ? (
             <Button variant="outline" size="sm" onClick={handleMarkAllRead}>
               <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
               Đánh dấu tất cả đã đọc

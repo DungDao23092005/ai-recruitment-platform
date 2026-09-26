@@ -7,6 +7,7 @@ import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import * as notificationsApi from '@/api/notifications';
 import * as applicationsApi from '@/api/applications';
 import * as interviewsApi from '@/api/interviews';
+import { useUnreadCountStore } from '@/stores/useUnreadCountStore';
 
 vi.mock('@/api/notifications');
 vi.mock('@/api/applications');
@@ -14,6 +15,10 @@ vi.mock('@/api/interviews');
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: vi.fn(),
   AuthProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+vi.mock('@/stores/useUnreadCountStore', () => ({
+  useUnreadCountStore: vi.fn(),
 }));
 
 const { mockNavigate } = vi.hoisted(() => ({
@@ -35,6 +40,11 @@ describe('NotificationsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockNavigate.mockClear();
+    vi.mocked(useUnreadCountStore).mockReturnValue({
+      unreadCount: 0,
+      decrement: vi.fn(),
+      setUnreadCount: vi.fn(),
+    });
   });
 
   const renderPage = (initialEntries = ['/notifications']) => {
@@ -108,6 +118,11 @@ describe('NotificationsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockNavigate.mockClear();
+    vi.mocked(useUnreadCountStore).mockReturnValue({
+      unreadCount: 0,
+      decrement: vi.fn(),
+      setUnreadCount: vi.fn(),
+    });
   });
 
   it('renders notification list when authenticated', async () => {
@@ -232,6 +247,13 @@ describe('NotificationsPage', () => {
       marked_read: 1,
     });
 
+    // Mock store with unreadCount > 0 so button is visible
+    vi.mocked(useUnreadCountStore).mockReturnValue({
+      unreadCount: 1,
+      decrement: vi.fn(),
+      setUnreadCount: vi.fn(),
+    });
+
     renderPage();
 
     await waitFor(() => {
@@ -290,6 +312,13 @@ describe('NotificationsPage', () => {
       token: 'token',
       login: vi.fn(),
       logout: vi.fn(),
+    });
+
+    // Mock store with unreadCount = 1
+    vi.mocked(useUnreadCountStore).mockReturnValue({
+      unreadCount: 1,
+      decrement: vi.fn(),
+      setUnreadCount: vi.fn(),
     });
 
     vi.mocked(notificationsApi.getNotifications).mockResolvedValue(mockNotifications);
