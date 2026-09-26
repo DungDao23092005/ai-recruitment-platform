@@ -16,6 +16,10 @@ export async function getUnreadNotificationCount(): Promise<UnreadCountResponse>
   return apiClient.get<UnreadCountResponse, UnreadCountResponse>('/notifications/unread-count');
 }
 
+export async function getStreamTicket(): Promise<{ ticket: string }> {
+  return apiClient.post<{ ticket: string }, { ticket: string }>('/notifications/stream-ticket');
+}
+
 export async function markNotificationRead(
   notificationId: string
 ): Promise<Notification> {

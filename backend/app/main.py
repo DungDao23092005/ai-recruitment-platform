@@ -8,6 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.core.pubsub import pubsub_manager
 from app.core.rate_limit import RateLimiter, set_rate_limiter
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 
@@ -91,9 +92,25 @@ async def lifespan(app: FastAPI):
             "Failed to initialize Qdrant collections: %s", exc
         )
 
+    # Initialize PubSub manager for real-time notifications
+    try:
+        await pubsub_manager.connect()
+        logger.info("PubSub manager initialized for real-time notifications")
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error(
+            "Failed to initialize PubSub manager: %s", exc
+        )
+
     yield
 
     # Shutdown
+    try:
+        await pubsub_manager.disconnect()
+        logger.info("PubSub manager disconnected")
+    except Exception:
+        pass
+
     if redis_client:
         try:
             await redis_client.aclose()
