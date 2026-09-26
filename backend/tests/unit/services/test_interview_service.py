@@ -30,6 +30,38 @@ def make_session() -> MagicMock:
     return session
 
 
+def capture_add_and_materialize_uuid(session: MagicMock, call_order: list = None):
+    """
+    Capture objects added to session and materialize UUID on flush.
+
+    This simulates SQLAlchemy behavior where:
+    1. Object is created with id=None (or callable default)
+    2. session.add(obj) adds to session
+    3. session.flush() materializes the UUID (calls default=uuid.uuid4)
+    4. After flush, obj.id is populated
+    """
+    captured_objects = []
+
+    original_add = session.add
+
+    def capture_add(obj):
+        captured_objects.append(obj)
+        original_add(obj)
+
+    session.add = capture_add
+
+    async def mock_flush():
+        if call_order is not None:
+            call_order.append("flush")
+        for obj in captured_objects:
+            if hasattr(obj, 'id') and obj.id is None:
+                obj.id = uuid.uuid4()
+
+    session.flush = mock_flush
+
+    return captured_objects
+
+
 def make_user(role: UserRole = UserRole.RECRUITER):
     return SimpleNamespace(id=uuid.uuid4(), role=role, is_active=True)
 
@@ -74,8 +106,8 @@ class TestScheduleInterviewFlush:
         # Track call order
         call_order = []
 
-        async def mock_flush():
-            call_order.append("flush")
+        # Capture objects and materialize UUID on flush
+        captured_objects = capture_add_and_materialize_uuid(session, call_order)
 
         async def mock_commit():
             call_order.append("commit")
@@ -83,7 +115,6 @@ class TestScheduleInterviewFlush:
         async def mock_refresh(obj):
             call_order.append("refresh")
 
-        session.flush = mock_flush
         session.commit = mock_commit
         session.refresh = AsyncMock()
 
@@ -147,28 +178,22 @@ class TestScheduleInterviewFlush:
         assert "notification" in call_order, "notification was not called"
         # Verify commit was called
         assert "commit" in call_order, "commit() was not called"
-        
+
         # Verify order: flush -> notification -> commit
         flush_index = call_order.index("flush")
         notification_index = call_order.index("notification")
         commit_index = call_order.index("commit")
-        
+
         assert flush_index < notification_index, "flush() must be called before notification"
         assert notification_index < commit_index, "notification must be called before commit()"
 
     @pytest.mark.asyncio
     async def test_notification_entity_id_equals_interview_id(self):
-        """Verify notification is created with entity_id == interview.id."""
+        """Verify notification is created with entity_id == interview.id after flush materializes UUID."""
         session = make_session()
-        
-        # Capture the interview that gets added to session
-        captured_interview = []
-        
-        original_add = session.add
-        def capture_add(obj):
-            captured_interview.append(obj)
-            original_add(obj)
-        session.add = capture_add
+
+        # Capture objects and materialize UUID on flush
+        captured_objects = capture_add_and_materialize_uuid(session)
 
         # Create mock application with candidate and job
         mock_candidate = MagicMock(user_id=uuid.uuid4())
@@ -226,21 +251,26 @@ class TestScheduleInterviewFlush:
         # Verify notification was created
         assert len(notification_calls) == 1, "create_notification was not called exactly once"
         call_kwargs = notification_calls[0]
-        
-        # Check that entity_id matches the interview.id
+
+        # Check that entity_id is passed
         assert "entity_id" in call_kwargs, "entity_id not passed to create_notification"
-        
+
         # Get the interview that was created (first non-Application object added)
         interview_obj = None
-        for obj in captured_interview:
+        for obj in captured_objects:
             if hasattr(obj, 'id') and not isinstance(obj, Application):
                 interview_obj = obj
                 break
-        
+
         assert interview_obj is not None, "Interview was not created"
+
+        # CRITICAL: Verify UUID was materialized by flush
         interview_id = interview_obj.id
+        assert interview_id is not None, "interview.id should be materialized after flush, but is None"
+        assert isinstance(interview_id, uuid.UUID), f"interview.id should be UUID, got {type(interview_id)}"
+
         notification_entity_id = call_kwargs["entity_id"]
-        
+
         assert notification_entity_id == interview_id, \
             f"entity_id ({notification_entity_id}) does not match interview.id ({interview_id})"
 

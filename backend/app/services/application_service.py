@@ -68,6 +68,7 @@ class ApplicationService:
             job_id=job_id,
         )
         self.session.add(application)
+        await self.session.flush()
         try:
             # Notify recruiter(s) about new application BEFORE commit
             notification_service = NotificationService(self.session)

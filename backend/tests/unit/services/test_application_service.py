@@ -23,7 +23,40 @@ def make_session() -> MagicMock:
     session.commit = AsyncMock()
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
+    session.flush = AsyncMock()
     return session
+
+
+def capture_add_and_materialize_uuid(session: MagicMock, call_order: list = None):
+    """
+    Capture objects added to session and materialize UUID on flush.
+
+    This simulates SQLAlchemy behavior where:
+    1. Object is created with id=None (or callable default)
+    2. session.add(obj) adds to session
+    3. session.flush() materializes the UUID (calls default=uuid.uuid4)
+    4. After flush, obj.id is populated
+    """
+    captured_objects = []
+
+    original_add = session.add
+
+    def capture_add(obj):
+        captured_objects.append(obj)
+        original_add(obj)
+
+    session.add = capture_add
+
+    async def mock_flush():
+        if call_order is not None:
+            call_order.append("flush")
+        for obj in captured_objects:
+            if hasattr(obj, 'id') and obj.id is None:
+                obj.id = uuid.uuid4()
+
+    session.flush = mock_flush
+
+    return captured_objects
 
 
 def make_user(
@@ -52,7 +85,7 @@ def make_application(
 
 
 def make_job() -> Job:
-    return Job(
+    job = Job(
         id=uuid.uuid4(),
         company_id=uuid.uuid4(),
         title="Backend Engineer",
@@ -62,6 +95,9 @@ def make_job() -> Job:
         workplace_type="remote",
         location="",
     )
+    job.company = MagicMock()
+    job.company.recruiters = [MagicMock(user_id=uuid.uuid4())]
+    return job
 
 
 def make_service(session) -> ApplicationService:
@@ -72,7 +108,10 @@ def make_service(session) -> ApplicationService:
 
 
 class TestApplyJob:
-    def test_creates_application(self):
+    @patch("app.services.application_service.NotificationService")
+    def test_creates_application(self, mock_notification_service_class):
+        mock_notification_service_class.return_value.create_notification = AsyncMock()
+
         session = make_session()
         service = make_service(session)
         job = make_job()
@@ -91,6 +130,8 @@ class TestApplyJob:
         session.refresh.assert_awaited_once_with(
             application, attribute_names=["candidate"]
         )
+        session.flush.assert_awaited_once()
+        mock_notification_service_class.return_value.create_notification.assert_awaited()
 
     def test_job_not_found_raises(self):
         session = make_session()
@@ -127,7 +168,10 @@ class TestApplyJob:
         session.add.assert_not_called()
         session.commit.assert_not_awaited()
 
-    def test_commit_failure_rolls_back(self):
+    @patch("app.services.application_service.NotificationService")
+    def test_commit_failure_rolls_back(self, mock_notification_service_class):
+        mock_notification_service_class.return_value.create_notification = AsyncMock()
+
         session = make_session()
         service = make_service(session)
         service.jobs.get_job_with_company_and_recruiters.return_value = make_job()
@@ -143,6 +187,116 @@ class TestApplyJob:
             )
 
         session.rollback.assert_awaited_once()
+
+    def test_flush_called_before_notification(self):
+        """Verify flush is called before notification uses application.id."""
+        session = make_session()
+
+        # Track call order
+        call_order = []
+
+        # Capture objects and materialize UUID on flush
+        captured_objects = capture_add_and_materialize_uuid(session, call_order)
+
+        async def mock_commit():
+            call_order.append("commit")
+
+        async def mock_refresh(obj):
+            call_order.append("refresh")
+
+        session.commit = mock_commit
+        session.refresh = AsyncMock()
+
+        service = make_service(session)
+        job = make_job()
+        service.jobs.get_job_with_company_and_recruiters.return_value = job
+        service.applications.get_by_candidate_and_job.return_value = None
+        candidate_id = uuid.uuid4()
+
+        # Mock NotificationService.create_notification to track when it's called
+        notification_calls = []
+
+        async def mock_create_notification(**kwargs):
+            call_order.append("notification")
+            notification_calls.append(kwargs)
+
+        with patch(
+            "app.services.application_service.NotificationService"
+        ) as mock_notification_service_class:
+            mock_notification_service_class.return_value.create_notification = mock_create_notification
+
+            application = asyncio.run(
+                service.apply_job(candidate_id=candidate_id, job_id=job.id)
+            )
+
+        # Verify flush was called
+        assert "flush" in call_order, "flush() was not called"
+        # Verify notification was called
+        assert "notification" in call_order, "notification was not called"
+        # Verify commit was called
+        assert "commit" in call_order, "commit() was not called"
+
+        # Verify order: flush -> notification -> commit
+        flush_index = call_order.index("flush")
+        notification_index = call_order.index("notification")
+        commit_index = call_order.index("commit")
+
+        assert flush_index < notification_index, "flush() must be called before notification"
+        assert notification_index < commit_index, "notification must be called before commit()"
+
+    def test_notification_entity_id_equals_application_id(self):
+        """Verify notification is created with entity_id == application.id after flush materializes UUID."""
+        session = make_session()
+
+        # Capture objects and materialize UUID on flush
+        captured_objects = capture_add_and_materialize_uuid(session)
+
+        service = make_service(session)
+        job = make_job()
+        service.jobs.get_job_with_company_and_recruiters.return_value = job
+        service.applications.get_by_candidate_and_job.return_value = None
+        candidate_id = uuid.uuid4()
+
+        # Track notification calls with arguments
+        notification_calls = []
+
+        async def mock_create_notification(**kwargs):
+            notification_calls.append(kwargs)
+
+        with patch(
+            "app.services.application_service.NotificationService"
+        ) as mock_notification_service_class:
+            mock_notification_service_class.return_value.create_notification = mock_create_notification
+
+            application = asyncio.run(
+                service.apply_job(candidate_id=candidate_id, job_id=job.id)
+            )
+
+        # Verify notification was created for each recruiter
+        assert len(notification_calls) == 1, "create_notification was not called exactly once per recruiter"
+        call_kwargs = notification_calls[0]
+
+        # Check that entity_id is passed
+        assert "entity_id" in call_kwargs, "entity_id not passed to create_notification"
+
+        # Get the application that was created
+        app_obj = None
+        for obj in captured_objects:
+            if hasattr(obj, 'id') and isinstance(obj, Application):
+                app_obj = obj
+                break
+
+        assert app_obj is not None, "Application was not created"
+
+        # CRITICAL: Verify UUID was materialized by flush
+        application_id = app_obj.id
+        assert application_id is not None, "application.id should be materialized after flush, but is None"
+        assert isinstance(application_id, uuid.UUID), f"application.id should be UUID, got {type(application_id)}"
+
+        notification_entity_id = call_kwargs["entity_id"]
+
+        assert notification_entity_id == application_id, \
+            f"entity_id ({notification_entity_id}) does not match application.id ({application_id})"
 
 
 class TestListApplicationsByJob:

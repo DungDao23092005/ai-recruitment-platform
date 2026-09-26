@@ -210,7 +210,8 @@ export function NotificationsPage() {
     // Fire-and-forget mark-read API
     markNotificationRead(notification.id)
       .then(() => {
-        // Success - nothing more to do
+        // Success - dispatch event for authoritative resync
+        window.dispatchEvent(new CustomEvent('notification:read'));
       })
       .catch(() => {
         // Rollback on failure
@@ -229,6 +230,8 @@ export function NotificationsPage() {
       await markAllNotificationsRead();
       setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
       setUnreadCount(0);
+      // Dispatch event for authoritative resync
+      window.dispatchEvent(new CustomEvent('notification:read-all'));
     } catch {
       setError('Không thể đánh dấu tất cả đã đọc. Vui lòng thử lại.');
     }
