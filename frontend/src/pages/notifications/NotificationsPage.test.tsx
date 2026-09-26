@@ -1,5 +1,5 @@
 /// <reference types="vitest/globals" />
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NotificationsPage } from '@/pages/notifications/NotificationsPage';
@@ -43,6 +43,7 @@ describe('NotificationsPage', () => {
     vi.mocked(useUnreadCountStore).mockReturnValue({
       unreadCount: 0,
       decrement: vi.fn(),
+      increment: vi.fn(),
       setUnreadCount: vi.fn(),
     });
   });
@@ -121,6 +122,7 @@ describe('NotificationsPage', () => {
     vi.mocked(useUnreadCountStore).mockReturnValue({
       unreadCount: 0,
       decrement: vi.fn(),
+      increment: vi.fn(),
       setUnreadCount: vi.fn(),
     });
   });
@@ -638,6 +640,95 @@ describe('NotificationsPage', () => {
 
       // Should navigate to candidate applications
       expect(mockNavigate).toHaveBeenCalledWith('/candidate/applications');
+    });
+
+    // ===== PHASE 1: ALREADY-READ NAVIGATION =====
+
+    it('already-read notification still navigates without calling mark-read', async () => {
+      vi.mocked(useAuth).mockReturnValue(
+        mockUser('candidate')
+      );
+
+      const alreadyReadNotifications = [
+        { ...mockNotifications[0], id: '1', entity_type: 'application', entity_id: 'app-1', is_read: true },
+      ];
+
+      vi.mocked(notificationsApi.getNotifications).mockResolvedValue(alreadyReadNotifications);
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Notification 1')).toBeInTheDocument();
+      });
+
+      // Click the already-read notification
+      await screen.getByText('Test Notification 1').click();
+
+      // Should NOT call markNotificationRead for already-read notification
+      await waitFor(() => {
+        expect(vi.mocked(notificationsApi.markNotificationRead)).not.toHaveBeenCalled();
+      });
+
+      // Should NOT call decrement or increment
+      const decrementMock = vi.mocked(useUnreadCountStore).mock.results[0].value.decrement;
+      const incrementMock = vi.mocked(useUnreadCountStore).mock.results[0].value.increment;
+      expect(decrementMock).not.toHaveBeenCalled();
+      expect(incrementMock).not.toHaveBeenCalled();
+
+      // Should still navigate to candidate applications
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith('/candidate/applications');
+      });
+    });
+
+    // ===== PHASE 1: MARK-READ FAILURE / ROLLBACK =====
+
+    it('mark-read failure triggers rollback and still navigates', async () => {
+      vi.mocked(useAuth).mockReturnValue(
+        mockUser('candidate')
+      );
+
+      const unreadNotifications = [
+        { ...mockNotifications[0], id: '1', entity_type: 'application', entity_id: 'app-1', is_read: false },
+      ];
+
+      // Mock markNotificationRead to reject
+      vi.mocked(notificationsApi.getNotifications).mockResolvedValue(unreadNotifications);
+      vi.mocked(notificationsApi.markNotificationRead).mockRejectedValue(new Error('Network error'));
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Notification 1')).toBeInTheDocument();
+      });
+
+      // Click the unread notification
+      await screen.getByText('Test Notification 1').click();
+
+      // Verify markNotificationRead was called
+      await waitFor(() => {
+        expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('1');
+      });
+
+      // Verify decrement was called once
+      const decrementMock = vi.mocked(useUnreadCountStore).mock.results[0].value.decrement;
+      await waitFor(() => {
+        expect(decrementMock).toHaveBeenCalledTimes(1);
+      });
+
+      // Navigation should still happen despite mark-read failure
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith('/candidate/applications');
+      });
+
+      // Wait for the promise rejection to be handled (rollback)
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      });
+
+      // Verify increment was called once for rollback
+      const incrementMock = vi.mocked(useUnreadCountStore).mock.results[0].value.increment;
+      expect(incrementMock).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -92,7 +92,7 @@ function getEntityRoute(entityType: string | null, entityId: string | null, user
 export function NotificationsPage() {
   const { isAuthenticated, isLoading: authLoading, currentUser } = useAuth();
   const navigate = useNavigate();
-  const { unreadCount, decrement, setUnreadCount } = useUnreadCountStore();
+  const { unreadCount, decrement, increment, setUnreadCount } = useUnreadCountStore();
 
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
@@ -128,33 +128,23 @@ export function NotificationsPage() {
   const retry = () => fetchNotifications(1, false);
 
   const handleMarkRead = async (notification: Notification) => {
-    if (notification.is_read) return;
-    try {
-      await markNotificationRead(notification.id);
-      setNotifications((prev) =>
-        prev.map((n) => (n.id === notification.id ? { ...n, is_read: true } : n))
-      );
-      decrement();
+    // Separate read handling from navigation
+    const userRole = currentUser?.role;
 
-      // Navigate to entity route based on user role
-      const userRole = currentUser?.role;
-
+    // Helper to resolve and navigate
+    const resolveAndNavigate = async () => {
       if (notification.entity_type === 'application' && notification.entity_id && userRole === 'recruiter') {
-        // For recruiters: fetch application to get job_id, then navigate to job applicants page
         try {
           const application = await getApplicationDetail(notification.entity_id);
           if (application.job_id) {
             navigate(`/recruiter/jobs/${application.job_id}/applicants`);
           } else {
-            // Fallback if no job_id
             navigate(`/recruiter/jobs`);
           }
         } catch {
-          // Fallback on error - use Recruiter safe fallback
           navigate(`/recruiter/jobs`);
         }
       } else if (notification.entity_type === 'interview' && notification.entity_id && userRole === 'recruiter') {
-        // For recruiters with interview notification: fetch interview to get application, then get job
         try {
           const interview = await getInterview(notification.entity_id);
           if (interview.application_id) {
@@ -168,11 +158,9 @@ export function NotificationsPage() {
             navigate(`/recruiter/jobs`);
           }
         } catch {
-          // Fallback on error - use Recruiter safe fallback
           navigate(`/recruiter/jobs`);
         }
       } else if (notification.entity_type === 'application' && notification.entity_id && userRole === 'admin') {
-        // Admin with application notification: navigate to admin job applicants page
         try {
           const application = await getApplicationDetail(notification.entity_id);
           if (application.job_id) {
@@ -184,7 +172,6 @@ export function NotificationsPage() {
           navigate(`/admin/jobs`);
         }
       } else if (notification.entity_type === 'interview' && notification.entity_id && userRole === 'admin') {
-        // Admin with interview notification: fetch interview to get application, then job
         try {
           const interview = await getInterview(notification.entity_id);
           if (interview.application_id) {
@@ -201,15 +188,40 @@ export function NotificationsPage() {
           navigate(`/admin/jobs`);
         }
       } else {
-        // Candidate or other roles: use standard route
         const route = getEntityRoute(notification.entity_type, notification.entity_id, userRole || 'candidate');
         if (route) {
           navigate(route);
         }
       }
-    } catch {
-      setError('Không thể đánh dấu đã đọc. Vui lòng thử lại.');
+    };
+
+    // If already read, just navigate without mark-read
+    if (notification.is_read) {
+      await resolveAndNavigate();
+      return;
     }
+
+    // Unread notification: optimistic update + fire-and-forget mark-read + navigate
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === notification.id ? { ...n, is_read: true } : n))
+    );
+    decrement();
+
+    // Fire-and-forget mark-read API
+    markNotificationRead(notification.id)
+      .then(() => {
+        // Success - nothing more to do
+      })
+      .catch(() => {
+        // Rollback on failure
+        setNotifications((prev) =>
+          prev.map((n) => (n.id === notification.id ? { ...n, is_read: false } : n))
+        );
+        increment();
+      });
+
+    // Always navigate regardless of mark-read status
+    await resolveAndNavigate();
   };
 
   const handleMarkAllRead = async () => {
