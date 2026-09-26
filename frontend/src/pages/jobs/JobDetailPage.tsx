@@ -385,7 +385,22 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
       </div>
 
       {showApply ? (
-        <ApplyModal job={job} onClose={() => setShowApply(false)} />
+        <ApplyModal
+          job={job}
+          onClose={() => setShowApply(false)}
+          onSuccess={() =>
+            setAppStatus({
+              kind: 'exists',
+              status: 'applied',
+            })
+          }
+          onWithdraw={() =>
+            setAppStatus({
+              kind: 'exists',
+              status: 'withdrawn',
+            })
+          }
+        />
       ) : null}
     </div>
   )

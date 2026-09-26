@@ -11,9 +11,10 @@ export interface ApplyModalProps {
   job: Job
   onClose: () => void
   onSuccess?: () => void
+  onWithdraw?: () => void
 }
 
-export function ApplyModal({ job, onClose, onSuccess }: ApplyModalProps) {
+export function ApplyModal({ job, onClose, onSuccess, onWithdraw }: ApplyModalProps) {
   const [submitting, setSubmitting] = useState(false)
   const [success, setSuccess] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -54,6 +55,7 @@ export function ApplyModal({ job, onClose, onSuccess }: ApplyModalProps) {
       const updated = await withdrawApplication(application.id)
       setApplication(updated)
       setWithdrawn(true)
+      onWithdraw?.()
     } catch (err) {
       setError(getFriendlyErrorMessage(err))
     } finally {
