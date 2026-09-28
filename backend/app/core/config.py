@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # AI & Vector Database Configuration
     GEMINI_API_KEY: str = ""
-    GEMINI_GENERATION_MODEL: str = "gemini-3.5-flash"
+    GEMINI_GENERATION_MODEL: str = "gemini-3.5-flash-lite"
     QDRANT_HOST: str = "localhost"
     QDRANT_PORT: int = 6333
     QDRANT_URL: str | None = None

@@ -6337,3 +6337,205 @@ class TestTelemetryFastPath:
         assert call_schemas.count(QueryRewriteResponse) == 1
         assert call_schemas.count(LLMChatResponse) == 1
         assert call_schemas.count(FactCheckResponse) == 1
+class TestSkillGapContextProvenance:
+    """Regression tests for Q3 skill-gap context provenance."""
+
+    @pytest.mark.asyncio
+    async def test_candidate_skill_gap_uses_recommendation_context(self):
+        """Q3 skill-gap uses Q1 recommendation context, not fresh search."""
+        from app.services.rag_chat_service import RAGChatService, LLMChatResponse
+        from app.schemas.ai_chat import ChatSource
+        from app.schemas.ai_job import ParsedJobSchema
+        import uuid
+
+        # Q1 recommendation context: JOB_A, JOB_B, JOB_C
+        job_a_id = uuid.uuid4()
+        job_b_id = uuid.uuid4()
+        job_c_id = uuid.uuid4()
+        fake_x_id = uuid.uuid4()  # Would be returned by fresh search
+        fake_y_id = uuid.uuid4()
+
+        job_a = ParsedJobSchema(title="Job A", required_skills=["Python", "FastAPI"])
+        job_b = ParsedJobSchema(title="Job B", required_skills=["Python", "Docker"])
+        job_c = ParsedJobSchema(title="Job C", required_skills=["Python", "SQL"])
+
+        job_a_source = ChatSource(source_type="job", entity_id=job_a_id, title="Job A", relevance_score=0.9, skills=["Python", "FastAPI"])
+        job_b_source = ChatSource(source_type="job", entity_id=job_b_id, title="Job B", relevance_score=0.85, skills=["Python", "Docker"])
+        job_c_source = ChatSource(source_type="job", entity_id=job_c_id, title="Job C", relevance_score=0.8, skills=["Python", "SQL"])
+
+        context = MagicMock()
+        context.jobs = [job_a, job_b, job_c]
+        context.candidates = [MagicMock()]
+        context.match_results = []
+        context.sources = [job_a_source, job_b_source, job_c_source]
+        context.knowledge = []
+
+        flat_text = RAGChatService._build_flat_context_text(context)
+        metadata_text = RAGChatService._build_source_metadata_text(context)
+        authorized_text = flat_text + "\n\n--- SOURCE METADATA (for citation IDs) ---\n" + metadata_text
+
+        # LLM response cites only Q1 jobs (JOB_A, JOB_B, JOB_C)
+        llm_response = LLMChatResponse(
+            answer="Bạn còn thiếu Docker và SQL cho các vị trí phù hợp.",
+            cited_source_ids=[job_a_id, job_b_id, job_c_id],
+            evidence_quotes=[
+                f"SOURCE\n  canonical_id: {job_a_id}\n  source_type: job\n  title: Job A\n  relevance_score: 0.900\n  skills: Python, FastAPI",
+                f"SOURCE\n  canonical_id: {job_b_id}\n  source_type: job\n  title: Job B\n  relevance_score: 0.850\n  skills: Python, Docker",
+                f"SOURCE\n  canonical_id: {job_c_id}\n  source_type: job\n  title: Job C\n  relevance_score: 0.800\n  skills: Python, SQL",
+            ],
+            claims=["Job A yêu cầu FastAPI", "Job B yêu cầu Docker", "Job C yêu cầu SQL"],
+            suggested_followups=[],
+        )
+
+        response, valid_quotes = RAGChatService._validate_response(llm_response, context)
+
+        # Should pass - all cited IDs are from Q1 context
+        assert len(response.sources) == 3
+        source_ids = {s.entity_id for s in response.sources}
+        assert job_a_id in source_ids
+        assert job_b_id in source_ids
+        assert job_c_id in source_ids
+        assert len(source_ids) == 3
+
+
+    @pytest.mark.asyncio
+    async def test_candidate_skill_gap_does_not_drop_authorized_resume(self):
+        """Q3 must include candidate's own resume in sources."""
+        from app.services.rag_chat_service import RAGChatService, LLMChatResponse
+        from app.schemas.ai_chat import ChatSource
+        from app.schemas.ai_job import ParsedJobSchema
+        import uuid
+
+        job_id = uuid.uuid4()
+        resume_id = uuid.uuid4()
+
+        job = ParsedJobSchema(title="AI Engineer", required_skills=["Python", "PyTorch"])
+        job_source = ChatSource(source_type="job", entity_id=job_id, title="AI Engineer", relevance_score=0.9, skills=["Python", "PyTorch"])
+        resume_source = ChatSource(source_type="resume", entity_id=resume_id, title="Hồ sơ ứng viên", relevance_score=1.0, skills=["Python"])
+
+        context = MagicMock()
+        context.jobs = [job]
+        context.candidates = [MagicMock()]
+        context.match_results = []
+        context.sources = [job_source, resume_source]
+        context.knowledge = []
+
+        flat_text = RAGChatService._build_flat_context_text(context)
+        metadata_text = RAGChatService._build_source_metadata_text(context)
+        authorized_text = flat_text + "\n\n--- SOURCE METADATA (for citation IDs) ---\n" + metadata_text
+
+        llm_response = LLMChatResponse(
+            answer="Bạn còn thiếu PyTorch cho vị trí này.",
+            cited_source_ids=[job_id, resume_id],
+            evidence_quotes=[
+                f"SOURCE\n  canonical_id: {job_id}\n  source_type: job\n  title: AI Engineer\n  relevance_score: 0.900\n  skills: Python, PyTorch",
+                f"SOURCE\n  canonical_id: {resume_id}\n  source_type: resume\n  title: Hồ sơ ứng viên\n  relevance_score: 1.000\n  skills: Python",
+            ],
+            claims=["AI Engineer yêu cầu PyTorch", "Ứng viên có Python"],
+            suggested_followups=[],
+        )
+
+        response, valid_quotes = RAGChatService._validate_response(llm_response, context)
+
+        # Must include resume source
+        assert len(response.sources) == 2
+        source_types = {s.source_type for s in response.sources}
+        assert "job" in source_types
+        assert "resume" in source_types
+        assert resume_id in {s.entity_id for s in response.sources}
+
+
+    @pytest.mark.asyncio
+    async def test_candidate_skill_gap_preserves_previous_job_entities(self):
+        """Q3 preserves Q1 job entities exactly."""
+        from app.services.rag_chat_service import RAGChatService, LLMChatResponse
+        from app.schemas.ai_chat import ChatSource
+        from app.schemas.ai_job import ParsedJobSchema
+        import uuid
+
+        job_a_id = uuid.uuid4()
+        job_b_id = uuid.uuid4()
+        job_c_id = uuid.uuid4()
+
+        job_a = ParsedJobSchema(title="Job A", required_skills=["Python"])
+        job_b = ParsedJobSchema(title="Job B", required_skills=["Java"])
+        job_c = ParsedJobSchema(title="Job C", required_skills=["Go"])
+
+        job_a_source = ChatSource(source_type="job", entity_id=job_a_id, title="Job A", relevance_score=0.9, skills=["Python"])
+        job_b_source = ChatSource(source_type="job", entity_id=job_b_id, title="Job B", relevance_score=0.85, skills=["Java"])
+        job_c_source = ChatSource(source_type="job", entity_id=job_c_id, title="Job C", relevance_score=0.8, skills=["Go"])
+
+        context = MagicMock()
+        context.jobs = [job_a, job_b, job_c]
+        context.candidates = [MagicMock()]
+        context.match_results = []
+        context.sources = [job_a_source, job_b_source, job_c_source]
+        context.knowledge = []
+
+        flat_text = RAGChatService._build_flat_context_text(context)
+        metadata_text = RAGChatService._build_source_metadata_text(context)
+        authorized_text = flat_text + "\n\n--- SOURCE METADATA (for citation IDs) ---\n" + metadata_text
+
+        # Q1 recommended: A, B, C
+        # Q3 should use same entities
+        llm_response = LLMChatResponse(
+            answer="Kỹ năng còn thiếu: Docker, Kubernetes.",
+            cited_source_ids=[job_a_id, job_b_id, job_c_id],
+            evidence_quotes=[
+                f"SOURCE\n  canonical_id: {job_a_id}\n  source_type: job\n  title: Job A\n  relevance_score: 0.900\n  skills: Python",
+                f"SOURCE\n  canonical_id: {job_b_id}\n  source_type: job\n  title: Job B\n  relevance_score: 0.850\n  skills: Java",
+                f"SOURCE\n  canonical_id: {job_c_id}\n  source_type: job\n  title: Job C\n  relevance_score: 0.800\n  skills: Go",
+            ],
+            claims=["Job A, B, C yêu cầu Docker, Kubernetes"],
+            suggested_followups=[],
+        )
+
+        response, valid_quotes = RAGChatService._validate_response(llm_response, context)
+
+        # Must preserve exact same job entities from Q1
+        source_ids = {s.entity_id for s in response.sources if s.source_type == "job"}
+        expected = {job_a_id, job_b_id, job_c_id}
+        assert source_ids == expected
+
+
+    @pytest.mark.asyncio
+    async def test_job_uuid_extraction_rejects_non_job_entities(self):
+        """_extract_previous_job_ids only extracts Job UUIDs, not Resume/Candidate UUIDs."""
+        from app.services.rag_chat_service import _extract_previous_job_ids
+        from app.schemas.ai_chat import ChatMessage
+        import uuid
+
+        job_id = uuid.uuid4()
+        resume_id = uuid.uuid4()
+        candidate_id = uuid.uuid4()
+
+        # History contains assistant message with mixed UUIDs
+        history = [
+            ChatMessage(
+                role="assistant",
+                content="Recommendation with jobs and resume",
+                recommended_job_ids=[job_id]  # Only job ID should be extracted
+            ),
+        ]
+
+        # Should only extract job_id, not resume_id or candidate_id
+        result = _extract_previous_job_ids(history)
+        assert result == [job_id]
+        assert resume_id not in result
+        assert candidate_id not in result
+
+        # Multiple job IDs
+        job2_id = uuid.uuid4()
+        job3_id = uuid.uuid4()
+        history2 = [
+            ChatMessage(role="assistant", content="Rec 1", recommended_job_ids=[job_id]),
+            ChatMessage(role="assistant", content="Rec 2", recommended_job_ids=[job2_id, job3_id]),
+        ]
+        result2 = _extract_previous_job_ids(history2)
+        assert set(result2) == {job_id, job2_id, job3_id}
+
+        # Empty history
+        assert _extract_previous_job_ids([]) == []
+        # No recommended_job_ids
+        history3 = [ChatMessage(role="assistant", content="Just text")]
+        assert _extract_previous_job_ids(history3) == []

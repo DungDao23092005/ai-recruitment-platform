@@ -191,8 +191,15 @@ export function useNotificationStream() {
         }
       });
 
-      eventSource.onerror = (error) => {
+eventSource.onerror = (error) => {
         console.warn('[NotificationStream] Connection error:', error);
+
+        // Always close the EventSource to prevent native browser reconnect with stale ticket
+        // This is critical because the ticket is single-use - native retry would reuse the stale ticket
+        if (eventSourceRef.current) {
+          eventSourceRef.current.close();
+          eventSourceRef.current = null;
+        }
 
         if (eventSource.readyState === EventSource.CLOSED) {
           console.log('[NotificationStream] Connection closed, scheduling reconnect...');

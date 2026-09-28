@@ -591,3 +591,106 @@ class TestRetryBehavior:
 
         assert result.full_name == "Jane Doe"
         assert transport.call_count == 1, f"Expected 1 call, got {transport.call_count}"
+
+
+class TestAsyncOffloading:
+    """Tests to verify async offloading of synchronous Gemini calls."""
+
+    @pytest.fixture
+    def provider(self, monkeypatch):
+        monkeypatch.setattr(settings, "GEMINI_GENERATION_MODEL", "gemini-3.5-flash")
+        return GeminiLLMProvider(api_key="test-key")
+
+    def test_async_offloading_does_not_block_event_loop(self, provider):
+        """Verify that synchronous Gemini call is offloaded to thread pool.
+
+        This test ensures that the synchronous `client.models.generate_content`
+        call is properly offloaded to a thread pool using `asyncio.to_thread`,
+        allowing other async tasks to run concurrently.
+        """
+        import asyncio
+
+        # Track when the blocking call starts and ends
+        call_started = asyncio.Event()
+        call_finished = asyncio.Event()
+        blocking_duration = 0.1  # 100ms simulated blocking
+
+        original_generate_content = None
+
+        def mock_generate_content(*args, **kwargs):
+            call_started.set()
+            import time
+            time.sleep(blocking_duration)
+            call_finished.set()
+            return original_generate_content(*args, **kwargs)
+
+        transport = _CallCounterTransport([_make_success_response()])
+
+        with _patched_genai_client(transport) as client:
+            # Store original method and patch it
+            original_generate_content = client.models.generate_content
+            client.models.generate_content = mock_generate_content
+
+            with patch("google.genai.Client", return_value=client):
+                # Start a concurrent heartbeat task
+                heartbeat_count = 0
+                heartbeat_done = asyncio.Event()
+
+                async def heartbeat():
+                    nonlocal heartbeat_count
+                    while not call_finished.is_set():
+                        heartbeat_count += 1
+                        await asyncio.sleep(0.01)  # 10ms heartbeat
+
+                async def run_test():
+                    nonlocal heartbeat_count
+                    heartbeat_task = asyncio.create_task(heartbeat())
+                    try:
+                        await provider.generate_structured_output(
+                            prompt="Parse this resume",
+                            response_schema=_DummySchema,
+                        )
+                    finally:
+                        heartbeat_done.set()
+                        await heartbeat_task
+
+                    return heartbeat_count
+
+                heartbeat_count = _run(run_test())
+
+        # Verify the call was made
+        assert transport.call_count == 1
+
+        # Verify heartbeat ran concurrently (should have multiple beats during blocking call)
+        # With 100ms blocking and 10ms heartbeat interval, we expect ~10 heartbeats
+        assert heartbeat_count >= 5, f"Expected concurrent heartbeats (>=5), got {heartbeat_count}"
+
+    def test_multiple_concurrent_requests(self, provider):
+        """Verify multiple concurrent requests are handled without blocking each other."""
+        import asyncio
+
+        transport = _CallCounterTransport([
+            _make_success_response('{"full_name": "User 1"}'),
+            _make_success_response('{"full_name": "User 2"}'),
+            _make_success_response('{"full_name": "User 3"}'),
+        ])
+
+        with _patched_genai_client(transport) as client:
+            with patch("google.genai.Client", return_value=client):
+                async def make_request(i: int):
+                    return await provider.generate_structured_output(
+                        prompt=f"Parse resume {i}",
+                        response_schema=_DummySchema,
+                    )
+
+                async def run_all():
+                    tasks = [make_request(i) for i in range(3)]
+                    return await asyncio.gather(*tasks)
+
+                results = _run(run_all())
+
+        assert len(results) == 3
+        assert transport.call_count == 3
+        assert results[0].full_name == "User 1"
+        assert results[1].full_name == "User 2"
+        assert results[2].full_name == "User 3"

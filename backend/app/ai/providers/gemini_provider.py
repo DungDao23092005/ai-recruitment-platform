@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -101,7 +102,9 @@ class GeminiLLMProvider(BaseLLMProvider):
         config = types.GenerateContentConfig(**config_args)
 
         try:
-            response = client.models.generate_content(
+            # Offload synchronous blocking network I/O to thread pool to avoid blocking FastAPI event loop
+            response = await asyncio.to_thread(
+                client.models.generate_content,
                 model=self.model_name,
                 contents=prompt,
                 config=config,

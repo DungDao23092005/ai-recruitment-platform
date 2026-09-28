@@ -58,6 +58,10 @@ class ChatMessage(BaseModel):
     content: str = Field(
         ..., min_length=1, max_length=4000, description="Message text content"
     )
+    recommended_job_ids: list[uuid.UUID] = Field(
+        default_factory=list,
+        description="Job IDs from recommendation response for follow-up context"
+    )
 
 
 class ChatSource(BaseModel):
@@ -107,10 +111,14 @@ class ChatResponse(BaseModel):
     )
     sources: list[ChatSource] = Field(
         default_factory=list,
-        description="Retrieved context citations from the vector store",
+        description="Retrieved context citations from the vector store"
     )
     suggested_followups: list[str] = Field(
         default_factory=list,
         max_length=5,
-        description="Suggested follow-up questions",
+        description="Suggested follow-up questions"
+    )
+    recommended_job_ids: list[uuid.UUID] = Field(
+        default_factory=list,
+        description="Job IDs from recommendation for follow-up context"
     )

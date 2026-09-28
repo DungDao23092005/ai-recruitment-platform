@@ -43,7 +43,7 @@ class AIMatchingService:
     ) -> None:
         self.resume_parser = resume_parser or ResumeParser()
         self.job_parser = job_parser or JobParser()
-        self.embedding_service = embedding_service or EmbeddingService()
+        self.embedding_service = embedding_service or EmbeddingService(SentenceTransformerEmbeddingProvider())
         self.vector_repository = vector_repository or QdrantVectorRepository()
         self.matching_engine = matching_engine or MatchingEngine()
         self._context_resolver = context_resolver
@@ -122,6 +122,7 @@ class AIMatchingService:
         candidate_id: uuid.UUID,
         parsed_resume: ParsedResumeSchema,
         is_deleted: bool = False,
+        vector: list[float] | None = None,
     ) -> None:
         """Canonical reindex method for a resume.
 
@@ -132,8 +133,10 @@ class AIMatchingService:
             candidate_id: The candidate's UUID
             parsed_resume: Parsed resume data
             is_deleted: Whether the resume is deleted/inactive
+            vector: Pre-computed embedding vector. If not provided, will be generated.
         """
-        vector = await self.embedding_service.embed_resume(parsed_resume)
+        if vector is None:
+            vector = await self.embedding_service.embed_resume(parsed_resume)
         payload = {
             "candidate_id": str(candidate_id),
             "skills": parsed_resume.skills,
@@ -235,11 +238,28 @@ class AIMatchingService:
                     point_id=candidate_id,
                 )
                 if retrieved is None:
-                    raise EntityNotFoundException(
-                        f"Resume vector for Candidate {candidate_id} "
-                        "not found in vector repository"
-                    )
-                candidate_vector = retrieved["vector"]
+                    # Lazy self-healing: attempt to rebuild the resume vector from SQL
+                    if session is not None:
+                        resume_repo = ResumeRepository(session, Resume)
+                        primary_resume = await resume_repo.get_primary_by_candidate(candidate_id)
+                        if primary_resume is not None and primary_resume.parsed_data:
+                            try:
+                                parsed_resume = ParsedResumeSchema(**primary_resume.parsed_data)
+                                candidate_vector = await self.embedding_service.embed_resume(
+                                    parsed_resume
+                                )
+                                # Self-heal: upsert the vector to Qdrant (pass vector to avoid double embedding)
+                                await self._reindex_resume(candidate_id, parsed_resume, vector=candidate_vector)
+                            except Exception:
+                                # If parsing fails, fall through to error
+                                pass
+
+                    if candidate_vector is None:
+                        raise EntityNotFoundException(
+                            "CV của bạn chưa được số hoá thành công. Vui lòng tải lại CV."
+                        )
+                else:
+                    candidate_vector = retrieved["vector"]
                 # Hydrate full resume from SQL (includes education, projects, experiences)
                 # instead of building minimal schema from Qdrant payload
                 if session is not None and actor_user is not None:

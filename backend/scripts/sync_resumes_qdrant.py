@@ -57,7 +57,9 @@ async def run_sync(
 
     # Initialize services (use provided instances for testing, otherwise create new)
     if matching_service is None:
-        matching_service = AIMatchingService()
+        from app.ai.embeddings.embedding_service import EmbeddingService
+        from app.ai.embeddings.embedding_service import SentenceTransformerEmbeddingProvider
+        matching_service = AIMatchingService(embedding_service=EmbeddingService(SentenceTransformerEmbeddingProvider()))
     if repo is None:
         repo = QdrantVectorRepository()
 

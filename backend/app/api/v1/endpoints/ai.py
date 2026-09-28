@@ -374,6 +374,11 @@ async def ai_chat(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
     except AIProviderQuotaExceededError as exc:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -508,14 +513,20 @@ async def recommend_candidates_for_job(
     else:
         job_vector = await service.embedding_service.embed_job(parsed_job)
 
-    return await service.recommend_candidates_for_job(
-        job_id=job_id,
-        parsed_job=parsed_job,
-        job_vector=job_vector,
-        limit=limit,
-        session=db,
-        actor_user=current_user,
-    )
+    try:
+        return await service.recommend_candidates_for_job(
+            job_id=job_id,
+            parsed_job=parsed_job,
+            job_vector=job_vector,
+            limit=limit,
+            session=db,
+            actor_user=current_user,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
 from app.services.ai_evaluation_service import AIEvaluationService, EvaluationSample, RelevanceLabel
 
 @router.post(
