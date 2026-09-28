@@ -185,7 +185,7 @@ class MockContextResolver:
         self.resolve_jobs_calls.append((job_ids, actor_user))
         return {jid: self.jobs_dict[jid] for jid in job_ids if jid in self.jobs_dict}
 
-    async def resolve_resumes(self, candidate_ids: list, actor_user) -> dict:
+    async def resolve_resumes(self, candidate_ids: list, actor_user, **kwargs) -> dict:
         self.resolve_resumes_calls.append((candidate_ids, actor_user))
         return {cid: self.resumes_dict[cid] for cid in candidate_ids if cid in self.resumes_dict}
 
@@ -201,6 +201,13 @@ class MockSession:
 
     async def __aexit__(self, *args):
         pass
+
+    async def execute(self, stmt):
+        class MockResult:
+            def scalar_one_or_none(self):
+                import uuid
+                return uuid.uuid4()
+        return MockResult()
 
 
 def make_mock_session_factory(resolver: MockContextResolver):
