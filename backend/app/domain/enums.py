@@ -64,3 +64,33 @@ class InterviewStatus(str, Enum):
     CANCELLED = "cancelled"
     CANDIDATE_CONFIRMED = "candidate_confirmed"
     CANDIDATE_DECLINED = "candidate_declined"
+
+
+class RecruitmentPlanStatus(str, Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+class SubscriptionStatus(str, Enum):
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+    PENDING = "pending"
+
+
+class PaymentProvider(str, Enum):
+    MOMO = "momo"
+
+
+class PaymentOrderStatus(str, Enum):
+    PENDING = "pending"
+    PAID = "paid"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+
+
+class PaymentTransactionStatus(str, Enum):
+    SUCCESS = "success"
+    FAILED = "failed"
+    PENDING = "pending"

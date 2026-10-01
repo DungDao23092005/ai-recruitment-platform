@@ -15,6 +15,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.models.notification import Notification
     from app.models.password_reset_otp import PasswordResetOTP
+    from app.models.payment_order import PaymentOrder
+    from app.models.recruitment_plan import RecruitmentPlan
+    from app.models.subscription import Subscription
 
 
 class StringEnum(TypeDecorator):
@@ -85,4 +88,10 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     )
     locked_users: Mapped[list["User"]] = relationship(
         back_populates="locked_by_user",
+    )
+    subscriptions: Mapped[list["Subscription"]] = relationship(
+        back_populates="user",
+    )
+    payment_orders: Mapped[list["PaymentOrder"]] = relationship(
+        back_populates="user",
     )
