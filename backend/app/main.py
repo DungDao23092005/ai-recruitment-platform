@@ -146,9 +146,8 @@ app.add_middleware(
 # Set up Security Headers middleware (after CORS to preserve CORS headers)
 app.add_middleware(SecurityHeadersMiddleware)
 
-# Include API Router
+# Include the central API v1 router
 app.include_router(api_router, prefix=settings.API_V1_STR)
-
 
 @app.get("/")
 async def root():

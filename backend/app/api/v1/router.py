@@ -2,6 +2,8 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
     admin,
+    admin_plans,
+    admin_subscriptions,
     ai,
     applications,
     auth,
@@ -9,6 +11,8 @@ from app.api.v1.endpoints import (
     health,
     jobs,
     notifications,
+    plans,
+    subscriptions,
     users,
 )
 
@@ -27,4 +31,8 @@ api_router.include_router(
     notifications.router, prefix="/notifications", tags=["Notifications"]
 )
 api_router.include_router(ai.router, prefix="/ai", tags=["AI Engine"])
-api_router.include_router(admin.router, tags=["Admin"])
+api_router.include_router(admin.router)
+api_router.include_router(plans.router)
+api_router.include_router(subscriptions.router)
+api_router.include_router(admin_plans.router)
+api_router.include_router(admin_subscriptions.router)

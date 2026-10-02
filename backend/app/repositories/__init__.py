@@ -5,7 +5,9 @@ from app.repositories.interview_repository import InterviewRepository
 from app.repositories.interfaces.base_interface import BaseRepositoryInterface
 from app.repositories.job_repository import JobRepository
 from app.repositories.notification_repository import NotificationRepository
+from app.repositories.recruitment_plan_repository import RecruitmentPlanRepository
 from app.repositories.resume_repository import ResumeRepository
+from app.repositories.subscription_repository import SubscriptionRepository
 from app.repositories.user_repository import UserRepository
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     "ResumeRepository",
     "InterviewRepository",
     "NotificationRepository",
+    "RecruitmentPlanRepository",
+    "SubscriptionRepository",
 ]

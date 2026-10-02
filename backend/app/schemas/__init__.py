@@ -24,7 +24,19 @@ from app.schemas.password_reset import (
     ResetPasswordRequest,
     ResetPasswordResponse,
 )
+from app.schemas.recruitment_plan import (
+    RecruitmentPlanAdminRead,
+    RecruitmentPlanCreate,
+    RecruitmentPlanRead,
+    RecruitmentPlanUpdate,
+)
 from app.schemas.skill import SkillCreate, SkillRead
+from app.schemas.subscription import (
+    SubscriptionAdminRead,
+    SubscriptionCreate,
+    SubscriptionRead,
+    SubscriptionSummary,
+)
 from app.schemas.token import Token, TokenPayload
 from app.schemas.user import (
     CandidateProfileCreate,
@@ -65,4 +77,12 @@ __all__ = [
     "VerifyResetOtpResponse",
     "ResetPasswordRequest",
     "ResetPasswordResponse",
+    "RecruitmentPlanCreate",
+    "RecruitmentPlanRead",
+    "RecruitmentPlanUpdate",
+    "RecruitmentPlanAdminRead",
+    "SubscriptionCreate",
+    "SubscriptionRead",
+    "SubscriptionSummary",
+    "SubscriptionAdminRead",
 ]
