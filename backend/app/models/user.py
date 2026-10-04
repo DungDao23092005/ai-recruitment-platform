@@ -33,7 +33,9 @@ class StringEnum(TypeDecorator):
     def process_bind_param(self, value, dialect):
         if value is None:
             return None
-        return value.value
+        if hasattr(value, "value"):
+            return value.value
+        return str(value)
 
     def process_result_value(self, value, dialect):
         if value is None:

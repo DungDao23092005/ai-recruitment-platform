@@ -80,6 +80,7 @@ class SubscriptionStatus(str, Enum):
 
 class PaymentProvider(str, Enum):
     MOMO = "momo"
+    VNPAY = "vnpay"
 
 
 class PaymentOrderStatus(str, Enum):

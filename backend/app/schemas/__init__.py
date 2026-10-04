@@ -44,6 +44,15 @@ from app.schemas.user import (
     UserCreate,
     UserRead,
 )
+from app.schemas.payment import (
+    VNPayCreatePaymentRequest,
+    VNPayCreatePaymentResponse,
+    VNPayIPNParams,
+    VNPayReturnParams,
+    PaymentOrderRead,
+    PaymentTransactionRead,
+    PaymentStatusResponse,
+)
 
 __all__ = [
     "Token",
@@ -85,4 +94,11 @@ __all__ = [
     "SubscriptionRead",
     "SubscriptionSummary",
     "SubscriptionAdminRead",
+    "VNPayCreatePaymentRequest",
+    "VNPayCreatePaymentResponse",
+    "VNPayIPNParams",
+    "VNPayReturnParams",
+    "PaymentOrderRead",
+    "PaymentTransactionRead",
+    "PaymentStatusResponse",
 ]

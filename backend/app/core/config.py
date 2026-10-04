@@ -66,6 +66,15 @@ class Settings(BaseSettings):
     # Trusted Proxies for safe client IP extraction
     TRUSTED_PROXIES: Annotated[list[str], NoDecode] = []
 
+    # VNPAY Configuration
+    VNPAY_TMN_CODE: str = ""
+    VNPAY_HASH_SECRET: str = ""
+    VNPAY_PAYMENT_URL: str = "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
+    VNPAY_QUERY_URL: str = "https://sandbox.vnpayment.vn/merchant_webapi/api/transaction"
+    VNPAY_RETURN_URL: str = ""
+    VNPAY_IPN_URL: str = ""
+    VNPAY_TIMEOUT: int = 15
+
     EMAIL_PROVIDER: str = "mailpit"
     EMAIL_FROM: str = "AI Recruitment Platform <noreply@example.com>"
     RESEND_API_KEY: str = ""
