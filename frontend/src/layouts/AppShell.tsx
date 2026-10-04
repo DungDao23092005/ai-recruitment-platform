@@ -56,6 +56,12 @@ function useAppNav(role?: UserRole): NavSection[] {
         ],
       },
       {
+        title: 'Nâng cấp nhà tuyển dụng',
+        items: [
+          { to: '/plans', label: 'Gói dịch vụ', icon: Sparkles, end: true },
+        ],
+      },
+      {
         title: 'Hồ sơ',
         items: [
           { to: '/candidate/cv-upload', label: 'Upload CV', icon: FileText },
@@ -77,6 +83,7 @@ function useAppNav(role?: UserRole): NavSection[] {
           { to: '/recruiter/company', label: 'Công ty', icon: Building },
           { to: '/recruiter/jobs', label: 'Tin tuyển dụng', icon: Briefcase, end: true },
           { to: '/recruiter/jobs/new', label: 'Đăng tin mới', icon: PlusCircle },
+          { to: '/plans', label: 'Gói dịch vụ', icon: Sparkles },
         ],
       },
       {
