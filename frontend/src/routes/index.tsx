@@ -36,6 +36,8 @@ import { SemanticCandidateSearchPage } from '@/features/recruiter/pages/Semantic
 import { AIChatPage } from '@/pages/ai/AIChatPage'
 import { NotificationsPage } from '@/pages/notifications/NotificationsPage'
 import { PlansPage } from '@/pages/plans/PlansPage'
+import { CheckoutPage } from '@/pages/plans/CheckoutPage'
+import { PaymentResultPage } from '@/pages/plans/PaymentResultPage'
 import { ProtectedRoute } from '@/components/common/ProtectedRoute'
 import { RoleGuard } from '@/components/common/RoleGuard'
 import type { UserRole } from '@/types/auth'
@@ -289,11 +291,27 @@ export function AppRouter() {
               </RoleGuard>
             }
           />
+<Route
+  path="/plans"
+  element={
+    <ProtectedByRole allowedRoles={['candidate', 'recruiter', 'admin']}>
+      <PlansPage />
+    </ProtectedByRole>
+  }
+/>
           <Route
-            path="/plans"
+            path="/checkout/:planId"
+            element={
+              <ProtectedByRole allowedRoles={['candidate']}>
+                <CheckoutPage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/payment-result"
             element={
               <ProtectedByRole allowedRoles={['candidate', 'recruiter', 'admin']}>
-                <PlansPage />
+                <PaymentResultPage />
               </ProtectedByRole>
             }
           />
