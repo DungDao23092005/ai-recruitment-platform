@@ -124,3 +124,6 @@ def require_role(allowed_roles: list[UserRole]):
 require_admin = require_role([UserRole.ADMIN])
 require_recruiter = require_role([UserRole.RECRUITER, UserRole.ADMIN])
 require_candidate = require_role([UserRole.CANDIDATE, UserRole.ADMIN])
+require_candidate_recruiter_admin = require_role(
+    [UserRole.CANDIDATE, UserRole.RECRUITER, UserRole.ADMIN]
+)

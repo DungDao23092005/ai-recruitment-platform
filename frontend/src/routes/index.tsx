@@ -302,7 +302,7 @@ export function AppRouter() {
           <Route
             path="/checkout/:planId"
             element={
-              <ProtectedByRole allowedRoles={['candidate']}>
+              <ProtectedByRole allowedRoles={['candidate', 'recruiter', 'admin']}>
                 <CheckoutPage />
               </ProtectedByRole>
             }

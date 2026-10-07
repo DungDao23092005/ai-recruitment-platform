@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_current_active_user, require_candidate
+from app.api.deps import get_db, get_current_active_user, require_candidate_recruiter_admin
 from app.core.config import settings
 from app.core.exceptions import EntityNotFoundException
 from app.models import User
@@ -55,13 +55,13 @@ def _get_client_ip(request: Request) -> str:
 )
 async def create_vnpay_payment(
     data: VNPayCreatePaymentRequest,
-    current_user: User = Depends(require_candidate),
+    current_user: User = Depends(require_candidate_recruiter_admin),
     service: PaymentService = Depends(_get_payment_service),
     request: Request = None,
 ) -> VNPayCreatePaymentResponse:
     """Create a VNPAY payment for a recruitment plan.
 
-    Authenticated candidate only.
+    Authenticated candidate, recruiter, or admin.
     Uses authoritative plan price from backend.
     Creates PENDING subscription and PaymentOrder.
     Returns VNPAY payment URL for redirect.
