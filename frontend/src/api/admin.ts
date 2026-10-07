@@ -9,6 +9,10 @@ import type {
   AdminUser,
   AdminUserList,
   AdminUserListParams,
+  AdminPlanRead,
+  AdminPlanCreate,
+  AdminPlanUpdate,
+  AdminPlanStatusUpdate,
 } from '@/types/admin'
 
 export async function getAdminStats(): Promise<AdminStats> {
@@ -59,4 +63,37 @@ export async function getAdminJobs(
   return apiClient.get<AdminJobList, AdminJobList>('/admin/jobs', {
     params,
   })
+}
+
+export async function getAdminPlans(
+  params?: { skip?: number; limit?: number; search?: string },
+): Promise<AdminPlanRead[]> {
+  return apiClient.get<AdminPlanRead[], AdminPlanRead[]>('/admin/plans', { params })
+}
+
+export async function getAdminPlan(id: string): Promise<AdminPlanRead> {
+  return apiClient.get<AdminPlanRead, AdminPlanRead>(`/admin/plans/${id}`)
+}
+
+export async function createAdminPlan(
+  data: AdminPlanCreate,
+): Promise<AdminPlanRead> {
+  return apiClient.post<AdminPlanCreate, AdminPlanRead>('/admin/plans', data)
+}
+
+export async function updateAdminPlan(
+  id: string,
+  data: AdminPlanUpdate,
+): Promise<AdminPlanRead> {
+  return apiClient.patch<AdminPlanUpdate, AdminPlanRead>(`/admin/plans/${id}`, data)
+}
+
+export async function updateAdminPlanStatus(
+  id: string,
+  data: AdminPlanStatusUpdate,
+): Promise<AdminPlanRead> {
+  return apiClient.patch<AdminPlanStatusUpdate, AdminPlanRead>(
+    `/admin/plans/${id}/status`,
+    data,
+  )
 }

@@ -104,6 +104,7 @@ function useAppNav(role?: UserRole): NavSection[] {
         { to: '/admin/dashboard', label: 'Tổng quan', icon: LayoutDashboard },
         { to: '/admin/users', label: 'Quản lý người dùng', icon: Users },
         { to: '/admin/companies', label: 'Quản lý công ty', icon: Building },
+        { to: '/admin/plans', label: 'Gói dịch vụ', icon: Sparkles },
       ],
     },
     {

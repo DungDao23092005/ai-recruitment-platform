@@ -95,3 +95,48 @@ export interface AdminJobListParams {
   limit: number
   search?: string
 }
+
+export interface AdminPlanRead {
+  id: string
+  name: string
+  description: string | null
+  price: number
+  currency: string
+  duration_days: number
+  max_job_posts: number
+  max_candidate_searches: number
+  max_ai_features: number
+  display_order: number
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface AdminPlanCreate {
+  name: string
+  description: string | null
+  price: number
+  currency: string
+  duration_days: number
+  max_job_posts: number
+  max_candidate_searches: number
+  max_ai_features: number
+  display_order: number
+}
+
+export interface AdminPlanUpdate {
+  name?: string
+  description?: string | null
+  price?: number
+  currency?: string
+  duration_days?: number
+  max_job_posts?: number
+  max_candidate_searches?: number
+  max_ai_features?: number
+  display_order?: number
+  is_active?: boolean
+}
+
+export interface AdminPlanStatusUpdate {
+  is_active: boolean
+}
