@@ -13,11 +13,12 @@ from app.core.exceptions import (
     InvalidTransitionException,
     ValidationError,
 )
-from app.domain.enums import SubscriptionStatus
+from app.domain.enums import SubscriptionStatus, UserRole
 from app.domain.models.base import utc_now
-from app.models import RecruitmentPlan, Subscription, User
+from app.models import RecruitmentPlan, RecruiterProfile, Subscription, User
 from app.repositories import RecruitmentPlanRepository, SubscriptionRepository
 from app.schemas.subscription import SubscriptionCreate
+from app.services.recruiter_access import ensure_recruiter_access
 
 
 class SubscriptionService:
@@ -169,6 +170,16 @@ class SubscriptionService:
         plan = await self.plans.get_active_by_id(sub.plan_id)
         if plan is None:
             raise EntityNotFoundException(f"Plan {sub.plan_id} not found or inactive")
+
+        # Get the user (already locked by _lock_user_for_subscription)
+        stmt = select(User).where(User.id == sub.user_id)
+        result = await self.session.execute(stmt)
+        user = result.scalar_one_or_none()
+        if user is None:
+            raise EntityNotFoundException(f"User {sub.user_id} not found")
+
+        # Ensure recruiter access (role transition + profile creation)
+        await ensure_recruiter_access(self.session, user)
 
         sub.status = SubscriptionStatus.ACTIVE
         sub.started_at = now

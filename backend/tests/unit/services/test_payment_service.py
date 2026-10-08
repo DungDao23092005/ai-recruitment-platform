@@ -1,10 +1,17 @@
 import pytest
 import uuid
+import asyncio
 from datetime import datetime
 from uuid import uuid4
+from unittest.mock import AsyncMock, MagicMock
 
-from app.domain.enums import PaymentOrderStatus, PaymentProvider, PaymentTransactionStatus, SubscriptionStatus
-from app.models import PaymentOrder, PaymentTransaction
+from app.core.exceptions import (
+    ConflictException,
+    EntityNotFoundException,
+    InvalidTransitionException,
+)
+from app.domain.enums import PaymentOrderStatus, PaymentProvider, PaymentTransactionStatus, SubscriptionStatus, UserRole
+from app.models import PaymentOrder, PaymentTransaction, RecruiterProfile, Subscription, User
 from app.services.payment_service import PaymentService
 from app.services.payment_providers.vnpay import VNPAYProvider
 
@@ -252,3 +259,262 @@ class TestPaymentTransactionModel:
             status=PaymentTransactionStatus.PENDING,
         )
         assert txn.status == PaymentTransactionStatus.PENDING
+
+
+def _make_payment_service_session() -> MagicMock:
+    session = MagicMock()
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    session.rollback = AsyncMock()
+    session.execute = AsyncMock()
+    return session
+
+
+def _make_user(user_id: uuid.UUID | None = None, role: UserRole = UserRole.CANDIDATE, recruiter_profile: RecruiterProfile | None = None) -> User:
+    user = User(
+        id=user_id or uuid.uuid4(),
+        email="test@example.com",
+        password_hash="hash",
+        role=role,
+    )
+    if recruiter_profile:
+        user.recruiter_profile = recruiter_profile
+        recruiter_profile.user = user
+    return user
+
+
+def _make_profile_result(profile: RecruiterProfile | None) -> MagicMock:
+    """Create a mock result for RecruiterProfile query."""
+    mock = MagicMock()
+    mock.scalar_one_or_none.return_value = profile
+    return mock
+
+
+def _make_lock_result(user: User) -> MagicMock:
+    """Create a mock result for user locking query."""
+    mock = MagicMock()
+    mock.scalar_one_or_none.return_value = user
+    return mock
+
+
+def _make_subscription(sub_id: uuid.UUID, user_id: uuid.UUID, plan_id: uuid.UUID, status: SubscriptionStatus = SubscriptionStatus.PENDING) -> Subscription:
+    return Subscription(
+        id=sub_id,
+        user_id=user_id,
+        plan_id=plan_id,
+        status=status,
+    )
+
+
+def _make_plan(plan_id: uuid.UUID) -> MagicMock:
+    plan = MagicMock()
+    plan.id = plan_id
+    plan.duration_days = 30
+    return plan
+
+
+class TestActivateSubscriptionForPaymentRoleTransition:
+    """Phase 6.1: Tests for role transition and RecruiterProfile creation during payment activation."""
+
+    def test_candidate_payment_activation_creates_recruiter_role_and_profile(self):
+        """TEST 1: CANDIDATE + verified VNPAY activation → role becomes RECRUITER + RecruiterProfile exists."""
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+
+        sub_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.PENDING)
+        plan = _make_plan(plan_id)
+
+        user = _make_user(user_id=user_id, role=UserRole.CANDIDATE)
+
+        # Mock repositories
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+
+        # Mock session.execute for user locking (first call) and profile query (second call)
+        session.execute.side_effect = [
+            _make_lock_result(user),           # First call: lock user row
+            _make_profile_result(None),        # Second call: query RecruiterProfile (not found)
+        ]
+
+        result = asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        assert result is sub
+        assert sub.status == SubscriptionStatus.ACTIVE
+        assert sub.started_at is not None
+        assert sub.expires_at is not None
+        assert user.role == UserRole.RECRUITER
+        # Verify RecruiterProfile was created and added to session
+        added_profiles = [call.args[0] for call in session.add.call_args_list
+                          if isinstance(call.args[0], RecruiterProfile)]
+        assert len(added_profiles) == 1
+        assert added_profiles[0].user_id == user.id
+
+    def test_existing_recruiter_payment_activation_keeps_role_and_reuses_profile(self):
+        """TEST 2: RECRUITER + verified VNPAY activation → remains RECRUITER + existing profile reused."""
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+
+        sub_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.PENDING)
+        plan = _make_plan(plan_id)
+
+        existing_profile = RecruiterProfile(user_id=user_id, full_name="Existing Recruiter")
+        user = _make_user(user_id=user_id, role=UserRole.RECRUITER, recruiter_profile=existing_profile)
+
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+
+        # Mock session.execute for user locking (first call) and profile query (second call)
+        session.execute.side_effect = [
+            _make_lock_result(user),                   # First call: lock user row
+            _make_profile_result(existing_profile),    # Second call: query RecruiterProfile (found)
+        ]
+
+        result = asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        assert result is sub
+        assert sub.status == SubscriptionStatus.ACTIVE
+        assert user.role == UserRole.RECRUITER
+        # Verify no new RecruiterProfile was added (existing reused)
+        added_profiles = [call.args[0] for call in session.add.call_args_list
+                          if isinstance(call.args[0], RecruiterProfile)]
+        assert len(added_profiles) == 0
+
+    def test_admin_payment_activation_remains_admin_no_profile(self):
+        """TEST 3: ADMIN + activation → remains ADMIN + no profile created."""
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+
+        sub_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.PENDING)
+        plan = _make_plan(plan_id)
+
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+
+        # For ADMIN, only user lock is called (no profile query)
+        session.execute.side_effect = [
+            _make_lock_result(user),           # First call: lock user row
+        ]
+
+        result = asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        assert result is sub
+        assert sub.status == SubscriptionStatus.ACTIVE
+        assert user.role == UserRole.ADMIN  # Role unchanged
+        # Verify no RecruiterProfile was added
+        added_profiles = [call.args[0] for call in session.add.call_args_list
+                          if isinstance(call.args[0], RecruiterProfile)]
+        assert len(added_profiles) == 0
+
+    def test_candidate_with_existing_profile_payment_activation_reuses_profile(self):
+        """TEST 4: CANDIDATE + existing RecruiterProfile + payment activation → role becomes RECRUITER + SAME profile reused."""
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+
+        sub_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.PENDING)
+        plan = _make_plan(plan_id)
+
+        existing_profile = RecruiterProfile(user_id=user_id, full_name="Pre-existing Profile")
+        user = _make_user(user_id=user_id, role=UserRole.CANDIDATE, recruiter_profile=existing_profile)
+
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+
+        # Mock session.execute for user locking (first call) and profile query (second call)
+        session.execute.side_effect = [
+            _make_lock_result(user),                   # First call: lock user row
+            _make_profile_result(existing_profile),    # Second call: query RecruiterProfile (found)
+        ]
+
+        result = asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        assert result is sub
+        assert sub.status == SubscriptionStatus.ACTIVE
+        assert user.role == UserRole.RECRUITER
+        # Verify no new RecruiterProfile was added (existing reused)
+        added_profiles = [call.args[0] for call in session.add.call_args_list
+                          if isinstance(call.args[0], RecruiterProfile)]
+        assert len(added_profiles) == 0
+
+    def test_payment_activation_failure_rolls_back(self):
+        """TEST 6: Failure during RecruiterProfile creation → exception propagates for caller to rollback."""
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+
+        sub_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.PENDING)
+        plan = _make_plan(plan_id)
+
+        user = _make_user(user_id=user_id, role=UserRole.CANDIDATE)
+
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+
+        # Mock session.execute for user locking (first call) and profile query (second call)
+        session.execute.side_effect = [
+            _make_lock_result(user),           # First call: lock user row
+            _make_profile_result(None),        # Second call: query RecruiterProfile (not found)
+        ]
+
+        # Simulate commit failure
+        session.commit.side_effect = Exception("Database error")
+
+        with pytest.raises(Exception):
+            asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        # Exception propagates - caller (process_vnpay_ipn) is responsible for rollback
+        # Verify commit was attempted
+        session.commit.assert_awaited()
+
+    def test_repeated_payment_activation_idempotent_no_duplicate_profile(self):
+        """TEST 7: Repeated payment activation/idempotency → no duplicate RecruiterProfile + no unexpected exception."""
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+
+        sub_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        # Subscription already ACTIVE (simulating repeated activation attempt)
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.ACTIVE)
+        plan = _make_plan(plan_id)
+
+        user = _make_user(user_id=user_id, role=UserRole.RECRUITER)
+
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+
+        # For already ACTIVE subscription, InvalidTransitionException is raised before profile query
+        session.execute.side_effect = [
+            _make_lock_result(user),           # First call: lock user row
+        ]
+
+        # Should raise InvalidTransitionException for already active subscription
+        with pytest.raises(InvalidTransitionException):
+            asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        # Verify no profile creation was attempted
+        add_calls = [call for call in session.add.call_args_list
+                     if call.args and hasattr(call.args[0], '__class__') and call.args[0].__class__.__name__ == 'RecruiterProfile']
+        assert len(add_calls) == 0  # No new profile created

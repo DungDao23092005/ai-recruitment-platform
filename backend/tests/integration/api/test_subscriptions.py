@@ -3,14 +3,15 @@ import uuid
 import pytest
 from fastapi import Depends
 import httpx
+from sqlalchemy import select
 
 from app.api.v1.endpoints import admin_subscriptions as admin_subs_endpoints
 from app.api.v1.endpoints import subscriptions as subs_endpoints
 from app.main import app
 from app.services.subscription_service import SubscriptionService
-from app.core.security import get_password_hash
+from app.core.security import get_password_hash, decode_access_token
 from app.domain.enums import UserRole
-from app.models import User
+from app.models import User, RecruiterProfile
 from app.database.session import async_session_factory
 from tests.integration.api.conftest import API_V1, run
 
@@ -72,6 +73,34 @@ async def _get_candidate_user():
         return result.scalar_one_or_none()
 
 
+async def _get_candidate_user_id(candidate_client: httpx.AsyncClient) -> uuid.UUID:
+    """Extract candidate user ID from the candidate client's auth token."""
+    auth_header = candidate_client.headers.get("Authorization", "")
+    token = auth_header.replace("Bearer ", "")
+    payload = decode_access_token(token)
+    return uuid.UUID(payload["sub"])
+
+
+async def _get_user_role(user_id: uuid.UUID) -> UserRole | None:
+    """Get user role by querying the database."""
+    async with async_session_factory() as session:
+        result = await session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        return user.role if user else None
+
+
+async def _get_recruiter_profile(user_id: uuid.UUID) -> RecruiterProfile | None:
+    """Get RecruiterProfile by user_id using explicit query (no lazy loading)."""
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(RecruiterProfile).where(
+                RecruiterProfile.user_id == user_id,
+                RecruiterProfile.is_deleted == False,  # noqa: E712
+            )
+        )
+        return result.scalar_one_or_none()
+
+
 class TestUserSubscriptionAccess:
     def test_anonymous_access_401(self, client, run_async):
         """Unauthenticated user cannot access subscription endpoints."""
@@ -125,28 +154,84 @@ class TestAdminSubscriptionAccess:
         data = resp.json()
         assert isinstance(data, list)
 
-    def test_admin_can_provision_subscription(self, admin_sub_client, run_async, subscription_service_override):
-        """Admin can provision an active subscription for a user."""
+    def test_admin_can_provision_subscription(self, admin_sub_client, run_async, subscription_service_override, candidate_client):
+        """Admin can provision an active subscription for a user.
+
+        Phase 6.1: Verify candidate role transitions to RECRUITER and RecruiterProfile is created.
+        """
         from tests.integration.api.test_plans import _create_plan, PLAN_BODY
 
         # Create a plan
         plan = _create_plan(admin_sub_client, run_async)
 
-        # Get candidate user
-        candidate_user = run(_get_candidate_user())
-        if not candidate_user:
-            pytest.skip("No candidate user available")
+        # Get candidate user ID from the candidate_client token
+        candidate_user_id = run(_get_candidate_user_id(candidate_client))
 
-        # Provision subscription
+        # Verify initial state: candidate is CANDIDATE, no RecruiterProfile
+        initial_role = run(_get_user_role(candidate_user_id))
+        assert initial_role == UserRole.CANDIDATE
+        initial_profile = run(_get_recruiter_profile(candidate_user_id))
+        assert initial_profile is None
+
+        # Provision subscription via Admin endpoint
         resp = run_async(admin_sub_client.post(f"{API_V1}/admin/subscriptions", json={
-            "user_id": str(candidate_user.id),
+            "user_id": str(candidate_user_id),
             "plan_id": str(plan["id"]),
         }))
         assert resp.status_code == 201, resp.text
         data = resp.json()
         assert data["status"] == "active"
-        assert data["user_id"] == str(candidate_user.id)
+        assert data["user_id"] == str(candidate_user_id)
         assert data["plan_id"] == str(plan["id"])
+        subscription_id = data["id"]
+
+        # ASSERT 1: Subscription is ACTIVE in database
+        assert data["status"] == "active"
+
+        # ASSERT 2: Candidate role becomes RECRUITER
+        role_after = run(_get_user_role(candidate_user_id))
+        assert role_after == UserRole.RECRUITER, f"Expected RECRUITER, got {role_after}"
+
+        # ASSERT 3: RecruiterProfile exists for the candidate
+        profile = run(_get_recruiter_profile(candidate_user_id))
+        assert profile is not None, "RecruiterProfile should exist after provisioning"
+        assert profile.user_id == candidate_user_id
+
+        # Test repeat provisioning/activation behavior
+        # Attempt to provision again for the same user with a different plan
+        plan2 = _create_plan(admin_sub_client, run_async)
+        resp2 = run_async(admin_sub_client.post(f"{API_V1}/admin/subscriptions", json={
+            "user_id": str(candidate_user_id),
+            "plan_id": str(plan2["id"]),
+        }))
+        # The service should reject this due to existing active subscription
+        # (ConflictException: "User already has an active subscription")
+        assert resp2.status_code == 400, f"Expected 400 for duplicate active subscription, got {resp2.status_code}: {resp2.text}"
+        assert "already has an active subscription" in resp2.json().get("detail", "")
+
+        # Verify NO duplicate RecruiterProfile was created
+        # Query all profiles for this user
+        async def _count_profiles(uid: uuid.UUID) -> int:
+            async with async_session_factory() as session:
+                result = await session.execute(
+                    select(RecruiterProfile).where(
+                        RecruiterProfile.user_id == uid,
+                        RecruiterProfile.is_deleted == False,  # noqa: E712
+                    )
+                )
+                return len(result.scalars().all())
+
+        profile_count = run(_count_profiles(candidate_user_id))
+        assert profile_count == 1, f"Expected exactly 1 RecruiterProfile, found {profile_count}"
+
+        # Verify role remains RECRUITER
+        role_final = run(_get_user_role(candidate_user_id))
+        assert role_final == UserRole.RECRUITER
+
+        # Verify the original subscription is still active
+        resp3 = run_async(admin_sub_client.get(f"{API_V1}/admin/subscriptions/{subscription_id}"))
+        assert resp3.status_code == 200
+        assert resp3.json()["status"] == "active"
 
     def test_admin_can_get_subscription(self, admin_sub_client, run_async, subscription_service_override):
         """Admin can get any subscription by ID."""

@@ -14,9 +14,9 @@ from app.core.exceptions import (
     InvalidTransitionException,
     ValidationError,
 )
-from app.domain.enums import PaymentOrderStatus, PaymentProvider, PaymentTransactionStatus, SubscriptionStatus
+from app.domain.enums import PaymentOrderStatus, PaymentProvider, PaymentTransactionStatus, SubscriptionStatus, UserRole
 from app.domain.models.base import utc_now
-from app.models import PaymentOrder, PaymentTransaction, RecruitmentPlan, Subscription, User
+from app.models import PaymentOrder, PaymentTransaction, RecruitmentPlan, RecruiterProfile, Subscription, User
 from app.repositories import (
     PaymentOrderRepository,
     PaymentTransactionRepository,
@@ -24,6 +24,7 @@ from app.repositories import (
     SubscriptionRepository,
 )
 from app.services.payment_providers import VNPAYProvider
+from app.services.recruiter_access import ensure_recruiter_access
 
 
 class PaymentService:
@@ -295,6 +296,9 @@ class PaymentService:
         user = result.scalar_one_or_none()
         if user is None:
             raise EntityNotFoundException(f"User {sub.user_id} not found")
+
+        # Ensure recruiter access (role transition + profile creation)
+        await ensure_recruiter_access(self.session, user)
 
         now = utc_now()
 

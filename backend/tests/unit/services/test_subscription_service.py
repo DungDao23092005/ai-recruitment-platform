@@ -10,9 +10,9 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidTransitionException,
 )
-from app.domain.enums import SubscriptionStatus
+from app.domain.enums import SubscriptionStatus, UserRole
 from app.domain.models.base import utc_now
-from app.models import RecruitmentPlan, Subscription, User
+from app.models import RecruitmentPlan, RecruiterProfile, Subscription, User
 from app.repositories import RecruitmentPlanRepository, SubscriptionRepository
 from app.services.subscription_service import SubscriptionService
 
@@ -25,6 +25,34 @@ def make_session() -> MagicMock:
     session.rollback = AsyncMock()
     session.execute = AsyncMock()
     return session
+
+
+def _make_profile_result(profile: RecruiterProfile | None) -> MagicMock:
+    """Create a mock result for RecruiterProfile query."""
+    mock = MagicMock()
+    mock.scalar_one_or_none.return_value = profile
+    return mock
+
+
+def _make_lock_result(user: User) -> MagicMock:
+    """Create a mock result for user locking query."""
+    mock = MagicMock()
+    mock.scalar_one_or_none.return_value = user
+    return mock
+
+
+def _make_check_result(active_sub: Subscription | None) -> MagicMock:
+    """Create a mock result for active subscription check."""
+    mock = MagicMock()
+    mock.scalar_one_or_none.return_value = active_sub
+    return mock
+
+
+def _make_user_result(user: User) -> MagicMock:
+    """Create a mock result for user fetch after lock."""
+    mock = MagicMock()
+    mock.scalar_one_or_none.return_value = user
+    return mock
 
 
 def make_plan(plan_id: uuid.UUID | None = None) -> RecruitmentPlan:
@@ -56,13 +84,17 @@ def make_subscription(
     )
 
 
-def make_user(user_id: uuid.UUID | None = None) -> User:
-    return User(
+def make_user(user_id: uuid.UUID | None = None, role: UserRole = UserRole.CANDIDATE, recruiter_profile: RecruiterProfile | None = None) -> User:
+    user = User(
         id=user_id or uuid.uuid4(),
         email="test@example.com",
         password_hash="hash",
-        role="candidate",
+        role=role,
     )
+    if recruiter_profile:
+        user.recruiter_profile = recruiter_profile
+        recruiter_profile.user = user
+    return user
 
 
 def make_service(session: MagicMock) -> SubscriptionService:
@@ -234,12 +266,13 @@ class TestActivateSubscription:
         sub = make_subscription(sub_id=sub_id, plan_id=plan_id, status=SubscriptionStatus.PENDING)
 
         user = make_user(user_id=sub.user_id)
-        mock_lock_result = MagicMock()
-        mock_lock_result.scalar_one_or_none.return_value = user
-        mock_check_result = MagicMock()
-        mock_check_result.scalar_one_or_none.return_value = None
-
-        session.execute.side_effect = [mock_lock_result, mock_check_result]
+        # Mock session.execute for: user lock, active check, user fetch, profile query
+        session.execute.side_effect = [
+            _make_lock_result(user),       # _lock_user_for_subscription
+            _make_check_result(None),      # _check_active_overlap
+            _make_user_result(user),       # fetch user after lock
+            _make_profile_result(None),    # ensure_recruiter_access: query RecruiterProfile
+        ]
 
         service.subscriptions.get_by_id_including_deleted.return_value = sub
         service.plans.get_active_by_id.return_value = plan
@@ -251,6 +284,11 @@ class TestActivateSubscription:
         assert sub.started_at is not None
         assert sub.expires_at is not None
         assert sub.expires_at > sub.started_at
+        # Verify RecruiterProfile was created and added to session
+        added_profiles = [call.args[0] for call in session.add.call_args_list
+                          if isinstance(call.args[0], RecruiterProfile)]
+        assert len(added_profiles) == 1
+        assert added_profiles[0].user_id == user.id
 
     def test_raises_not_found(self):
         session = make_session()
@@ -453,3 +491,199 @@ class TestCheckAndExpireSubscriptions:
 
         assert count == 0
         session.commit.assert_not_awaited()
+
+
+class TestActivateSubscriptionRoleTransition:
+    """Phase 6.1: Tests for role transition and RecruiterProfile creation during subscription activation."""
+
+    def test_candidate_activation_creates_recruiter_role_and_profile(self):
+        """TEST 1: CANDIDATE + activation → role becomes RECRUITER + RecruiterProfile exists."""
+        session = make_session()
+        service = make_service(session)
+        sub_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        plan = make_plan(plan_id=plan_id)
+        sub = make_subscription(sub_id=sub_id, plan_id=plan_id, status=SubscriptionStatus.PENDING)
+
+        user = make_user(user_id=sub.user_id, role=UserRole.CANDIDATE)
+        # Mock session.execute for: user lock, active check, user fetch, profile query
+        session.execute.side_effect = [
+            _make_lock_result(user),       # _lock_user_for_subscription
+            _make_check_result(None),      # _check_active_overlap
+            _make_user_result(user),       # fetch user after lock
+            _make_profile_result(None),    # ensure_recruiter_access: query RecruiterProfile
+        ]
+
+        service.subscriptions.get_by_id_including_deleted.return_value = sub
+        service.plans.get_active_by_id.return_value = plan
+
+        result = asyncio.run(service.activate_subscription(sub_id))
+
+        assert result is sub
+        assert sub.status == SubscriptionStatus.ACTIVE
+        assert user.role == UserRole.RECRUITER
+        # Verify RecruiterProfile was created and added to session
+        added_profiles = [call.args[0] for call in session.add.call_args_list
+                          if isinstance(call.args[0], RecruiterProfile)]
+        assert len(added_profiles) == 1
+        assert added_profiles[0].user_id == user.id
+
+    def test_existing_recruiter_activation_keeps_role_and_reuses_profile(self):
+        """TEST 2: RECRUITER + activation → remains RECRUITER + existing profile reused."""
+        session = make_session()
+        service = make_service(session)
+        sub_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        plan = make_plan(plan_id=plan_id)
+        sub = make_subscription(sub_id=sub_id, plan_id=plan_id, status=SubscriptionStatus.PENDING)
+
+        existing_profile = RecruiterProfile(user_id=sub.user_id, full_name="Existing Recruiter")
+        user = make_user(user_id=sub.user_id, role=UserRole.RECRUITER, recruiter_profile=existing_profile)
+        # Mock session.execute for: user lock, active check, user fetch, profile query
+        session.execute.side_effect = [
+            _make_lock_result(user),                   # _lock_user_for_subscription
+            _make_check_result(None),                  # _check_active_overlap
+            _make_user_result(user),                   # fetch user after lock
+            _make_profile_result(existing_profile),    # ensure_recruiter_access: query RecruiterProfile
+        ]
+
+        service.subscriptions.get_by_id_including_deleted.return_value = sub
+        service.plans.get_active_by_id.return_value = plan
+
+        result = asyncio.run(service.activate_subscription(sub_id))
+
+        assert result is sub
+        assert sub.status == SubscriptionStatus.ACTIVE
+        assert user.role == UserRole.RECRUITER
+        # Verify no new RecruiterProfile was added (existing reused)
+        added_profiles = [call.args[0] for call in session.add.call_args_list
+                          if isinstance(call.args[0], RecruiterProfile)]
+        assert len(added_profiles) == 0
+
+    def test_admin_activation_remains_admin_no_profile(self):
+        """TEST 3: ADMIN + activation → remains ADMIN + no profile created."""
+        session = make_session()
+        service = make_service(session)
+        sub_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        plan = make_plan(plan_id=plan_id)
+        sub = make_subscription(sub_id=sub_id, plan_id=plan_id, status=SubscriptionStatus.PENDING)
+
+        user = make_user(user_id=sub.user_id, role=UserRole.ADMIN)
+        # For ADMIN, ensure_recruiter_access doesn't query profile
+        # Mock session.execute for: user lock, active check, user fetch
+        session.execute.side_effect = [
+            _make_lock_result(user),       # _lock_user_for_subscription
+            _make_check_result(None),      # _check_active_overlap
+            _make_user_result(user),       # fetch user after lock
+        ]
+
+        service.subscriptions.get_by_id_including_deleted.return_value = sub
+        service.plans.get_active_by_id.return_value = plan
+
+        result = asyncio.run(service.activate_subscription(sub_id))
+
+        assert result is sub
+        assert sub.status == SubscriptionStatus.ACTIVE
+        assert user.role == UserRole.ADMIN  # Role unchanged
+        # Verify no RecruiterProfile was added
+        added_profiles = [call.args[0] for call in session.add.call_args_list
+                          if isinstance(call.args[0], RecruiterProfile)]
+        assert len(added_profiles) == 0
+
+    def test_candidate_with_existing_profile_reuses_profile(self):
+        """TEST 4: CANDIDATE + existing RecruiterProfile → role becomes RECRUITER + SAME profile reused."""
+        session = make_session()
+        service = make_service(session)
+        sub_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        plan = make_plan(plan_id=plan_id)
+        sub = make_subscription(sub_id=sub_id, plan_id=plan_id, status=SubscriptionStatus.PENDING)
+
+        # User is CANDIDATE but already has a RecruiterProfile (edge case)
+        existing_profile = RecruiterProfile(user_id=sub.user_id, full_name="Pre-existing Profile")
+        user = make_user(user_id=sub.user_id, role=UserRole.CANDIDATE, recruiter_profile=existing_profile)
+        # Mock session.execute for: user lock, active check, user fetch, profile query
+        session.execute.side_effect = [
+            _make_lock_result(user),                   # _lock_user_for_subscription
+            _make_check_result(None),                  # _check_active_overlap
+            _make_user_result(user),                   # fetch user after lock
+            _make_profile_result(existing_profile),    # ensure_recruiter_access: query RecruiterProfile
+        ]
+
+        service.subscriptions.get_by_id_including_deleted.return_value = sub
+        service.plans.get_active_by_id.return_value = plan
+
+        result = asyncio.run(service.activate_subscription(sub_id))
+
+        assert result is sub
+        assert sub.status == SubscriptionStatus.ACTIVE
+        assert user.role == UserRole.RECRUITER
+        # Verify no new RecruiterProfile was added (existing reused)
+        added_profiles = [call.args[0] for call in session.add.call_args_list
+                          if isinstance(call.args[0], RecruiterProfile)]
+        assert len(added_profiles) == 0
+
+    def test_activation_failure_rolls_back_role_and_profile(self):
+        """TEST 6: Failure during RecruiterProfile creation → exception propagates for caller to rollback."""
+        session = make_session()
+        service = make_service(session)
+        sub_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        plan = make_plan(plan_id=plan_id)
+        sub = make_subscription(sub_id=sub_id, plan_id=plan_id, status=SubscriptionStatus.PENDING)
+
+        user = make_user(user_id=sub.user_id, role=UserRole.CANDIDATE)
+        # Mock session.execute for: user lock, active check, user fetch, profile query
+        session.execute.side_effect = [
+            _make_lock_result(user),       # _lock_user_for_subscription
+            _make_check_result(None),      # _check_active_overlap
+            _make_user_result(user),       # fetch user after lock
+            _make_profile_result(None),    # ensure_recruiter_access: query RecruiterProfile
+        ]
+
+        service.subscriptions.get_by_id_including_deleted.return_value = sub
+        service.plans.get_active_by_id.return_value = plan
+
+        # Simulate commit failure (e.g., database constraint violation during profile creation)
+        session.commit.side_effect = Exception("Database error")
+
+        with pytest.raises(Exception):
+            asyncio.run(service.activate_subscription(sub_id))
+
+        # Exception propagates - caller is responsible for rollback
+        # Verify commit was attempted
+        session.commit.assert_awaited()
+
+    def test_repeated_activation_idempotent_no_duplicate_profile(self):
+        """TEST 7: Repeated activation/idempotency → no duplicate RecruiterProfile + no exception."""
+        session = make_session()
+        service = make_service(session)
+        sub_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        plan = make_plan(plan_id=plan_id)
+        # Subscription already ACTIVE (simulating repeated activation attempt)
+        sub = make_subscription(sub_id=sub_id, plan_id=plan_id, status=SubscriptionStatus.ACTIVE)
+
+        user = make_user(user_id=sub.user_id, role=UserRole.RECRUITER)
+        # For already ACTIVE subscription, InvalidTransitionException is raised before profile query
+        # Mock session.execute for: user lock, active check (which returns existing active)
+        existing_active = make_subscription(user_id=user.id, status=SubscriptionStatus.ACTIVE)
+        session.execute.side_effect = [
+            _make_lock_result(user),           # _lock_user_for_subscription
+            _make_check_result(existing_active), # _check_active_overlap returns existing
+        ]
+
+        service.subscriptions.get_by_id_including_deleted.return_value = sub
+        service.plans.get_active_by_id.return_value = plan
+
+        # Should raise InvalidTransitionException for already active subscription
+        # but not due to profile duplication
+        with pytest.raises(InvalidTransitionException):
+            asyncio.run(service.activate_subscription(sub_id))
+
+        # Verify no profile creation was attempted (user already has role RECRUITER)
+        # The _ensure_recruiter_access should not add a new profile
+        add_calls = [call for call in session.add.call_args_list
+                     if call.args and hasattr(call.args[0], '__class__') and call.args[0].__class__.__name__ == 'RecruiterProfile']
+        assert len(add_calls) == 0  # No new profile created
