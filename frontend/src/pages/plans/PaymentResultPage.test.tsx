@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, waitFor, act } from '@testing-library/react'
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 import { AuthProvider } from '@/contexts/AuthContext'
@@ -10,6 +10,9 @@ import * as authApi from '@/api/auth'
 const mockedGetPaymentStatus = vi.mocked(paymentsApi.getPaymentStatus)
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
 const mockedRefreshCurrentUser = vi.fn()
+
+// Configurable currentUser for tests
+let mockCurrentUser: { role: string } | null = null
 
 vi.mock('@/api/payments', () => ({
   getPaymentStatus: vi.fn(),
@@ -29,9 +32,9 @@ vi.mock('@/contexts/AuthContext', async () => {
   return {
     ...actual,
     useAuth: () => ({
-      currentUser: null,
+      currentUser: mockCurrentUser,
       token: null,
-      isAuthenticated: false,
+      isAuthenticated: !!mockCurrentUser,
       isLoading: false,
       login: vi.fn(),
       logout: vi.fn(),
@@ -39,6 +42,10 @@ vi.mock('@/contexts/AuthContext', async () => {
     }),
   }
 })
+
+function setMockCurrentUser(role: string | null) {
+  mockCurrentUser = role ? { role } : null
+}
 
 function renderPaymentPage(orderId: string | null = 'order-1') {
   const url = orderId ? `/payment-result?order_id=${orderId}` : '/payment-result'
@@ -55,6 +62,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockedRefreshCurrentUser.mockReset()
   mockedRefreshCurrentUser.mockResolvedValue(undefined)
+  mockCurrentUser = null
   vi.spyOn(window, 'alert').mockImplementation(() => {})
 })
 
@@ -331,4 +339,109 @@ describe('PaymentResultPage', () => {
 
     unmount()
   }, 15000)
+})
+
+describe('Phase 6.4 - Recruiter Navigation', () => {
+  it('shows recruiter success CTA with upgrade message and primary CTA to /recruiter/portal', async () => {
+    setMockCurrentUser('recruiter')
+    mockedGetPaymentStatus.mockResolvedValue({
+      is_successful: true,
+      message: 'Thành công',
+      payment_order: { status: 'success' },
+    })
+
+    const { unmount } = renderPaymentPage()
+    // Wait for the recruiter-specific content to appear
+    await waitFor(() => expect(screen.getByText('Bạn đã được nâng cấp lên Nhà tuyển dụng thành công')).toBeInTheDocument())
+
+    expect(screen.getByText('Bắt đầu quản lý công ty và đăng tin tuyển dụng ngay.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Bắt đầu tuyển dụng' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Quay lại gói dịch vụ' })).toBeInTheDocument()
+
+    unmount()
+  })
+
+  it('has clickable primary CTA button for /recruiter/portal', async () => {
+    setMockCurrentUser('recruiter')
+    mockedGetPaymentStatus.mockResolvedValue({
+      is_successful: true,
+      message: 'Thành công',
+      payment_order: { status: 'success' },
+    })
+
+    const { unmount } = renderPaymentPage()
+    // Wait for the recruiter-specific content to appear
+    await waitFor(() => expect(screen.getByText('Bạn đã được nâng cấp lên Nhà tuyển dụng thành công')).toBeInTheDocument())
+
+    const primaryButton = screen.getByRole('button', { name: 'Bắt đầu tuyển dụng' })
+    expect(primaryButton).toBeInTheDocument()
+
+    fireEvent.click(primaryButton)
+    // The click should not throw
+
+    unmount()
+  })
+
+  it('has clickable secondary CTA button for /plans', async () => {
+    setMockCurrentUser('recruiter')
+    mockedGetPaymentStatus.mockResolvedValue({
+      is_successful: true,
+      message: 'Thành công',
+      payment_order: { status: 'success' },
+    })
+
+    const { unmount } = renderPaymentPage()
+    // Wait for the recruiter-specific content to appear
+    await waitFor(() => expect(screen.getByText('Bạn đã được nâng cấp lên Nhà tuyển dụng thành công')).toBeInTheDocument())
+
+    const secondaryButton = screen.getByRole('button', { name: 'Quay lại gói dịch vụ' })
+    expect(secondaryButton).toBeInTheDocument()
+
+    fireEvent.click(secondaryButton)
+    // The click should not throw
+
+    unmount()
+  })
+
+  it('falls back to standard success UI for non-recruiter users', async () => {
+    setMockCurrentUser('candidate')
+    mockedGetPaymentStatus.mockResolvedValue({
+      is_successful: true,
+      message: 'Thành công',
+      payment_order: { status: 'success' },
+    })
+
+    const { unmount } = renderPaymentPage()
+    // Wait for standard success content to appear
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Quay lại gói dịch vụ' })).toBeInTheDocument())
+
+    expect(screen.queryByText('Bạn đã được nâng cấp lên Nhà tuyển dụng thành công')).not.toBeInTheDocument()
+    expect(screen.queryByText('Bắt đầu tuyển dụng')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Quay lại gói dịch vụ' })).toBeInTheDocument()
+
+    const secondaryButton = screen.getByRole('button', { name: 'Quay lại gói dịch vụ' })
+    fireEvent.click(secondaryButton)
+    // The click should not throw
+
+    unmount()
+  })
+
+  it('falls back to standard success UI for null currentUser', async () => {
+    setMockCurrentUser(null)
+    mockedGetPaymentStatus.mockResolvedValue({
+      is_successful: true,
+      message: 'Thành công',
+      payment_order: { status: 'success' },
+    })
+
+    const { unmount } = renderPaymentPage()
+    // Wait for standard success content to appear
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Quay lại gói dịch vụ' })).toBeInTheDocument())
+
+    expect(screen.queryByText('Bạn đã được nâng cấp lên Nhà tuyển dụng thành công')).not.toBeInTheDocument()
+    expect(screen.queryByText('Bắt đầu tuyển dụng')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Quay lại gói dịch vụ' })).toBeInTheDocument()
+
+    unmount()
+  })
 })

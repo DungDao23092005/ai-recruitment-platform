@@ -936,3 +936,116 @@ describe('AppRouter candidate applications', () => {
     ).not.toBeInTheDocument()
   })
 })
+
+describe('Phase 6.4 - Role Navigation Regression', () => {
+  it('lets a recruiter access /recruiter/portal', async () => {
+    setUser('recruiter')
+
+    renderAt('/recruiter/portal')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Tổng quan tuyển dụng' }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('lets a recruiter access /recruiter/company', async () => {
+    setUser('recruiter')
+
+    renderAt('/recruiter/company')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Quản lý công ty/ }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('lets a recruiter access /recruiter/jobs/new', async () => {
+    setUser('recruiter')
+
+    renderAt('/recruiter/jobs/new')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Đăng tin tuyển dụng/ }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('blocks a candidate who became recruiter from /candidate/portal', async () => {
+    setUser('recruiter')
+
+    renderAt('/candidate/portal')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Tổng quan ứng viên' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('blocks a candidate who became recruiter from /candidate/profile', async () => {
+    setUser('recruiter')
+
+    renderAt('/candidate/profile')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Hồ sơ ứng viên' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('blocks a candidate who became recruiter from /candidate/jobs', async () => {
+    setUser('recruiter')
+
+    renderAt('/candidate/jobs')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Việc làm' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('blocks a candidate who became recruiter from /candidate/applications', async () => {
+    setUser('recruiter')
+
+    renderAt('/candidate/applications')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Đơn ứng tuyển của tôi' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('blocks a candidate who became recruiter from /candidate/recommendations', async () => {
+    setUser('recruiter')
+
+    renderAt('/candidate/recommendations')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Gợi ý việc làm cho bạn' }),
+    ).not.toBeInTheDocument()
+  })
+})

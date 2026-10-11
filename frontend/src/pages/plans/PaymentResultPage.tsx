@@ -7,7 +7,7 @@ import { getPaymentStatus } from '@/api/payments'
 export function PaymentResultPage() {
   const location = useLocation()
   const navigate = useNavigate()
-  const { refreshCurrentUser } = useAuth()
+  const { currentUser, refreshCurrentUser } = useAuth()
   const authRefreshed = useRef(false)
 
   // Parse order_id from query parameters
@@ -114,6 +114,12 @@ export function PaymentResultPage() {
     navigate('/plans', { replace: true })
   }, [navigate])
 
+  const handleGoRecruiterPortal = useCallback(() => {
+    navigate('/recruiter/portal', { replace: true })
+  }, [navigate])
+
+  const isRecruiter = currentUser?.role === 'recruiter'
+
   return (
     <div className="container py-10 sm:py-12">
       <div className="max-w-7xl mx-auto">
@@ -136,16 +142,39 @@ export function PaymentResultPage() {
             <div className="p-6 rounded-lg mb-6">
               {isSuccessful && (
                 <div className="bg-green-50 border-green-200">
-                  <h3 className="font-semibold text-green-600 mb-2">Thanh toán thành công</h3>
-                  <p className="text-green-600">{paymentMessage}</p>
-                  <Button onClick={handleGoBack}>Quay lại gói dịch vụ</Button>
+                  {isRecruiter ? (
+                    <>
+                      <h3 className="font-semibold text-green-600 mb-2">
+                        Bạn đã được nâng cấp lên Nhà tuyển dụng thành công
+                      </h3>
+                      <p className="text-green-600 mb-4">
+                        Bắt đầu quản lý công ty và đăng tin tuyển dụng ngay.
+                      </p>
+                      <div className="flex gap-3">
+                        <Button onClick={handleGoRecruiterPortal}>
+                          Bắt đầu tuyển dụng
+                        </Button>
+                        <Button variant="outline" onClick={handleGoBack}>
+                          Quay lại gói dịch vụ
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <h3 className="font-semibold text-green-600 mb-2">
+                        Thanh toán thành công
+                      </h3>
+                      <p className="text-green-600 mb-4">{paymentMessage}</p>
+                      <Button onClick={handleGoBack}>Quay lại gói dịch vụ</Button>
+                    </>
+                  )}
                 </div>
               )}
 
               {!isSuccessful && (
                 <div className="bg-red-50 border-red-200">
                   <h3 className="font-semibold text-red-600 mb-2">Thanh toán thất bại</h3>
-                  <p className="text-red-600">{paymentMessage}</p>
+                  <p className="text-red-600 mb-4">{paymentMessage}</p>
                   <Button onClick={handleGoBack}>Quay lại gói dịch vụ</Button>
                 </div>
               )}
