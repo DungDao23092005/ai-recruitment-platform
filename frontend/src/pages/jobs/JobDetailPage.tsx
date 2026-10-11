@@ -117,7 +117,7 @@ export interface JobDetailPageProps {
 export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { currentUser } = useAuth()
+  const { currentUser, isLoading: isAuthLoading } = useAuth()
   const [state, setState] = useState<JobState>({ kind: 'loading' })
   const [showApply, setShowApply] = useState(false)
   const [appStatus, setAppStatus] = useState<ApplicationStatusState>({ kind: 'loading' })
@@ -156,12 +156,17 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
   }, [id])
 
   useEffect(() => {
-    if (!id || state.kind !== 'success' || !currentUser || currentUser.role !== 'candidate') {
-      if (currentUser && currentUser.role === 'candidate' && state.kind === 'success') {
-        setAppStatus({ kind: 'none' })
-      } else if (!currentUser || currentUser.role !== 'candidate') {
-        setAppStatus({ kind: 'none' })
-      }
+    if (!id || state.kind !== 'success') {
+      return
+    }
+
+    // Wait for authentication to resolve before determining app status
+    if (isAuthLoading) {
+      return
+    }
+
+    if (!currentUser || currentUser.role !== 'candidate') {
+      setAppStatus({ kind: 'none' })
       return
     }
 
@@ -187,7 +192,7 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
     return () => {
       active = false
     }
-  }, [id, state, currentUser])
+  }, [id, state, currentUser, isAuthLoading])
 
   const handleApply = () => {
     if (!currentUser) {
@@ -337,7 +342,7 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
 
           <Card className="border-primary/20 bg-primary/5 shadow-soft">
             <CardContent className="space-y-3 pt-6">
-              {appStatus.kind === 'loading' ? (
+              {appStatus.kind === 'loading' || isAuthLoading ? (
                 <div className="space-y-3 w-full">
                   <Skeleton className="h-12 w-full" />
                   <p className="text-center text-xs text-muted-foreground">

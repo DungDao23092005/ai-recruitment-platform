@@ -185,11 +185,9 @@ describe('JobDetailPage', () => {
       ).toBeInTheDocument()
     })
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Ứng tuyển ngay/i })).toBeInTheDocument()
-    })
+    const applyButton = await screen.findByRole('button', { name: /Ứng tuyển ngay/i })
 
-    fireEvent.click(screen.getByRole('button', { name: /Ứng tuyển ngay/i }))
+    fireEvent.click(applyButton)
 
     await waitFor(() => {
       expect(
