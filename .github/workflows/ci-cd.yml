@@ -1,4 +1,4 @@
-name: CI
+name: AI Recruitment Platform CI/CD
 
 on:
   push:
