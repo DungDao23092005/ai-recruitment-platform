@@ -52,12 +52,12 @@ jobs:
         image: mcr.microsoft.com/mssql/server:2022-latest
         env:
           ACCEPT_EULA: Y
-          MSSQL_SA_PASSWORD: ${{ env.DATABASE_PASSWORD }}
+          MSSQL_SA_PASSWORD: TestPassword123!
           MSSQL_PID: Developer
         ports:
           - 1433:1433
         options: >-
-          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P ${{ env.DATABASE_PASSWORD }} -C -Q 'SELECT 1'"
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P TestPassword123! -C -Q 'SELECT 1'"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
