@@ -50,7 +50,7 @@ describe('StatusUpdateModal', () => {
   it('only contains valid transitions for an applied application', () => {
     renderModal('applied')
 
-    expect(selectOptions()).toEqual(['under_review'])
+    expect(selectOptions()).toEqual(['under_review', 'rejected'])
   })
 
   it('only contains valid transitions for an interviewing application', () => {

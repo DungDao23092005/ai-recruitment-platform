@@ -1052,18 +1052,27 @@ class TestApplicationCandidateEnrichment:
 class TestGetMyApplications:
     """GET /applications/mine — candidate-owned application history."""
 
+    # Cache company per recruiter client to respect single-company rule
+    _company_cache = {}
+
     @staticmethod
     def create_job(recruiter_client, run_async, title, suffix=""):
-        company = run_async(
-            recruiter_client.post(
-                f"{API_V1}/companies",
-                json={
-                    **COMPANY_BODY,
-                    "slug": f"acme-corp-{suffix or uuid.uuid4().hex[:8]}",
-                    "tax_code": f"12{suffix or uuid.uuid4().hex[:8]}",
-                },
-            )
-        ).json()
+        # Use client's base_url or a unique identifier to cache company per recruiter
+        cache_key = id(recruiter_client)
+        if cache_key not in TestGetMyApplications._company_cache:
+            company = run_async(
+                recruiter_client.post(
+                    f"{API_V1}/companies",
+                    json={
+                        **COMPANY_BODY,
+                        "slug": f"acme-corp-{suffix or uuid.uuid4().hex[:8]}",
+                        "tax_code": f"12{suffix or uuid.uuid4().hex[:8]}",
+                    },
+                )
+            ).json()
+            TestGetMyApplications._company_cache[cache_key] = company
+        else:
+            company = TestGetMyApplications._company_cache[cache_key]
         job = run_async(
             recruiter_client.post(
                 f"{API_V1}/jobs",

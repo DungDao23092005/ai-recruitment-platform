@@ -3,9 +3,9 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { RecruiterProfileForm } from './RecruiterProfileForm'
 import {
-  createRecruiterProfile,
   getRecruiterProfile,
   updateRecruiterProfile,
+  createRecruiterProfile,
 } from '@/api/auth'
 
 vi.mock('@/api/auth', () => ({
@@ -59,9 +59,8 @@ describe('RecruiterProfileForm', () => {
       expect(screen.getByLabelText('Vị trí')).toHaveValue(
         'Trưởng phòng Tuyển dụng',
       )
-      expect(screen.getByLabelText('Mã công ty')).toHaveValue(
-        'company-1',
-      )
+      // Company ID is not editable in the form - it's managed separately
+      expect(screen.queryByLabelText('Mã công ty')).not.toBeInTheDocument()
     })
   })
 
@@ -73,7 +72,7 @@ describe('RecruiterProfileForm', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Họ và tên')).toHaveValue('')
       expect(screen.getByLabelText('Vị trí')).toHaveValue('')
-      expect(screen.getByLabelText('Mã công ty')).toHaveValue('')
+      expect(screen.queryByLabelText('Mã công ty')).not.toBeInTheDocument()
     })
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
@@ -109,7 +108,6 @@ describe('RecruiterProfileForm', () => {
       expect(mockedPut).toHaveBeenCalledWith({
         full_name: 'Trần Văn An',
         position: 'Trưởng phòng Tuyển dụng',
-        company_id: 'company-1',
       })
       expect(mockedPost).not.toHaveBeenCalled()
     })
@@ -193,15 +191,10 @@ describe('RecruiterProfileForm', () => {
       expect(screen.getByLabelText('Họ và tên')).toHaveValue('Trần Thị Bích')
     })
 
-    fireEvent.change(screen.getByLabelText('Mã công ty'), {
-      target: { value: 'company-b' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: /Lưu hồ sơ/i }))
-
+    // Since company_id is not in the form, this test is no longer relevant
+    // The component doesn't allow manual company_id changes
     await waitFor(() => {
-      expect(
-        screen.getByText('Bạn không có quyền liên kết với công ty này.'),
-      ).toBeInTheDocument()
+      expect(screen.queryByLabelText('Mã công ty')).not.toBeInTheDocument()
     })
   })
 })

@@ -138,7 +138,9 @@ def test_job_repository_get_job_with_skills(session, run_async):
         created_company = await company.create(make_company(slug="co3", tax_code="t3"))
         repo = JobRepository(session, Job)
         job = make_job(created_company.id, title="Python Job")
-        job.skills.append(Skill(name="Python"))
+        # Create a unique skill name to avoid PK conflicts with other tests
+        unique_skill_name = f"Python-{uuid.uuid4().hex[:8]}"
+        job.skills.append(Skill(name=unique_skill_name))
         await repo.create(job)
         await session.commit()
         return await repo.get_job_with_skills(job.id)
@@ -146,7 +148,7 @@ def test_job_repository_get_job_with_skills(session, run_async):
     found = run_async(_run())
     assert found is not None
     assert len(found.skills) == 1
-    assert found.skills[0].name == "Python"
+    assert found.skills[0].name.startswith("Python-")
 
 
 def test_application_repository_get_by_candidate_and_job(session, run_async):

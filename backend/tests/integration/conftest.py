@@ -8,15 +8,22 @@ from app.database.session import engine
 # Ensure that tests never run against development database
 DEVELOPMENT_DATABASE = "ai_recruitment_platform"
 
-_LOOP = asyncio.new_event_loop()
+
+# Use a single session-scoped event loop for all synchronous fixtures
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_or_create_loop() -> asyncio.AbstractEventLoop:
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+    return _loop
 
 
 def run(coro) -> object:
-    """Run a coroutine in the current event loop."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.get_event_loop()
+    """Run a coroutine using the shared session-scoped event loop."""
+    loop = _get_or_create_loop()
     return loop.run_until_complete(coro)
 
 
