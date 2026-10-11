@@ -1215,6 +1215,39 @@ class TestGetMyApplications:
         assert titles == ["Job 2", "Job 1", "Job 0"]
 
 
+class TestPhase65Authorization:
+    """Phase 6.5: Authorization regression tests for applications API."""
+
+    def test_recruiter_cannot_apply_for_job(self, recruiter_client, run_async, published_job):
+        """
+        Phase 6.5: Recruiter cannot apply for a job.
+
+        POST /api/v1/applications with a recruiter token should return 403.
+        """
+        resp = run_async(
+            recruiter_client.post(
+                f"{API_V1}/applications",
+                json={"job_id": published_job["id"]},
+            )
+        )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+        assert resp.json()["detail"] == "Not enough permissions"
+
+    def test_candidate_cannot_list_job_applications(self, candidate_client, run_async, published_job):
+        """
+        Phase 6.5: Candidate cannot list job applications.
+
+        GET /api/v1/applications?job_id={job_id} with a candidate token should return 403.
+        """
+        resp = run_async(
+            candidate_client.get(
+                f"{API_V1}/applications", params={"job_id": published_job["id"]}
+            )
+        )
+        assert resp.status_code == 403, f"Expected 403, got {resp.status_code}: {resp.text}"
+        assert "Not enough permissions" in resp.json()["detail"]
+
+
 class TestApplicationStatusConcurrency:
     """Real SQL Server concurrency regression test for application status updates.
 

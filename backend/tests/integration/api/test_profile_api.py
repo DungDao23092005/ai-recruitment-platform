@@ -413,3 +413,52 @@ class TestRecruiterProfileCompanyOwnership:
         assert resp.json()["company_id"] == company["id"]
         assert resp.json()["full_name"] is None
         assert resp.json()["position"] is None
+
+
+class TestPhase65RecruiterMetricsAuthorization:
+    """Phase 6.5: Recruiter metrics endpoint authorization regression tests."""
+
+    def test_anonymous_access_returns_401(self, client, run_async):
+        """Anonymous access to /users/me/recruiter-metrics returns 401."""
+        resp = run_async(client.get(f"{API_V1}/users/me/recruiter-metrics"))
+        assert resp.status_code == 401
+
+    def test_candidate_access_returns_403(self, candidate_client, run_async):
+        """Candidate access to /users/me/recruiter-metrics returns 403."""
+        resp = run_async(candidate_client.get(f"{API_V1}/users/me/recruiter-metrics"))
+        assert resp.status_code == 403
+
+    def test_recruiter_access_returns_200(self, recruiter_client, run_async):
+        """Recruiter access to /users/me/recruiter-metrics returns 200.
+
+        Note: This endpoint requires the recruiter to have a profile and associated company.
+        We create the necessary profile and company first.
+        """
+        from tests.integration.api.test_applications_api import COMPANY_BODY
+
+        # Create a company for the recruiter
+        company = run_async(
+            recruiter_client.post(f"{API_V1}/companies", json=COMPANY_BODY)
+        ).json()
+
+        # Create/update recruiter profile with the company
+        resp = run_async(
+            recruiter_client.put(
+                f"{API_V1}/users/me/recruiter-profile",
+                json={
+                    "full_name": "Test Recruiter",
+                    "position": "Hiring Manager",
+                    "company_id": company["id"],
+                },
+            )
+        )
+        assert resp.status_code == 200
+
+        # Now access the metrics endpoint
+        resp = run_async(recruiter_client.get(f"{API_V1}/users/me/recruiter-metrics"))
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "total_jobs" in data
+        assert "total_applications" in data
+        assert "jobs_by_status" in data
+        assert "applications_by_status" in data

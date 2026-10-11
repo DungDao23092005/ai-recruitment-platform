@@ -233,6 +233,152 @@ class TestAdminSubscriptionAccess:
         assert resp3.status_code == 200
         assert resp3.json()["status"] == "active"
 
+
+class TestCandidateTokenContinuityAfterRoleTransition:
+    """
+    Phase 6.5: Regression test for token continuity across Candidate -> Recruiter transition.
+
+    This test proves that the SAME JWT token works before and after role transition,
+    without requiring re-login. The backend resolves the current User from the
+    database on authenticated requests, so Candidate -> Recruiter works with the
+    SAME JWT. This test MUST fail if JWT contains role claim or caches original role.
+    """
+
+    def test_candidate_token_continuity_after_role_transition(
+        self, candidate_client, admin_client, run_async, subscription_service_override
+    ):
+        """
+        Test that the SAME JWT token works before and after Candidate -> Recruiter transition.
+
+        BEFORE TRANSITION:
+        - Get candidate client with access_token
+        - Verify GET /auth/me returns role = "candidate"
+        - Verify candidate CANNOT access recruiter-only endpoints (403)
+        - Verify candidate CAN access candidate-only endpoints (200)
+
+        TRANSITION:
+        - Use admin to provision subscription for this SAME candidate
+        - This promotes candidate -> recruiter via the real activation flow
+
+        AFTER TRANSITION (using SAME client/token):
+        - Verify GET /auth/me returns role = "recruiter"
+        - Verify candidate CANNOT access candidate-only endpoints (403)
+        - Verify recruiter CAN access recruiter-only endpoints (200)
+        """
+        import httpx
+        from app.domain.enums import UserRole
+
+        # ============================================================
+        # BEFORE TRANSITION
+        # ============================================================
+
+        # Verify current role is candidate
+        me_resp = run_async(candidate_client.get(f"{API_V1}/auth/me"))
+        assert me_resp.status_code == 200, me_resp.text
+        me_data = me_resp.json()
+        assert me_data["role"] == "candidate", f"Expected candidate role, got {me_data['role']}"
+
+        # Verify candidate CANNOT access recruiter-only endpoints
+        recruiter_only_endpoints = [
+            ("GET", "/jobs/mine"),
+            ("POST", "/companies", {"name": "Test Corp", "slug": "test-corp", "tax_code": "987654321", "size": "startup"}),
+            ("GET", "/users/me/recruiter-profile"),
+        ]
+        for method, path, *body in recruiter_only_endpoints:
+            if method == "GET":
+                resp = run_async(candidate_client.get(f"{API_V1}{path}"))
+            elif method == "POST":
+                resp = run_async(candidate_client.post(f"{API_V1}{path}", json=body[0] if body else {}))
+            assert resp.status_code == 403, f"Expected 403 for {method} {path}, got {resp.status_code}: {resp.text}"
+
+        # Verify candidate CAN access candidate-only endpoints
+        mine_resp = run_async(candidate_client.get(f"{API_V1}/applications/mine"))
+        assert mine_resp.status_code == 200, f"Expected 200 for /applications/mine, got {mine_resp.status_code}: {mine_resp.text}"
+
+        # Get candidate user ID for transition
+        from app.core.security import decode_access_token
+        auth_header = candidate_client.headers.get("Authorization", "")
+        token = auth_header.replace("Bearer ", "")
+        payload = decode_access_token(token)
+        candidate_user_id = payload["sub"]
+
+        # ============================================================
+        # TRANSITION: Use admin to provision subscription for THIS candidate
+        # ============================================================
+        # This uses the SAME activation flow as the existing subscription tests
+
+        # First, create a plan using admin client
+        plan_resp = run_async(admin_client.post(f"{API_V1}/admin/plans", json={
+            "name": "Test Plan for Token Continuity",
+            "description": "Test plan for role transition",
+            "price": 1000000,
+            "currency": "VND",
+            "duration_days": 30,
+            "max_job_posts": 10,
+            "is_active": True,
+            "display_order": 1,
+        }))
+        assert plan_resp.status_code == 201, f"Failed to create plan: {plan_resp.text}"
+        plan = plan_resp.json()
+
+        # Provision subscription for the SAME candidate
+        prov_resp = run_async(admin_client.post(f"{API_V1}/admin/subscriptions", json={
+            "user_id": candidate_user_id,
+            "plan_id": plan["id"],
+        }))
+        assert prov_resp.status_code == 201, f"Failed to provision subscription: {prov_resp.text}"
+
+        # ============================================================
+        # AFTER TRANSITION: Using the SAME candidate_client (SAME token)
+        # ============================================================
+
+        # Verify role is now recruiter
+        me_resp_after = run_async(candidate_client.get(f"{API_V1}/auth/me"))
+        assert me_resp_after.status_code == 200, me_resp_after.text
+        me_data_after = me_resp_after.json()
+        assert me_data_after["role"] == "recruiter", f"Expected recruiter role, got {me_data_after['role']}"
+
+        # Verify candidate CANNOT access candidate-only endpoints
+        mine_resp_after = run_async(candidate_client.get(f"{API_V1}/applications/mine"))
+        assert mine_resp_after.status_code == 403, f"Expected 403 for /applications/mine after transition, got {mine_resp_after.status_code}: {mine_resp_after.text}"
+
+        # Verify recruiter CAN access recruiter-only endpoints
+        # GET /jobs/mine
+        jobs_mine_resp = run_async(candidate_client.get(f"{API_V1}/jobs/mine"))
+        assert jobs_mine_resp.status_code == 200, f"Expected 200 for /jobs/mine, got {jobs_mine_resp.status_code}: {jobs_mine_resp.text}"
+
+        # GET /users/me/recruiter-profile
+        recruiter_profile_resp = run_async(candidate_client.get(f"{API_V1}/users/me/recruiter-profile"))
+        # May be 200 or 404 (if no profile created yet), but NOT 403
+        assert recruiter_profile_resp.status_code in (200, 404), f"Expected 200 or 404 for /recruiter-profile, got {recruiter_profile_resp.status_code}: {recruiter_profile_resp.text}"
+
+        # POST /companies (create a company)
+        company_resp = run_async(candidate_client.post(f"{API_V1}/companies", json={
+            "name": "Test Corp After Transition",
+            "slug": "test-corp-after-transition",
+            "tax_code": "111111111",
+            "size": "startup",
+        }))
+        assert company_resp.status_code == 201, f"Expected 201 for POST /companies, got {company_resp.status_code}: {company_resp.text}"
+
+        # Verify candidate CANNOT apply for jobs
+        # Need a published job first - create one with a recruiter client
+        # For this test, we just verify the applications POST returns 403
+        # (We'd need a valid job_id, but we can test the authorization boundary)
+        fake_job_id = str(uuid.uuid4())
+        apply_resp = run_async(candidate_client.post(f"{API_V1}/applications", json={"job_id": fake_job_id}))
+        # Should be 403 (forbidden for recruiter) or 404 (job not found) - not 201
+        assert apply_resp.status_code in (403, 404), f"Expected 403 or 404 for POST /applications as recruiter, got {apply_resp.status_code}: {apply_resp.text}"
+
+        # Verify GET /candidate-profile is forbidden for recruiter
+        candidate_profile_resp = run_async(candidate_client.get(f"{API_V1}/users/me/candidate-profile"))
+        assert candidate_profile_resp.status_code == 403, f"Expected 403 for /candidate-profile as recruiter, got {candidate_profile_resp.status_code}: {candidate_profile_resp.text}"
+
+        # Verify GET /candidate/applications/mine is forbidden for recruiter
+        # (This is the candidate-owned applications endpoint)
+        candidate_apps_resp = run_async(candidate_client.get(f"{API_V1}/applications/mine"))
+        assert candidate_apps_resp.status_code == 403, f"Expected 403 for /applications/mine as recruiter, got {candidate_apps_resp.status_code}: {candidate_apps_resp.text}"
+
     def test_admin_can_get_subscription(self, admin_sub_client, run_async, subscription_service_override):
         """Admin can get any subscription by ID."""
         from tests.integration.api.test_plans import _create_plan

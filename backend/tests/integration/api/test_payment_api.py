@@ -587,6 +587,18 @@ class TestPaymentAPIStatus:
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
+class TestPhase65PaymentAuthorization:
+    """Phase 6.5: Payment API authorization regression tests."""
+
+    def test_get_payment_status_anonymous_denied(self, client, test_payment_order):
+        """Anonymous access to /api/v1/payments/vnpay/status/{order_id} returns 401."""
+        response = _get(
+            client,
+            f"/api/v1/payments/vnpay/status/{test_payment_order.internal_order_id}",
+        )
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+
 class TestPaymentAPIReturnNeverActivates:
     """Critical test: GET /api/v1/payments/vnpay/return never activates subscription."""
 
