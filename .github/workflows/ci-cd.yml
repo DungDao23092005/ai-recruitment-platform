@@ -31,6 +31,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -75,11 +76,6 @@ jobs:
         ports:
           - 6333:6333
           - 6334:6334
-        options: >-
-          --health-cmd "curl -sf http://localhost:6333/health"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
 
     steps:
       - name: Checkout repository
@@ -152,6 +148,28 @@ jobs:
           /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "${{ env.DATABASE_PASSWORD }}" -C -Q "SELECT @@VERSION"
         env:
           PATH: "${{ env.PATH }}:/opt/mssql-tools18/bin"
+
+      - name: Verify Qdrant Vector DB Connectivity
+        run: |
+          echo "Waiting for Qdrant to be ready at http://localhost:6333/readyz (timeout: 30s)..."
+          if timeout 30s bash -c '
+            while true; do
+              if curl -fsS --max-time 2 "http://localhost:6333/readyz" > /dev/null 2>&1; then
+                exit 0
+              fi
+              sleep 1
+            done
+          '; then
+            echo "Qdrant is ready!"
+          else
+            status=$?
+            if [ "$status" -eq 124 ]; then
+              echo "ERROR: Qdrant did not become ready within 30 seconds."
+            else
+              echo "ERROR: Qdrant readiness check failed with exit code $status."
+            fi
+            exit 1
+          fi
 
       - name: Run backend unit tests
         run: |
