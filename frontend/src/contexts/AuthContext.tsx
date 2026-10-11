@@ -24,6 +24,7 @@ interface AuthContextValue {
   isLoading: boolean
   login: (credentials: LoginCredentials) => Promise<User>
   logout: () => void
+  refreshCurrentUser: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
@@ -37,6 +38,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearToken()
     setCurrentUser(null)
     setToken(null)
+  }, [])
+
+  const refreshCurrentUser = useCallback(async () => {
+    try {
+      const user = await getCurrentUser()
+      setCurrentUser(user)
+    } catch (error) {
+      console.warn('refreshCurrentUser failed, preserving existing state:', error)
+    }
   }, [])
 
   const logout = useCallback(async () => {
@@ -139,8 +149,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isLoading,
       login,
       logout,
+      refreshCurrentUser,
     }),
-    [currentUser, token, isLoading, login, logout],
+    [currentUser, token, isLoading, login, logout, refreshCurrentUser],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

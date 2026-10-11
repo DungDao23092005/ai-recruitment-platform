@@ -1,11 +1,14 @@
 import { useLocation, useNavigate } from 'react-router-dom'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
 import { getPaymentStatus } from '@/api/payments'
 
 export function PaymentResultPage() {
   const location = useLocation()
   const navigate = useNavigate()
+  const { refreshCurrentUser } = useAuth()
+  const authRefreshed = useRef(false)
 
   // Parse order_id from query parameters
   const urlParams = new URLSearchParams(location.search)
@@ -27,6 +30,13 @@ export function PaymentResultPage() {
       if (res.payment_order.status === 'pending') {
         startPolling(internalOrderId)
       } else {
+        // Definitive success: refresh auth exactly once before clearing loading
+        if (res.is_successful && !authRefreshed.current) {
+          authRefreshed.current = true
+          await refreshCurrentUser().catch(() => {
+            // preserve payment success even if auth refresh fails
+          })
+        }
         setIsLoading(false)
       }
     } catch (err) {
@@ -34,7 +44,7 @@ export function PaymentResultPage() {
       setPaymentMessage('Không thể kiểm tra trạng thái thanh toán')
       setIsLoading(false)
     }
-  }, [])
+  }, [refreshCurrentUser, authRefreshed, setIsLoading])
 
   // Start polling for pending status
   const startPolling = useCallback(
@@ -51,6 +61,14 @@ export function PaymentResultPage() {
           setPaymentMessage(res.message)
 
           // Check payment_order.status for definitive state
+          // Exactly-one auth refresh on first definitive success
+          if (res.payment_order.status === 'success' && !authRefreshed.current) {
+            authRefreshed.current = true
+            await refreshCurrentUser().catch(() => {
+              // preserve payment success if auth refresh fails
+            })
+          }
+
           if (res.payment_order.status === 'success') {
             setIsLoading(false)
           } else if (res.payment_order.status === 'failed') {
@@ -69,7 +87,7 @@ export function PaymentResultPage() {
         }
       })()
     },
-    [retryCount, getPaymentStatus]
+    [retryCount, getPaymentStatus, refreshCurrentUser, authRefreshed]
   )
 
   // Effect: initial load

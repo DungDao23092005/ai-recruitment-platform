@@ -22,24 +22,29 @@ vi.mock('@/api/auth', () => ({
   register: vi.fn(),
   createCandidateProfile: vi.fn(),
   createRecruiterProfile: vi.fn(),
+  logout: vi.fn(),
 }))
 
 const mockedLogin = vi.mocked(authApi.login)
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
 
 function TestConsumer() {
-  const { currentUser, isAuthenticated, isLoading, login, logout } = useAuth()
+  const { currentUser, isAuthenticated, isLoading, login, logout, refreshCurrentUser } = useAuth()
 
   return (
     <div>
       <span data-testid="loading">{String(isLoading)}</span>
       <span data-testid="authenticated">{String(isAuthenticated)}</span>
       <span data-testid="user">{currentUser?.email ?? 'none'}</span>
+      <span data-testid="role">{currentUser?.role ?? 'none'}</span>
       <button type="button" onClick={() => login({ email: 'a@b.c', password: 'password1' })}>
         Login
       </button>
       <button type="button" onClick={logout}>
         Logout
+      </button>
+      <button type="button" onClick={refreshCurrentUser}>
+        Refresh
       </button>
     </div>
   )
@@ -129,11 +134,13 @@ describe('AuthContext', () => {
       expect(screen.getByTestId('user')).toHaveTextContent('candidate@example.com'),
     )
 
-    act(() => {
+    await act(async () => {
       screen.getByRole('button', { name: 'Logout' }).click()
     })
 
-    expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull()
+    await waitFor(() =>
+      expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull(),
+    )
     expect(screen.getByTestId('authenticated')).toHaveTextContent('false')
     expect(screen.getByTestId('user')).toHaveTextContent('none')
   })
@@ -251,4 +258,51 @@ describe('AuthContext', () => {
       'storage',
       expect.any(Function)
     )
+  })
+
+  describe('refreshCurrentUser', () => {
+    it('calls getCurrentUser and updates user role in context', async () => {
+      localStorage.setItem(TOKEN_STORAGE_KEY, 'stored-token')
+      mockedGetCurrentUser.mockResolvedValueOnce(mockUser)
+      renderProvider()
+      await waitFor(() =>
+        expect(screen.getByTestId('user')).toHaveTextContent('candidate@example.com'),
+      )
+      const refreshedUser: User = {
+        id: 'user-1',
+        email: 'candidate@example.com',
+        role: 'recruiter',
+        is_active: true,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+      }
+      mockedGetCurrentUser.mockResolvedValueOnce(refreshedUser)
+      await act(async () => {
+        screen.getByRole('button', { name: 'Refresh' }).click()
+      })
+      expect(mockedGetCurrentUser).toHaveBeenCalledTimes(2)
+      await waitFor(() =>
+        expect(screen.getByTestId('user')).toHaveTextContent('candidate@example.com'),
+      )
+      expect(screen.getByTestId('role')).toHaveTextContent('recruiter')
+    })
+
+    it('preserves existing auth state when getCurrentUser fails', async () => {
+      localStorage.setItem(TOKEN_STORAGE_KEY, 'stored-token')
+      mockedGetCurrentUser.mockResolvedValueOnce(mockUser)
+      renderProvider()
+      await waitFor(() =>
+        expect(screen.getByTestId('user')).toHaveTextContent('candidate@example.com'),
+      )
+      mockedGetCurrentUser.mockRejectedValueOnce(new Error('Network error'))
+      await act(async () => {
+        screen.getByRole('button', { name: 'Refresh' }).click()
+      })
+      await waitFor(() =>
+        expect(screen.getByTestId('authenticated')).toHaveTextContent('true'),
+      )
+      await waitFor(() =>
+        expect(screen.getByTestId('user')).toHaveTextContent('candidate@example.com'),
+      )
+    })
   })
