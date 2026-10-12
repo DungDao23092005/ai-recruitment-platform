@@ -39,10 +39,21 @@ def configure_test_settings():
 
 
 @pytest.fixture(scope="session")
-async def lifespan_manager():
-    """Manage the FastAPI lifespan for integration tests."""
-    async with LifespanManager(app) as manager:
+def lifespan_manager():
+    """Manage the FastAPI lifespan for integration tests using the shared event loop."""
+    async def _start():
+        manager = LifespanManager(app)
+        await manager.__aenter__()
+        return manager
+
+    async def _stop(manager):
+        await manager.__aexit__(None, None, None)
+
+    manager = run(_start())
+    try:
         yield manager
+    finally:
+        run(_stop(manager))
 
 
 @pytest.fixture(scope="session")
