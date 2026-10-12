@@ -1,6 +1,6 @@
 import socket
 import uuid
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -44,6 +44,52 @@ def _vector(dim: int = 384) -> list[float]:
     return [0.1] * dim
 
 
+def _fake_parsed_resume() -> "ParsedResumeSchema":
+    from app.schemas.ai_resume import ParsedResumeSchema
+
+    return ParsedResumeSchema(
+        full_name="Jane Doe",
+        email="jane.doe@example.com",
+        phone=None,
+        title="Software Engineer",
+        summary="Experienced engineer with Python skills",
+        total_years_experience=5.0,
+        skills=["Python", "FastAPI", "Docker"],
+        technical_skills=["Python", "FastAPI", "Docker"],
+        soft_skills=["Communication", "Teamwork"],
+        job_titles=["Software Engineer", "Backend Developer"],
+        projects=[],
+        experiences=[],
+        education=[],
+        certifications=[],
+        languages=["English"],
+    )
+
+
+def _fake_parsed_job() -> "ParsedJobSchema":
+    from app.schemas.ai_job import ParsedJobSchema
+
+    return ParsedJobSchema(
+        title="Backend Engineer",
+        summary="We are hiring a Python developer to build robust APIs.",
+        seniority="Senior",
+        responsibilities=["Design and implement APIs", "Write tests", "Review code"],
+        required_skills=["Python", "FastAPI", "Docker"],
+        preferred_skills=["PostgreSQL", "Redis"],
+        minimum_years_experience=3.0,
+        education_level="Bachelor",
+        certifications=[],
+        languages=["English"],
+        location="Ho Chi Minh City",
+        city="Ho Chi Minh City",
+        salary_min=1000.0,
+        salary_max=2000.0,
+        currency="USD",
+        employment_type="Full-time",
+        workplace_type="Remote",
+    )
+
+
 class TestMatch:
     def test_match_returns_result(self, candidate_client, run_async):
         resp = run_async(
@@ -80,8 +126,13 @@ class TestParseResume:
         reason="BLOCKED BY ENVIRONMENT: Qdrant not available",
     )
     @patch("app.services.ai_matching_service.PDFTextExtractor.extract")
-    def test_parse_resume_indexes(self, mock_extract, candidate_client, run_async):
+    @patch("app.services.ai_matching_service.ResumeParser.parse", new_callable=AsyncMock)
+    def test_parse_resume_indexes(
+        self, mock_parse_resume, mock_extract, candidate_client, run_async
+    ):
         mock_extract.return_value = "Fake CV with Python skills"
+        mock_parse_resume.return_value = _fake_parsed_resume()
+
         profile = run_async(
             candidate_client.post(
                 f"{API_V1}/users/me/candidate-profile",
@@ -124,7 +175,10 @@ class TestParseJD:
         not QDRANT_AVAILABLE,
         reason="BLOCKED BY ENVIRONMENT: Qdrant not available",
     )
-    def test_parse_jd_indexes(self, recruiter_client, run_async):
+    @patch("app.services.ai_matching_service.JobParser.parse", new_callable=AsyncMock)
+    def test_parse_jd_indexes(self, mock_parse_job, recruiter_client, run_async):
+        mock_parse_job.return_value = _fake_parsed_job()
+
         resp = run_async(
             recruiter_client.post(
                 f"{API_V1}/ai/parse-jd",
