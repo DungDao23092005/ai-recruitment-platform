@@ -133,7 +133,8 @@ vi.mock('@/api/metrics', () => ({
 }))
 
 vi.mock('@/api/notifications', () => ({
-  getUnreadNotificationCount: vi.fn().mockResolvedValue({ count: 0 }),
+  getUnreadNotificationCount: vi.fn().mockResolvedValue({ unread_count: 0 }),
+  getStreamTicket: vi.fn().mockResolvedValue({ ticket: 'test-ticket' }),
 }))
 
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
@@ -187,9 +188,14 @@ function renderAt(path: string) {
   )
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetAllMocks()
   localStorage.clear()
+
+  const mockedNotifications = vi.mocked(await import('@/api/notifications'))
+  mockedNotifications.getUnreadNotificationCount.mockResolvedValue({ unread_count: 0 })
+  mockedNotifications.getStreamTicket.mockResolvedValue({ ticket: 'test-ticket' })
+
   mockedGetJobs.mockResolvedValue({ items: [mockJob], total: 1 })
   mockedGetJobById.mockResolvedValue(mockJob)
   mockedGetMyJobById.mockResolvedValue(mockJob)
@@ -576,11 +582,7 @@ describe('AppRouter Navbar integration', () => {
 
     renderAt('/')
 
-    await waitFor(() => {
-      expect(
-        screen.getByRole('navigation', { name: 'Điều hướng chính' }),
-      ).toBeInTheDocument()
-    })
+    await screen.findByRole('link', { name: 'Tìm việc AI' })
     const publicNav = screen.getByRole('navigation', {
       name: 'Điều hướng chính',
     })
@@ -590,7 +592,7 @@ describe('AppRouter Navbar integration', () => {
     expect(within(publicNav).getByText('Gợi ý việc làm')).toBeInTheDocument()
     expect(within(publicNav).getByText('Trợ lý AI')).toBeInTheDocument()
     // Dashboard link for candidate is "Tổng quan" pointing to /candidate/portal
-    const dashboardCta = within(publicNav).getByRole('link', {
+    const dashboardCta = await within(publicNav).findByRole('link', {
       name: 'Tổng quan',
     })
     expect(dashboardCta).toHaveAttribute('href', '/candidate/portal')
@@ -601,11 +603,7 @@ describe('AppRouter Navbar integration', () => {
 
     renderAt('/')
 
-    await waitFor(() => {
-      expect(
-        screen.getByRole('navigation', { name: 'Điều hướng chính' }),
-      ).toBeInTheDocument()
-    })
+    await screen.findByRole('link', { name: 'Quản lý tuyển dụng' })
     const publicNav = screen.getByRole('navigation', {
       name: 'Điều hướng chính',
     })
@@ -616,7 +614,7 @@ describe('AppRouter Navbar integration', () => {
     expect(within(publicNav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
     expect(within(publicNav).getByText('Trợ lý AI')).toBeInTheDocument()
     // Dashboard link for recruiter is "Quản lý tuyển dụng" pointing to /recruiter/portal
-    const dashboardCta = within(publicNav).getByRole('link', {
+    const dashboardCta = await within(publicNav).findByRole('link', {
       name: 'Quản lý tuyển dụng',
     })
     expect(dashboardCta).toHaveAttribute('href', '/recruiter/portal')
@@ -627,11 +625,7 @@ describe('AppRouter Navbar integration', () => {
 
     renderAt('/')
 
-    await waitFor(() => {
-      expect(
-        screen.getByRole('navigation', { name: 'Điều hướng chính' }),
-      ).toBeInTheDocument()
-    })
+    await screen.findByRole('link', { name: 'Bảng điều khiển' })
     const publicNav = screen.getByRole('navigation', {
       name: 'Điều hướng chính',
     })
@@ -642,7 +636,7 @@ describe('AppRouter Navbar integration', () => {
     expect(within(publicNav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
     expect(within(publicNav).getByText('Trợ lý AI')).toBeInTheDocument()
     // Dashboard link for admin is "Bảng điều khiển" pointing to /admin/dashboard
-    const dashboardCta = within(publicNav).getByRole('link', {
+    const dashboardCta = await within(publicNav).findByRole('link', {
       name: 'Bảng điều khiển',
     })
     expect(dashboardCta).toHaveAttribute('href', '/admin/dashboard')

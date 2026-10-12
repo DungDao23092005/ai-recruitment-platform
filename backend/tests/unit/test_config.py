@@ -4,7 +4,17 @@ from pydantic import ValidationError
 from app.core.config import Settings
 
 
-def test_default_settings():
+def test_default_settings(monkeypatch: pytest.MonkeyPatch):
+    # Clear CI environment variables that would override defaults
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.delenv("PROJECT_NAME", raising=False)
+    monkeypatch.delenv("VERSION", raising=False)
+    monkeypatch.delenv("API_V1_STR", raising=False)
+    monkeypatch.delenv("BACKEND_CORS_ORIGINS", raising=False)
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+
     settings = Settings(_env_file=None)
 
     assert settings.PROJECT_NAME == "AI Recruitment Platform"
