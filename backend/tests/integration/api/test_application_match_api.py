@@ -71,11 +71,11 @@ class FakeEmbeddingService:
         self.resume_embeds = []
         self.job_embeds = []
 
-    def embed_resume(self, parsed_resume):
+    async def embed_resume(self, parsed_resume):
         self.resume_embeds.append(parsed_resume)
         return [0.5, 0.5, 0.5, 0.5]
 
-    def embed_job(self, parsed_job):
+    async def embed_job(self, parsed_job):
         self.job_embeds.append(parsed_job)
         return [0.5, 0.5, 0.5, 0.5]
 
@@ -111,20 +111,36 @@ async def _seed_job_skills(job_id, skill_names):
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
-    from app.models import Job
+    from app.models import Job, JobSkill, Skill
 
     async with async_session_factory() as session:
         stmt = (
             select(Job)
-            .options(selectinload(Job.skills))
+            .options(selectinload(Job.job_skills).selectinload(JobSkill.skill))
             .where(Job.id == job_id)
         )
         job = (await session.execute(stmt)).scalar_one()
+
         for name in skill_names:
-            skill = Skill(name=name)
-            session.add(skill)
-            await session.flush()
-            job.skills.append(skill)
+            # Reuse existing active skill by name (filter out soft-deleted)
+            stmt = select(Skill).where(Skill.name == name, Skill.is_deleted == False)
+            skill = (await session.execute(stmt)).scalar_one_or_none()
+            if skill is None:
+                skill = Skill(name=name)
+                session.add(skill)
+                await session.flush()
+
+            # Check if this (job_id, skill_id) association already exists
+            existing_association = any(
+                js.skill_id == skill.id for js in job.job_skills
+            )
+            if not existing_association:
+                job_skill = JobSkill(
+                    job_id=job_id,
+                    skill_id=skill.id,
+                    is_mandatory=True,
+                )
+                session.add(job_skill)
         await session.commit()
 
 
@@ -214,10 +230,18 @@ class TestGetApplicationMatch:
         body = resp.json()
         assert 0.0 <= body["overall_score"] <= 100.0
         assert set(body.keys()) == {
+            "entity_id",
             "overall_score",
             "cosine_similarity",
             "skill_coverage_score",
+            "preferred_skill_coverage_score",
             "experience_match_score",
+            "education_score",
+            "project_score",
+            "has_required_skills",
+            "has_preferred_skills",
+            "has_experience_requirement",
+            "has_education_requirement",
             "matching_skills",
             "skill_gap",
             "match_reasons",
