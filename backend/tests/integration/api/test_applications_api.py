@@ -1413,7 +1413,10 @@ class TestApplicationStatusConcurrency:
                 results["actor_b"] = result
 
         # Run both actors concurrently
-        run_async(asyncio.gather(actor_a(), actor_b()))
+        async def run_concurrent():
+            await asyncio.gather(actor_a(), actor_b())
+
+        run_async(run_concurrent())
 
         # Verify exactly one success and one conflict
         statuses = [results["actor_a"][0], results["actor_b"][0]]
@@ -1528,7 +1531,11 @@ class TestApplicationStatusConcurrency:
                 )
                 results["actor_b"] = result
 
-        run_async(asyncio.gather(actor_a(), actor_b()))
+        # Run both actors concurrently
+        async def run_concurrent():
+            await asyncio.gather(actor_a(), actor_b())
+
+        run_async(run_concurrent())
 
         statuses = [results["actor_a"][0], results["actor_b"][0]]
         assert statuses.count("success") == 1
