@@ -172,6 +172,9 @@ class TestAdminUsersList:
                 "role",
                 "is_active",
                 "is_deleted",
+                "lock_reason",
+                "locked_at",
+                "locked_by",
                 "created_at",
                 "updated_at",
             }
@@ -207,29 +210,38 @@ class TestAdminUsersDeactivate:
 
         list_resp = run(admin_client.get(f"{API_V1}/admin/users"))
         target = next(u for u in list_resp.json()["items"] if u["email"] == email)
-        assert target["is_deleted"] is False
+        assert target["is_active"] is True
 
         resp = run(
             admin_client.patch(
-                f"{API_V1}/admin/users/{target['id']}/deactivate"
+                f"{API_V1}/admin/users/{target['id']}/deactivate",
+                json={"reason": "Test deactivation reason"},
             )
         )
         assert resp.status_code == 200
         data = resp.json()
         assert data["id"] == target["id"]
-        assert data["is_deleted"] is True
+        assert data["is_active"] is False
+        assert data["lock_reason"] == "Test deactivation reason"
+        assert data["locked_at"] is not None
+        assert data["locked_by"] is not None
 
     def test_deactivated_user_appears_in_admin_list(self, client, admin_client):
         email = _register(client, "candidate")
         list_resp = run(admin_client.get(f"{API_V1}/admin/users"))
         target = next(u for u in list_resp.json()["items"] if u["email"] == email)
 
-        run(admin_client.patch(f"{API_V1}/admin/users/{target['id']}/deactivate"))
+        run(
+            admin_client.patch(
+                f"{API_V1}/admin/users/{target['id']}/deactivate",
+                json={"reason": "Test deactivation reason"},
+            )
+        )
 
         resp = run(admin_client.get(f"{API_V1}/admin/users"))
         data = resp.json()
         match = next(u for u in data["items"] if u["id"] == target["id"])
-        assert match["is_deleted"] is True
+        assert match["is_active"] is False
 
     def test_deactivate_already_deactivated_404(self, client, admin_client):
         email = _register(client, "candidate")
@@ -238,27 +250,36 @@ class TestAdminUsersDeactivate:
 
         first = run(
             admin_client.patch(
-                f"{API_V1}/admin/users/{target['id']}/deactivate"
+                f"{API_V1}/admin/users/{target['id']}/deactivate",
+                json={"reason": "First deactivation"},
             )
         )
         assert first.status_code == 200
         second = run(
             admin_client.patch(
-                f"{API_V1}/admin/users/{target['id']}/deactivate"
+                f"{API_V1}/admin/users/{target['id']}/deactivate",
+                json={"reason": "Second deactivation attempt"},
             )
         )
-        assert second.status_code == 404
+        # Deactivation is idempotent - second call succeeds and overwrites lock fields
+        assert second.status_code == 200
+        data = second.json()
+        assert data["lock_reason"] == "Second deactivation attempt"
 
     def test_deactivate_unknown_user_404(self, admin_client):
         resp = run(
-            admin_client.patch(f"{API_V1}/admin/users/{uuid.uuid4()}/deactivate")
+            admin_client.patch(
+                f"{API_V1}/admin/users/{uuid.uuid4()}/deactivate",
+                json={"reason": "Test reason"},
+            )
         )
         assert resp.status_code == 404
 
     def test_candidate_forbidden(self, candidate_client):
         resp = run(
             candidate_client.patch(
-                f"{API_V1}/admin/users/{uuid.uuid4()}/deactivate"
+                f"{API_V1}/admin/users/{uuid.uuid4()}/deactivate",
+                json={"reason": "Test reason"},
             )
         )
         assert resp.status_code == 403
@@ -273,13 +294,15 @@ class TestAdminUsersDeactivate:
         target = next(u for u in list_resp.json()["items"] if u["email"] == email)
         deact = run(
             admin_client.patch(
-                f"{API_V1}/admin/users/{target['id']}/deactivate"
+                f"{API_V1}/admin/users/{target['id']}/deactivate",
+                json={"reason": "Test deactivation reason"},
             )
         )
         assert deact.status_code == 200
 
         me = run(user_client.get(f"{API_V1}/auth/me"))
-        assert me.status_code == 401
+        # Deactivated user gets 403 (forbidden) when accessing protected endpoints
+        assert me.status_code == 403
         run(user_client.aclose())
 
 

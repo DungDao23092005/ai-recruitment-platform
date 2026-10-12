@@ -582,9 +582,11 @@ describe('AppRouter Navbar integration', () => {
 
     renderAt('/')
 
-    await screen.findByRole('link', { name: 'Tìm việc AI' })
     const publicNav = screen.getByRole('navigation', {
       name: 'Điều hướng chính',
+    })
+    await within(publicNav).findByRole('link', {
+      name: 'Tìm việc AI',
     })
     expect(within(publicNav).getByText('Trang chủ')).toBeInTheDocument()
     expect(within(publicNav).getByText('Việc làm')).toBeInTheDocument()
@@ -603,9 +605,11 @@ describe('AppRouter Navbar integration', () => {
 
     renderAt('/')
 
-    await screen.findByRole('link', { name: 'Quản lý tuyển dụng' })
     const publicNav = screen.getByRole('navigation', {
       name: 'Điều hướng chính',
+    })
+    await within(publicNav).findByRole('link', {
+      name: 'Quản lý tuyển dụng',
     })
     expect(within(publicNav).getByText('Trang chủ')).toBeInTheDocument()
     expect(within(publicNav).getByText('Việc làm')).toBeInTheDocument()
@@ -625,9 +629,11 @@ describe('AppRouter Navbar integration', () => {
 
     renderAt('/')
 
-    await screen.findByRole('link', { name: 'Bảng điều khiển' })
     const publicNav = screen.getByRole('navigation', {
       name: 'Điều hướng chính',
+    })
+    await within(publicNav).findByRole('link', {
+      name: 'Bảng điều khiển',
     })
     expect(within(publicNav).getByText('Trang chủ')).toBeInTheDocument()
     expect(within(publicNav).getByText('Việc làm')).toBeInTheDocument()
