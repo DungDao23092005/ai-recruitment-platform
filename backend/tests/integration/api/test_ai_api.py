@@ -4,7 +4,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.database.session import async_session_factory
+from app.models import Resume
 from tests.integration.api.conftest import API_V1
+from tests.integration.conftest import run
 
 _RESUME_BODY = {
     "full_name": "Jane Doe",
@@ -463,6 +466,38 @@ class TestRecommendationsCandidateName:
         )
         assert profile.status_code == 201, profile.text
         candidate_id = profile.json()["id"]
+
+        # Seed a primary SQL Resume record for the candidate so that
+        # ContextResolver.resolve_resumes() can hydrate the candidate from SQL.
+        async def _seed_resume():
+            async with async_session_factory() as session:
+                resume = Resume(
+                    candidate_id=candidate_id,
+                    title="Integration Jane - Backend Engineer",
+                    file_path="resume.pdf",
+                    is_primary=True,
+                    parsed_data={
+                        "full_name": "Integration Jane",
+                        "email": None,
+                        "phone": None,
+                        "title": "Backend Engineer",
+                        "summary": None,
+                        "total_years_experience": None,
+                        "skills": ["Python"],
+                        "technical_skills": ["Python"],
+                        "soft_skills": [],
+                        "job_titles": ["Backend Engineer"],
+                        "projects": [],
+                        "experiences": [],
+                        "education": [],
+                        "certifications": [],
+                        "languages": [],
+                    },
+                )
+                session.add(resume)
+                await session.commit()
+
+        run(_seed_resume())
 
         repo = QdrantVectorRepository()
         try:
