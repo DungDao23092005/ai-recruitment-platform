@@ -194,7 +194,11 @@ class TestAdminCompanyDelete:
         assert recruiter_job.status_code == 404
 
         listing = run_async(client.get(f"{API_V1}/jobs"))
-        assert all(item["id"] != job["id"] for item in listing.json())
+        assert listing.status_code == 200
+        assert all(
+            item["id"] != job["id"]
+            for item in listing.json()["items"]
+        )
 
         assert str(job["id"]) in vector_repository.deleted_point_ids
         assert str(job["id"]) not in vector_repository.job_vectors
