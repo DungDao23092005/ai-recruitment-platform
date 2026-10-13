@@ -49,6 +49,34 @@ class FakeRAGChatService:
 # Fixtures
 # ============================================================
 
+@pytest.fixture(scope="module", autouse=True)
+def configure_rate_limit_settings():
+    """Override rate limit settings for this test module with small, realistic thresholds.
+
+    This fixture runs at module scope and restores original settings after all tests
+    in this module complete. It ensures rate limit tests can exhaust limits within
+    the 60-second Redis TTL window.
+    """
+    from app.core.config import settings
+
+    # Save original values
+    original_ai_chat = settings.RATE_LIMIT_AI_CHAT_PER_MINUTE
+    original_login_email = settings.RATE_LIMIT_LOGIN_EMAIL_PER_MINUTE
+    original_login_ip = settings.RATE_LIMIT_LOGIN_IP_PER_MINUTE
+
+    # Set small, realistic limits for testing
+    settings.RATE_LIMIT_AI_CHAT_PER_MINUTE = 10
+    settings.RATE_LIMIT_LOGIN_EMAIL_PER_MINUTE = 5
+    settings.RATE_LIMIT_LOGIN_IP_PER_MINUTE = 20
+
+    yield
+
+    # Restore original values
+    settings.RATE_LIMIT_AI_CHAT_PER_MINUTE = original_ai_chat
+    settings.RATE_LIMIT_LOGIN_EMAIL_PER_MINUTE = original_login_email
+    settings.RATE_LIMIT_LOGIN_IP_PER_MINUTE = original_login_ip
+
+
 @pytest.fixture(scope="session", autouse=True)
 def initialize_rate_limiter():
     """Initialize rate limiter before tests on the shared event loop."""
@@ -488,7 +516,11 @@ class TestXForwardedForSpoofing:
     def test_untrusted_xff_ignored(self, client):
         """Untrusted X-Forwarded-For is ignored for rate limiting."""
         original_proxies = settings.TRUSTED_PROXIES
+        original_ip_limit = settings.RATE_LIMIT_LOGIN_IP_PER_MINUTE
         settings.TRUSTED_PROXIES = []
+        # Temporarily lower IP limit so this test can exhaust it within the
+        # module-scoped fixture's 60s Redis TTL window
+        settings.RATE_LIMIT_LOGIN_IP_PER_MINUTE = 5
 
         try:
             email = f"xffspoof-{uuid.uuid4()}@test.com"
@@ -524,6 +556,7 @@ class TestXForwardedForSpoofing:
             assert resp.status_code == 429, f"Expected 429 at attempt {limit+1}, got {resp.status_code}"
         finally:
             settings.TRUSTED_PROXIES = original_proxies
+            settings.RATE_LIMIT_LOGIN_IP_PER_MINUTE = original_ip_limit
 
     def test_trusted_proxy_xff_respected(self, client):
         """Trusted proxy X-Forwarded-For IS respected via real HTTP request.
