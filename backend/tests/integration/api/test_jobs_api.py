@@ -909,12 +909,13 @@ class FakeVectorRepository:
         self.deleted_point_ids: list[str] = []
 
     async def upsert_job_vector(
-        self, job_id, vector, skills=None, created_at=None
+        self, job_id, vector, skills=None, created_at=None, status=None
     ):
         self.job_vectors[str(job_id)] = {
             "vector": vector,
             "skills": skills or [],
             "created_at": created_at,
+            "status": status,
         }
 
     async def delete_vector(self, collection_name, point_id):
