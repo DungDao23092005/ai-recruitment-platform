@@ -12,14 +12,11 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta
 
-import httpx
-
 from sqlalchemy import select
 
 import pytest
 from fastapi import status
 
-from app.main import app
 from app.models.payment_order import PaymentOrder
 from app.schemas.payment import (
     VNPayCreatePaymentRequest,
@@ -28,73 +25,13 @@ from app.schemas.payment import (
     VNPayReturnParams,
     PaymentStatusResponse,
 )
+from tests.integration.api.conftest import API_V1
 from tests.integration.conftest import run
 
 
-@pytest.fixture(scope="session", autouse=True)
-def configure_test_settings():
-    """Configure test settings to avoid rate limit interference."""
-    from app.core.config import settings
-    settings.RATE_LIMIT_ENABLED = False
-
-
-@pytest.fixture(scope="session")
-async def lifespan_manager():
-    """Manage the FastAPI lifespan for integration tests."""
-    from asgi_lifespan import LifespanManager
-    from app.main import app
-    async with LifespanManager(app) as manager:
-        yield manager
-
-
-@pytest.fixture(scope="session")
-def client(lifespan_manager):
-    """Create async HTTP client for integration tests."""
-    import httpx
-    async_client = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://testserver",
-    )
-    yield async_client
-    run(async_client.aclose())
-
-
-def _make_auth_client(client):
-    """Create an authenticated candidate HTTP client."""
-    email = f"test-candidate-{uuid.uuid4()}@example.com"
-    register = run(
-        client.post(
-            "/api/v1/auth/register",
-            json={"email": email, "password": "password123", "role": "candidate"},
-        )
-    )
-    assert register.status_code == 201, register.text
-    login = run(
-        client.post(
-            "/api/v1/auth/login",
-            data={"username": email, "password": "password123"},
-        )
-    )
-    assert login.status_code == 200, login.text
-    token = login.json()["access_token"]
-    from httpx import AsyncClient as HC
-    auth_client = HC(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://testserver",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    return auth_client
-
-
-@pytest.fixture
-def candidate_client(client):
-    """Create authenticated candidate client."""
-    auth_client = _make_auth_client(client)
-    yield auth_client
-    run(auth_client.aclose())
-
-
 # Fixtures that create database objects using run() helper
+# - flush() + commit() so data is visible across sessions
+# - genuine User records (NO fake UUIDs)
 # - flush() + commit() so data is visible across sessions
 # - genuine User records (NO fake UUIDs)
 @pytest.fixture
