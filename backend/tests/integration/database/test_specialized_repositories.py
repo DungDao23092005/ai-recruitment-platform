@@ -9,7 +9,7 @@ from app.domain.enums import (
     UserRole,
     WorkplaceType,
 )
-from app.models import Application, CandidateProfile, Company, Job, Skill, User
+from app.models import Application, CandidateProfile, Company, Job, JobSkill, Skill, User
 from app.repositories.application_repository import ApplicationRepository
 from app.repositories.company_repository import CompanyRepository
 from app.repositories.job_repository import JobRepository
@@ -140,7 +140,8 @@ def test_job_repository_get_job_with_skills(session, run_async):
         job = make_job(created_company.id, title="Python Job")
         # Create a unique skill name to avoid PK conflicts with other tests
         unique_skill_name = f"Python-{uuid.uuid4().hex[:8]}"
-        job.skills.append(Skill(name=unique_skill_name))
+        skill = Skill(name=unique_skill_name)
+        job.job_skills.append(JobSkill(skill=skill, is_mandatory=True))
         await repo.create(job)
         await session.commit()
         return await repo.get_job_with_skills(job.id)
