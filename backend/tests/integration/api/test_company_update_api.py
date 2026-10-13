@@ -157,14 +157,14 @@ class TestRecruiterCompanyUpdate:
         assert data["size"] == company["size"]
 
     def test_duplicate_slug_returns_400(
-        self, recruiter_a_client, run_async
+        self, recruiter_a_client, recruiter_b_client, run_async
     ):
         first = _create_company(recruiter_a_client, run_async, slug="edit-corp")
         second = _create_company(
-            recruiter_a_client, run_async, slug="edit-corp-2", tax_code="555555555"
+            recruiter_b_client, run_async, slug="edit-corp-2", tax_code="555555555"
         )
         resp = run_async(
-            recruiter_a_client.patch(
+            recruiter_b_client.patch(
                 f"{API_V1}/companies/{second['id']}",
                 json={"slug": first["slug"]},
             )
@@ -172,14 +172,14 @@ class TestRecruiterCompanyUpdate:
         assert resp.status_code == 400
 
     def test_duplicate_tax_code_returns_400(
-        self, recruiter_a_client, run_async
+        self, recruiter_a_client, recruiter_b_client, run_async
     ):
         first = _create_company(recruiter_a_client, run_async)
         second = _create_company(
-            recruiter_a_client, run_async, slug="edit-corp-2", tax_code="666666666"
+            recruiter_b_client, run_async, slug="edit-corp-2", tax_code="666666666"
         )
         resp = run_async(
-            recruiter_a_client.patch(
+            recruiter_b_client.patch(
                 f"{API_V1}/companies/{second['id']}",
                 json={"tax_code": first["tax_code"]},
             )
