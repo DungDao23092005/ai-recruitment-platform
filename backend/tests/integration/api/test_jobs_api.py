@@ -145,7 +145,10 @@ class TestJobs:
         resp = run_async(client.get(f"{API_V1}/jobs"))
 
         assert resp.status_code == 200
-        assert isinstance(resp.json(), list)
+        data = resp.json()
+        assert isinstance(data, dict)
+        assert isinstance(data["items"], list)
+        assert isinstance(data["total"], int)
 
     def test_published_job_visible(
         self, client, run_async, recruiter_client, created_company
@@ -171,7 +174,7 @@ class TestJobs:
         resp = run_async(client.get(f"{API_V1}/jobs"))
 
         assert resp.status_code == 200
-        ids = [item["id"] for item in resp.json()]
+        ids = [item["id"] for item in resp.json()["items"]]
         assert job["id"] in ids
 
     def test_draft_job_not_visible_by_id(
@@ -212,7 +215,7 @@ class TestJobs:
         resp = run_async(client.get(f"{API_V1}/jobs"))
 
         assert resp.status_code == 200
-        ids = [item["id"] for item in resp.json()]
+        ids = [item["id"] for item in resp.json()["items"]]
         assert job["id"] not in ids
 
 
@@ -476,7 +479,7 @@ class TestMyJobs:
         resp = run_async(client.get(f"{API_V1}/jobs"))
 
         assert resp.status_code == 200
-        ids = [job["id"] for job in resp.json()]
+        ids = [job["id"] for job in resp.json()["items"]]
         assert published["id"] in ids
         assert draft["id"] not in ids
 
@@ -510,7 +513,7 @@ class TestJobCompanyName:
 
         assert resp.status_code == 200
         match = next(
-            item for item in resp.json() if item["id"] == job["id"]
+            item for item in resp.json()["items"] if item["id"] == job["id"]
         )
         assert match["company_name"] == company["name"]
         assert match["company_id"] == company["id"]
@@ -647,7 +650,7 @@ class TestJobListSkillsRegression:
         assert resp.status_code == 200
         
         # Find our job in the list
-        items = resp.json()
+        items = resp.json()["items"]
         match = next(item for item in items if item["id"] == job["id"])
         
         # Assert skills are correctly serialized
@@ -679,7 +682,7 @@ class TestJobListSkillsRegression:
         assert resp.status_code == 200
         
         # Find our job in the list
-        items = resp.json()
+        items = resp.json()["items"]
         match = next(item for item in items if item["id"] == job["id"])
         
         # Assert skills is an empty list
@@ -1181,7 +1184,7 @@ class TestJobStatusApi:
             client.get(f"{API_V1}/jobs/{job['id']}")
         ).status_code == 404
         listing = run_async(client.get(f"{API_V1}/jobs")).json()
-        assert job["id"] not in [item["id"] for item in listing]
+        assert job["id"] not in [item["id"] for item in listing["items"]]
 
     def test_reopen_closed_returns_to_public(
         self, client, recruiter_a_client, run_async
@@ -1363,7 +1366,7 @@ class TestDeleteJobApi:
         ).status_code == 404
         assert run_async(client.get(f"{API_V1}/jobs/{job['id']}")).status_code == 404
         listing = run_async(client.get(f"{API_V1}/jobs")).json()
-        assert job["id"] not in [item["id"] for item in listing]
+        assert job["id"] not in [item["id"] for item in listing["items"]]
         assert run_async(count_jobs_for_company(company_a["id"])) == 1
 
     def test_anonymous_gets_401(self, client, run_async):
