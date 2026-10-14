@@ -221,3 +221,221 @@ class TestAdminPlans:
     def test_unknown_plan_returns_404(self, admin_plan_client, run_async, plan_service_override):
         resp = run_async(admin_plan_client.get(f"{API_V1}/admin/plans/{uuid.uuid4()}"))
         assert resp.status_code == 404
+
+
+class TestAdminPlanDeletion:
+    """Tests for DELETE /api/v1/admin/plans/{plan_id}."""
+
+    def test_delete_unused_plan_succeeds(self, admin_plan_client, run_async, plan_service_override):
+        """Admin can delete a plan with no subscriptions or payment orders."""
+        plan = _create_plan(admin_plan_client, run_async)
+
+        resp = run_async(admin_plan_client.delete(f"{API_V1}/admin/plans/{plan['id']}"))
+        assert resp.status_code == 204, resp.text
+
+        # Verify plan is actually deleted (hard delete)
+        get_resp = run_async(admin_plan_client.get(f"{API_V1}/admin/plans/{plan['id']}"))
+        assert get_resp.status_code == 404
+
+    def test_delete_plan_referenced_by_active_subscription_rejected(
+        self, admin_plan_client, candidate_client, run_async, plan_service_override
+    ):
+        """Cannot delete a plan that has an active subscription."""
+        # Create plan and candidate
+        plan = _create_plan(admin_plan_client, run_async)
+        profile = run_async(candidate_client.post(
+            f"{API_V1}/users/me/candidate-profile",
+            json={"full_name": "Test User", "title": "Engineer"},
+        ))
+        assert profile.status_code == 201, profile.text
+        candidate_user_id = profile.json()["user_id"]
+
+        # Create subscription (mock the subscription creation since we need it in DB)
+        from app.models import Subscription
+        from app.domain.enums import SubscriptionStatus
+        import uuid
+
+        async def _create_subscription():
+            from app.database.session import async_session_factory
+            from app.models import Subscription
+            async with async_session_factory() as session:
+                subscription = Subscription(
+                    id=uuid.uuid4(),
+                    user_id=candidate_user_id,
+                    plan_id=plan['id'],
+                    status=SubscriptionStatus.ACTIVE,
+                )
+                session.add(subscription)
+                await session.commit()
+                await session.refresh(subscription)
+                return subscription
+
+        run(_create_subscription())
+
+        # Try to delete - should fail with 409
+        resp = run_async(admin_plan_client.delete(f"{API_V1}/admin/plans/{plan['id']}"))
+        assert resp.status_code == 409, resp.text
+        assert "đã có người đăng ký" in resp.json()["detail"]
+
+        # Verify plan and subscription still exist
+        get_resp = run_async(admin_plan_client.get(f"{API_V1}/admin/plans/{plan['id']}"))
+        assert get_resp.status_code == 200
+
+    def test_delete_plan_referenced_by_soft_deleted_subscription_rejected(
+        self, admin_plan_client, candidate_client, run_async, plan_service_override
+    ):
+        """Cannot delete a plan referenced by a soft-deleted subscription."""
+        plan = _create_plan(admin_plan_client, run_async)
+        profile = run_async(candidate_client.post(
+            f"{API_V1}/users/me/candidate-profile",
+            json={"full_name": "Test User", "title": "Engineer"},
+        ))
+        assert profile.status_code == 201, profile.text
+        candidate_user_id = profile.json()["user_id"]
+
+        # Create and soft-delete a subscription
+        from app.models import Subscription
+        from app.domain.enums import SubscriptionStatus
+        import uuid
+
+        async def _create_and_soft_delete_subscription():
+            from app.database.session import async_session_factory
+            from app.models import Subscription
+            async with async_session_factory() as session:
+                subscription = Subscription(
+                    id=uuid.uuid4(),
+                    user_id=candidate_user_id,
+                    plan_id=plan['id'],
+                    status=SubscriptionStatus.CANCELLED,  # or soft-deleted
+                )
+                session.add(subscription)
+                await session.commit()
+                await session.refresh(subscription)
+                # Soft delete it
+                subscription.is_deleted = True
+                await session.commit()
+                return subscription
+
+        run(_create_and_soft_delete_subscription())
+
+        # Try to delete - should fail with 409
+        resp = run_async(admin_plan_client.delete(f"{API_V1}/admin/plans/{plan['id']}"))
+        assert resp.status_code == 409, resp.text
+        assert "đã có người đăng ký" in resp.json()["detail"]
+
+        # Verify plan and subscription still exist
+        get_resp = run_async(admin_plan_client.get(f"{API_V1}/admin/plans/{plan['id']}"))
+        assert get_resp.status_code == 200
+
+    def test_delete_plan_referenced_by_payment_order_rejected(
+        self, admin_plan_client, candidate_client, run_async, plan_service_override
+    ):
+        """Cannot delete a plan that has a payment order."""
+        plan = _create_plan(admin_plan_client, run_async)
+        profile = run_async(candidate_client.post(
+            f"{API_V1}/users/me/candidate-profile",
+            json={"full_name": "Test User", "title": "Engineer"},
+        ))
+        assert profile.status_code == 201, profile.text
+        candidate_user_id = profile.json()["user_id"]
+
+        # Create a payment order
+        from app.models import PaymentOrder
+        from app.domain.enums import PaymentOrderStatus, PaymentProvider
+        import uuid
+
+        async def _create_payment_order():
+            from app.database.session import async_session_factory
+            from app.models import PaymentOrder
+            async with async_session_factory() as session:
+                order = PaymentOrder(
+                    id=uuid.uuid4(),
+                    user_id=candidate_user_id,
+                    plan_id=plan['id'],
+                    amount=100000,
+                    currency="VND",
+                    provider="momo",
+                    internal_order_id=f"TEST_{uuid.uuid4().hex[:8]}",
+                    status=PaymentOrderStatus.PENDING,
+                )
+                session.add(order)
+                await session.commit()
+                await session.refresh(order)
+                return order
+
+        run(_create_payment_order())
+
+        # Try to delete - should fail with 409
+        resp = run_async(admin_plan_client.delete(f"{API_V1}/admin/plans/{plan['id']}"))
+        assert resp.status_code == 409, resp.text
+        assert "lịch sử thanh toán" in resp.json()["detail"]
+
+        # Verify plan and payment order still exist
+        get_resp = run_async(admin_plan_client.get(f"{API_V1}/admin/plans/{plan['id']}"))
+        assert get_resp.status_code == 200
+
+    def test_delete_plan_referenced_by_soft_deleted_payment_order_rejected(
+        self, admin_plan_client, candidate_client, run_async, plan_service_override
+    ):
+        """Cannot delete a plan referenced by a soft-deleted payment order."""
+        plan = _create_plan(admin_plan_client, run_async)
+        profile = run_async(candidate_client.post(
+            f"{API_V1}/users/me/candidate-profile",
+            json={"full_name": "Test User", "title": "Engineer"},
+        ))
+        assert profile.status_code == 201, profile.text
+        candidate_user_id = profile.json()["user_id"]
+
+        # Create and soft-delete a payment order
+        from app.models import PaymentOrder
+        from app.domain.enums import PaymentOrderStatus, PaymentProvider
+        import uuid
+
+        async def _create_and_soft_delete_payment_order():
+            from app.database.session import async_session_factory
+            from app.models import PaymentOrder
+            async with async_session_factory() as session:
+                order = PaymentOrder(
+                    id=uuid.uuid4(),
+                    user_id=candidate_user_id,
+                    plan_id=plan['id'],
+                    amount=100000,
+                    currency="VND",
+                    provider="momo",
+                    internal_order_id=f"TEST_{uuid.uuid4().hex[:8]}",
+                    status=PaymentOrderStatus.CANCELLED,
+                )
+                session.add(order)
+                await session.commit()
+                await session.refresh(order)
+                # Soft delete
+                order.is_deleted = True
+                await session.commit()
+                return order
+
+        run(_create_and_soft_delete_payment_order())
+
+        # Try to delete - should fail with 409
+        resp = run_async(admin_plan_client.delete(f"{API_V1}/admin/plans/{plan['id']}"))
+        assert resp.status_code == 409, resp.text
+        assert "lịch sử thanh toán" in resp.json()["detail"]
+
+    def test_unknown_plan_returns_404(self, admin_plan_client, run_async):
+        """Deleting unknown plan returns 404."""
+        resp = run_async(admin_plan_client.delete(f"{API_V1}/admin/plans/{uuid.uuid4()}"))
+        assert resp.status_code == 404
+
+    def test_anonymous_delete_returns_401(self, client, run_async):
+        """Anonymous users cannot delete plans."""
+        resp = run_async(client.delete(f"{API_V1}/admin/plans/{uuid.uuid4()}"))
+        assert resp.status_code == 401
+
+    def test_candidate_cannot_delete(self, candidate_client, run_async):
+        """Candidates cannot delete plans."""
+        resp = run_async(candidate_client.delete(f"{API_V1}/admin/plans/{uuid.uuid4()}"))
+        assert resp.status_code == 403
+
+    def test_recruiter_cannot_delete(self, recruiter_client, run_async):
+        """Recruiters cannot delete plans."""
+        resp = run_async(recruiter_client.delete(f"{API_V1}/admin/plans/{uuid.uuid4()}"))
+        assert resp.status_code == 403

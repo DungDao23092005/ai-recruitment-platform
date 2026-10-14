@@ -237,3 +237,90 @@ class TestSetPlanStatus:
 
         assert result is plan
         assert plan.is_active is False
+
+
+class TestDeletePlan:
+    def test_deletes_unreferenced_plan(self):
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        service.plans.get_by_id.return_value = plan
+        service.plans.count_subscriptions.return_value = 0
+        service.plans.count_payment_orders.return_value = 0
+        service.plans.delete.return_value = True
+
+        asyncio.run(service.delete_plan(plan.id))
+
+        service.plans.get_by_id.assert_awaited_once_with(plan.id)
+        service.plans.count_subscriptions.assert_awaited_once_with(plan.id)
+        service.plans.count_payment_orders.assert_awaited_once_with(plan.id)
+        service.plans.delete.assert_awaited_once_with(plan.id)
+
+    def test_raises_not_found_when_plan_missing(self):
+        session = make_session()
+        service = make_service(session)
+        service.plans.get_by_id.return_value = None
+
+        with pytest.raises(EntityNotFoundException):
+            asyncio.run(service.delete_plan(uuid.uuid4()))
+
+    def test_raises_conflict_when_subscriptions_exist(self):
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        service.plans.get_by_id.return_value = plan
+        service.plans.count_subscriptions.return_value = 5
+
+        with pytest.raises(ConflictException) as exc_info:
+            asyncio.run(service.delete_plan(plan.id))
+
+        assert "đã có người đăng ký" in str(exc_info.value)
+        service.plans.delete.assert_not_awaited()
+
+    def test_raises_conflict_when_payment_orders_exist(self):
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        service.plans.get_by_id.return_value = plan
+        service.plans.count_subscriptions.return_value = 0
+        service.plans.count_payment_orders.return_value = 3
+
+        with pytest.raises(ConflictException) as exc_info:
+            asyncio.run(service.delete_plan(plan.id))
+
+        assert "lịch sử thanh toán" in str(exc_info.value)
+        service.plans.delete.assert_not_awaited()
+
+    def test_raises_conflict_on_integrity_error_from_repository(self):
+        """IntegrityError from repository.delete() is caught and mapped to ConflictException."""
+        import sqlalchemy.exc
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        service.plans.get_by_id.return_value = plan
+        service.plans.count_subscriptions.return_value = 0
+        service.plans.count_payment_orders.return_value = 0
+        # Repository delete raises IntegrityError (simulating concurrent FK violation)
+        service.plans.delete.side_effect = sqlalchemy.exc.IntegrityError("FK violation", "", None)
+
+        with pytest.raises(ConflictException) as exc_info:
+            asyncio.run(service.delete_plan(plan.id))
+
+        assert "dữ liệu liên quan vừa phát sinh" in str(exc_info.value)
+        session.rollback.assert_awaited_once()
+
+    def test_other_exceptions_not_caught_as_conflict(self):
+        """Unrelated exceptions from repository.delete() propagate as-is."""
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        service.plans.get_by_id.return_value = plan
+        service.plans.count_subscriptions.return_value = 0
+        service.plans.count_payment_orders.return_value = 0
+        service.plans.delete.side_effect = RuntimeError("unexpected db error")
+
+        with pytest.raises(RuntimeError, match="unexpected db error"):
+            asyncio.run(service.delete_plan(plan.id))
+
+        # rollback is still called by repository, but service doesn't catch it
+        # (repository already rolled back internally)

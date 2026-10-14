@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Building, ChevronLeft, ChevronRight, Search, Edit, Lock, Unlock } from 'lucide-react'
+import { Building, ChevronLeft, ChevronRight, Search, Edit, Lock, Unlock, Trash2 } from 'lucide-react'
 import { getAdminPlans } from '@/api/admin'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
@@ -34,9 +34,10 @@ function formatDuration(days: number): string {
 interface AdminPlanListProps {
   onEdit: (plan: AdminPlanRead) => void
   onStatus: (plan: AdminPlanRead) => void
+  onDelete: (plan: AdminPlanRead) => void
 }
 
-export function AdminPlanList({ onEdit, onStatus }: AdminPlanListProps) {
+export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps) {
   const [listState, setListState] = useState<ListState>({ kind: 'loading' })
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
@@ -197,6 +198,16 @@ export function AdminPlanList({ onEdit, onStatus }: AdminPlanListProps) {
                                 Mở khóa
                               </>
                             )}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            aria-label={`Xóa gói ${plan.name}`}
+                            onClick={() => onDelete(plan)}
+                          >
+                            <Trash2 className="h-4 w-4 mr-1" aria-hidden="true" />
+                            Xóa
                           </Button>
                         </td>
                       </tr>

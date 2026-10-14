@@ -135,3 +135,30 @@ async def update_plan_status(
             detail=str(exc),
         ) from exc
     return RecruitmentPlanAdminRead.model_validate(plan)
+
+
+@router.delete(
+    "/{plan_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_plan(
+    plan_id: uuid.UUID,
+    current_user: User = Depends(require_admin),
+    service: RecruitmentPlanService = Depends(_get_plan_service),
+) -> None:
+    """Delete a recruitment plan (admin only).
+
+    Only plans with zero subscriptions and zero payment orders can be deleted.
+    """
+    try:
+        await service.delete_plan(plan_id)
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ConflictException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc

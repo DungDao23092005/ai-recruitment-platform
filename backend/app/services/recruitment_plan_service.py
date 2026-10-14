@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
@@ -114,3 +115,39 @@ class RecruitmentPlanService:
             await self.session.rollback()
             raise
         return plan
+
+    async def delete_plan(self, plan_id: uuid.UUID) -> None:
+        """Delete a plan if it has no subscriptions or payment orders.
+
+        Raises:
+            EntityNotFoundException: If the plan does not exist.
+            ConflictException: If the plan has subscriptions or payment orders,
+                or if a concurrent reference was created.
+        """
+        plan = await self.plans.get_by_id(plan_id)
+        if plan is None:
+            raise EntityNotFoundException(f"Recruitment plan {plan_id} not found")
+
+        # Check for subscriptions
+        subscription_count = await self.plans.count_subscriptions(plan.id)
+        if subscription_count > 0:
+            raise ConflictException(
+                "Không thể xóa gói này vì đã có người đăng ký. Hãy khóa gói thay vì xóa."
+            )
+
+        # Check for payment orders
+        payment_order_count = await self.plans.count_payment_orders(plan.id)
+        if payment_order_count > 0:
+            raise ConflictException(
+                "Không thể xóa gói này vì đã có lịch sử thanh toán. Hãy khóa gói thay vì xóa."
+            )
+
+        # Hard delete the plan - repository commits internally,
+        # so wrap the call to catch potential IntegrityError from FK constraints.
+        try:
+            await self.plans.delete(plan.id)
+        except IntegrityError:
+            await self.session.rollback()
+            raise ConflictException(
+                "Không thể xóa gói tuyển dụng do có dữ liệu liên quan vừa phát sinh."
+            )

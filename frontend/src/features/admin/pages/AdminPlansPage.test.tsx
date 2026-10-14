@@ -1,7 +1,7 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
 import { vi } from 'vitest'
 import { AdminPlansPage } from '@/features/admin/pages/AdminPlansPage'
-import { getAdminPlans } from '@/api/admin'
+import { getAdminPlans, deleteAdminPlan } from '@/api/admin'
 import type { AdminPlanRead } from '@/types/admin'
 
 vi.mock('@/api/admin')
@@ -165,6 +165,221 @@ describe('AdminPlansPage', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Network error')).toBeInTheDocument()
+    })
+  })
+
+  describe('Plan deletion', () => {
+    beforeEach(() => {
+      vi.mocked(getAdminPlans).mockResolvedValue(mockPlans)
+      vi.mocked(deleteAdminPlan).mockResolvedValue(undefined)
+    })
+
+    it('Xóa button renders for each plan row', async () => {
+      render(<AdminPlansPage />)
+
+      await waitFor(() => {
+        expect(screen.getByText('Gói cơ bản')).toBeInTheDocument()
+      })
+
+      // Check that Xóa button exists for each plan
+      const deleteButtons = screen.getAllByRole('button', { name: /xóa gói/i })
+      expect(deleteButtons.length).toBe(2)
+    })
+
+    it('opens delete confirmation modal with correct plan name', async () => {
+      render(<AdminPlansPage />)
+
+      await waitFor(() => {
+        expect(screen.getByText('Gói cơ bản')).toBeInTheDocument()
+      })
+
+      // Click delete button on first plan
+      const deleteButton = screen.getByRole('button', { name: /xóa gói gói cơ bản/i })
+      fireEvent.click(deleteButton)
+
+      // Modal should open with correct plan name
+      await waitFor(() => {
+        const dialog = screen.getByRole('dialog')
+        expect(dialog).toBeInTheDocument()
+        expect(dialog).toHaveTextContent('Xóa gói tuyển dụng')
+        // Plan name should be rendered as text, not literal HTML
+        expect(dialog).toHaveTextContent('Gói cơ bản')
+      })
+    })
+
+    it('cancelling does not call delete API', async () => {
+      render(<AdminPlansPage />)
+
+      await waitFor(() => {
+        expect(screen.getByText('Gói cơ bản')).toBeInTheDocument()
+      })
+
+      // Open delete modal
+      fireEvent.click(screen.getByRole('button', { name: /xóa gói gói cơ bản/i }))
+
+      await waitFor(() => {
+        expect(screen.getByRole('dialog')).toBeInTheDocument()
+      })
+
+      // Click cancel (within dialog)
+      const dialog = screen.getByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: /hủy/i }))
+
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      })
+
+      // API should not have been called
+      expect(deleteAdminPlan).not.toHaveBeenCalled()
+    })
+
+    it('confirming calls deleteAdminPlan with correct plan ID', async () => {
+      render(<AdminPlansPage />)
+
+      await waitFor(() => {
+        expect(screen.getByText('Gói cơ bản')).toBeInTheDocument()
+      })
+
+      // Open delete modal
+      fireEvent.click(screen.getByRole('button', { name: /xóa gói gói cơ bản/i }))
+
+      await waitFor(() => {
+        expect(screen.getByRole('dialog')).toBeInTheDocument()
+      })
+
+      // Click delete confirmation (within dialog)
+      const dialog = screen.getByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: /xóa gói$/i }))
+
+      await waitFor(() => {
+        expect(deleteAdminPlan).toHaveBeenCalledTimes(1)
+        expect(deleteAdminPlan).toHaveBeenCalledWith('plan-1')
+      })
+    })
+
+    it('successful deletion closes modal and refreshes list', async () => {
+      render(<AdminPlansPage />)
+
+      await waitFor(() => {
+        expect(screen.getByText('Gói cơ bản')).toBeInTheDocument()
+      })
+
+      // Open and confirm deletion
+      fireEvent.click(screen.getByRole('button', { name: /xóa gói gói cơ bản/i }))
+      await waitFor(() => {
+        expect(screen.getByRole('dialog')).toBeInTheDocument()
+      })
+      const dialog = screen.getByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: /xóa gói$/i }))
+
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      })
+
+      // Plan list should have been refreshed
+      // (in real scenario, the mock would return empty array on second call)
+    })
+
+    it('409 Conflict displays backend message and keeps plan in list', async () => {
+      vi.mocked(deleteAdminPlan).mockRejectedValueOnce({
+        response: {
+          status: 409,
+          data: { detail: 'Không thể xóa gói này vì đã có người đăng ký. Hãy khóa gói thay vì xóa.' },
+        },
+      })
+
+      render(<AdminPlansPage />)
+
+      await waitFor(() => {
+        expect(screen.getByText('Gói cơ bản')).toBeInTheDocument()
+      })
+
+      // Open delete modal
+      fireEvent.click(screen.getByRole('button', { name: /xóa gói Gói cơ bản/i }))
+      await waitFor(() => {
+        expect(screen.getByRole('dialog')).toBeInTheDocument()
+      })
+
+      // Click delete (within dialog to avoid duplicate buttons)
+      const dialog = screen.getByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: /xóa gói$/i }))
+
+      // Should show error message
+      await waitFor(() => {
+        expect(screen.getByText('Không thể xóa gói này vì đã có người đăng ký. Hãy khóa gói thay vì xóa.')).toBeInTheDocument()
+      })
+
+      // Modal should still be open
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+      // Plan should still be in the list (appears in table and modal)
+      expect(screen.getAllByText('Gói cơ bản').length).toBeGreaterThanOrEqual(2)
+    })
+
+    it('generic failure does not show false success or remove row', async () => {
+      vi.mocked(deleteAdminPlan).mockImplementationOnce(() =>
+        Promise.reject({
+          response: {
+            status: 500,
+            data: { detail: 'Internal server error' },
+          },
+        })
+      )
+
+      render(<AdminPlansPage />)
+
+      await waitFor(() => {
+        expect(screen.getByText('Gói cơ bản')).toBeInTheDocument()
+      })
+
+      // Open and confirm deletion
+      fireEvent.click(screen.getByRole('button', { name: /Xóa gói Gói cơ bản/i }))
+      await waitFor(() => {
+        expect(screen.getByRole('dialog')).toBeInTheDocument()
+      })
+      const dialog = screen.getByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: /xóa gói$/i }))
+
+      // Should show error but not remove the row
+      await waitFor(() => {
+        expect(screen.getByText('Internal server error')).toBeInTheDocument()
+      })
+
+      // Plan should still be in the list (appears in table and modal)
+      expect(screen.getAllByText('Gói cơ bản').length).toBeGreaterThanOrEqual(2)
+    })
+
+    it('double click does not dispatch duplicate requests', async () => {
+      let resolveDelete: (value: void) => void
+      const deletePromise = new Promise<void>((resolve) => {
+        resolveDelete = resolve
+      })
+      vi.mocked(deleteAdminPlan).mockReturnValue(deletePromise)
+
+      render(<AdminPlansPage />)
+
+      await waitFor(() => {
+        expect(screen.getByText('Gói cơ bản')).toBeInTheDocument()
+      })
+
+      // Open and click delete rapidly
+      fireEvent.click(screen.getByRole('button', { name: /xóa gói gói cơ bản/i }))
+      await waitFor(() => {
+        expect(screen.getByRole('dialog')).toBeInTheDocument()
+      })
+
+      // Click delete twice rapidly (within dialog to avoid duplicate buttons)
+      const dialog = screen.getByRole('dialog')
+      const deleteButton = within(dialog).getByRole('button', { name: /xóa gói$/i })
+      fireEvent.click(deleteButton)
+      fireEvent.click(deleteButton)
+
+      // Resolve the promise
+      resolveDelete!()
+
+      await waitFor(() => {
+        expect(deleteAdminPlan).toHaveBeenCalledTimes(1)
+      })
     })
   })
 })

@@ -3,6 +3,7 @@ import { Plus, RefreshCw } from 'lucide-react'
 import { getAdminPlans } from '@/api/admin'
 import { AdminPlanForm } from '@/features/admin/components/AdminPlanForm'
 import { AdminPlanList } from '@/features/admin/components/AdminPlanList'
+import { AdminPlanDeleteModal } from '@/features/admin/components/AdminPlanDeleteModal'
 import { Button } from '@/components/ui/button'
 import type { AdminPlanRead } from '@/types/admin'
 
@@ -11,6 +12,7 @@ export function AdminPlansPage() {
   const [error, setError] = useState<string | null>(null)
   const [editingPlan, setEditingPlan] = useState<AdminPlanRead | null>(null)
   const [statusPlan, setStatusPlan] = useState<AdminPlanRead | null>(null)
+  const [deletingPlan, setDeletingPlan] = useState<AdminPlanRead | null>(null)
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false)
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
 
@@ -48,6 +50,10 @@ export function AdminPlansPage() {
     setIsStatusModalOpen(true)
   }
 
+  const handleDelete = (plan: AdminPlanRead) => {
+    setDeletingPlan(plan)
+  }
+
   const handlePlanCreated = () => {
     setIsCreateModalOpen(false)
     loadPlans()
@@ -60,6 +66,11 @@ export function AdminPlansPage() {
 
   const handlePlanStatusToggled = () => {
     setIsStatusModalOpen(false)
+    loadPlans()
+  }
+
+  const handlePlanDeleted = () => {
+    setDeletingPlan(null)
     loadPlans()
   }
 
@@ -127,9 +138,19 @@ export function AdminPlansPage() {
         />
       )}
 
+      {deletingPlan && (
+        <AdminPlanDeleteModal
+          planId={deletingPlan.id}
+          planName={deletingPlan.name}
+          onClose={() => setDeletingPlan(null)}
+          onSuccess={handlePlanDeleted}
+        />
+      )}
+
       <AdminPlanList
         onEdit={handleEdit}
         onStatus={handleStatus}
+        onDelete={handleDelete}
       />
     </div>
   )

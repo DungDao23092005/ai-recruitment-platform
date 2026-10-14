@@ -97,3 +97,7 @@ export async function updateAdminPlanStatus(
     data,
   )
 }
+
+export async function deleteAdminPlan(id: string): Promise<void> {
+  await apiClient.delete(`/admin/plans/${id}`)
+}
