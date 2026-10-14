@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 import { PlansPage } from '@/pages/plans/PlansPage'
@@ -12,6 +12,7 @@ vi.mock('@/api/plans', async () => {
   return {
     ...actual,
     getPlans: vi.fn(),
+    getPlan: vi.fn(),
   }
 })
 
@@ -35,6 +36,8 @@ const plans = [
     currency: 'VND',
     duration_days: 30,
     max_job_posts: 5,
+    max_candidate_searches: 10,
+    max_ai_features: 3,
     is_active: true,
     features: ['1 công việc đăng'],
   },
@@ -46,6 +49,8 @@ const plans = [
     currency: 'VND',
     duration_days: 30,
     max_job_posts: 20,
+    max_candidate_searches: 50,
+    max_ai_features: 10,
     is_active: true,
     features: ['5 công việc đăng', 'Tiếp cận người dùng kích cỡ'],
   },
@@ -56,8 +61,8 @@ const subscription = {
   user_id: 'user-1',
   plan_id: 'plan-1',
   status: 'active' as const,
-  start_date: '2024-01-01',
-  end_date: '2025-01-01',
+  started_at: '2024-01-01',
+  expires_at: '2025-01-01',
   plan: {
     id: 'plan-1',
     name: 'Gói Standard',
@@ -66,6 +71,8 @@ const subscription = {
     currency: 'VND',
     duration_days: 30,
     max_job_posts: 5,
+    max_candidate_searches: 10,
+    max_ai_features: 3,
     features: ['1 công việc đăng'],
   },
 }
@@ -85,8 +92,23 @@ describe('PlansPage', () => {
       </MemoryRouter>
     )
 
-    const loadingDiv = screen.getByText('Đang tải gói...')
-    expect(loadingDiv).toBeInTheDocument()
+    // Check for skeleton loading - the page renders 3 skeleton cards
+    const skeletons = screen.getAllByTestId('skeleton')
+    expect(skeletons.length).toBeGreaterThan(0)
+  })
+
+  it('shows page header with title and description', async () => {
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(subscription as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => expect(screen.getByText('Các gói tuyển dụng')).toBeInTheDocument())
+    expect(screen.getByText(/Chọn gói phù hợp để đăng tin tuyển dụng/)).toBeInTheDocument()
   })
 
   it('shows current subscription when present', async () => {
@@ -99,10 +121,13 @@ describe('PlansPage', () => {
       </MemoryRouter>
     )
 
-    await waitFor(() => expect(screen.getByText('Tạo lại')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Đang hoạt động')).toBeInTheDocument())
+    // Check subscription card specifically
+    const subscriptionCard = screen.getByText('Đang hoạt động').closest('div')
+    expect(subscriptionCard).toBeInTheDocument()
   })
 
-  it('renders multiple plan cards', async () => {
+it('renders multiple plan cards with correct data', async () => {
     mockedGetPlans.mockResolvedValueOnce(plans as any)
     mockedGetMySubscription.mockResolvedValueOnce(subscription as any)
 
@@ -113,6 +138,40 @@ describe('PlansPage', () => {
     )
 
     await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(2))
+    // Check plan cards - use getAllByRole for plan cards
+    const planCards = screen.getAllByRole('article')
+    // First article is subscription card, next two are plan cards
+    expect(planCards.length).toBeGreaterThanOrEqual(2)
+
+    // Check plan names appear in plan cards - verify both plan names exist in the document
+    const standardElements = screen.getAllByText('Gói Standard')
+    const nangCaoElements = screen.getAllByText('Gói Nâng cao')
+    expect(standardElements.length).toBeGreaterThanOrEqual(1)
+    expect(nangCaoElements.length).toBeGreaterThanOrEqual(1)
+
+    // Check prices - there will be multiple but at least these two
+    expect(screen.getByText('5.000.000 ₫')).toBeInTheDocument()
+    expect(screen.getByText('10.000.000 ₫')).toBeInTheDocument()
+  })
+
+  it('shows plan features and quotas correctly', async () => {
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(subscription as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      const jobPostsElements = screen.getAllByText(/bài đăng tin/)
+      expect(jobPostsElements.length).toBeGreaterThanOrEqual(1)
+    })
+    const searchElements = screen.getAllByText(/tìm kiếm ứng viên/)
+    expect(searchElements.length).toBeGreaterThanOrEqual(1)
+    const aiElements = screen.getAllByText(/tính năng AI/)
+    expect(aiElements.length).toBeGreaterThanOrEqual(1)
   })
 
   it('shows empty state when no plans', async () => {
@@ -125,7 +184,7 @@ describe('PlansPage', () => {
       </MemoryRouter>
     )
 
-    await waitFor(() => expect(screen.getByText('Không có gói lên kế hoạch')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Không có gói tuyển dụng')).toBeInTheDocument())
   })
 
   it('shows error when plans API fails', async () => {
@@ -139,5 +198,21 @@ describe('PlansPage', () => {
     )
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
+  })
+
+  it('renders select buttons for each plan', async () => {
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(subscription as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      const buttons = screen.getAllByText('Chọn gói này')
+      expect(buttons.length).toBe(2)
+    })
   })
 })

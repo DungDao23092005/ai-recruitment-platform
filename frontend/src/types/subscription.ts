@@ -8,6 +8,8 @@ export interface RecruitmentPlan {
   currency: string
   duration_days: number
   max_job_posts: number
+  max_candidate_searches: number | null
+  max_ai_features: number | null
   is_active: boolean
   display_order?: number
   features?: string[]
@@ -18,8 +20,8 @@ export interface Subscription {
   user_id: string
   plan_id: string
   status: SubscriptionStatus
-  start_date?: string
-  end_date?: string
+  started_at: string | null
+  expires_at: string | null
   plan?: RecruitmentPlan
 }
 
@@ -28,8 +30,8 @@ export interface SubscriptionRead {
   user_id: string
   plan_id: string
   status: SubscriptionStatus
-  start_date?: string
-  end_date?: string
+  started_at: string | null
+  expires_at: string | null
   plan?: RecruitmentPlan
 }
 
@@ -41,6 +43,8 @@ export interface RecruitmentPlanRead {
   currency: string
   duration_days: number
   max_job_posts: number
+  max_candidate_searches: number | null
+  max_ai_features: number | null
   is_active: boolean
   display_order?: number
   features?: string[]
