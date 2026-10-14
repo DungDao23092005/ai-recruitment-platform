@@ -28,20 +28,25 @@ export function AdminPlanForm({
 }: AdminPlanFormProps) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [price, setPrice] = useState(0)
-  const [currency, setCurrency] = useState('VND')
-  const [durationDays, setDurationDays] = useState(30)
-  const [maxJobPosts, setMaxJobPosts] = useState(10)
-  const [maxCandidateSearches, setMaxCandidateSearches] = useState(50)
-  const [maxAiFeatures, setMaxAiFeatures] = useState(10)
-  const [displayOrder, setDisplayOrder] = useState(0)
-  const [isActive, setIsActive] = useState(true)
 
   const isCreate = mode === 'create'
   const isEdit = mode === 'edit'
   const isStatus = mode === 'status'
+
+  // Resolve plan ID: use explicit planId, fallback to defaultPlan.id
+  const targetPlanId = planId ?? defaultPlan?.id
+
+  // Initialize form state from defaultPlan when in edit mode, otherwise use defaults
+  const [name, setName] = useState(defaultPlan?.name ?? '')
+  const [description, setDescription] = useState(defaultPlan?.description ?? '')
+  const [price, setPrice] = useState(defaultPlan?.price ?? 0)
+  const [currency, setCurrency] = useState(defaultPlan?.currency ?? 'VND')
+  const [durationDays, setDurationDays] = useState(defaultPlan?.duration_days ?? 30)
+  const [maxJobPosts, setMaxJobPosts] = useState(defaultPlan?.max_job_posts ?? 10)
+  const [maxCandidateSearches, setMaxCandidateSearches] = useState(defaultPlan?.max_candidate_searches ?? 50)
+  const [maxAiFeatures, setMaxAiFeatures] = useState(defaultPlan?.max_ai_features ?? 10)
+  const [displayOrder, setDisplayOrder] = useState(defaultPlan?.display_order ?? 0)
+  const [isActive, setIsActive] = useState(defaultPlan?.is_active ?? true)
 
   const validateForm = (): boolean => {
     if (!name.trim()) {
@@ -98,11 +103,16 @@ export function AdminPlanForm({
           display_order: displayOrder,
         }
         result = await createAdminPlan(payload)
-      } else if (isEdit && planId) {
+      } else if (isEdit) {
+        if (!targetPlanId) {
+          setError('Thiếu ID gói để cập nhật')
+          setSubmitting(false)
+          return
+        }
         const payload: AdminPlanUpdate = {
           name: name.trim() || undefined,
           description: description.trim() || null,
-          price: price > 0 ? price : undefined,
+          price: price >= 0 ? price : undefined,
           currency: currency || undefined,
           duration_days: durationDays > 0 ? durationDays : undefined,
           max_job_posts: maxJobPosts >= 0 ? maxJobPosts : undefined,
@@ -111,9 +121,9 @@ export function AdminPlanForm({
           display_order: displayOrder >= 0 ? displayOrder : undefined,
           is_active: isActive,
         }
-        result = await updateAdminPlan(planId, payload)
+        result = await updateAdminPlan(targetPlanId!, payload)
       } else if (isStatus) {
-        if (!planId) {
+        if (!targetPlanId) {
           setError('Thiếu ID gói để thay đổi trạng thái')
           setSubmitting(false)
           return
@@ -121,7 +131,7 @@ export function AdminPlanForm({
         const payload: AdminPlanStatusUpdate = {
           is_active: isActive,
         }
-        result = await updateAdminPlanStatus(planId, payload)
+        result = await updateAdminPlanStatus(targetPlanId!, payload)
         onClose()
         onSuccess?.(result)
         setSubmitting(false)
@@ -205,11 +215,6 @@ export function AdminPlanForm({
               disabled={submitting}
               aria-invalid={error ? true : undefined}
             />
-            {error && (
-              <p role="alert" className="mt-1 text-sm text-destructive">
-                {error}
-              </p>
-            )}
           </div>
 
           <div>

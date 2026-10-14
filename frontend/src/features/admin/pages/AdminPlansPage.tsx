@@ -103,6 +103,7 @@ export function AdminPlansPage() {
         <AdminPlanForm
           mode="edit"
           defaultPlan={editingPlan}
+          planId={editingPlan.id}
           onClose={() => setEditingPlan(null)}
           onSuccess={handlePlanUpdated}
         />
