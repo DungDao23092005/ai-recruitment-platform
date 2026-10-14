@@ -76,7 +76,8 @@ export function AdminPlanForm({
   }
 
   const handleSubmit = async () => {
-    if (!validateForm()) return
+    // Only validate full form for create/edit modes
+    if (!isStatus && !validateForm()) return
 
     setSubmitting(true)
     setError(null)
@@ -111,7 +112,12 @@ export function AdminPlanForm({
           is_active: isActive,
         }
         result = await updateAdminPlan(planId, payload)
-      } else if (isStatus && planId) {
+      } else if (isStatus) {
+        if (!planId) {
+          setError('Thiếu ID gói để thay đổi trạng thái')
+          setSubmitting(false)
+          return
+        }
         const payload: AdminPlanStatusUpdate = {
           is_active: isActive,
         }

@@ -120,6 +120,7 @@ export function AdminPlansPage() {
         <AdminPlanForm
           mode="status"
           defaultPlan={statusPlan}
+          planId={statusPlan.id}
           onClose={() => setIsStatusModalOpen(false)}
           onSuccess={handlePlanStatusToggled}
         />
