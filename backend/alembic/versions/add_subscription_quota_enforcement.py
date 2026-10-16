@@ -13,7 +13,7 @@ from sqlalchemy.dialects.mssql import NVARCHAR
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'add_subscription_quota_enforcement'
+revision: str = 'sub_quota_enforcement'
 down_revision: Union[str, None] = '47c75548f388'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
