@@ -20,6 +20,14 @@ class SubscriptionRead(BaseModel):
     expires_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
+    # Quota snapshot from plan at activation
+    max_job_posts: int
+    max_candidate_searches: int
+    max_ai_features: int
+    # Usage counters
+    job_posts_used: int
+    candidate_searches_used: int
+    ai_features_used: int
 
 
 class SubscriptionSummary(BaseModel):
@@ -52,6 +60,13 @@ class SubscriptionAdminRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     is_deleted: bool
+    # Quota snapshot and usage
+    max_job_posts: int
+    max_candidate_searches: int
+    max_ai_features: int
+    job_posts_used: int
+    candidate_searches_used: int
+    ai_features_used: int
 
 
 class SubscriptionAdminProvision(BaseModel):

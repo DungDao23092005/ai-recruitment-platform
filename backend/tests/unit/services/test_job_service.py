@@ -14,6 +14,8 @@ from app.models import Company, Job, JobSkill, Skill
 from app.repositories import CompanyRepository, JobRepository
 from app.schemas.job import JobCreate, JobUpdate
 from app.services.job_service import JobService
+from app.services.quota_enforcement_service import QuotaCheckResult
+from app.domain.enums import SubscriptionUsageFeatureType, SubscriptionUsageStatus
 
 
 def make_session() -> MagicMock:
@@ -428,6 +430,69 @@ class TestCreateJob:
         assert created_job.company is not None
         assert created_job.company.id == company.id
         assert created_job.company.name == "Acme Corp"
+
+    def test_published_create_uses_same_job_id_for_quota_and_job(self):
+        session = make_session()
+        service = make_service(session)
+        service.companies.get_by_id.return_value = make_company()
+
+        captured = {}
+
+        async def fake_consume(user_id, job_id, is_admin=False):
+            captured["job_id"] = job_id
+            captured["user_id"] = user_id
+            captured["is_admin"] = is_admin
+            return QuotaCheckResult(allowed=True, remaining=4, limit=5, used=1)
+
+        service.quota_service.consume_job_post_quota_idempotent = fake_consume
+
+        user_id = uuid.uuid4()
+        data = JobCreate(
+            company_id=uuid.uuid4(),
+            title="Backend Engineer",
+            description="Build APIs",
+            job_type=JobType.FULL_TIME,
+            workplace_type=WorkplaceType.REMOTE,
+            status=JobStatus.PUBLISHED,
+        )
+
+        job = asyncio.run(service.create_job(data, user_id=user_id))
+
+        assert captured["job_id"] is not None
+        assert captured["user_id"] == user_id
+        assert captured["is_admin"] is False
+        assert job.id == captured["job_id"]
+        assert job.status == JobStatus.PUBLISHED
+
+        # The Job added to the session carries the same id as the quota reservation
+        added_job = session.add.call_args[0][0]
+        assert added_job.id == captured["job_id"]
+
+    def test_published_create_commit_failure_rolls_back(self):
+        session = make_session()
+        service = make_service(session)
+        service.companies.get_by_id.return_value = make_company()
+        session.commit.side_effect = RuntimeError("db down")
+
+        async def fake_consume(user_id, job_id, is_admin=False):
+            return QuotaCheckResult(allowed=True, remaining=4, limit=5, used=1)
+
+        service.quota_service.consume_job_post_quota_idempotent = fake_consume
+
+        data = JobCreate(
+            company_id=uuid.uuid4(),
+            title="Backend Engineer",
+            description="Build APIs",
+            job_type=JobType.FULL_TIME,
+            workplace_type=WorkplaceType.REMOTE,
+            status=JobStatus.PUBLISHED,
+        )
+
+        with pytest.raises(RuntimeError, match="db down"):
+            asyncio.run(service.create_job(data, user_id=uuid.uuid4()))
+
+        session.rollback.assert_awaited_once()
+
     def test_publishes_draft(self):
         session = make_session()
         service = make_service(session)
@@ -462,6 +527,195 @@ class TestCreateJob:
             asyncio.run(service.publish_job(job.id))
 
         session.commit.assert_not_awaited()
+
+
+class TestJobQuotaLifecycle:
+    """Regression tests for the approved job-post quota lifecycle policy.
+
+    - Draft creation is free.
+    - First publication consumes one job-post quota.
+    - Direct PUBLISHED creation consumes one quota.
+    - Content edits do not consume quota.
+    - Closing/deleting does not refund quota.
+    - Reopening the same job within the same subscription must NOT charge twice.
+    - Publishing the same job under a new subscription consumes that subscription's quota once.
+    """
+
+    def _make_published_consume_mock(self, already_charged: bool = False):
+        """Return an AsyncMock for consume_job_post_quota_idempotent.
+
+        If already_charged, returns a result indicating the job was already
+        consumed under the current subscription (no increment). Otherwise
+        returns a result indicating a fresh consumption.
+        """
+        async def fake_consume(user_id, job_id, is_admin=False):
+            if already_charged:
+                return QuotaCheckResult(
+                    allowed=True, remaining=4, limit=5, used=5
+                )
+            return QuotaCheckResult(
+                allowed=True, remaining=4, limit=5, used=1
+            )
+
+        return AsyncMock(side_effect=fake_consume)
+
+    def test_draft_creation_does_not_consume_quota(self):
+        session = make_session()
+        service = make_service(session)
+        service.companies.get_by_id.return_value = make_company()
+        consume_mock = self._make_published_consume_mock()
+        service.quota_service.consume_job_post_quota_idempotent = consume_mock
+
+        data = JobCreate(
+            company_id=uuid.uuid4(),
+            title="Backend Engineer",
+            description="Build APIs",
+            job_type=JobType.FULL_TIME,
+            workplace_type=WorkplaceType.REMOTE,
+            status=JobStatus.DRAFT,
+        )
+
+        job = asyncio.run(service.create_job(data, user_id=uuid.uuid4()))
+
+        assert job.status == JobStatus.DRAFT
+        consume_mock.assert_not_awaited()
+
+    def test_first_draft_to_published_consumes_one_unit(self):
+        session = make_session()
+        service = make_service(session)
+        service.companies.get_by_id.return_value = make_company()
+        consume_mock = self._make_published_consume_mock()
+        service.quota_service.consume_job_post_quota_idempotent = consume_mock
+
+        user_id = uuid.uuid4()
+        data = JobCreate(
+            company_id=uuid.uuid4(),
+            title="Backend Engineer",
+            description="Build APIs",
+            job_type=JobType.FULL_TIME,
+            workplace_type=WorkplaceType.REMOTE,
+            status=JobStatus.PUBLISHED,
+        )
+
+        job = asyncio.run(service.create_job(data, user_id=user_id))
+
+        assert job.status == JobStatus.PUBLISHED
+        consume_mock.assert_awaited_once_with(user_id=user_id, job_id=job.id, is_admin=False)
+
+    def test_direct_published_creation_records_correct_job_id(self):
+        session = make_session()
+        service = make_service(session)
+        service.companies.get_by_id.return_value = make_company()
+        captured = {}
+
+        async def fake_consume(user_id, job_id, is_admin=False):
+            captured["job_id"] = job_id
+            return QuotaCheckResult(allowed=True, remaining=4, limit=5, used=1)
+
+        service.quota_service.consume_job_post_quota_idempotent = fake_consume
+
+        user_id = uuid.uuid4()
+        data = JobCreate(
+            company_id=uuid.uuid4(),
+            title="Backend Engineer",
+            description="Build APIs",
+            job_type=JobType.FULL_TIME,
+            workplace_type=WorkplaceType.REMOTE,
+            status=JobStatus.PUBLISHED,
+        )
+
+        job = asyncio.run(service.create_job(data, user_id=user_id))
+
+        assert captured["job_id"] == job.id
+        assert job.id is not None
+
+    def test_closing_published_job_does_not_consume_quota(self):
+        session = make_session()
+        service = make_service(session)
+        job = make_job(status=JobStatus.PUBLISHED)
+        service.jobs.get_job_with_company_and_skills.return_value = job
+        consume_mock = self._make_published_consume_mock()
+        service.quota_service.consume_job_post_quota_idempotent = consume_mock
+
+        result = asyncio.run(service.close_job(job.id))
+
+        assert result.status == JobStatus.CLOSED
+        consume_mock.assert_not_awaited()
+
+    def test_reopening_same_job_same_subscription_does_not_charge_again(self):
+        session = make_session()
+        service = make_service(session)
+        job = make_job(status=JobStatus.CLOSED)
+        service.jobs.get_job_with_company_and_skills.return_value = job
+        # Simulate that the job was already charged under this subscription.
+        consume_mock = self._make_published_consume_mock(already_charged=True)
+        service.quota_service.consume_job_post_quota_idempotent = consume_mock
+
+        result = asyncio.run(
+            service.update_job_status(job.id, JobStatus.PUBLISHED, user_id=uuid.uuid4())
+        )
+
+        assert result.status == JobStatus.PUBLISHED
+        consume_mock.assert_awaited_once()
+        # No second charge: used stays at 5 (already_charged path).
+        call_args = consume_mock.await_args
+        assert call_args is not None
+        assert call_args.kwargs["is_admin"] is False
+
+    def test_multiple_close_reopen_cycles_do_not_increase_usage(self):
+        session = make_session()
+        service = make_service(session)
+        job = make_job(status=JobStatus.PUBLISHED)
+        service.jobs.get_job_with_company_and_skills.return_value = job
+        consume_mock = self._make_published_consume_mock(already_charged=True)
+        service.quota_service.consume_job_post_quota_idempotent = consume_mock
+
+        for _ in range(3):
+            asyncio.run(
+                service.update_job_status(job.id, JobStatus.CLOSED)
+            )
+            asyncio.run(
+                service.update_job_status(job.id, JobStatus.PUBLISHED, user_id=uuid.uuid4())
+            )
+
+        # The consume method should only be called on reopen (3 times), each
+        # returning already_charged=True so no counter increment happens.
+        assert consume_mock.await_count == 3
+
+    def test_same_job_under_new_subscription_consumes_once(self):
+        session = make_session()
+        service = make_service(session)
+        job = make_job(status=JobStatus.CLOSED)
+        service.jobs.get_job_with_company_and_skills.return_value = job
+        # First call: new subscription, not yet charged.
+        consume_mock = self._make_published_consume_mock(already_charged=False)
+        service.quota_service.consume_job_post_quota_idempotent = consume_mock
+
+        new_user_id = uuid.uuid4()
+        result = asyncio.run(
+            service.update_job_status(
+                job.id, JobStatus.PUBLISHED, user_id=new_user_id
+            )
+        )
+
+        assert result.status == JobStatus.PUBLISHED
+        consume_mock.assert_awaited_once_with(
+            user_id=new_user_id, job_id=job.id, is_admin=False
+        )
+
+    def test_publish_job_uses_idempotent_consume(self):
+        session = make_session()
+        service = make_service(session)
+        job = make_job(status=JobStatus.DRAFT)
+        service.jobs.get_job_with_company_and_skills.return_value = job
+        consume_mock = self._make_published_consume_mock()
+        service.quota_service.consume_job_post_quota_idempotent = consume_mock
+
+        user_id = uuid.uuid4()
+        result = asyncio.run(service.publish_job(job.id, user_id=user_id))
+
+        assert result.status == JobStatus.PUBLISHED
+        consume_mock.assert_awaited_once_with(user_id=user_id, job_id=job.id, is_admin=False)
 
 
 class TestCloseJob:

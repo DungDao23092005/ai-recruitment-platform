@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 
 from app.ai.embeddings.embedding_service import EmbeddingService
 from app.ai.interfaces.base_provider import (
@@ -36,6 +37,7 @@ from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.ai_matching_service import AIMatchingService
+from app.services.quota_enforcement_service import QuotaEnforcementService, ReservationResult
 
 VECTOR_DIM = settings.VECTOR_DIMENSION
 
@@ -303,6 +305,24 @@ def _mock_interview_generator_service():
     return service
 
 
+def _mock_quota_service():
+    """Mock QuotaEnforcementService for e2e integration tests."""
+    service = MagicMock(spec=QuotaEnforcementService)
+    # Default to success for all reservation methods
+    reservation_result = ReservationResult(
+        usage_id=uuid.uuid4(),
+        remaining=5,
+        limit=10,
+        used=5,
+        bypassed=False,
+    )
+    service.reserve_ai_quota = AsyncMock(return_value=reservation_result)
+    service.reserve_search_quota = AsyncMock(return_value=reservation_result)
+    service.finalize_reservation = AsyncMock()
+    service.release_reservation = AsyncMock()
+    return service
+
+
 def _mock_admin_service():
     service = MagicMock()
     service.get_stats = AsyncMock(
@@ -443,7 +463,7 @@ async def _override_get_db():
 
 
 @pytest.fixture
-def client(pipeline_service):
+def client(pipeline_service, monkeypatch):
     store = pipeline_service.vector_repository.store
     store[("resumes", str(KNOWN_CANDIDATE_ID))] = (
         FakeEmbeddingProvider._hash_vector("Python FastAPI SQL Server"),
@@ -476,6 +496,24 @@ def client(pipeline_service):
         lambda: _mock_interview_generator_service()
     )
     app.dependency_overrides[_get_admin_service] = lambda: _mock_admin_service()
+
+    # Create mock QuotaEnforcementService instance
+    reservation_result = ReservationResult(
+        usage_id=uuid.uuid4(),
+        remaining=5,
+        limit=10,
+        used=5,
+        bypassed=False,
+    )
+    mock_quota_service = MagicMock(spec=QuotaEnforcementService)
+    mock_quota_service.reserve_ai_quota = AsyncMock(return_value=reservation_result)
+    mock_quota_service.reserve_search_quota = AsyncMock(return_value=reservation_result)
+    mock_quota_service.finalize_reservation = AsyncMock()
+    mock_quota_service.release_reservation = AsyncMock()
+
+    # Patch the QuotaEnforcementService class at module level (only used in ai.py)
+    monkeypatch.setattr('app.api.v1.endpoints.ai.QuotaEnforcementService', lambda *args, **kwargs: mock_quota_service)
+
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

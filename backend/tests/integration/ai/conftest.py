@@ -8,6 +8,7 @@ import uuid
 import httpx
 import pytest
 from qdrant_client import AsyncQdrantClient
+from sqlalchemy import select
 from tests.integration.conftest import run
 
 from app.ai.interfaces.base_provider import (
@@ -151,7 +152,7 @@ def tracked():
         run(client.close())
 
 
-def _make_authenticated_client(role: str) -> httpx.AsyncClient:
+def _make_authenticated_client(role: str, setup_subscription: bool = False) -> httpx.AsyncClient:
     from app.main import app
 
     email = f"ai-{role}-{uuid.uuid4()}@example.com"
@@ -176,11 +177,65 @@ def _make_authenticated_client(role: str) -> httpx.AsyncClient:
     )
     assert login.status_code == 200, login.text
     token = login.json()["access_token"]
-    return httpx.AsyncClient(
+    client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://testserver",
         headers={"Authorization": f"Bearer {token}"},
     )
+
+    if setup_subscription and role == "recruiter":
+
+        async def setup_subscription_db():
+            async with async_session_factory() as session:
+                from app.models import RecruitmentPlan, Subscription, User
+                from app.domain.enums import SubscriptionStatus
+                from app.domain.models.base import utc_now
+                from datetime import timedelta
+
+                # Get the user
+                user_result = await session.execute(
+                    select(User).where(User.email == email)
+                )
+                user = user_result.scalar_one_or_none()
+                if not user:
+                    return
+
+                # Create a plan with quota
+                plan = RecruitmentPlan(
+                    name=f"AI Integration Plan {uuid.uuid4()}",
+                    price=1000,
+                    currency="VND",
+                    duration_days=30,
+                    max_job_posts=10,
+                    max_candidate_searches=10,
+                    max_ai_features=10,
+                    is_active=True,
+                    display_order=0,
+                )
+                session.add(plan)
+                await session.flush()
+
+                # Create active subscription
+                now = utc_now()
+                subscription = Subscription(
+                    user_id=user.id,
+                    plan_id=plan.id,
+                    status=SubscriptionStatus.ACTIVE,
+                    started_at=now,
+                    expires_at=now + timedelta(days=30),
+                    max_job_posts=plan.max_job_posts,
+                    max_candidate_searches=plan.max_candidate_searches or 0,
+                    max_ai_features=plan.max_ai_features or 0,
+                    job_posts_used=0,
+                    candidate_searches_used=0,
+                    ai_features_used=0,
+                )
+                session.add(subscription)
+                await session.commit()
+
+        run(setup_subscription_db())
+
+    return client
 
 
 @pytest.fixture
@@ -196,6 +251,6 @@ def candidate_client():
 def recruiter_client():
     if not SQL_AVAILABLE:
         pytest.skip(SKIP_REASON_SQL)
-    client = _make_authenticated_client("recruiter")
+    client = _make_authenticated_client("recruiter", setup_subscription=True)
     yield client
     run(client.aclose())

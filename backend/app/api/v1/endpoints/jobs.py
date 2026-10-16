@@ -10,6 +10,7 @@ from app.core.exceptions import (
     AIError,
     EmptyDocumentError,
     EntityNotFoundException,
+    ForbiddenException,
     InvalidDocumentError,
     InvalidTransitionException,
     ValidationError,
@@ -66,7 +67,8 @@ async def create_job(
             detail=f"Company {data.company_id} not found",
         )
 
-    if current_user.role != UserRole.ADMIN:
+    is_admin = current_user.role == UserRole.ADMIN
+    if not is_admin:
         user = await UserService(service.session).get_user_with_profile(
             current_user.id
         )
@@ -82,7 +84,11 @@ async def create_job(
             )
 
     try:
-        job = await service.create_job(data)
+        job = await service.create_job(
+            data,
+            user_id=current_user.id,
+            is_admin=is_admin,
+        )
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -91,6 +97,11 @@ async def create_job(
     except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
             detail=str(exc),
         ) from exc
     return to_job_read(job)
@@ -206,7 +217,12 @@ async def update_my_job_status(
 ) -> JobRead:
     try:
         await service.get_recruiter_job_by_id(current_user, job_id)
-        job = await service.update_job_status(job_id, data.status)
+        job = await service.update_job_status(
+            job_id,
+            data.status,
+            user_id=current_user.id,
+            is_admin=current_user.role == UserRole.ADMIN,
+        )
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -215,6 +231,11 @@ async def update_my_job_status(
     except InvalidTransitionException as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
             detail=str(exc),
         ) from exc
     return to_job_read(job)

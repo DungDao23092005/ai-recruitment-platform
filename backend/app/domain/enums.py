@@ -95,3 +95,15 @@ class PaymentTransactionStatus(str, Enum):
     SUCCESS = "success"
     FAILED = "failed"
     PENDING = "pending"
+
+
+class SubscriptionUsageFeatureType(str, Enum):
+    JOB_POST = "job_post"
+    CANDIDATE_SEARCH = "candidate_search"
+    AI_FEATURE = "ai_feature"
+
+
+class SubscriptionUsageStatus(str, Enum):
+    RESERVED = "reserved"
+    COMPLETED = "completed"
+    FAILED = "failed"

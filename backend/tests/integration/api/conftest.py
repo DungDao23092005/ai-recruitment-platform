@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from sqlalchemy import select
 
 import httpx
 import pytest
@@ -12,9 +13,10 @@ from app.core.rate_limit import set_rate_limiter, get_rate_limiter
 from app.core.rate_limit import RateLimiter
 from app.core.security import get_password_hash
 from app.database.session import async_session_factory
-from app.domain.enums import UserRole
+from app.domain.enums import UserRole, SubscriptionStatus
+from app.domain.models.base import utc_now
 from app.main import app
-from app.models import User
+from app.models import User, RecruitmentPlan, Subscription
 from redis.asyncio import Redis, ConnectionPool
 
 API_V1 = "/api/v1"
@@ -83,11 +85,65 @@ def _make_auth_client(client: httpx.AsyncClient, role: str) -> httpx.AsyncClient
     )
     assert login.status_code == 200, login.text
     token = login.json()["access_token"]
-    return httpx.AsyncClient(
+    auth_client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://testserver",
         headers={"Authorization": f"Bearer {token}"},
     )
+
+    # For recruiters, create a subscription with quota
+    if role == "recruiter":
+        async def setup_subscription():
+            async with async_session_factory() as session:
+                from app.models import RecruitmentPlan, Subscription, User
+                from app.domain.enums import SubscriptionStatus
+                from app.domain.models.base import utc_now
+                from datetime import timedelta
+
+                # Get the user
+                user_result = await session.execute(
+                    select(User).where(User.email == email)
+                )
+                user = user_result.scalar_one_or_none()
+                if not user:
+                    return
+
+                # Create a plan with quota
+                plan = RecruitmentPlan(
+                    name=f"Test Plan {uuid.uuid4()}",
+                    price=1000,
+                    currency="VND",
+                    duration_days=30,
+                    max_job_posts=10,
+                    max_candidate_searches=10,
+                    max_ai_features=10,
+                    is_active=True,
+                    display_order=0,
+                )
+                session.add(plan)
+                await session.flush()
+
+                # Create active subscription
+                now = utc_now()
+                subscription = Subscription(
+                    user_id=user.id,
+                    plan_id=plan.id,
+                    status=SubscriptionStatus.ACTIVE,
+                    started_at=now,
+                    expires_at=now + timedelta(days=30),
+                    max_job_posts=plan.max_job_posts,
+                    max_candidate_searches=plan.max_candidate_searches or 0,
+                    max_ai_features=plan.max_ai_features or 0,
+                    job_posts_used=0,
+                    candidate_searches_used=0,
+                    ai_features_used=0,
+                )
+                session.add(subscription)
+                await session.commit()
+
+        run(setup_subscription())
+
+    return auth_client
 
 
 def _make_admin_client(client: httpx.AsyncClient) -> httpx.AsyncClient:

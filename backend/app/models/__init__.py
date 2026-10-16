@@ -14,6 +14,7 @@ from app.models.recruitment_plan import RecruitmentPlan
 from app.models.resume import Resume
 from app.models.skill import Skill
 from app.models.subscription import Subscription
+from app.models.subscription_usage import SubscriptionUsage
 from app.models.user import User
 
 __all__ = [
@@ -33,5 +34,6 @@ __all__ = [
     "Resume",
     "Skill",
     "Subscription",
+    "SubscriptionUsage",
     "User",
 ]

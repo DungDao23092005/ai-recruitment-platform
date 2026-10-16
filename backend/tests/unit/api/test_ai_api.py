@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException, status
@@ -20,10 +20,12 @@ from app.core.exceptions import (
     AIError,
     EmptyDocumentError,
     EntityNotFoundException,
+    ForbiddenException,
     InvalidDocumentError,
 )
 from app.domain.enums import JobStatus, UserRole
 from app.main import app
+from app.services.quota_enforcement_service import QuotaEnforcementService, ReservationResult
 
 KNOWN_JOB_ID = uuid.uuid4()
 KNOWN_COMPANY_ID = uuid.uuid4()
@@ -148,12 +150,34 @@ def mock_interview_generator_service():
 
 
 @pytest.fixture
+def mock_quota_service():
+    """Mock QuotaEnforcementService for unit tests."""
+    with patch('app.api.v1.endpoints.ai.QuotaEnforcementService') as mock_class:
+        service = MagicMock(spec=QuotaEnforcementService)
+        # Default to success for all reservation methods
+        reservation_result = ReservationResult(
+            usage_id=uuid.uuid4(),
+            remaining=5,
+            limit=10,
+            used=5,
+            bypassed=False,
+        )
+        service.reserve_ai_quota = AsyncMock(return_value=reservation_result)
+        service.reserve_search_quota = AsyncMock(return_value=reservation_result)
+        service.finalize_reservation = AsyncMock()
+        service.release_reservation = AsyncMock()
+        mock_class.return_value = service
+        yield service
+
+
+@pytest.fixture
 def client(
     mock_service,
     mock_explain_service,
     mock_search_service,
     mock_rag_chat_service,
     mock_interview_generator_service,
+    mock_quota_service,
 ):
     app.dependency_overrides[_get_ai_service] = lambda: mock_service
     app.dependency_overrides[_get_explainable_ai_service] = (
@@ -418,6 +442,120 @@ class TestRecommendCandidates:
 
         assert resp.status_code == status.HTTP_403_FORBIDDEN
         mock_service.recommend_candidates_for_job.assert_not_called()
+
+    def test_recommendations_candidates_consumes_search_quota(
+        self, recruiter_client, mock_service, mock_quota_service
+    ):
+        mock_service.recommend_candidates_for_job.return_value = [
+            {
+                "candidate_id": str(uuid.uuid4()),
+                "parsed_resume": _parsed_resume(),
+                "match_result": {
+                    "overall_score": 85.0,
+                    "cosine_similarity": 0.85,
+                    "skill_coverage_score": 1.0,
+                    "experience_match_score": 0.5,
+                },
+            }
+        ]
+
+        resp = recruiter_client.get(
+            "/api/v1/ai/recommendations/candidates",
+            params={"job_id": str(uuid.uuid4())},
+        )
+
+        assert resp.status_code == 200
+        mock_quota_service.reserve_search_quota.assert_called_once()
+        kwargs = mock_quota_service.reserve_search_quota.call_args.kwargs
+        assert kwargs["is_admin"] is False
+        mock_quota_service.finalize_reservation.assert_called_once()
+        # Candidate recommendations must not consume AI feature quota
+        mock_quota_service.reserve_ai_quota.assert_not_called()
+
+    def test_recommendations_candidates_no_subscription_returns_403(
+        self, recruiter_client, mock_service, mock_quota_service
+    ):
+        mock_quota_service.reserve_search_quota.side_effect = ForbiddenException(
+            "Bạn chưa có gói đăng ký hợp lệ."
+        )
+
+        resp = recruiter_client.get(
+            "/api/v1/ai/recommendations/candidates",
+            params={"job_id": str(uuid.uuid4())},
+        )
+
+        assert resp.status_code == status.HTTP_403_FORBIDDEN
+        mock_service.recommend_candidates_for_job.assert_not_called()
+        mock_quota_service.finalize_reservation.assert_not_called()
+
+    def test_recommendations_candidates_search_failure_releases_reservation(
+        self, recruiter_client, mock_service, mock_quota_service
+    ):
+        mock_service.recommend_candidates_for_job.side_effect = Exception(
+            "search engine down"
+        )
+
+        with pytest.raises(Exception, match="search engine down"):
+            recruiter_client.get(
+                "/api/v1/ai/recommendations/candidates",
+                params={"job_id": str(uuid.uuid4())},
+            )
+
+        mock_quota_service.release_reservation.assert_called_once()
+        mock_quota_service.finalize_reservation.assert_not_called()
+
+    def test_recommendations_candidates_admin_bypasses_quota(
+        self, active_client, mock_service, mock_quota_service
+    ):
+        mock_service.recommend_candidates_for_job.return_value = [
+            {
+                "candidate_id": str(uuid.uuid4()),
+                "parsed_resume": _parsed_resume(),
+                "match_result": {
+                    "overall_score": 85.0,
+                    "cosine_similarity": 0.85,
+                    "skill_coverage_score": 1.0,
+                    "experience_match_score": 0.5,
+                },
+            }
+        ]
+
+        resp = active_client.get(
+            "/api/v1/ai/recommendations/candidates",
+            params={"job_id": str(uuid.uuid4())},
+        )
+
+        assert resp.status_code == 200
+        mock_quota_service.reserve_search_quota.assert_called_once()
+        kwargs = mock_quota_service.reserve_search_quota.call_args.kwargs
+        assert kwargs["is_admin"] is True
+
+    def test_recommendations_candidates_idempotency_key_forwarded(
+        self, recruiter_client, mock_service, mock_quota_service
+    ):
+        mock_service.recommend_candidates_for_job.return_value = [
+            {
+                "candidate_id": str(uuid.uuid4()),
+                "parsed_resume": _parsed_resume(),
+                "match_result": {
+                    "overall_score": 85.0,
+                    "cosine_similarity": 0.85,
+                    "skill_coverage_score": 1.0,
+                    "experience_match_score": 0.5,
+                },
+            }
+        ]
+
+        key = "idem-rec-1"
+        resp = recruiter_client.get(
+            "/api/v1/ai/recommendations/candidates",
+            params={"job_id": str(uuid.uuid4())},
+            headers={"Idempotency-Key": key},
+        )
+
+        assert resp.status_code == 200
+        kwargs = mock_quota_service.reserve_search_quota.call_args.kwargs
+        assert kwargs["idempotency_key"] == key
 
 
 class TestServiceExceptionMapping:

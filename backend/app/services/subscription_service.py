@@ -185,6 +185,15 @@ class SubscriptionService:
         sub.started_at = now
         sub.expires_at = now + timedelta(days=plan.duration_days)
 
+        # Snapshot quota from plan at activation time
+        sub.max_job_posts = plan.max_job_posts
+        sub.max_candidate_searches = plan.max_candidate_searches or 0
+        sub.max_ai_features = plan.max_ai_features or 0
+        # Initialize usage counters to 0 (grandfathered jobs not counted)
+        sub.job_posts_used = 0
+        sub.candidate_searches_used = 0
+        sub.ai_features_used = 0
+
         try:
             await self.session.commit()
             await self.session.refresh(sub)

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import uuid
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,8 +26,10 @@ from app.core.exceptions import (
     AIProviderUnavailableError,
     EmptyDocumentError,
     EntityNotFoundException,
+    ForbiddenException,
     InvalidDocumentError,
 )
+from app.domain.enums import UserRole
 from app.core.rate_limit import RateLimitResult, ai_chat_rate_limit, parse_resume_rate_limit, parse_jd_rate_limit, match_rate_limit, recommendations_rate_limit
 from app.models import User
 from app.schemas.ai_chat import ChatRequest, ChatResponse
@@ -48,6 +51,7 @@ from app.services.ai_matching_service import AIMatchingService
 from app.services.explainable_ai_service import ExplainableAIService
 from app.services.interview_generator_service import InterviewGeneratorService
 from app.services.job_service import JobService
+from app.services.quota_enforcement_service import QuotaEnforcementService
 from app.services.rag_chat_service import RAGChatService
 from app.services.semantic_search_service import SemanticSearchService
 
@@ -202,24 +206,53 @@ class MatchRequest(BaseModel):
 )
 async def parse_jd(
     data: ParseJDRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
     service: AIMatchingService = Depends(_get_ai_service),
     _: RateLimitResult = Depends(parse_jd_rate_limit),
 ) -> ParsedJobSchema:
+    quota_service = QuotaEnforcementService(db)
+    reservation = None
+    is_admin = current_user.role == UserRole.ADMIN
     try:
-        return await service.process_and_index_job(
+        # Reserve quota for AI feature (parse-jd uses external LLM)
+        reservation = await quota_service.reserve_ai_quota(
+            user_id=current_user.id,
+            idempotency_key=idempotency_key,
+            is_admin=is_admin,
+        )
+
+        result = await service.process_and_index_job(
             job_id=data.job_id or uuid.uuid4(),
             job_title=data.job_title,
             job_description=data.job_description,
         )
+
+        # Finalize reservation on success
+        await quota_service.finalize_reservation(reservation.usage_id, success=True)
+        return result
+
     except EmptyDocumentError as exc:
+        # Release reservation on validation error
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
     except InvalidDocumentError as exc:
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except ForbiddenException as exc:
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
             detail=str(exc),
         ) from exc
 
@@ -250,23 +283,55 @@ async def match_candidate_and_job(
 )
 async def explain_match(
     data: ExplainMatchRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
     service: ExplainableAIService = Depends(_get_explainable_ai_service),
 ) -> ExplainMatchResponse:
+    # Only recruiters need quota for explain-match; candidates and admins bypass
+    is_recruiter = current_user.role == UserRole.RECRUITER
+    quota_service = QuotaEnforcementService(db)
+    reservation = None
     try:
-        return await service.explain_match(
+        # Reserve quota for AI feature (only for recruiters)
+        if is_recruiter:
+            reservation = await quota_service.reserve_ai_quota(
+                user_id=current_user.id,
+                idempotency_key=idempotency_key,
+                is_admin=False,  # recruiters are not admins here
+            )
+
+        result = await service.explain_match(
             match_result=data.match_result,
             candidate=data.candidate,
             job=data.job,
         )
+
+        # Finalize reservation on success (only if reservation was created)
+        if reservation:
+            await quota_service.finalize_reservation(reservation.usage_id, success=True)
+        return result
+
     except EmptyDocumentError as exc:
+        # Release reservation on validation error
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
     except InvalidDocumentError as exc:
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except ForbiddenException as exc:
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
             detail=str(exc),
         ) from exc
 
@@ -278,36 +343,71 @@ async def explain_match(
 )
 async def generate_interview_questions(
     data: GenerateInterviewQuestionsRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
     service: InterviewGeneratorService = Depends(
         _get_interview_generator_service
     ),
 ) -> GenerateInterviewQuestionsResponse:
+    quota_service = QuotaEnforcementService(db)
+    reservation = None
+    is_admin = current_user.role == UserRole.ADMIN
     try:
-        return await service.generate_questions(data)
+        # Reserve quota for AI feature
+        reservation = await quota_service.reserve_ai_quota(
+            user_id=current_user.id,
+            idempotency_key=idempotency_key,
+            is_admin=is_admin,
+        )
+
+        result = await service.generate_questions(data)
+
+        # Finalize reservation on success
+        await quota_service.finalize_reservation(reservation.usage_id, success=True)
+        return result
+
     except EmptyDocumentError as exc:
+        # Release reservation on validation error
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
     except InvalidDocumentError as exc:
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
     except AIProviderQuotaExceededError as exc:
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=str(exc),
             headers={"Retry-After": str(exc.retry_after) if exc.retry_after else "60"},
         ) from exc
     except AIProviderUnavailableError as exc:
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
             headers={"Retry-After": str(exc.retry_after) if exc.retry_after else "60"},
         ) from exc
+    except ForbiddenException as exc:
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
     except AIError as exc:
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
@@ -444,27 +544,57 @@ async def semantic_search_candidates(
     q: str = Query(..., min_length=1),
     limit: int = Query(default=10, ge=1, le=100),
     score_threshold: float | None = Query(default=None, ge=0.0, le=1.0),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     current_user: User = Depends(require_recruiter),
     db: AsyncSession = Depends(get_db),
     service: SemanticSearchService = Depends(_get_semantic_search_service),
 ) -> list[SemanticSearchResult]:
+    quota_service = QuotaEnforcementService(db)
+    reservation = None
+    is_admin = current_user.role == UserRole.ADMIN
     try:
+        # Reserve quota for candidate search
+        reservation = await quota_service.reserve_search_quota(
+            user_id=current_user.id,
+            idempotency_key=idempotency_key,
+            is_admin=is_admin,
+        )
+
         from app.repositories import BaseRepository
         from app.models import CandidateProfile
 
         candidate_repo = BaseRepository(db, CandidateProfile)
-        return await service.search_candidates(
+        results = await service.search_candidates(
             query=q,
             limit=limit,
             score_threshold=score_threshold,
             candidate_repository=candidate_repo,
         )
+
+        # Finalize reservation on success
+        await quota_service.finalize_reservation(reservation.usage_id, success=True)
+        return results
+
     except EmptyDocumentError as exc:
+        # Release reservation on validation error
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except ForbiddenException as exc:
+        # Quota exceeded or no subscription
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
     except (InvalidDocumentError, AIError) as exc:
+        # Release reservation on other errors
+        if reservation:
+            await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
@@ -482,11 +612,31 @@ async def recommend_candidates_for_job(
     db: AsyncSession = Depends(get_db),
     job_id: uuid.UUID = Query(...),
     limit: int = Query(default=10, ge=1, le=100),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     _: RateLimitResult = Depends(recommendations_rate_limit),
 ) -> list[CandidateMatchRecommendation]:
+    # Candidate recommendations consume candidate-search quota, same as search.
+    # Admin (allowed via require_recruiter) bypasses quota server-side.
+    quota_service = QuotaEnforcementService(db)
+    reservation = None
+    is_admin = current_user.role == UserRole.ADMIN
+    try:
+        reservation = await quota_service.reserve_search_quota(
+            user_id=current_user.id,
+            idempotency_key=idempotency_key,
+            reference_id=job_id,
+            is_admin=is_admin,
+        )
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+
     try:
         job = await JobService(db).get_recruiter_job_by_id(current_user, job_id)
     except EntityNotFoundException as exc:
+        await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
@@ -511,10 +661,14 @@ async def recommend_candidates_for_job(
     if retrieved is not None:
         job_vector = retrieved["vector"]
     else:
-        job_vector = await service.embedding_service.embed_job(parsed_job)
+        try:
+            job_vector = await service.embedding_service.embed_job(parsed_job)
+        except Exception:
+            await quota_service.release_reservation(reservation.usage_id)
+            raise
 
     try:
-        return await service.recommend_candidates_for_job(
+        result = await service.recommend_candidates_for_job(
             job_id=job_id,
             parsed_job=parsed_job,
             job_vector=job_vector,
@@ -523,10 +677,17 @@ async def recommend_candidates_for_job(
             actor_user=current_user,
         )
     except EntityNotFoundException as exc:
+        await quota_service.release_reservation(reservation.usage_id)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+    except Exception:
+        await quota_service.release_reservation(reservation.usage_id)
+        raise
+
+    await quota_service.finalize_reservation(reservation.usage_id, success=True)
+    return result
 from app.services.ai_evaluation_service import AIEvaluationService, EvaluationSample, RelevanceLabel
 
 @router.post(

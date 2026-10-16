@@ -5,11 +5,12 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import EntityNotFoundException, InvalidTransitionException
-from app.domain.enums import JobStatus, UserRole
+from app.core.exceptions import EntityNotFoundException, ForbiddenException, InvalidTransitionException
+from app.domain.enums import JobStatus, JobType, UserRole, WorkplaceType
 from app.models import Company, Job, JobSkill, Skill, User
 from app.repositories import CompanyRepository, JobRepository
 from app.schemas.job import JobCreate, JobUpdate
+from app.services.quota_enforcement_service import QuotaEnforcementService
 from app.services.user_service import UserService
 
 JOB_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
@@ -26,12 +27,14 @@ class JobService:
         session: AsyncSession,
         embedding_service=None,
         vector_repository=None,
+        quota_service=None,
     ) -> None:
         from app.ai.embeddings.embedding_service import (
             EmbeddingService,
             SentenceTransformerEmbeddingProvider,
         )
         from app.ai.vector_db.qdrant_client import QdrantVectorRepository
+        from app.services.quota_enforcement_service import QuotaEnforcementService
 
         self.session = session
         self.jobs = JobRepository(session, Job)
@@ -40,8 +43,9 @@ class JobService:
             SentenceTransformerEmbeddingProvider()
         )
         self.vector_repository = vector_repository or QdrantVectorRepository()
+        self.quota_service = quota_service or QuotaEnforcementService(session)
 
-    async def create_job(self, data: JobCreate) -> Job:
+    async def create_job(self, data: JobCreate, user_id: uuid.UUID | None = None, is_admin: bool = False) -> Job:
         company = await self.companies.get_by_id(data.company_id)
         if company is None:
             raise EntityNotFoundException(f"Company {data.company_id} not found")
@@ -52,7 +56,19 @@ class JobService:
         if required_skills is None:
             required_skills = data.skills or []
 
+        # Determine job_id up front so the quota ledger references the actual job
+        job_id = uuid.uuid4()
+
+        # Check quota if creating as PUBLISHED (same transaction as job creation)
+        if data.status == JobStatus.PUBLISHED and user_id is not None:
+            await self.quota_service.consume_job_post_quota_idempotent(
+                user_id=user_id,
+                job_id=job_id,
+                is_admin=is_admin,
+            )
+
         job = Job(
+            id=job_id,
             company_id=data.company_id,
             title=data.title,
             description=data.description,
@@ -66,6 +82,7 @@ class JobService:
         self.session.add(job)
         try:
             await self.session.flush()  # Get the job ID before adding skills
+
             await self._attach_skills(job, required_skills, data.preferred_skills)
             await self._reindex_job(job)
             await self.session.commit()
@@ -78,8 +95,8 @@ class JobService:
             raise
         return job
 
-    async def publish_job(self, job_id: uuid.UUID) -> Job:
-        return await self.update_job_status(job_id, JobStatus.PUBLISHED)
+    async def publish_job(self, job_id: uuid.UUID, user_id: uuid.UUID | None = None, is_admin: bool = False) -> Job:
+        return await self.update_job_status(job_id, JobStatus.PUBLISHED, user_id, is_admin)
 
     async def close_job(self, job_id: uuid.UUID) -> Job:
         return await self.update_job_status(job_id, JobStatus.CLOSED)
@@ -88,6 +105,8 @@ class JobService:
         self,
         job_id: uuid.UUID,
         new_status: JobStatus,
+        user_id: uuid.UUID | None = None,
+        is_admin: bool = False,
     ) -> Job:
         job = await self.jobs.get_job_with_company_and_skills(job_id)
         if job is None:
@@ -98,6 +117,19 @@ class JobService:
                 f"Cannot change job status from {job.status.value!r} "
                 f"to {new_status.value!r}"
             )
+
+        # Check quota when transitioning to PUBLISHED
+        if new_status == JobStatus.PUBLISHED and job.status != JobStatus.PUBLISHED:
+            if user_id is not None:
+                # Idempotent: a job already charged under the current subscription
+                # can be reopened without consuming another unit. A different
+                # subscription is charged once.
+                await self.quota_service.consume_job_post_quota_idempotent(
+                    user_id=user_id,
+                    job_id=job_id,
+                    is_admin=is_admin,
+                )
+
         job.status = new_status
         # Qdrant upsert BEFORE SQL commit (Architecture v3.2: Qdrant-First Dependency)
         await self._reindex_job(job)
