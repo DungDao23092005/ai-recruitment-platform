@@ -3,10 +3,19 @@ from __future__ import annotations
 import hmac
 import hashlib
 import urllib.parse
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.core.config import settings
+
+VIETNAM_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+
+def _vietnam_now() -> datetime:
+    """Current time in Vietnam (GMT+7), timezone-aware."""
+    return datetime.now(VIETNAM_TZ)
 
 
 class VNPAYProvider:
@@ -50,7 +59,8 @@ class VNPAYProvider:
         order_type: str = "other",
         return_url: str | None = None,
         ipn_url: str | None = None,
-        expire_minutes: int = 15,
+        expire_minutes: int | None = None,
+        create_time: datetime | None = None,
     ) -> dict[str, str]:
         """Build VNPAY payment parameters according to current specification.
 
@@ -63,15 +73,42 @@ class VNPAYProvider:
             order_type: Order type code
             return_url: Override return URL
             ipn_url: Override IPN URL
-            expire_minutes: Payment expiration in minutes
+            expire_minutes: Payment expiration in minutes. When omitted, the
+                provider's configured ``self.timeout`` (from ``VNPAY_TIMEOUT``)
+                is used. Must be a positive integer.
+            create_time: Authoritative timezone-aware creation instant. When
+                supplied, it is used (converted to Vietnam time) for both
+                ``vnp_CreateDate`` and ``vnp_ExpireDate`` so that the PAY
+                request timestamp matches the persisted
+                ``PaymentOrder.created_at`` exactly. When omitted, the
+                provider reads the current Vietnam time instead. Naive
+                datetimes are rejected because interpreting them would depend
+                on the host machine's timezone.
 
         Returns:
             Dictionary of VNPAY parameters (without vnp_SecureHash)
+
+        Raises:
+            ValueError: If ``expire_minutes`` is not a positive integer, or if
+                ``create_time`` is a naive (timezone-unaware) datetime.
         """
-        now = datetime.utcnow()
-        create_date = now.strftime("%Y%m%d%H%M%S")
-        from datetime import timedelta
-        expire_date = (now + timedelta(minutes=expire_minutes)).strftime("%Y%m%d%H%M%S")
+        effective_timeout = expire_minutes if expire_minutes is not None else self.timeout
+        if not isinstance(effective_timeout, int) or isinstance(effective_timeout, bool) or effective_timeout <= 0:
+            raise ValueError("expire_minutes must be a positive integer")
+
+        # All VNPAY date fields must use Vietnam time (GMT+7), never naive UTC.
+        # Use the caller-supplied authoritative instant when provided so that
+        # the PAY vnp_CreateDate cannot drift from the persisted
+        # PaymentOrder.created_at across a second boundary.
+        if create_time is not None:
+            if create_time.tzinfo is None or create_time.utcoffset() is None:
+                raise ValueError("create_time must be a timezone-aware datetime")
+            create_dt = create_time.astimezone(VIETNAM_TZ)
+        else:
+            create_dt = _vietnam_now()
+
+        create_date = create_dt.strftime("%Y%m%d%H%M%S")
+        expire_date = (create_dt + timedelta(minutes=effective_timeout)).strftime("%Y%m%d%H%M%S")
 
         params = {
             "vnp_Version": "2.1.0",
@@ -163,13 +200,22 @@ class VNPAYProvider:
     ) -> dict[str, str]:
         """Build VNPAY querydr (transaction query) parameters.
 
+        Uses the official QueryDr v2.1.0 wire field names:
+        - ``vnp_TransactionDate``: the original payment creation time in
+          Vietnam time (GMT+7), matching that payment's original
+          ``vnp_CreateDate``.
+        - ``vnp_CreateDate``: the current QueryDr request creation time in
+          Vietnam time (GMT+7).
+        - ``vnp_RequestId``: a unique identifier for this QueryDr request.
+
         Args:
             txn_ref: Merchant transaction reference
-            transaction_date: Transaction date in YYYYMMDDHHMMSS format
+            transaction_date: Original payment creation time in
+                ``YYYYMMDDHHMMSS`` format (Vietnam time)
             client_ip: Client IP address
 
         Returns:
-            Dictionary of query parameters (without vnp_SecureHash)
+            Dictionary of query parameters (without ``vnp_SecureHash``)
         """
         params = {
             "vnp_Version": "2.1.0",
@@ -177,26 +223,70 @@ class VNPAYProvider:
             "vnp_TmnCode": self.tmn_code,
             "vnp_TxnRef": txn_ref,
             "vnp_OrderInfo": f"Query transaction {txn_ref}",
-            "vnp_TransDate": transaction_date,
-            "vnp_CreateDate": datetime.utcnow().strftime("%Y%m%d%H%M%S"),
+            "vnp_TransactionDate": transaction_date,
+            "vnp_RequestId": uuid.uuid4().hex,
+            "vnp_CreateDate": _vietnam_now().strftime("%Y%m%d%H%M%S"),
             "vnp_IpAddr": client_ip or "127.0.0.1",
         }
         return params
 
-    def build_query_url(self, params: dict[str, str]) -> str:
-        """Build VNPAY query API URL with secure hash.
+    # Fields that form the QueryDr v2.1.0 canonical signing string, in the
+    # exact order required by the VNPAY specification.
+    QUERYDR_SIGN_FIELDS = (
+        "vnp_RequestId",
+        "vnp_Version",
+        "vnp_Command",
+        "vnp_TmnCode",
+        "vnp_TxnRef",
+        "vnp_TransactionDate",
+        "vnp_CreateDate",
+        "vnp_IpAddr",
+        "vnp_OrderInfo",
+    )
+
+    def generate_query_secure_hash(self, params: dict[str, str]) -> str:
+        """Generate HMAC-SHA512 secure hash for a QueryDr request.
+
+        The canonical signing string is the pipe-delimited concatenation of
+        the documented fields in exactly this order::
+
+            vnp_RequestId|vnp_Version|vnp_Command|vnp_TmnCode|vnp_TxnRef|
+            vnp_TransactionDate|vnp_CreateDate|vnp_IpAddr|vnp_OrderInfo
 
         Args:
-            params: Query parameters (without vnp_SecureHash)
+            params: QueryDr parameters (without ``vnp_SecureHash``)
 
         Returns:
-            Complete query URL
+            Hex-encoded HMAC-SHA512 hash
         """
-        secure_hash = self.generate_secure_hash(params)
-        params_with_hash = {**params, "vnp_SecureHash": secure_hash}
-        sorted_params = self._sort_params(params_with_hash)
-        query_string = self._build_query_string(sorted_params)
-        return f"{self.query_url}?{query_string}"
+        canonical = "|".join(params[field] for field in self.QUERYDR_SIGN_FIELDS)
+        return hmac.new(
+            self.hash_secret.encode("utf-8"),
+            canonical.encode("utf-8"),
+            hashlib.sha512,
+        ).hexdigest()
+
+    def build_query_request(self, params: dict[str, str]) -> dict[str, object]:
+        """Build a complete QueryDr HTTP POST request.
+
+        VNPAY QueryDr v2.1.0 is invoked as an HTTP POST with a JSON body,
+        not a GET URL with a sorted query string.
+
+        Args:
+            params: QueryDr parameters (without ``vnp_SecureHash``)
+
+        Returns:
+            A dict with ``url``, ``json`` (body including
+            ``vnp_SecureHash``), and ``headers`` suitable for passing to an
+            HTTP client.
+        """
+        secure_hash = self.generate_query_secure_hash(params)
+        body = {**params, "vnp_SecureHash": secure_hash}
+        return {
+            "url": self.query_url,
+            "json": body,
+            "headers": {"Content-Type": "application/json"},
+        }
 
     def parse_response_code(self, response_code: str) -> tuple[bool, str]:
         """Parse VNPAY response code into success status and message.

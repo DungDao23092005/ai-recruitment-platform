@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,7 @@ from app.repositories import (
     SubscriptionRepository,
 )
 from app.services.payment_providers import VNPAYProvider
+from app.services.payment_providers.vnpay import VIETNAM_TZ
 from app.services.recruiter_access import ensure_recruiter_access
 
 
@@ -105,6 +107,19 @@ class PaymentService:
         # 4. Create PaymentOrder
         internal_order_id = self._generate_internal_order_id()
 
+        # Resolve the timeout once from the configured provider (VNPAY_TIMEOUT,
+        # in minutes). The same value is used for both the application-level
+        # expiration and the VNPAY gateway expiration so they represent the
+        # same instant.
+        timeout = self.vnpay.timeout
+
+        # Capture ONE authoritative creation instant (UTC-aware) and reuse it
+        # for the persisted order timestamp, the application expiration, and
+        # the VNPAY PAY request. This prevents a cross-second clock read from
+        # making the stored created_at differ from the original PAY
+        # vnp_CreateDate, which QueryDr relies on to reference the transaction.
+        now_utc = utc_now()
+
         payment_order = PaymentOrder(
             user_id=user_id,
             plan_id=plan_id,
@@ -114,14 +129,20 @@ class PaymentService:
             provider=PaymentProvider.VNPAY,
             internal_order_id=internal_order_id,
             status=PaymentOrderStatus.PENDING,
-            expired_at=utc_now() + timedelta(minutes=15),  # Match VNPAY expire time
+            created_at=now_utc,
+            expired_at=now_utc + timedelta(minutes=timeout),
         )
         self.session.add(payment_order)
-        await self.session.commit()
-        await self.session.refresh(payment_order)
-        await self.session.refresh(subscription)
+        try:
+            await self.session.commit()
+            await self.session.refresh(payment_order)
+            await self.session.refresh(subscription)
+        except Exception:
+            await self.session.rollback()
+            raise
 
-        # 5. Build VNPAY parameters
+        # 5. Build VNPAY parameters (same timeout AND same creation instant as
+        # the persisted order, so PAY vnp_CreateDate == created_at).
         order_info = f"Thanh toan goi tuyen dung {plan.name}"
         params = self.vnpay.build_payment_params(
             amount=amount,
@@ -129,6 +150,8 @@ class PaymentService:
             order_info=order_info,
             client_ip=client_ip,
             return_url=return_url,
+            expire_minutes=timeout,
+            create_time=now_utc,
         )
 
         # 6. Build payment URL with secure hash
@@ -400,16 +423,25 @@ class PaymentService:
         if payment_order is None:
             return None
 
-        transaction_date = payment_order.created_at.strftime("%Y%m%d%H%M%S")
+        # vnp_TransDate must identify the original payment transaction's
+        # creation time in Vietnam time (GMT+7), matching the original
+        # payment request's vnp_CreateDate. created_at is stored UTC-aware;
+        # convert it to Vietnam time rather than substituting the current time.
+        vietnam_created_at = payment_order.created_at.astimezone(VIETNAM_TZ)
+        transaction_date = vietnam_created_at.strftime("%Y%m%d%H%M%S")
         params = self.vnpay.build_query_params(
             txn_ref=internal_order_id,
             transaction_date=transaction_date,
         )
-        query_url = self.vnpay.build_query_url(params)
+        request = self.vnpay.build_query_request(params)
 
-        # Note: Actual HTTP call would be made here using async HTTP client
-        # For now, return the query URL for external calling
-        return {
-            "query_url": query_url,
-            "params": params,
-        }
+        # QueryDr v2.1.0 is an HTTP POST with a JSON body.
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                request["url"],
+                json=request["json"],
+                headers=request["headers"],
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            return response.json()

@@ -3,11 +3,13 @@ from __future__ import annotations
 import hmac
 import hashlib
 import urllib.parse
+from datetime import datetime, timedelta
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.services.payment_providers.vnpay import VNPAYProvider
+from app.services.payment_providers.vnpay import VNPAYProvider, VIETNAM_TZ
 
 
 class TestVNPAYProvider:
@@ -257,68 +259,145 @@ class TestVNPAYProvider:
         assert url.startswith("https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?")
 
     def test_query_params_construction(self, provider: VNPAYProvider) -> None:
-        """Test querydr parameter construction."""
+        """Test querydr parameter construction uses official v2.1.0 field names."""
         params = provider.build_query_params(
             txn_ref="VNPAY_TEST_123",
             transaction_date="20240101120000",
             client_ip="192.168.1.1",
         )
 
+        # Required official fields present
         assert params["vnp_Version"] == "2.1.0"
         assert params["vnp_Command"] == "querydr"
         assert params["vnp_TmnCode"] == "TEST_TMN_CODE"
         assert params["vnp_TxnRef"] == "VNPAY_TEST_123"
-        assert params["vnp_TransDate"] == "20240101120000"
+        assert params["vnp_TransactionDate"] == "20240101120000"
         assert params["vnp_IpAddr"] == "192.168.1.1"
+        assert params["vnp_OrderInfo"] == "Query transaction VNPAY_TEST_123"
+        assert "vnp_CreateDate" in params
+        assert "vnp_RequestId" in params
 
-    def test_build_query_url(self, provider: VNPAYProvider) -> None:
-        """Test query URL construction."""
+        # Obsolete wire alias must be absent
+        assert "vnp_TransDate" not in params
+
+    def test_build_query_request(self, provider: VNPAYProvider) -> None:
+        """Test querydr request is HTTP POST JSON with secure hash."""
         params = provider.build_query_params(
             txn_ref="VNPAY_TEST_123",
             transaction_date="20240101120000",
         )
-        url = provider.build_query_url(params)
+        request = provider.build_query_request(params)
 
-        assert "vnp_SecureHash=" in url
-        assert url.startswith("https://sandbox.vnpayment.vn/merchant_webapi/api/transaction?")
+        assert request["url"] == (
+            "https://sandbox.vnpayment.vn/merchant_webapi/api/transaction"
+        )
+        assert request["headers"]["Content-Type"] == "application/json"
 
-    def test_compare_digest_used(self, provider: VNPAYProvider) -> None:
-        """Test that hmac.compare_digest is used for timing-safe comparison."""
-        # This test verifies the implementation uses compare_digest
-        # by checking the source code indirectly through behavior
-        params = {
-            "vnp_Amount": "10000000",
-            "vnp_Command": "pay",
-            "vnp_TmnCode": "TEST_TMN_CODE",
-        }
+        body = request["json"]
+        assert "vnp_SecureHash" in body
+        assert len(body["vnp_SecureHash"]) == 128  # SHA-512 hex length
+        assert body["vnp_Command"] == "querydr"
+        assert body["vnp_TxnRef"] == "VNPAY_TEST_123"
+
+        # Hash matches manual pipe-delimited canonical computation
+        canonical = "|".join(body[field] for field in provider.QUERYDR_SIGN_FIELDS)
+        expected = hmac.new(
+            b"TEST_HASH_SECRET",
+            canonical.encode("utf-8"),
+            hashlib.sha512,
+        ).hexdigest()
+        assert body["vnp_SecureHash"] == expected
+
+    def test_query_request_id_unique(self, provider: VNPAYProvider) -> None:
+        """Each QueryDr request must carry a unique vnp_RequestId."""
+        params_a = provider.build_query_params(
+            txn_ref="VNPAY_TEST_123", transaction_date="20240101120000"
+        )
+        params_b = provider.build_query_params(
+            txn_ref="VNPAY_TEST_123", transaction_date="20240101120000"
+        )
+        assert params_a["vnp_RequestId"] != params_b["vnp_RequestId"]
+
+    def test_query_secure_hash_pipe_delimited_order(self, provider: VNPAYProvider) -> None:
+        """QueryDr signature uses the documented pipe-delimited field order."""
+        params = provider.build_query_params(
+            txn_ref="VNPAY_TEST_123",
+            transaction_date="20240101120000",
+            client_ip="192.168.1.1",
+        )
+        request = provider.build_query_request(params)
+        body = request["json"]
+
+        canonical = "|".join(
+            body[field]
+            for field in provider.QUERYDR_SIGN_FIELDS
+        )
+        expected = hmac.new(
+            b"TEST_HASH_SECRET",
+            canonical.encode("utf-8"),
+            hashlib.sha512,
+        ).hexdigest()
+        assert body["vnp_SecureHash"] == expected
+
+    def test_query_create_date_uses_vietnam_time(self, provider: VNPAYProvider) -> None:
+        """QueryDr vnp_CreateDate must use Vietnam time."""
+        fixed = self._fixed_vietnam_now()
+        with patch("app.services.payment_providers.vnpay._vietnam_now", return_value=fixed):
+            params = provider.build_query_params(
+                txn_ref="VNPAY_TEST_123", transaction_date="20240101120000"
+            )
+        create_dt = datetime.strptime(params["vnp_CreateDate"], "%Y%m%d%H%M%S").replace(
+            tzinfo=VIETNAM_TZ
+        )
+        assert create_dt == fixed
+        assert create_dt.utcoffset() == timedelta(hours=7)
+
+    def test_query_transaction_date_preserves_original(self, provider: VNPAYProvider) -> None:
+        """QueryDr vnp_TransactionDate must be the original payment creation time, not now."""
+        params = provider.build_query_params(
+            txn_ref="VNPAY_TEST_123", transaction_date="20240101120000"
+        )
+        assert params["vnp_TransactionDate"] == "20240101120000"
+
+    def _fixed_vietnam_now(self) -> datetime:
+        """Fixed Vietnam (GMT+7) instant near a day boundary for deterministic tests."""
+        return datetime(2026, 1, 31, 23, 50, 0, tzinfo=VIETNAM_TZ)
+
+    def test_signature_valid_after_timestamp_change(self, provider: VNPAYProvider) -> None:
+        """Signature generation/verification must remain valid with Vietnam timestamps."""
+        fixed = self._fixed_vietnam_now()
+        with patch("app.services.payment_providers.vnpay._vietnam_now", return_value=fixed):
+            params = provider.build_payment_params(
+                amount=100000, order_id="X", order_info="T", client_ip="127.0.0.1"
+            )
         secure_hash = provider.generate_secure_hash(params)
-        params_with_hash = {**params, "vnp_SecureHash": secure_hash}
+        assert provider.verify_signature({**params, "vnp_SecureHash": secure_hash}) is True
 
-        # Should not raise and should return True
-        assert provider.verify_signature(params_with_hash) is True
+    # ------------------------------------------------------------------
+    # Restored regression tests (removed during the QueryDr edits).
+    # Tests 1-7 below are restored verbatim from the committed base version.
+    # Tests 8-14 were not recoverable from git history and are reconstructed
+    # equivalents with meaningful assertions.
+    # ------------------------------------------------------------------
 
-        # Verify the implementation uses compare_digest by checking
-        # that a constant-time comparison is used (indirect test)
-        # The actual implementation in vnpay.py uses hmac.compare_digest
+    def _make_provider(
+        self, *, timeout: int = 15, secret: str = "TEST_HASH_SECRET"
+    ) -> VNPAYProvider:
+        """Build a provider with an explicit configured timeout/secret."""
+        with patch("app.services.payment_providers.vnpay.settings") as mock_settings:
+            mock_settings.VNPAY_TMN_CODE = "TEST_TMN_CODE"
+            mock_settings.VNPAY_HASH_SECRET = secret
+            mock_settings.VNPAY_PAYMENT_URL = "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
+            mock_settings.VNPAY_QUERY_URL = "https://sandbox.vnpayment.vn/merchant_webapi/api/transaction"
+            mock_settings.VNPAY_RETURN_URL = "http://localhost:5173/payment-result"
+            mock_settings.VNPAY_IPN_URL = "http://localhost:8000/api/v1/payments/vnpay/ipn"
+            mock_settings.VNPAY_TIMEOUT = timeout
+            return VNPAYProvider()
 
-    def test_verify_signature_tampered_txn_ref(self, provider: VNPAYProvider) -> None:
-        """Test signature verification fails when TxnRef is tampered."""
-        params = {
-            "vnp_Amount": "10000000",
-            "vnp_Command": "pay",
-            "vnp_TmnCode": "TEST_TMN_CODE",
-            "vnp_TxnRef": "VNPAY_20240101_120000_ABCD1234",
-        }
-        secure_hash = provider.generate_secure_hash(params)
-
-        # Tamper with TxnRef
-        params_tampered = {
-            **params,
-            "vnp_TxnRef": "VNPAY_20240101_120000_EFGH5678",
-            "vnp_SecureHash": secure_hash,
-        }
-
-        assert provider.verify_signature(params_tampered) is False
+    @staticmethod
+    def _parse_vietnam(value: str) -> datetime:
+        """Parse a ``YYYYMMDDHHMMSS`` VNPAY date string as Vietnam time."""
+        return datetime.strptime(value, "%Y%m%d%H%M%S").replace(tzinfo=VIETNAM_TZ)
 
     def test_verify_signature_tampered_order_info(self, provider: VNPAYProvider) -> None:
         """Test signature verification fails when order info is tampered."""
@@ -395,16 +474,7 @@ class TestVNPAYProvider:
         assert provider.verify_signature({**params2, "vnp_SecureHash": hash2}) is True
 
         # Test vector 3: Different secret produces different hash
-        with patch("app.services.payment_providers.vnpay.settings") as mock_settings:
-            mock_settings.VNPAY_TMN_CODE = "TEST_TMN_CODE"
-            mock_settings.VNPAY_HASH_SECRET = "DIFFERENT_SECRET"
-            mock_settings.VNPAY_PAYMENT_URL = "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
-            mock_settings.VNPAY_QUERY_URL = "https://sandbox.vnpayment.vn/merchant_webapi/api/transaction"
-            mock_settings.VNPAY_RETURN_URL = "http://localhost:5173/payment-result"
-            mock_settings.VNPAY_IPN_URL = "http://localhost:8000/api/v1/payments/vnpay/ipn"
-            mock_settings.VNPAY_TIMEOUT = 15
-            provider2 = VNPAYProvider()
-
+        provider2 = self._make_provider(secret="DIFFERENT_SECRET")
         hash2_diff = provider2.generate_secure_hash(params1)
         assert hash2_diff != hash1
 
@@ -459,3 +529,82 @@ class TestVNPAYProvider:
 
         # Response 24 (user cancelled) + Status 00 = Fail
         assert provider.is_payment_successful({"vnp_ResponseCode": "24", "vnp_TransactionStatus": "00"}) is False
+
+    # --- Reconstructed tests (8-14): not recoverable from git history ---
+
+    def test_create_date_uses_vietnam_time(self, provider: VNPAYProvider) -> None:
+        """PAY vnp_CreateDate must be rendered from Vietnam (GMT+7) time."""
+        fixed = self._fixed_vietnam_now()
+        with patch("app.services.payment_providers.vnpay._vietnam_now", return_value=fixed):
+            params = provider.build_payment_params(
+                amount=100000, order_id="TEST_123", order_info="Test"
+            )
+        create_dt = self._parse_vietnam(params["vnp_CreateDate"])
+        assert create_dt == fixed
+        assert create_dt.utcoffset() == timedelta(hours=7)
+
+    def test_expire_date_uses_vietnam_time(self, provider: VNPAYProvider) -> None:
+        """PAY vnp_ExpireDate must be rendered from Vietnam time plus the timeout."""
+        fixed = self._fixed_vietnam_now()
+        with patch("app.services.payment_providers.vnpay._vietnam_now", return_value=fixed):
+            params = provider.build_payment_params(
+                amount=100000, order_id="TEST_123", order_info="Test", expire_minutes=15
+            )
+        expire_dt = self._parse_vietnam(params["vnp_ExpireDate"])
+        assert expire_dt == fixed + timedelta(minutes=15)
+        assert expire_dt.utcoffset() == timedelta(hours=7)
+
+    def test_configured_timeout_thirty_minutes(self) -> None:
+        """A configured 30-minute timeout is honoured by the PAY request."""
+        provider = self._make_provider(timeout=30)
+        fixed = self._fixed_vietnam_now()
+        with patch("app.services.payment_providers.vnpay._vietnam_now", return_value=fixed):
+            params = provider.build_payment_params(
+                amount=100000, order_id="TEST_123", order_info="Test"
+            )
+        create_dt = self._parse_vietnam(params["vnp_CreateDate"])
+        expire_dt = self._parse_vietnam(params["vnp_ExpireDate"])
+        assert expire_dt - create_dt == timedelta(minutes=30)
+
+    def test_omitting_timeout_uses_provider_timeout(self, provider: VNPAYProvider) -> None:
+        """Omitting expire_minutes falls back to the configured provider timeout."""
+        fixed = self._fixed_vietnam_now()
+        with patch("app.services.payment_providers.vnpay._vietnam_now", return_value=fixed):
+            params = provider.build_payment_params(
+                amount=100000, order_id="TEST_123", order_info="Test"
+            )
+        create_dt = self._parse_vietnam(params["vnp_CreateDate"])
+        expire_dt = self._parse_vietnam(params["vnp_ExpireDate"])
+        assert expire_dt - create_dt == timedelta(minutes=provider.timeout)
+
+    def test_explicit_timeout_overrides_configured(self, provider: VNPAYProvider) -> None:
+        """An explicit expire_minutes overrides the configured timeout."""
+        fixed = self._fixed_vietnam_now()
+        with patch("app.services.payment_providers.vnpay._vietnam_now", return_value=fixed):
+            params = provider.build_payment_params(
+                amount=100000, order_id="TEST_123", order_info="Test", expire_minutes=45
+            )
+        create_dt = self._parse_vietnam(params["vnp_CreateDate"])
+        expire_dt = self._parse_vietnam(params["vnp_ExpireDate"])
+        assert expire_dt - create_dt == timedelta(minutes=45)
+
+    def test_invalid_timeout_rejected(self, provider: VNPAYProvider) -> None:
+        """Zero or negative timeouts must be rejected."""
+        for invalid in (0, -1, -15):
+            with pytest.raises(ValueError):
+                provider.build_payment_params(
+                    amount=100000,
+                    order_id="TEST_123",
+                    order_info="Test",
+                    expire_minutes=invalid,
+                )
+
+    def test_day_rollover(self, provider: VNPAYProvider) -> None:
+        """Expiration crossing midnight must roll to the next day correctly."""
+        fixed = datetime(2026, 1, 31, 23, 50, 0, tzinfo=VIETNAM_TZ)
+        with patch("app.services.payment_providers.vnpay._vietnam_now", return_value=fixed):
+            params = provider.build_payment_params(
+                amount=100000, order_id="TEST_123", order_info="Test", expire_minutes=15
+            )
+        assert params["vnp_CreateDate"] == "20260131235000"
+        assert params["vnp_ExpireDate"] == "20260201000500"

@@ -1,9 +1,12 @@
 import pytest
 import uuid
 import asyncio
-from datetime import datetime
+import hmac
+import hashlib
+import urllib.parse
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.core.exceptions import (
     ConflictException,
@@ -268,6 +271,17 @@ def _make_payment_service_session() -> MagicMock:
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
     session.execute = AsyncMock()
+
+    async def _fake_flush():
+        # Mock flush assigns ids like a real database would on flush.
+        for call in session.add.call_args_list:
+            obj = call.args[0]
+            if isinstance(obj, Subscription) and getattr(obj, "id", None) is None:
+                obj.id = uuid.uuid4()
+            if isinstance(obj, PaymentOrder) and getattr(obj, "id", None) is None:
+                obj.id = uuid.uuid4()
+
+    session.flush = AsyncMock(side_effect=_fake_flush)
     return session
 
 
@@ -518,3 +532,378 @@ class TestActivateSubscriptionForPaymentRoleTransition:
         add_calls = [call for call in session.add.call_args_list
                      if call.args and hasattr(call.args[0], '__class__') and call.args[0].__class__.__name__ == 'RecruiterProfile']
         assert len(add_calls) == 0  # No new profile created
+
+
+class TestCreateVnpayPayment:
+    """Tests for VNPAY payment creation timeout propagation (Fix B)."""
+
+    def _build_provider_with_timeout(self, timeout_minutes: int) -> VNPAYProvider:
+        """Build a VNPAY provider with a controlled VNPAY_TIMEOUT."""
+        with patch("app.services.payment_providers.vnpay.settings") as mock_settings:
+            mock_settings.VNPAY_TMN_CODE = "TEST_TMN_CODE"
+            mock_settings.VNPAY_HASH_SECRET = "TEST_HASH_SECRET"
+            mock_settings.VNPAY_PAYMENT_URL = "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
+            mock_settings.VNPAY_QUERY_URL = "https://sandbox.vnpayment.vn/merchant_webapi/api/transaction"
+            mock_settings.VNPAY_RETURN_URL = "http://localhost:3000/payment-result"
+            mock_settings.VNPAY_IPN_URL = "http://localhost:8000/api/v1/payments/vnpay/ipn"
+            mock_settings.VNPAY_TIMEOUT = timeout_minutes
+            provider = VNPAYProvider()
+        return provider
+
+    def _make_service(self) -> tuple[PaymentService, MagicMock]:
+        session = _make_payment_service_session()
+        return PaymentService(session), session
+
+    def test_expired_at_and_provider_timeout_use_configured_timeout(self) -> None:
+        """VNPAY_TIMEOUT=30 → PaymentOrder.expired_at is +30 min and provider gets expire_minutes=30."""
+        service, session = self._make_service()
+        user_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        plan = MagicMock()
+        plan.id = plan_id
+        plan.price = 1_000_000
+        plan.name = "Test Plan"
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+
+        fixed_utc = datetime(2026, 5, 5, 10, 0, 0, tzinfo=timezone.utc)
+        provider = self._build_provider_with_timeout(30)
+        captured: dict[str, object] = {}
+        original_build = provider.build_payment_params
+
+        def capture_build_params(**kwargs):
+            captured["expire_minutes"] = kwargs.get("expire_minutes")
+            return original_build(**kwargs)
+
+        provider.build_payment_params = capture_build_params  # type: ignore[method-assign]
+        service.vnpay = provider  # type: ignore[assignment]
+
+        with patch("app.services.payment_service.utc_now", return_value=fixed_utc):
+            url, internal_order_id, subscription_id = asyncio.run(
+                service.create_vnpay_payment(user_id, plan_id, "127.0.0.1")
+            )
+
+        added_orders = [
+            c.args[0]
+            for c in session.add.call_args_list
+            if isinstance(c.args[0], PaymentOrder)
+        ]
+        assert len(added_orders) == 1
+        assert added_orders[0].expired_at == fixed_utc + timedelta(minutes=30)
+        assert captured["expire_minutes"] == 30
+        assert internal_order_id is not None
+        assert subscription_id is not None
+        assert isinstance(url, str)
+        assert url.startswith("https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?")
+
+    def test_no_hardcoded_15_minutes(self) -> None:
+        """The create-payment path must not contain a hardcoded 15-minute timeout."""
+        service, session = self._make_service()
+        plan_id = uuid.uuid4()
+        plan = MagicMock()
+        plan.id = plan_id
+        plan.price = 500_000
+        plan.name = "Plan"
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+
+        fixed_utc = datetime(2026, 5, 5, 10, 0, 0, tzinfo=timezone.utc)
+        provider = self._build_provider_with_timeout(45)
+        service.vnpay = provider  # type: ignore[assignment]
+
+        with patch("app.services.payment_service.utc_now", return_value=fixed_utc):
+            asyncio.run(service.create_vnpay_payment(uuid.uuid4(), plan_id, "127.0.0.1"))
+
+        added_orders = [
+            c.args[0]
+            for c in session.add.call_args_list
+            if isinstance(c.args[0], PaymentOrder)
+        ]
+        assert len(added_orders) == 1
+        assert added_orders[0].expired_at == fixed_utc + timedelta(minutes=45)
+
+    def test_failed_payment_creation_rolls_back(self) -> None:
+        """Commit failure rolls back and propagates the exception."""
+        service, session = self._make_service()
+        plan_id = uuid.uuid4()
+        plan = MagicMock()
+        plan.id = plan_id
+        plan.price = 100_000
+        plan.name = "Plan"
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        session.commit.side_effect = Exception("database down")
+        provider = self._build_provider_with_timeout(30)
+        service.vnpay = provider  # type: ignore[assignment]
+
+        with pytest.raises(Exception, match="database down"):
+            asyncio.run(service.create_vnpay_payment(uuid.uuid4(), plan_id, "127.0.0.1"))
+
+        session.rollback.assert_awaited()
+
+
+class TestQueryVnpayTransaction:
+    """Tests for the VNPAY QueryDr reconciliation path (protocol compliance)."""
+
+    def _build_provider_with_timeout(self, timeout_minutes: int) -> VNPAYProvider:
+        """Build a VNPAY provider with a controlled VNPAY_TIMEOUT."""
+        with patch("app.services.payment_providers.vnpay.settings") as mock_settings:
+            mock_settings.VNPAY_TMN_CODE = "TEST_TMN_CODE"
+            mock_settings.VNPAY_HASH_SECRET = "TEST_HASH_SECRET"
+            mock_settings.VNPAY_PAYMENT_URL = "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
+            mock_settings.VNPAY_QUERY_URL = "https://sandbox.vnpayment.vn/merchant_webapi/api/transaction"
+            mock_settings.VNPAY_RETURN_URL = "http://localhost:3000/payment-result"
+            mock_settings.VNPAY_IPN_URL = "http://localhost:8000/api/v1/payments/vnpay/ipn"
+            mock_settings.VNPAY_TIMEOUT = timeout_minutes
+            provider = VNPAYProvider()
+        return provider
+
+    def _make_service(self) -> tuple[PaymentService, MagicMock]:
+        session = _make_payment_service_session()
+        return PaymentService(session), session
+
+    @staticmethod
+    def _make_post_mock(response_json: dict) -> AsyncMock:
+        """Build an AsyncMock for httpx.AsyncClient.post returning a JSON response.
+
+        ``await client.post(...)`` yields ``mock_response`` directly.
+        """
+        mock_response = MagicMock()
+        mock_response.json.return_value = response_json
+        mock_response.raise_for_status = MagicMock()
+        post_mock = AsyncMock(return_value=mock_response)
+        return post_mock
+
+    def test_query_sends_post_json_with_required_fields(self) -> None:
+        """QueryDr must POST a JSON body with all required v2.1.0 fields."""
+        service, session = self._make_service()
+        internal_order_id = "VNPAY_TEST_001"
+        payment_order = MagicMock()
+        payment_order.created_at = datetime(2026, 5, 5, 3, 0, 0, tzinfo=timezone.utc)
+        service.payment_orders.get_by_internal_order_id = AsyncMock(
+            return_value=payment_order
+        )
+
+        response_json = {
+            "vnp_ResponseCode": "00",
+            "vnp_TransactionStatus": "00",
+            "vnp_TransactionNo": "VNP_TXN_1",
+        }
+        post_mock = self._make_post_mock(response_json)
+
+        provider = self._build_provider_with_timeout(30)
+        service.vnpay = provider  # type: ignore[assignment]
+
+        with patch("httpx.AsyncClient.post", post_mock):
+            result = asyncio.run(
+                service.query_vnpay_transaction(internal_order_id)
+            )
+
+        assert result == response_json
+        post_mock.assert_called_once()
+        call_args = post_mock.call_args
+        assert call_args.args[0] == (
+            "https://sandbox.vnpayment.vn/merchant_webapi/api/transaction"
+        )
+        assert "json" in call_args.kwargs
+        assert call_args.kwargs["headers"]["Content-Type"] == "application/json"
+        body = call_args.kwargs["json"]
+
+        # Required official fields present
+        for field in [
+            "vnp_RequestId",
+            "vnp_Version",
+            "vnp_Command",
+            "vnp_TmnCode",
+            "vnp_TxnRef",
+            "vnp_TransactionDate",
+            "vnp_CreateDate",
+            "vnp_IpAddr",
+            "vnp_OrderInfo",
+            "vnp_SecureHash",
+        ]:
+            assert field in body, f"missing required field {field}"
+
+        # Obsolete alias must be absent
+        assert "vnp_TransDate" not in body
+        assert body["vnp_Version"] == "2.1.0"
+        assert body["vnp_Command"] == "querydr"
+        assert body["vnp_TxnRef"] == internal_order_id
+        # Original payment 03:00 UTC = 10:00 Vietnam (+7)
+        assert body["vnp_TransactionDate"] == "20260505100000"
+        assert body["vnp_TmnCode"] == "TEST_TMN_CODE"
+
+    def test_query_secure_hash_pipe_delimited_order(self) -> None:
+        """QueryDr signature uses the documented pipe-delimited field order."""
+        service, session = self._make_service()
+        internal_order_id = "VNPAY_TEST_002"
+        payment_order = MagicMock()
+        payment_order.created_at = datetime(2026, 5, 5, 3, 0, 0, tzinfo=timezone.utc)
+        service.payment_orders.get_by_internal_order_id = AsyncMock(
+            return_value=payment_order
+        )
+        post_mock = self._make_post_mock({"vnp_ResponseCode": "00"})
+
+        provider = self._build_provider_with_timeout(30)
+        service.vnpay = provider  # type: ignore[assignment]
+
+        with patch("httpx.AsyncClient.post", post_mock):
+            asyncio.run(service.query_vnpay_transaction(internal_order_id))
+
+        body = post_mock.call_args.kwargs["json"]
+        canonical = "|".join(body[field] for field in provider.QUERYDR_SIGN_FIELDS)
+        expected = hmac.new(
+            b"TEST_HASH_SECRET", canonical.encode("utf-8"), hashlib.sha512
+        ).hexdigest()
+        assert body["vnp_SecureHash"] == expected
+
+    def test_query_request_id_unique(self) -> None:
+        """Each QueryDr request carries a unique vnp_RequestId."""
+        service, session = self._make_service()
+        internal_order_id = "VNPAY_TEST_003"
+        payment_order = MagicMock()
+        payment_order.created_at = datetime(2026, 5, 5, 3, 0, 0, tzinfo=timezone.utc)
+        service.payment_orders.get_by_internal_order_id = AsyncMock(
+            return_value=payment_order
+        )
+        post_mock = self._make_post_mock({"vnp_ResponseCode": "00"})
+
+        provider = self._build_provider_with_timeout(30)
+        service.vnpay = provider  # type: ignore[assignment]
+
+        with patch("httpx.AsyncClient.post", post_mock):
+            asyncio.run(service.query_vnpay_transaction(internal_order_id))
+        body_a = post_mock.call_args.kwargs["json"]
+
+        post_mock_b = self._make_post_mock({"vnp_ResponseCode": "00"})
+        with patch("httpx.AsyncClient.post", post_mock_b):
+            asyncio.run(service.query_vnpay_transaction(internal_order_id))
+        body_b = post_mock_b.call_args.kwargs["json"]
+
+        assert body_a["vnp_RequestId"] != body_b["vnp_RequestId"]
+
+    def test_query_order_not_found_returns_none(self) -> None:
+        """QueryDr returns None when no payment order exists."""
+        service, session = self._make_service()
+        service.payment_orders.get_by_internal_order_id = AsyncMock(return_value=None)
+        post_mock = self._make_post_mock({"vnp_ResponseCode": "00"})
+
+        with patch("httpx.AsyncClient.post", post_mock):
+            result = asyncio.run(
+                service.query_vnpay_transaction("DOES_NOT_EXIST")
+            )
+        assert result is None
+        post_mock.assert_not_called()
+
+
+class TestAuthoritativeCreationTimestamp:
+    """Fix 1: a single authoritative instant drives created_at, expiration, PAY
+    timestamps, and QueryDr so a slow/rolled-over database commit cannot create a
+    one-second mismatch between the stored creation time and the PAY
+    ``vnp_CreateDate``."""
+
+    def _build_provider_with_timeout(self, timeout_minutes: int) -> VNPAYProvider:
+        with patch("app.services.payment_providers.vnpay.settings") as mock_settings:
+            mock_settings.VNPAY_TMN_CODE = "TEST_TMN_CODE"
+            mock_settings.VNPAY_HASH_SECRET = "TEST_HASH_SECRET"
+            mock_settings.VNPAY_PAYMENT_URL = "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
+            mock_settings.VNPAY_QUERY_URL = "https://sandbox.vnpayment.vn/merchant_webapi/api/transaction"
+            mock_settings.VNPAY_RETURN_URL = "http://localhost:3000/payment-result"
+            mock_settings.VNPAY_IPN_URL = "http://localhost:8000/api/v1/payments/vnpay/ipn"
+            mock_settings.VNPAY_TIMEOUT = timeout_minutes
+            return VNPAYProvider()
+
+    def test_single_clock_read_prevents_second_boundary_mismatch(self) -> None:
+        """A commit that crosses a second boundary must not drift created_at from
+        the PAY vnp_CreateDate or the QueryDr vnp_TransactionDate."""
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+
+        plan_id = uuid.uuid4()
+        plan = MagicMock()
+        plan.id = plan_id
+        plan.price = 1_000_000
+        plan.name = "Test Plan"
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+
+        # Authoritative instant: 10:15:30.985 UTC (just before a second boundary).
+        authoritative = datetime(2026, 5, 5, 3, 15, 30, 985000, tzinfo=timezone.utc)
+        # Simulated clock after the (slow) commit: 10:15:31.120 UTC — the next second.
+        post_commit = datetime(2026, 5, 5, 3, 15, 31, 120000, tzinfo=timezone.utc)
+        clock_calls = {"count": 0}
+
+        def fake_utc_now() -> datetime:
+            clock_calls["count"] += 1
+            if clock_calls["count"] == 1:
+                return authoritative
+            return post_commit
+
+        service.vnpay = self._build_provider_with_timeout(15)  # type: ignore[assignment]
+
+        with patch("app.services.payment_service.utc_now", side_effect=fake_utc_now):
+            url, internal_order_id, subscription_id = asyncio.run(
+                service.create_vnpay_payment(uuid.uuid4(), plan_id, "127.0.0.1")
+            )
+
+        # Exactly one clock read is used to derive the creation timestamp.
+        assert clock_calls["count"] == 1
+
+        added_orders = [
+            c.args[0]
+            for c in session.add.call_args_list
+            if isinstance(c.args[0], PaymentOrder)
+        ]
+        assert len(added_orders) == 1
+        order = added_orders[0]
+
+        # created_at derives from the authoritative instant (not the later clock).
+        assert order.created_at == authoritative
+        # Application expiration is the same instant plus the configured timeout.
+        assert order.expired_at == authoritative + timedelta(minutes=15)
+
+        # PAY request timestamps are rendered from the same instant in Vietnam time.
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        pay_create = query["vnp_CreateDate"][0]
+        pay_expire = query["vnp_ExpireDate"][0]
+        # 03:15:30 UTC == 10:15:30 Vietnam (GMT+7); +15 min => 10:30:30.
+        assert pay_create == "20260505101530"
+        assert pay_expire == "20260505103030"
+
+        # QueryDr reconstructs vnp_TransactionDate from the persisted created_at.
+        service.payment_orders.get_by_internal_order_id = AsyncMock(return_value=order)
+        post_mock = AsyncMock(return_value=MagicMock(
+            json=MagicMock(return_value={"vnp_ResponseCode": "00"}),
+            raise_for_status=MagicMock(),
+        ))
+        with patch("httpx.AsyncClient.post", post_mock):
+            asyncio.run(service.query_vnpay_transaction(internal_order_id))
+
+        body = post_mock.call_args.kwargs["json"]
+        assert body["vnp_TransactionDate"] == pay_create
+        assert body["vnp_TransactionDate"] == "20260505101530"
+
+    def test_build_payment_params_accepts_create_time_and_rejects_naive(self) -> None:
+        """The provider honours a supplied creation instant and rejects naive datetimes."""
+        provider = self._build_provider_with_timeout(15)
+        supplied = datetime(2026, 5, 5, 3, 15, 30, 985000, tzinfo=timezone.utc)
+
+        # Supersede the clock: if it is used, the assertion below would differ.
+        with patch(
+            "app.services.payment_providers.vnpay._vietnam_now",
+            return_value=datetime(2030, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+        ):
+            params = provider.build_payment_params(
+                amount=1_000_000,
+                order_id="ORDER_1",
+                order_info="Test",
+                expire_minutes=15,
+                create_time=supplied,
+            )
+
+        assert params["vnp_CreateDate"] == "20260505101530"
+        assert params["vnp_ExpireDate"] == "20260505103030"
+
+        with pytest.raises(ValueError):
+            provider.build_payment_params(
+                amount=1_000_000,
+                order_id="ORDER_1",
+                order_info="Test",
+                create_time=datetime(2026, 5, 5, 10, 15, 30),  # naive
+            )
