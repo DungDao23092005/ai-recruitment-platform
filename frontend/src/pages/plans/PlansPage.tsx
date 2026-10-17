@@ -10,14 +10,44 @@ import { ErrorBanner } from '@/components/ui/error-banner'
 
 export function PlansPage() {
   const { plans, isLoading, error, refetch } = usePlans()
-  const { subscription: activeSubscription, refetch: refetchSub } = useMySubscription()
+  const {
+    subscription: activeSubscription,
+    isLoading: isSubscriptionLoading,
+    error: subscriptionError,
+    refetch: refetchSub,
+  } = useMySubscription()
   const navigate = useNavigate()
+
+  const isCurrentPlan = useCallback(
+    (planId: string): boolean => {
+      if (isSubscriptionLoading || subscriptionError || !activeSubscription) {
+        return false
+      }
+      if (activeSubscription.status !== 'active') {
+        return false
+      }
+      if (activeSubscription.plan_id !== planId) {
+        return false
+      }
+      if (activeSubscription.expires_at) {
+        const expiresAt = new Date(activeSubscription.expires_at).getTime()
+        if (Number.isNaN(expiresAt) || expiresAt <= Date.now()) {
+          return false
+        }
+      }
+      return true
+    },
+    [activeSubscription, isSubscriptionLoading, subscriptionError],
+  )
 
   const handleSelectPlan = useCallback(
     (planId: string) => {
+      if (isCurrentPlan(planId)) {
+        return
+      }
       navigate(`/checkout/${planId}`)
     },
-    [navigate],
+    [isCurrentPlan, navigate],
   )
 
   const renderPlanSkeleton = () => (
@@ -79,6 +109,7 @@ export function PlansPage() {
                 <PlanCard
                   key={plan.id}
                   plan={plan}
+                  isCurrent={isCurrentPlan(plan.id)}
                   onSelect={handleSelectPlan}
                 />
               ))}

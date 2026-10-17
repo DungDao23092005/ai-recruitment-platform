@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 import { PlansPage } from '@/pages/plans/PlansPage'
 import { usePlans } from '@/features/subscriptions/hooks/usePlans'
@@ -62,7 +62,7 @@ const subscription = {
   plan_id: 'plan-1',
   status: 'active' as const,
   started_at: '2024-01-01',
-  expires_at: '2025-01-01',
+  expires_at: '2099-01-01',
   plan: {
     id: 'plan-1',
     name: 'Gói Standard',
@@ -281,9 +281,9 @@ it('renders multiple plan cards with correct data', async () => {
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument())
   })
 
-  it('renders select buttons for each plan', async () => {
+  it('renders select buttons for each plan when there is no current plan', async () => {
     mockedGetPlans.mockResolvedValueOnce(plans as any)
-    mockedGetMySubscription.mockResolvedValueOnce(subscription as any)
+    mockedGetMySubscription.mockResolvedValueOnce(null)
 
     render(
       <MemoryRouter initialEntries={['/plans']}>
@@ -295,5 +295,155 @@ it('renders multiple plan cards with correct data', async () => {
       const buttons = screen.getAllByText('Chọn gói này')
       expect(buttons.length).toBe(2)
     })
+    expect(screen.queryByText('Gói hiện tại của bạn')).not.toBeInTheDocument()
+  })
+
+  it('marks the active, unexpired plan as current and disables its CTA', async () => {
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(subscription as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    const currentButton = await screen.findByText('Gói hiện tại của bạn')
+    expect(currentButton).toBeDisabled()
+    expect(
+      screen.getByLabelText('Gói hiện tại của bạn: Gói Standard'),
+    ).toBeInTheDocument()
+    // The other plan keeps its normal select CTA.
+    expect(screen.getByText('Chọn gói này')).toBeInTheDocument()
+  })
+
+  it('keeps other plans selectable and navigates them to checkout', async () => {
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(subscription as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <Routes>
+          <Route path="/plans" element={<PlansPage />} />
+          <Route path="/checkout/:planId" element={<div>CHECKOUT PAGE</div>} />
+        </Routes>
+      </MemoryRouter>
+    )
+
+    await screen.findByText('Gói hiện tại của bạn')
+    fireEvent.click(screen.getByText('Chọn gói này'))
+
+    await waitFor(() => expect(screen.getByText('CHECKOUT PAGE')).toBeInTheDocument())
+  })
+
+  it('does not navigate to checkout when clicking the current plan CTA', async () => {
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(subscription as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <Routes>
+          <Route path="/plans" element={<PlansPage />} />
+          <Route path="/checkout/:planId" element={<div>CHECKOUT PAGE</div>} />
+        </Routes>
+      </MemoryRouter>
+    )
+
+    const currentButton = await screen.findByText('Gói hiện tại của bạn')
+    fireEvent.click(currentButton)
+
+    expect(screen.queryByText('CHECKOUT PAGE')).not.toBeInTheDocument()
+    expect(screen.getByText('Các gói tuyển dụng')).toBeInTheDocument()
+  })
+
+  it('does not mark current when the subscription is expired', async () => {
+    const expired = { ...subscription, expires_at: '2000-01-01' }
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(expired as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => expect(screen.getAllByText('Chọn gói này').length).toBe(2))
+    expect(screen.queryByText('Gói hiện tại của bạn')).not.toBeInTheDocument()
+  })
+
+  it('does not mark current when expires_at is invalid', async () => {
+    const invalid = { ...subscription, expires_at: 'not-a-real-date' }
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(invalid as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => expect(screen.getAllByText('Chọn gói này').length).toBe(2))
+    expect(screen.queryByText('Gói hiện tại của bạn')).not.toBeInTheDocument()
+  })
+
+  it.each(['pending', 'cancelled', 'expired'] as const)(
+    'does not mark current when status is %s',
+    async (status) => {
+      const nonActive = { ...subscription, status }
+      mockedGetPlans.mockResolvedValueOnce(plans as any)
+      mockedGetMySubscription.mockResolvedValueOnce(nonActive as any)
+
+      render(
+        <MemoryRouter initialEntries={['/plans']}>
+          <PlansPage />
+        </MemoryRouter>
+      )
+
+      await waitFor(() => expect(screen.getAllByText('Chọn gói này').length).toBe(2))
+      expect(screen.queryByText('Gói hiện tại của bạn')).not.toBeInTheDocument()
+    },
+  )
+
+  it('does not mark current while the subscription is still loading', async () => {
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockReturnValueOnce(new Promise(() => {}))
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => expect(screen.getAllByText('Chọn gói này').length).toBe(2))
+    expect(screen.queryByText('Gói hiện tại của bạn')).not.toBeInTheDocument()
+  })
+
+  it('does not mark current when the subscription request fails', async () => {
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockRejectedValueOnce(new Error('Failed to load subscription'))
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => expect(screen.getAllByText('Chọn gói này').length).toBe(2))
+    expect(screen.queryByText('Gói hiện tại của bạn')).not.toBeInTheDocument()
+  })
+
+  it('treats a null expires_at as not expired', async () => {
+    const noExpiry = { ...subscription, expires_at: null }
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(noExpiry as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    const currentButton = await screen.findByText('Gói hiện tại của bạn')
+    expect(currentButton).toBeDisabled()
   })
 })
