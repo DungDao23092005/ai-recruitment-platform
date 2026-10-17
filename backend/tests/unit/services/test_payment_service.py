@@ -677,6 +677,7 @@ class TestQueryVnpayTransaction:
         internal_order_id = "VNPAY_TEST_001"
         payment_order = MagicMock()
         payment_order.created_at = datetime(2026, 5, 5, 3, 0, 0, tzinfo=timezone.utc)
+        payment_order.internal_order_id = internal_order_id
         service.payment_orders.get_by_internal_order_id = AsyncMock(
             return_value=payment_order
         )
@@ -736,6 +737,7 @@ class TestQueryVnpayTransaction:
         internal_order_id = "VNPAY_TEST_002"
         payment_order = MagicMock()
         payment_order.created_at = datetime(2026, 5, 5, 3, 0, 0, tzinfo=timezone.utc)
+        payment_order.internal_order_id = internal_order_id
         service.payment_orders.get_by_internal_order_id = AsyncMock(
             return_value=payment_order
         )
@@ -760,6 +762,7 @@ class TestQueryVnpayTransaction:
         internal_order_id = "VNPAY_TEST_003"
         payment_order = MagicMock()
         payment_order.created_at = datetime(2026, 5, 5, 3, 0, 0, tzinfo=timezone.utc)
+        payment_order.internal_order_id = internal_order_id
         service.payment_orders.get_by_internal_order_id = AsyncMock(
             return_value=payment_order
         )
@@ -907,3 +910,292 @@ class TestAuthoritativeCreationTimestamp:
                 order_info="Test",
                 create_time=datetime(2026, 5, 5, 10, 15, 30),  # naive
             )
+
+
+def _make_querydr_order(
+    *,
+    internal_order_id: str = "VNPAY_QUERYDR_TEST_0001",
+    amount: int = 100000,
+) -> PaymentOrder:
+    return PaymentOrder(
+        id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        plan_id=uuid.uuid4(),
+        amount=amount,
+        provider=PaymentProvider.VNPAY,
+        internal_order_id=internal_order_id,
+        status=PaymentOrderStatus.PENDING,
+    )
+
+
+def _signed_querydr_body(service: PaymentService, order: PaymentOrder, **overrides) -> dict:
+    """Build a QueryDr response body signed with the service's own configuration."""
+    body = {
+        "vnp_ResponseId": "RID0000000000001",
+        "vnp_Command": "querydr",
+        "vnp_ResponseCode": "00",
+        "vnp_Message": "Query Success",
+        "vnp_TmnCode": service.vnpay.tmn_code,
+        "vnp_TxnRef": order.internal_order_id,
+        "vnp_Amount": str(order.amount * 100),
+        "vnp_BankCode": "NCB",
+        "vnp_PayDate": "20260505101530",
+        "vnp_TransactionNo": "12345678",
+        "vnp_TransactionType": "01",
+        "vnp_TransactionStatus": "00",
+        "vnp_OrderInfo": f"Query transaction {order.internal_order_id}",
+    }
+    body.update(overrides)
+    body["vnp_SecureHash"] = service.vnpay.generate_query_response_secure_hash(body)
+    return body
+
+
+class TestQueryDrResultClassification:
+    """Blocker C: conservative classification of QueryDr transaction statuses."""
+
+    def _service(self) -> PaymentService:
+        return PaymentService(_make_payment_service_session())
+
+    def test_success_requires_rc_and_status_00(self) -> None:
+        service = self._service()
+        assert (
+            service._classify_querydr_result(
+                {"vnp_ResponseCode": "00", "vnp_TransactionStatus": "00"}
+            )
+            == "success"
+        )
+
+    @pytest.mark.parametrize("status", ["02", "04"])
+    def test_documented_terminal_failures(self, status: str) -> None:
+        service = self._service()
+        assert (
+            service._classify_querydr_result(
+                {"vnp_ResponseCode": "00", "vnp_TransactionStatus": status}
+            )
+            == "failed"
+        )
+
+    def test_status_07_is_inconclusive_not_failed(self) -> None:
+        service = self._service()
+        assert "07" not in service.QUERYDR_TERMINAL_FAILURE_STATUSES
+        assert (
+            service._classify_querydr_result(
+                {"vnp_ResponseCode": "00", "vnp_TransactionStatus": "07"}
+            )
+            == "inconclusive"
+        )
+
+    def test_status_01_is_pending(self) -> None:
+        service = self._service()
+        assert (
+            service._classify_querydr_result(
+                {"vnp_ResponseCode": "00", "vnp_TransactionStatus": "01"}
+            )
+            == "pending"
+        )
+
+    @pytest.mark.parametrize("status", ["05", "06", "09", "99", ""])
+    def test_refund_and_unknown_statuses_are_inconclusive(self, status: str) -> None:
+        service = self._service()
+        assert (
+            service._classify_querydr_result(
+                {"vnp_ResponseCode": "00", "vnp_TransactionStatus": status}
+            )
+            == "inconclusive"
+        )
+
+    def test_non_zero_query_response_code_is_inconclusive(self) -> None:
+        service = self._service()
+        assert (
+            service._classify_querydr_result(
+                {"vnp_ResponseCode": "97", "vnp_TransactionStatus": "00"}
+            )
+            == "inconclusive"
+        )
+
+    def test_missing_fields_are_inconclusive(self) -> None:
+        service = self._service()
+        assert service._classify_querydr_result({}) == "inconclusive"
+
+
+class TestQueryDrReferenceValidation:
+    """Blocker B: strict response field validation."""
+
+    def _service_and_order(self) -> tuple[PaymentService, PaymentOrder]:
+        service = PaymentService(_make_payment_service_session())
+        return service, _make_querydr_order()
+
+    def test_valid_response_matches(self) -> None:
+        service, order = self._service_and_order()
+        assert service._querydr_reference_matches(order, _signed_querydr_body(service, order))
+
+    def test_missing_txnref_rejected(self) -> None:
+        service, order = self._service_and_order()
+        body = _signed_querydr_body(service, order)
+        body.pop("vnp_TxnRef")
+        assert service._querydr_reference_matches(order, body) is False
+
+    def test_wrong_txnref_rejected(self) -> None:
+        service, order = self._service_and_order()
+        body = _signed_querydr_body(service, order, vnp_TxnRef="VNPAY_OTHER")
+        assert service._querydr_reference_matches(order, body) is False
+
+    def test_missing_tmn_code_rejected(self) -> None:
+        service, order = self._service_and_order()
+        body = _signed_querydr_body(service, order)
+        body.pop("vnp_TmnCode")
+        assert service._querydr_reference_matches(order, body) is False
+
+    def test_wrong_tmn_code_rejected(self) -> None:
+        service, order = self._service_and_order()
+        body = _signed_querydr_body(service, order, vnp_TmnCode="OTHER_MERCHANT")
+        assert service._querydr_reference_matches(order, body) is False
+
+    def test_missing_amount_rejected(self) -> None:
+        service, order = self._service_and_order()
+        body = _signed_querydr_body(service, order)
+        body.pop("vnp_Amount")
+        assert service._querydr_reference_matches(order, body) is False
+
+    @pytest.mark.parametrize("amount", ["not-a-number", "100000.5", "", None, True])
+    def test_malformed_amount_rejected(self, amount) -> None:
+        service, order = self._service_and_order()
+        body = _signed_querydr_body(service, order, vnp_Amount=amount)
+        assert service._querydr_reference_matches(order, body) is False
+
+    def test_wrong_amount_rejected(self) -> None:
+        service, order = self._service_and_order()
+        body = _signed_querydr_body(service, order, vnp_Amount="1")
+        assert service._querydr_reference_matches(order, body) is False
+
+    @pytest.mark.parametrize("txn_type", ["02", "03", None, "1", ""])
+    def test_non_payment_transaction_type_rejected(self, txn_type) -> None:
+        service, order = self._service_and_order()
+        body = _signed_querydr_body(service, order, vnp_TransactionType=txn_type)
+        assert service._querydr_reference_matches(order, body) is False
+
+
+class TestReconcileForgeResistance:
+    """Forged / tampered QueryDr responses must never finalize an order."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_throttle(self):
+        from app.services.payment_service import reset_querydr_throttle
+
+        reset_querydr_throttle()
+        yield
+        reset_querydr_throttle()
+
+    @pytest.mark.asyncio
+    async def test_forged_signature_does_not_finalize(self) -> None:
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        order = _make_querydr_order(internal_order_id="VNPAY_FORGED_0001")
+
+        body = _signed_querydr_body(service, order)
+        body["vnp_Amount"] = "1"  # tampered after signing → invalid checksum
+
+        with patch.object(
+            service, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ), patch.object(
+            service, "_finalize_reconciled_success", new=AsyncMock()
+        ) as finalize_success, patch.object(
+            service, "_finalize_reconciled_failure", new=AsyncMock()
+        ) as finalize_failure:
+            await service._reconcile_pending_vnpay_payment(order)
+
+        finalize_success.assert_not_called()
+        finalize_failure.assert_not_called()
+        assert order.status == PaymentOrderStatus.PENDING
+        session.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_missing_signature_does_not_finalize(self) -> None:
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        order = _make_querydr_order(internal_order_id="VNPAY_FORGED_0002")
+
+        body = _signed_querydr_body(service, order)
+        body.pop("vnp_SecureHash")
+
+        with patch.object(
+            service, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ), patch.object(
+            service, "_finalize_reconciled_success", new=AsyncMock()
+        ) as finalize_success:
+            await service._reconcile_pending_vnpay_payment(order)
+
+        finalize_success.assert_not_called()
+        assert order.status == PaymentOrderStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_valid_signed_success_invokes_finalize(self) -> None:
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        order = _make_querydr_order(internal_order_id="VNPAY_VALID_0001")
+        body = _signed_querydr_body(service, order)
+
+        with patch.object(
+            service, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ), patch.object(
+            service, "_finalize_reconciled_success", new=AsyncMock()
+        ) as finalize_success:
+            await service._reconcile_pending_vnpay_payment(order)
+
+        finalize_success.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_querydr_after_ipn_already_paid_does_not_double_activate(self) -> None:
+        """If an IPN already finalized the order PAID, QueryDr must not re-activate."""
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        order = _make_querydr_order(internal_order_id="VNPAY_RACE_0001")
+        order.status = PaymentOrderStatus.PAID  # IPN won the race
+        body = _signed_querydr_body(service, order)
+
+        with patch.object(
+            service, "_lock_payment_order", new=AsyncMock(return_value=order)
+        ), patch.object(
+            service, "_record_success_and_activate", new=AsyncMock()
+        ) as record:
+            await service._finalize_reconciled_success(order, body)
+
+        record.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_querydr_duplicate_provider_transaction_not_recorded_twice(self) -> None:
+        """A provider transaction already recorded by IPN is not recorded again."""
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        order = _make_querydr_order(internal_order_id="VNPAY_DUP_0001")
+        body = _signed_querydr_body(service, order)
+
+        service.payment_transactions.get_by_provider_transaction_id = AsyncMock(
+            return_value=MagicMock()
+        )
+
+        with patch.object(
+            service, "_lock_payment_order", new=AsyncMock(return_value=order)
+        ), patch.object(
+            service, "_record_success_and_activate", new=AsyncMock()
+        ) as record:
+            await service._finalize_reconciled_success(order, body)
+
+        record.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tampered_unsigned_body_with_status_07_does_not_fail_order(self) -> None:
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        order = _make_querydr_order(internal_order_id="VNPAY_STATUS07_0001")
+        body = _signed_querydr_body(service, order, vnp_TransactionStatus="07")
+
+        with patch.object(
+            service, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ), patch.object(
+            service, "_finalize_reconciled_failure", new=AsyncMock()
+        ) as finalize_failure:
+            await service._reconcile_pending_vnpay_payment(order)
+
+        finalize_failure.assert_not_called()
+        assert order.status == PaymentOrderStatus.PENDING

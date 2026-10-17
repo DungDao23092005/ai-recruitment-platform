@@ -145,7 +145,7 @@ def test_payment_order(run_async, test_plan, candidate_client):
 @pytest.fixture
 def test_payment_order_and_pending_sub(run_async, test_plan, candidate_client):
     """Create a PaymentOrder with PENDING status and PENDING subscription."""
-    from app.domain.enums import PaymentOrderStatus, PaymentProvider, SubscriptionStatus
+    from app.domain.enums import PaymentOrderStatus, PaymentProvider, SubscriptionStatus, UserRole
     from app.models import Subscription, PaymentOrder
     from sqlalchemy import select
 
@@ -153,15 +153,16 @@ def test_payment_order_and_pending_sub(run_async, test_plan, candidate_client):
         from app.database.session import async_session_factory
 
         async with async_session_factory() as session:
-            # Genuine user from the authenticated candidate client
+            # Resolve the same authenticated candidate user pattern used by
+            # test_payment_order so the order is owned by candidate_client.
             from app.models import User
             user = await session.scalar(
-                select(User).where(User.email == "test-candidate@example.com")
+                select(User).where(User.role == UserRole.CANDIDATE)
             )
             if user is None:
                 user = User(
                     id=uuid.uuid4(),
-                    email="test-candidate@example.com",
+                    email=f"candidate-{uuid.uuid4().hex[:8]}@example.com",
                     password_hash="hashed",
                     role="candidate",
                 )
@@ -183,7 +184,10 @@ def test_payment_order_and_pending_sub(run_async, test_plan, candidate_client):
                 plan_id=test_plan.id,
                 subscription_id=subscription.id,
                 amount=test_plan.price,
-                internal_order_id="TEST_ORDER_PENDING_SUB",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=(
+                    f"TEST_ORDER_PENDING_SUB_{uuid.uuid4().hex[:8].upper()}"
+                ),
                 status=PaymentOrderStatus.PENDING,
                 expired_at=datetime.utcnow() + timedelta(minutes=15),
             )
@@ -498,30 +502,325 @@ class TestPaymentAPIDelete:
         # The key invariant: return is informational only
 
 
+def _signed_querydr_response(
+    order,
+    *,
+    response_code: str = "00",
+    transaction_status: str = "00",
+    amount: str | None = None,
+    transaction_type: str = "01",
+    tmn_code: str | None = None,
+    transaction_no: str | None = None,
+    sign: bool = True,
+) -> dict:
+    """Build a VNPAY QueryDr response with a genuine vnp_SecureHash.
+
+    Signing uses a fresh ``VNPAYProvider`` so it reads the same configured
+    secret as the service under test. Tests must never disable verification to
+    make an old case pass.
+    """
+    from app.services.payment_providers.vnpay import VNPAYProvider
+
+    provider = VNPAYProvider()
+    body = {
+        "vnp_ResponseId": uuid.uuid4().hex[:16],
+        "vnp_Command": "querydr",
+        "vnp_ResponseCode": response_code,
+        "vnp_Message": "Query Success" if response_code == "00" else "Query failed",
+        "vnp_TmnCode": provider.tmn_code if tmn_code is None else tmn_code,
+        "vnp_TxnRef": order.internal_order_id,
+        "vnp_Amount": str(order.amount * 100) if amount is None else amount,
+        "vnp_BankCode": "NCB",
+        "vnp_PayDate": "20260101120000",
+        "vnp_TransactionNo": transaction_no or f"VNP{uuid.uuid4().int % 10**10}",
+        "vnp_TransactionType": transaction_type,
+        "vnp_TransactionStatus": transaction_status,
+        "vnp_OrderInfo": f"Query transaction {order.internal_order_id}",
+    }
+    if sign:
+        body["vnp_SecureHash"] = provider.generate_query_response_secure_hash(body)
+    return body
+
+
 class TestPaymentAPIStatus:
-    """Tests for GET /api/v1/payments/vnpay/status/{internal_order_id} endpoint."""
+    """Tests for GET /api/v1/payments/vnpay/status/{internal_order_id} endpoint.
+
+    QueryDr reconciliation is mocked so these tests never make a real outbound
+    VNPAY call, while the database behavior remains live.
+    """
 
     def test_get_payment_status_authenticated_own(
         self, candidate_client, test_payment_order,
     ):
-        """Authenticated user can check their own payment status."""
-        response = _get(
-            candidate_client,
-            f"/api/v1/payments/vnpay/status/{test_payment_order.internal_order_id}",
-        )
+        """Authenticated user checks own pending status.
+
+        A temporary QueryDr failure must leave the order PENDING, never failed.
+        """
+        from unittest.mock import AsyncMock, patch
+        from app.services.payment_service import PaymentService
+
+        with patch.object(
+            PaymentService,
+            "_send_querydr_request",
+            new=AsyncMock(side_effect=RuntimeError("querydr unavailable")),
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{test_payment_order.internal_order_id}",
+            )
+
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
-        assert data["is_successful"] is False  # PENDING status
+        assert data["is_successful"] is False
+        assert data["payment_order"]["status"] == "pending"
+
+    def test_get_payment_status_querydr_success_finalizes_order(
+        self, candidate_client, test_payment_order,
+    ):
+        """A conclusive successful QueryDr finalizes the matching PENDING order."""
+        from unittest.mock import AsyncMock, patch
+        from app.services.payment_service import PaymentService
+
+        body = _signed_querydr_response(test_payment_order)
+        body["vnp_BankTranNo"] = "BANK123"
+
+        with patch.object(
+            PaymentService, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{test_payment_order.internal_order_id}",
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["is_successful"] is True
+        assert data["payment_order"]["status"] == "paid"
+
+    def test_get_payment_status_querydr_success_activates_subscription(
+        self, candidate_client, test_payment_order_and_pending_sub,
+    ):
+        """QueryDr-verified success activates the linked subscription."""
+        from unittest.mock import AsyncMock, patch
+        from app.domain.enums import SubscriptionStatus
+        from app.services.payment_service import PaymentService
+        from app.database.session import async_session_factory
+
+        order, subscription = test_payment_order_and_pending_sub
+        body = _signed_querydr_response(order)
+
+        with patch.object(
+            PaymentService, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{order.internal_order_id}",
+            )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["is_successful"] is True
+
+        async def _check():
+            from app.models import Subscription
+
+            async with async_session_factory() as session:
+                sub = await session.get(Subscription, subscription.id)
+                return sub.status
+
+        assert run(_check()) == SubscriptionStatus.ACTIVE
+
+    def test_get_payment_status_querydr_mismatched_amount_stays_pending(
+        self, candidate_client, test_payment_order,
+    ):
+        """A QueryDr response with a mismatched amount must not finalize the order."""
+        from unittest.mock import AsyncMock, patch
+        from app.services.payment_service import PaymentService
+
+        body = _signed_querydr_response(test_payment_order, amount="1")  # wrong amount
+        with patch.object(
+            PaymentService, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{test_payment_order.internal_order_id}",
+            )
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["is_successful"] is False
+        assert data["payment_order"]["status"] == "pending"
+
+    def test_get_payment_status_querydr_pending_stays_pending(
+        self, candidate_client, test_payment_order,
+    ):
+        """A documented non-terminal QueryDr status keeps the order PENDING."""
+        from unittest.mock import AsyncMock, patch
+        from app.services.payment_service import PaymentService
+
+        body = _signed_querydr_response(
+            test_payment_order, transaction_status="01"
+        )  # not completed (processing)
+        with patch.object(
+            PaymentService, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{test_payment_order.internal_order_id}",
+            )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["payment_order"]["status"] == "pending"
+
+    def test_get_payment_status_missing_signature_stays_pending(
+        self, candidate_client, test_payment_order,
+    ):
+        """A QueryDr response without a checksum must never finalize the order."""
+        from unittest.mock import AsyncMock, patch
+        from app.services.payment_service import PaymentService
+
+        body = _signed_querydr_response(test_payment_order, sign=False)
+        with patch.object(
+            PaymentService, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{test_payment_order.internal_order_id}",
+            )
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["is_successful"] is False
+        assert data["payment_order"]["status"] == "pending"
+
+    def test_get_payment_status_tampered_signature_stays_pending(
+        self, candidate_client, test_payment_order,
+    ):
+        """A response modified after signing must fail checksum verification."""
+        from unittest.mock import AsyncMock, patch
+        from app.services.payment_service import PaymentService
+
+        body = _signed_querydr_response(test_payment_order)
+        body["vnp_Amount"] = "1"  # tampered after signing
+
+        with patch.object(
+            PaymentService, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{test_payment_order.internal_order_id}",
+            )
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["is_successful"] is False
+        assert data["payment_order"]["status"] == "pending"
+
+    def test_get_payment_status_wrong_tmn_code_stays_pending(
+        self, candidate_client, test_payment_order,
+    ):
+        """A validly-signed response for another merchant must be rejected."""
+        from unittest.mock import AsyncMock, patch
+        from app.services.payment_service import PaymentService
+
+        body = _signed_querydr_response(test_payment_order, tmn_code="OTHER_MERCHANT")
+        with patch.object(
+            PaymentService, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{test_payment_order.internal_order_id}",
+            )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["payment_order"]["status"] == "pending"
+
+    def test_get_payment_status_refund_transaction_type_stays_pending(
+        self, candidate_client, test_payment_order,
+    ):
+        """A refund transaction type is never accepted as the original payment."""
+        from unittest.mock import AsyncMock, patch
+        from app.services.payment_service import PaymentService
+
+        body = _signed_querydr_response(test_payment_order, transaction_type="02")
+        with patch.object(
+            PaymentService, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{test_payment_order.internal_order_id}",
+            )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["payment_order"]["status"] == "pending"
+
+    def test_get_payment_status_status_07_stays_pending(
+        self, candidate_client, test_payment_order,
+    ):
+        """Fraud-suspected status 07 must not move the order to FAILED."""
+        from unittest.mock import AsyncMock, patch
+        from app.services.payment_service import PaymentService
+
+        body = _signed_querydr_response(test_payment_order, transaction_status="07")
+        with patch.object(
+            PaymentService, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{test_payment_order.internal_order_id}",
+            )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["payment_order"]["status"] == "pending"
+
+    def test_get_payment_status_forged_response_never_activates_subscription(
+        self, candidate_client, test_payment_order_and_pending_sub,
+    ):
+        """Evidence: a forged QueryDr success cannot finalize or activate."""
+        from unittest.mock import AsyncMock, patch
+        from app.domain.enums import SubscriptionStatus
+        from app.services.payment_service import PaymentService
+        from app.database.session import async_session_factory
+
+        order, subscription = test_payment_order_and_pending_sub
+        body = _signed_querydr_response(order)
+        body["vnp_Amount"] = "1"  # tamper after signing → invalid checksum
+
+        with patch.object(
+            PaymentService, "_send_querydr_request", new=AsyncMock(return_value=body)
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{order.internal_order_id}",
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["is_successful"] is False
+        assert data["payment_order"]["status"] == "pending"
+        assert data["transaction"] is None
+
+        async def _check():
+            from app.models import Subscription, PaymentOrder as _PaymentOrder
+
+            async with async_session_factory() as session:
+                sub = await session.get(Subscription, subscription.id)
+                locked_order = await session.get(_PaymentOrder, order.id)
+                return sub.status, locked_order.status
+
+        sub_status, order_status = run(_check())
+        assert sub_status == SubscriptionStatus.PENDING
+        assert order_status == "pending"
 
     def test_get_payment_status_cross_user_denied(
         self, candidate_client, another_user_payment_order,
     ):
         """Cross-user access denied - cannot check another user's payment."""
-        response = _get(
-            candidate_client,
-            f"/api/v1/payments/vnpay/status/{another_user_payment_order.internal_order_id}",
-        )
+        from unittest.mock import AsyncMock, patch
+        from app.services.payment_service import PaymentService
+
+        querydr = AsyncMock(return_value={"vnp_ResponseCode": "00"})
+        with patch.object(
+            PaymentService, "_send_querydr_request", new=querydr
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{another_user_payment_order.internal_order_id}",
+            )
         assert response.status_code == status.HTTP_404_NOT_FOUND
+        # Ownership is enforced before any reconciliation is attempted.
+        querydr.assert_not_called()
 
 
 class TestPhase65PaymentAuthorization:

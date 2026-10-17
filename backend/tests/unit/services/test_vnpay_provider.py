@@ -608,3 +608,130 @@ class TestVNPAYProvider:
             )
         assert params["vnp_CreateDate"] == "20260131235000"
         assert params["vnp_ExpireDate"] == "20260201000500"
+
+
+def _querydr_response(**overrides):
+    """A documented QueryDr v2.1.0 response body (unsigned)."""
+    body = {
+        "vnp_ResponseId": "RID0000000000001",
+        "vnp_Command": "querydr",
+        "vnp_ResponseCode": "00",
+        "vnp_Message": "Query Success",
+        "vnp_TmnCode": "TEST_TMN_CODE",
+        "vnp_TxnRef": "VNPAY_20240101_120000_ABCD1234",
+        "vnp_Amount": "10000000",
+        "vnp_BankCode": "NCB",
+        "vnp_PayDate": "20240101120030",
+        "vnp_TransactionNo": "12345678",
+        "vnp_TransactionType": "01",
+        "vnp_TransactionStatus": "00",
+        "vnp_OrderInfo": "Query transaction VNPAY_20240101_120000_ABCD1234",
+    }
+    body.update(overrides)
+    return body
+
+
+class TestVNPAYQueryDrResponseHash:
+    """Unit tests for QueryDr response checksum generation/verification."""
+
+    @pytest.fixture
+    def provider(self) -> VNPAYProvider:
+        with patch("app.services.payment_providers.vnpay.settings") as mock_settings:
+            mock_settings.VNPAY_TMN_CODE = "TEST_TMN_CODE"
+            mock_settings.VNPAY_HASH_SECRET = "TEST_HASH_SECRET"
+            mock_settings.VNPAY_PAYMENT_URL = "https://example.test/pay"
+            mock_settings.VNPAY_QUERY_URL = "https://example.test/query"
+            mock_settings.VNPAY_RETURN_URL = "http://localhost:5173/payment-result"
+            mock_settings.VNPAY_IPN_URL = "http://localhost:8000/ipn"
+            mock_settings.VNPAY_TIMEOUT = 15
+            return VNPAYProvider()
+
+    def test_valid_response_signature_verifies(self, provider: VNPAYProvider) -> None:
+        body = _querydr_response()
+        body["vnp_SecureHash"] = provider.generate_query_response_secure_hash(body)
+        assert provider.verify_query_response_hash(body) is True
+
+    def test_optional_promotion_fields_contribute_empty_segments(
+        self, provider: VNPAYProvider
+    ) -> None:
+        """The documented canonical string keeps empty segments for absent fields."""
+        body = _querydr_response()  # no vnp_PromotionCode / vnp_PromotionAmount
+        expected_canonical = "|".join(
+            [
+                body["vnp_ResponseId"],
+                body["vnp_Command"],
+                body["vnp_ResponseCode"],
+                body["vnp_Message"],
+                body["vnp_TmnCode"],
+                body["vnp_TxnRef"],
+                body["vnp_Amount"],
+                body["vnp_BankCode"],
+                body["vnp_PayDate"],
+                body["vnp_TransactionNo"],
+                body["vnp_TransactionType"],
+                body["vnp_TransactionStatus"],
+                body["vnp_OrderInfo"],
+                "",
+                "",
+            ]
+        )
+        expected = hmac.new(
+            b"TEST_HASH_SECRET", expected_canonical.encode("utf-8"), hashlib.sha512
+        ).hexdigest()
+        assert provider.generate_query_response_secure_hash(body) == expected
+
+    def test_promotion_fields_change_signature(self, provider: VNPAYProvider) -> None:
+        without = provider.generate_query_response_secure_hash(_querydr_response())
+        with_promo = provider.generate_query_response_secure_hash(
+            _querydr_response(vnp_PromotionCode="PROMO1", vnp_PromotionAmount="1000")
+        )
+        assert without != with_promo
+
+    def test_tampered_field_fails_verification(self, provider: VNPAYProvider) -> None:
+        body = _querydr_response()
+        body["vnp_SecureHash"] = provider.generate_query_response_secure_hash(body)
+        body["vnp_Amount"] = "1"  # tamper after signing
+        assert provider.verify_query_response_hash(body) is False
+
+    def test_missing_signature_fails_verification(self, provider: VNPAYProvider) -> None:
+        assert provider.verify_query_response_hash(_querydr_response()) is False
+
+    def test_empty_signature_fails_verification(self, provider: VNPAYProvider) -> None:
+        body = _querydr_response(vnp_SecureHash="")
+        assert provider.verify_query_response_hash(body) is False
+
+    def test_malformed_signature_fails_verification(self, provider: VNPAYProvider) -> None:
+        for bad in ("nothex" * 21, "abc", "z" * 128, "0" * 127):
+            assert provider.verify_query_response_hash(
+                _querydr_response(vnp_SecureHash=bad)
+            ) is False
+
+    def test_uppercase_signature_is_accepted(self, provider: VNPAYProvider) -> None:
+        body = _querydr_response()
+        digest = provider.generate_query_response_secure_hash(body)
+        body["vnp_SecureHash"] = digest.upper()
+        assert provider.verify_query_response_hash(body) is True
+
+    def test_wrong_secret_fails_verification(self) -> None:
+        with patch("app.services.payment_providers.vnpay.settings") as mock_settings:
+            mock_settings.VNPAY_TMN_CODE = "TEST_TMN_CODE"
+            mock_settings.VNPAY_HASH_SECRET = "WRONG_SECRET"
+            mock_settings.VNPAY_PAYMENT_URL = "https://example.test/pay"
+            mock_settings.VNPAY_QUERY_URL = "https://example.test/query"
+            mock_settings.VNPAY_RETURN_URL = "http://localhost:5173/payment-result"
+            mock_settings.VNPAY_IPN_URL = "http://localhost:8000/ipn"
+            mock_settings.VNPAY_TIMEOUT = 15
+            wrong_provider = VNPAYProvider()
+
+        body = _querydr_response()
+        body["vnp_SecureHash"] = wrong_provider.generate_query_response_secure_hash(body)
+        with patch("app.services.payment_providers.vnpay.settings") as mock_settings:
+            mock_settings.VNPAY_TMN_CODE = "TEST_TMN_CODE"
+            mock_settings.VNPAY_HASH_SECRET = "TEST_HASH_SECRET"
+            mock_settings.VNPAY_PAYMENT_URL = "https://example.test/pay"
+            mock_settings.VNPAY_QUERY_URL = "https://example.test/query"
+            mock_settings.VNPAY_RETURN_URL = "http://localhost:5173/payment-result"
+            mock_settings.VNPAY_IPN_URL = "http://localhost:8000/ipn"
+            mock_settings.VNPAY_TIMEOUT = 15
+            real_provider = VNPAYProvider()
+        assert real_provider.verify_query_response_hash(body) is False

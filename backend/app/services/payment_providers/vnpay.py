@@ -266,6 +266,86 @@ class VNPAYProvider:
             hashlib.sha512,
         ).hexdigest()
 
+    # Fields that form the QueryDr v2.1.0 *response* canonical signing string,
+    # in the exact order required by the VNPAY specification:
+    #   vnp_ResponseId|vnp_Command|vnp_ResponseCode|vnp_Message|vnp_TmnCode|
+    #   vnp_TxnRef|vnp_Amount|vnp_BankCode|vnp_PayDate|vnp_TransactionNo|
+    #   vnp_TransactionType|vnp_TransactionStatus|vnp_OrderInfo|
+    #   vnp_PromotionCode|vnp_PromotionAmount
+    # The optional fields (vnp_PayDate, vnp_PromotionCode, vnp_PromotionAmount)
+    # contribute an empty segment when absent from the response.
+    QUERYDR_RESPONSE_SIGN_FIELDS = (
+        "vnp_ResponseId",
+        "vnp_Command",
+        "vnp_ResponseCode",
+        "vnp_Message",
+        "vnp_TmnCode",
+        "vnp_TxnRef",
+        "vnp_Amount",
+        "vnp_BankCode",
+        "vnp_PayDate",
+        "vnp_TransactionNo",
+        "vnp_TransactionType",
+        "vnp_TransactionStatus",
+        "vnp_OrderInfo",
+        "vnp_PromotionCode",
+        "vnp_PromotionAmount",
+    )
+
+    def generate_query_response_secure_hash(self, body: dict[str, Any]) -> str:
+        """Compute the HMAC-SHA512 checksum VNPAY signs a QueryDr response with.
+
+        The canonical string is the pipe-delimited concatenation of the
+        documented response fields in the exact order above. Fields that are
+        absent from the response contribute an empty segment.
+
+        Args:
+            body: QueryDr response body (vnp_SecureHash is ignored)
+
+        Returns:
+            Lowercase hex-encoded HMAC-SHA512 hash
+        """
+        canonical = "|".join(
+            "" if body.get(field) is None else str(body.get(field))
+            for field in self.QUERYDR_RESPONSE_SIGN_FIELDS
+        )
+        return hmac.new(
+            self.hash_secret.encode("utf-8"),
+            canonical.encode("utf-8"),
+            hashlib.sha512,
+        ).hexdigest()
+
+    def verify_query_response_hash(self, body: dict[str, Any]) -> bool:
+        """Verify the ``vnp_SecureHash`` of a QueryDr response.
+
+        Returns ``False`` when the checksum is missing, empty, malformed, or
+        does not match the computed HMAC-SHA512 over the documented canonical
+        string. The secret key and the full checksum are never logged.
+
+        Args:
+            body: QueryDr response body including ``vnp_SecureHash``
+
+        Returns:
+            True only when the checksum is present and valid
+        """
+        if not isinstance(body, dict):
+            return False
+
+        received = body.get("vnp_SecureHash")
+        if not isinstance(received, str) or not received:
+            return False
+        received = received.strip()
+        # An HMAC-SHA512 hex digest is exactly 128 hex characters.
+        if len(received) != 128:
+            return False
+        try:
+            int(received, 16)
+        except ValueError:
+            return False
+
+        expected = self.generate_query_response_secure_hash(body)
+        return hmac.compare_digest(expected, received.lower())
+
     def build_query_request(self, params: dict[str, str]) -> dict[str, object]:
         """Build a complete QueryDr HTTP POST request.
 
