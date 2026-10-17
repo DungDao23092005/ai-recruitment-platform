@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +13,29 @@ from app.core.pubsub import pubsub_manager
 from app.models import Notification, User
 from app.repositories import NotificationRepository
 from app.schemas.notification import NotificationRead
+
+VIETNAM_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+SUBSCRIPTION_ACTIVATED_TYPE = "subscription_activated"
+SUBSCRIPTION_ENTITY_TYPE = "subscription"
+SUBSCRIPTION_ACTIVATED_TITLE = "Kích hoạt gói dịch vụ thành công"
+
+
+def _format_expiry_date(expires_at: datetime | None) -> str:
+    """Render an activation expiry date in Vietnam local time (dd/mm/yyyy).
+
+    Stored boundaries are UTC-aware; SQL Server may hand back a naive value, so
+    a naive datetime is treated as UTC before conversion. This keeps the date
+    the user sees consistent with the +07:00 business timezone.
+    """
+    if expires_at is None:
+        return "không xác định"
+    aware = (
+        expires_at
+        if expires_at.tzinfo is not None
+        else expires_at.replace(tzinfo=timezone.utc)
+    )
+    return aware.astimezone(VIETNAM_TZ).strftime("%d/%m/%Y")
 
 
 class NotificationService:
@@ -66,6 +91,41 @@ class NotificationService:
         event.listen(self.session.sync_session, "after_commit", _publish_after_commit, once=True)
 
         return NotificationRead.model_validate(notification)
+
+    async def notify_subscription_activated(
+        self,
+        user_id: uuid.UUID,
+        subscription_id: uuid.UUID,
+        plan_name: str,
+        expires_at: datetime | None,
+    ) -> NotificationRead | None:
+        """Create the one-time "subscription activated" notification.
+
+        Returns ``None`` when a notification for this subscription already
+        exists (see ``NotificationRepository.exists_by_entity``), so a re-entrant
+        activation handler cannot produce a duplicate. The caller is responsible
+        for invoking this inside the activation transaction, before commit.
+        """
+        already_notified = await self.notifications.exists_by_entity(
+            user_id=user_id,
+            entity_type=SUBSCRIPTION_ENTITY_TYPE,
+            entity_id=subscription_id,
+            notification_type=SUBSCRIPTION_ACTIVATED_TYPE,
+        )
+        if already_notified:
+            return None
+
+        return await self.create_notification(
+            user_id=user_id,
+            title=SUBSCRIPTION_ACTIVATED_TITLE,
+            content=(
+                f'Gói "{plan_name}" đã được kích hoạt thành công. '
+                f"Thời hạn sử dụng đến {_format_expiry_date(expires_at)}."
+            ),
+            notification_type=SUBSCRIPTION_ACTIVATED_TYPE,
+            entity_type=SUBSCRIPTION_ENTITY_TYPE,
+            entity_id=subscription_id,
+        )
 
     async def list_notifications(
         self,

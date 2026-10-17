@@ -731,4 +731,57 @@ describe('NotificationsPage', () => {
       expect(incrementMock).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('Subscription activation notifications', () => {
+    const subscriptionNotification = {
+      id: 'sub-1',
+      title: 'Kích hoạt gói dịch vụ thành công',
+      content: 'Gói "Professional" đã được kích hoạt thành công. Thời hạn sử dụng đến 31/12/2026.',
+      notification_type: 'subscription_activated',
+      entity_type: 'subscription',
+      entity_id: '22222222-2222-2222-2222-222222222222',
+      is_read: false,
+      created_at: new Date().toISOString(),
+    };
+
+    beforeEach(() => {
+      vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+      vi.mocked(notificationsApi.getNotifications).mockResolvedValue([subscriptionNotification]);
+      vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+        ...subscriptionNotification,
+        is_read: true,
+      });
+    });
+
+    it('renders the subscription icon, entity label and activation badge', async () => {
+      const { container } = renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText('Kích hoạt gói dịch vụ thành công')).toBeInTheDocument();
+      });
+
+      // Entity label
+      expect(screen.getByText('Gói dịch vụ')).toBeInTheDocument();
+      // Notification-type badge
+      expect(screen.getByText('Kích hoạt gói')).toBeInTheDocument();
+      // CreditCard icon from lucide-react
+      expect(container.querySelector('svg.lucide-credit-card')).not.toBeNull();
+    });
+
+    it('navigates to /plans when clicked', async () => {
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText('Kích hoạt gói dịch vụ thành công')).toBeInTheDocument();
+      });
+
+      await screen.getByText('Kích hoạt gói dịch vụ thành công').click();
+
+      await waitFor(() => {
+        expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('sub-1');
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith('/plans');
+    });
+  });
 });

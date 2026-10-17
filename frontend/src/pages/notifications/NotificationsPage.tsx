@@ -4,6 +4,7 @@ import {
   Calendar,
   Check,
   ChevronRight,
+  CreditCard,
   Loader2,
   Mail,
   MessageSquare,
@@ -29,11 +30,13 @@ const ITEMS_PER_PAGE = 20;
 const ENTITY_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   application: MessageSquare,
   interview: Calendar,
+  subscription: CreditCard,
 };
 
 const ENTITY_LABELS: Record<string, string> = {
   application: 'Đơn ứng tuyển',
   interview: 'Phỏng vấn',
+  subscription: 'Gói dịch vụ',
 };
 
 function NotificationSkeleton() {
@@ -84,6 +87,8 @@ function getEntityRoute(entityType: string | null, entityId: string | null, user
         return null;
       }
       return `/candidate/applications`;
+    case 'subscription':
+      return `/plans`;
     default:
       return null;
   }
@@ -412,6 +417,7 @@ function getBadgeVariant(type: string): 'success' | 'warning' | 'info' | 'destru
     case 'application_status_changed':
     case 'interview_scheduled':
     case 'interview_confirmed':
+    case 'subscription_activated':
       return 'success';
     case 'interview_updated':
     case 'new_application':
@@ -435,6 +441,7 @@ function formatNotificationType(type: string): string {
     application_withdrawn: 'Rút đơn',
     interview_confirmed: 'Xác nhận phỏng vấn',
     interview_declined: 'Từ chối phỏng vấn',
+    subscription_activated: 'Kích hoạt gói',
   };
   return typeMap[type] || type;
 }

@@ -371,6 +371,24 @@ def _build_vnpay_provider(timeout_minutes: int = 15) -> VNPAYProvider:
         return VNPAYProvider()
 
 
+@pytest.fixture(autouse=True)
+def _patch_activation_notifier(monkeypatch):
+    """Replace NotificationService with a mock for every test in this module.
+
+    The real ``NotificationService.create_notification`` registers a SQLAlchemy
+    ``after_commit`` listener on ``session.sync_session``. These unit tests use a
+    plain ``MagicMock`` session, which is not a valid event target and would
+    raise ``InvalidRequestError``. Activation tests assert on the mock instead.
+    """
+    mock_cls = MagicMock()
+    mock_cls.return_value.notify_subscription_activated = AsyncMock()
+    mock_cls.return_value.create_notification = AsyncMock()
+    monkeypatch.setattr(
+        "app.services.payment_service.NotificationService", mock_cls
+    )
+    return mock_cls
+
+
 class TestActivateSubscriptionForPaymentRoleTransition:
     """Phase 6.1: Tests for role transition and RecruiterProfile creation during payment activation."""
 
@@ -694,6 +712,79 @@ class TestActivateSubscriptionQuotaSnapshot:
 
         assert sub.job_posts_used == 3
         assert sub.max_job_posts == 9
+
+
+class TestActivationNotification:
+    """The shared success path emits exactly one subscription activation notification."""
+
+    PLAN_NAME = "Professional"
+
+    def _setup(self, status: SubscriptionStatus = SubscriptionStatus.PENDING):
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        sub_id, user_id, plan_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        plan = _make_plan(plan_id)
+        plan.name = self.PLAN_NAME
+        sub = _make_subscription(sub_id, user_id, plan_id, status)
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+        session.execute.side_effect = [_make_lock_result(user)]
+        return session, service, sub, plan
+
+    def test_creates_notification_once(self, _patch_activation_notifier):
+        _, service, sub, plan = self._setup()
+
+        asyncio.run(service._activate_subscription_for_payment(sub.id))
+
+        notifier = _patch_activation_notifier.return_value.notify_subscription_activated
+        notifier.assert_awaited_once()
+        kwargs = notifier.await_args.kwargs
+        assert kwargs["user_id"] == sub.user_id
+        assert kwargs["subscription_id"] == sub.id
+        assert kwargs["plan_name"] == plan.name
+        assert kwargs["expires_at"] == sub.expires_at
+
+    def test_notification_created_before_commit(self, _patch_activation_notifier):
+        session, service, sub, _ = self._setup()
+        order: list[str] = []
+
+        async def _notify(**kwargs):
+            order.append("notify")
+
+        async def _commit():
+            order.append("commit")
+
+        _patch_activation_notifier.return_value.notify_subscription_activated.side_effect = _notify
+        session.commit = AsyncMock(side_effect=_commit)
+
+        asyncio.run(service._activate_subscription_for_payment(sub.id))
+
+        assert order == ["notify", "commit"]
+
+    def test_already_active_subscription_does_not_notify(self, _patch_activation_notifier):
+        _, service, sub, _ = self._setup(status=SubscriptionStatus.ACTIVE)
+
+        with pytest.raises(InvalidTransitionException):
+            asyncio.run(service._activate_subscription_for_payment(sub.id))
+
+        _patch_activation_notifier.return_value.notify_subscription_activated.assert_not_awaited()
+
+    def test_commit_failure_propagates_with_notification_in_same_transaction(
+        self, _patch_activation_notifier
+    ):
+        session, service, sub, _ = self._setup()
+        session.commit.side_effect = Exception("db down")
+
+        with pytest.raises(Exception):
+            asyncio.run(service._activate_subscription_for_payment(sub.id))
+
+        # The notification is added to the same session/transaction as the
+        # activation, so a failed commit leaves neither persisted. The caller
+        # (IPN/QueryDr finalize) owns the rollback.
+        session.commit.assert_awaited()
+        _patch_activation_notifier.return_value.notify_subscription_activated.assert_awaited_once()
 
 
 class TestPurchaseGuardCreateVnpayPayment:

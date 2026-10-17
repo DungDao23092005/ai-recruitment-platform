@@ -38,6 +38,36 @@ class NotificationRepository(BaseRepository[Notification]):
         result = await self.session.execute(stmt)
         return result.scalar_one() or 0
 
+    async def exists_by_entity(
+        self,
+        user_id: Any,
+        entity_type: str,
+        entity_id: Any,
+        notification_type: str | None = None,
+    ) -> bool:
+        """Return True if a matching (non-deleted) notification already exists.
+
+        Used as a defense-in-depth guard before inserting an idempotent
+        domain-event notification (for example ``subscription_activated`` for a
+        given subscription). It is NOT the primary concurrency guarantee: the
+        scheduling of the activation itself is serialized by the per-user /
+        per-order row locks, so only the single transaction that performs the
+        ``PENDING -> ACTIVE`` transition ever reaches the insert. This check
+        additionally suppresses a duplicate if a handler is somehow re-entered
+        after that transition has already been recorded.
+        """
+        stmt = select(Notification.id).where(
+            Notification.user_id == user_id,
+            Notification.entity_type == entity_type,
+            Notification.entity_id == entity_id,
+            Notification.is_deleted == False,  # noqa: E712
+        )
+        if notification_type is not None:
+            stmt = stmt.where(Notification.notification_type == notification_type)
+        stmt = stmt.limit(1)
+        result = await self.session.execute(stmt)
+        return result.first() is not None
+
     async def get_by_id_and_user(
         self, notification_id: Any, user_id: Any
     ) -> Notification | None:

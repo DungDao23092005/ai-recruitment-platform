@@ -485,6 +485,58 @@ class TestCandidateTokenContinuityAfterRoleTransition:
         assert resp.status_code in (404, 405, 422)
 
 
+class TestActivationNotificationOverApi:
+    """Admin provisioning produces one listable activation notification."""
+
+    def test_admin_provisioning_creates_listable_notification(
+        self, admin_sub_client, candidate_client, run_async, subscription_service_override
+    ):
+        from tests.integration.api.test_plans import _create_plan
+
+        plan = _create_plan(admin_sub_client, run_async)
+        candidate_user_id = run(_get_candidate_user_id(candidate_client))
+
+        prov = run_async(
+            admin_sub_client.post(
+                f"{API_V1}/admin/subscriptions",
+                json={"user_id": str(candidate_user_id), "plan_id": str(plan["id"])},
+            )
+        )
+        assert prov.status_code == 201, prov.text
+        subscription_id = prov.json()["id"]
+
+        listing = run_async(candidate_client.get(f"{API_V1}/notifications"))
+        assert listing.status_code == 200, listing.text
+        matches = [
+            n
+            for n in listing.json()
+            if n["notification_type"] == "subscription_activated"
+        ]
+        assert len(matches) == 1, f"expected exactly one activation notification: {matches}"
+
+        notif = matches[0]
+        assert notif["title"] == "Kích hoạt gói dịch vụ thành công"
+        assert notif["entity_type"] == "subscription"
+        assert notif["entity_id"] == subscription_id
+        assert notif["is_read"] is False
+        assert plan["name"] in notif["content"]
+
+        # Marking as read must not create a second notification.
+        read = run_async(
+            candidate_client.patch(f"{API_V1}/notifications/{notif['id']}/read")
+        )
+        assert read.status_code == 200, read.text
+        assert read.json()["is_read"] is True
+
+        listing2 = run_async(candidate_client.get(f"{API_V1}/notifications"))
+        matches2 = [
+            n
+            for n in listing2.json()
+            if n["notification_type"] == "subscription_activated"
+        ]
+        assert len(matches2) == 1
+
+
 class TestSubscriptionOwnership:
     def test_ownership_enforced(self, candidate_client, candidate_b_client, run_async, subscription_service_override, admin_sub_client):
         """A user cannot retrieve another user's subscription via ID."""

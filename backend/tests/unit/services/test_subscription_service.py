@@ -104,6 +104,24 @@ def make_service(session: MagicMock) -> SubscriptionService:
     return service
 
 
+@pytest.fixture(autouse=True)
+def _patch_activation_notifier(monkeypatch):
+    """Replace NotificationService with a mock for every test in this module.
+
+    The real ``NotificationService.create_notification`` registers a SQLAlchemy
+    ``after_commit`` listener on ``session.sync_session``. These unit tests use a
+    plain ``MagicMock`` session, which is not a valid event target and would
+    raise ``InvalidRequestError``. Activation tests assert on the mock instead.
+    """
+    mock_cls = MagicMock()
+    mock_cls.return_value.notify_subscription_activated = AsyncMock()
+    mock_cls.return_value.create_notification = AsyncMock()
+    monkeypatch.setattr(
+        "app.services.subscription_service.NotificationService", mock_cls
+    )
+    return mock_cls
+
+
 class TestGetCurrentActiveSubscription:
     def test_returns_active_subscription(self):
         session = make_session()
@@ -348,6 +366,80 @@ class TestActivateSubscription:
 
         with pytest.raises(ConflictException):
             asyncio.run(service.activate_subscription(sub_id))
+
+
+class TestActivateSubscriptionNotification:
+    def _setup(self):
+        session = make_session()
+        service = make_service(session)
+        sub_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        plan = make_plan(plan_id=plan_id)
+        sub = make_subscription(sub_id=sub_id, plan_id=plan_id, status=SubscriptionStatus.PENDING)
+        user = make_user(user_id=sub.user_id)
+        session.execute.side_effect = [
+            _make_lock_result(user),        # _lock_user_for_subscription
+            _make_check_result(None),       # _check_active_overlap
+            _make_user_result(user),        # fetch user after lock
+            _make_profile_result(None),     # ensure_recruiter_access
+        ]
+        service.subscriptions.get_by_id_including_deleted.return_value = sub
+        service.plans.get_active_by_id.return_value = plan
+        return session, service, sub, plan
+
+    def test_notifies_once_on_activation(self, _patch_activation_notifier):
+        _, service, sub, plan = self._setup()
+
+        asyncio.run(service.activate_subscription(sub.id))
+
+        notifier = _patch_activation_notifier.return_value.notify_subscription_activated
+        notifier.assert_awaited_once()
+        kwargs = notifier.await_args.kwargs
+        assert kwargs["user_id"] == sub.user_id
+        assert kwargs["subscription_id"] == sub.id
+        assert kwargs["plan_name"] == plan.name
+        assert kwargs["expires_at"] == sub.expires_at
+
+    def test_notification_created_before_commit(self, _patch_activation_notifier):
+        session, service, sub, _ = self._setup()
+        order: list[str] = []
+
+        async def _notify(**kwargs):
+            order.append("notify")
+
+        async def _commit():
+            order.append("commit")
+
+        _patch_activation_notifier.return_value.notify_subscription_activated.side_effect = _notify
+        session.commit = AsyncMock(side_effect=_commit)
+
+        asyncio.run(service.activate_subscription(sub.id))
+
+        assert order == ["notify", "commit"]
+
+    def test_losing_concurrent_activation_does_not_notify(self, _patch_activation_notifier):
+        """If the subscription became ACTIVE while we waited for the lock, no notify."""
+        session, service, sub, _ = self._setup()
+
+        async def _refresh(obj):
+            obj.status = SubscriptionStatus.ACTIVE
+
+        session.refresh = AsyncMock(side_effect=_refresh)
+
+        with pytest.raises(InvalidTransitionException):
+            asyncio.run(service.activate_subscription(sub.id))
+
+        _patch_activation_notifier.return_value.notify_subscription_activated.assert_not_awaited()
+
+    def test_commit_failure_rolls_back_and_propagates(self, _patch_activation_notifier):
+        session, service, sub, _ = self._setup()
+        session.commit.side_effect = Exception("db down")
+
+        with pytest.raises(Exception):
+            asyncio.run(service.activate_subscription(sub.id))
+
+        session.rollback.assert_awaited()
+        _patch_activation_notifier.return_value.notify_subscription_activated.assert_awaited_once()
 
 
 class TestCancelSubscription:

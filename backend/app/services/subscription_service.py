@@ -18,6 +18,7 @@ from app.domain.models.base import utc_now
 from app.models import RecruitmentPlan, RecruiterProfile, Subscription, User
 from app.repositories import RecruitmentPlanRepository, SubscriptionRepository
 from app.schemas.subscription import SubscriptionCreate
+from app.services.notification_service import NotificationService
 from app.services.recruiter_access import ensure_recruiter_access
 
 
@@ -158,6 +159,18 @@ class SubscriptionService:
         # Lock user row to serialize activation for this user
         await self._lock_user_for_subscription(sub.user_id)
 
+        # Re-read the subscription under the per-user lock. The PENDING check
+        # above ran before serialization, so a concurrent activation of the same
+        # subscription may have completed while we waited for the lock. Refreshing
+        # here makes PENDING -> ACTIVE a single-winner transition, which in turn
+        # guarantees the activation notification is emitted exactly once per
+        # transition (a loser raises instead of re-notifying).
+        await self.session.refresh(sub)
+        if sub.status != SubscriptionStatus.PENDING:
+            raise InvalidTransitionException(
+                f"Cannot activate subscription in status {sub.status.value}"
+            )
+
         now = utc_now()
 
         # Check for existing active subscription BEFORE activating
@@ -193,6 +206,17 @@ class SubscriptionService:
         sub.job_posts_used = 0
         sub.candidate_searches_used = 0
         sub.ai_features_used = 0
+
+        # Create the activation notification in the SAME session/transaction as
+        # the PENDING -> ACTIVE transition so the two commit or roll back
+        # together. Publishing to Redis/SSE is scheduled for after commit and a
+        # publish failure cannot invalidate the committed activation.
+        await NotificationService(self.session).notify_subscription_activated(
+            user_id=sub.user_id,
+            subscription_id=sub.id,
+            plan_name=plan.name,
+            expires_at=sub.expires_at,
+        )
 
         try:
             await self.session.commit()

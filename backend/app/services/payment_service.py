@@ -25,6 +25,7 @@ from app.repositories import (
     RecruitmentPlanRepository,
     SubscriptionRepository,
 )
+from app.services.notification_service import NotificationService
 from app.services.payment_providers import VNPAYProvider
 from app.services.payment_providers.vnpay import VIETNAM_TZ
 from app.services.recruiter_access import ensure_recruiter_access
@@ -651,6 +652,21 @@ class PaymentService:
         sub.job_posts_used = 0
         sub.candidate_searches_used = 0
         sub.ai_features_used = 0
+
+        # Notify the user that the subscription is now active. This runs on the
+        # shared success path (IPN and QueryDr both funnel here) and is created
+        # in the SAME session/transaction as the PENDING->ACTIVE transition, so
+        # it is committed atomically with the activation and rolled back with it.
+        # The order-row lock guarantees this path executes at most once per
+        # successful payment; the notification's own entity guard is only
+        # defense-in-depth. Redis/SSE publishing is deferred to after commit and
+        # cannot fail the committed transaction.
+        await NotificationService(self.session).notify_subscription_activated(
+            user_id=sub.user_id,
+            subscription_id=sub.id,
+            plan_name=plan.name,
+            expires_at=sub.expires_at,
+        )
 
         await self.session.commit()
         await self.session.refresh(sub)
