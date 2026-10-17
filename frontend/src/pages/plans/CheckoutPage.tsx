@@ -111,16 +111,22 @@ export function CheckoutPage() {
       const res = await createVNPayPayment(plan!.id)
       window.location.href = res.payment_url
     } catch (err) {
-      const typedErr = err as { response?: { status?: number; message?: string } } | Error | undefined
+      const axiosErr = err as {
+        response?: { status?: number; data?: { detail?: string } }
+        message?: string
+      }
+      const status = axiosErr?.response?.status
+      const serverDetail = axiosErr?.response?.data?.detail
 
-      if (typedErr instanceof Error) {
-        setError(typedErr.message)
-      } else if (typedErr?.response?.status === 409) {
+      if (status === 409) {
         setError(
-          'Bạn đang có gói đăng tin đang hoạt động. Hệ thống hiện chưa hỗ trợ đăng ký chồng gói. Vui lòng để gói hiện tại hết hạn hoặc liên hệ hỗ trợ để được tư vấn.'
+          serverDetail ||
+            'Bạn đang có gói đăng tin đang hoạt động. Hệ thống chỉ hỗ trợ nâng cấp lên gói có giá cao hơn gói hiện tại. Vui lòng chọn gói cao hơn hoặc liên hệ hỗ trợ.'
         )
-      } else if (typedErr?.response?.message) {
-        setError(typedErr.response.message)
+      } else if (serverDetail) {
+        setError(serverDetail)
+      } else if (err instanceof Error) {
+        setError(err.message)
       } else {
         setError('Có lỗi xảy ra khi tạo thanh toán. Vui lòng thử lại sau.')
       }

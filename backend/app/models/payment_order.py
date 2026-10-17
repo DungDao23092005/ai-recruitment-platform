@@ -23,6 +23,12 @@ class PaymentOrder(Base, TimestampMixin, SoftDeleteMixin):
     __table_args__ = (
         Index("ix_payment_orders_provider_order_id_unique", "provider_order_id", unique=True, mssql_where=text("provider_order_id IS NOT NULL")),
         Index("ix_payment_orders_provider_request_id_unique", "provider_request_id", unique=True, mssql_where=text("provider_request_id IS NOT NULL")),
+        Index(
+            "ix_payment_orders_user_id_status",
+            "user_id",
+            "status",
+            mssql_include=["expired_at", "provider", "is_deleted"],
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)

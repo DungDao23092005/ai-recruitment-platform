@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
 import { getPaymentStatus } from '@/api/payments'
 
-type ResultState = 'loading' | 'success' | 'failed' | 'pending' | 'invalid' | 'error'
+type ResultState = 'loading' | 'success' | 'processing' | 'failed' | 'pending' | 'invalid' | 'error'
 
 // Bounded client polling. The backend reconciles each status check with VNPAY
 // QueryDr; these retries are only a UX affordance for a slow-clearing payment.
@@ -56,10 +56,19 @@ export function PaymentResultPage() {
         if (cancelled) return
 
         if (res.is_successful || res.payment_order.status === 'paid') {
-          await refreshAuthOnce()
-          if (cancelled) return
+          // A verified payment is NOT the same as a granted entitlement. Only
+          // show success when the server confirms the subscription is active;
+          // a paid order whose subscription never activated must surface the
+          // pending-activation state instead of a false upgrade confirmation.
+          if (res.is_activated) {
+            await refreshAuthOnce()
+            if (cancelled) return
+            setPaymentMessage(res.message)
+            setState('success')
+            return
+          }
           setPaymentMessage(res.message)
-          setState('success')
+          setState('processing')
           return
         }
 
@@ -137,6 +146,24 @@ export function PaymentResultPage() {
               </h3>
               <p className="text-yellow-700 mb-4">
                 {paymentMessage || 'Thanh toán của bạn đang được xác nhận.'}
+              </p>
+              <div className="flex gap-3">
+                <Button onClick={handleRetry}>Kiểm tra lại</Button>
+                <Button variant="outline" onClick={handleGoBack}>
+                  Quay lại gói dịch vụ
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {state === 'processing' && (
+            <div className="p-6 rounded-lg mb-6 bg-yellow-50 border-yellow-200">
+              <h3 className="font-semibold text-yellow-700 mb-2">
+                Đã nhận thanh toán, đang kích hoạt gói
+              </h3>
+              <p className="text-yellow-700 mb-4">
+                Chúng tôi đã ghi nhận thanh toán của bạn. Gói dịch vụ đang được kích hoạt, vui
+                lòng kiểm tra lại sau ít phút hoặc liên hệ hỗ trợ nếu tình trạng kéo dài.
               </p>
               <div className="flex gap-3">
                 <Button onClick={handleRetry}>Kiểm tra lại</Button>

@@ -443,9 +443,286 @@ class TestPaymentAPICreate:
         # (The test verifies the flow, not the exact amount in response)
 
 
+@pytest.fixture
+def active_subscription_factory(run_async, candidate_client):
+    """Create an ACTIVE subscription (and its plan) for the authenticated candidate."""
+
+    def _factory(*, price: int, currency: str = "VND"):
+        from app.domain.enums import SubscriptionStatus, UserRole
+        from app.models import RecruitmentPlan, Subscription, User
+
+        async def _create():
+            from datetime import timezone
+            from app.database.session import async_session_factory
+
+            async with async_session_factory() as session:
+                user = await session.scalar(
+                    select(User).where(User.role == UserRole.CANDIDATE)
+                )
+                assert user is not None
+                plan = RecruitmentPlan(
+                    id=uuid.uuid4(),
+                    name=f"Active Plan {price}",
+                    description="active plan",
+                    price=price,
+                    currency=currency,
+                    duration_days=30,
+                    max_job_posts=1,
+                    is_active=True,
+                    display_order=0,
+                )
+                session.add(plan)
+                await session.flush()
+                subscription = Subscription(
+                    id=uuid.uuid4(),
+                    user_id=user.id,
+                    plan_id=plan.id,
+                    status=SubscriptionStatus.ACTIVE,
+                    started_at=datetime.now(timezone.utc),
+                    expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+                )
+                session.add(subscription)
+                await session.flush()
+                await session.commit()
+                return plan, subscription
+
+        return run(_create())
+
+    return _factory
+
+
+class TestPaymentAPICreateUpgradePolicy:
+    """P0: a user with an ACTIVE subscription may only buy a higher-priced plan."""
+
+    def test_create_allowed_for_strict_upgrade(
+        self, candidate_client, test_plan, active_subscription_factory,
+    ):
+        """An active cheaper plan does not block a higher-priced checkout."""
+        active_subscription_factory(price=0)
+
+        response = _post(
+            candidate_client,
+            "/api/v1/payments/vnpay/create",
+            json={"plan_id": str(test_plan.id)},
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.json()["internal_order_id"].startswith("VNPAY_")
+
+    def test_create_rejected_when_current_plan_is_not_cheaper(
+        self, candidate_client, test_plan, active_subscription_factory,
+    ):
+        """A same-or-higher-priced active plan rejects the checkout with 409."""
+        active_subscription_factory(price=test_plan.price + 1_000_000)
+
+        response = _post(
+            candidate_client,
+            "/api/v1/payments/vnpay/create",
+            json={"plan_id": str(test_plan.id)},
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+
+
+@pytest.fixture
+def pending_payment_order_factory(run_async, candidate_client):
+    """Create a PENDING PaymentOrder (with a PENDING subscription) for the
+    authenticated candidate. ``expired_minutes`` may be negative to model an
+    expired-but-still-PENDING checkout."""
+
+    def _factory(*, plan, expired_minutes: int = 15):
+        from app.domain.enums import (
+            PaymentOrderStatus,
+            PaymentProvider,
+            SubscriptionStatus,
+            UserRole,
+        )
+        from app.models import PaymentOrder, Subscription, User
+
+        async def _create():
+            from datetime import timezone
+            from app.database.session import async_session_factory
+
+            async with async_session_factory() as session:
+                user = await session.scalar(
+                    select(User).where(User.role == UserRole.CANDIDATE)
+                )
+                assert user is not None
+                subscription = Subscription(
+                    id=uuid.uuid4(),
+                    user_id=user.id,
+                    plan_id=plan.id,
+                    status=SubscriptionStatus.PENDING,
+                )
+                session.add(subscription)
+                await session.flush()
+                order = PaymentOrder(
+                    id=uuid.uuid4(),
+                    user_id=user.id,
+                    plan_id=plan.id,
+                    subscription_id=subscription.id,
+                    amount=plan.price,
+                    currency=plan.currency,
+                    provider=PaymentProvider.VNPAY,
+                    internal_order_id=(
+                        f"VNPAY_PENDING_{uuid.uuid4().hex[:8].upper()}"
+                    ),
+                    status=PaymentOrderStatus.PENDING,
+                    created_at=datetime.now(timezone.utc),
+                    expired_at=datetime.now(timezone.utc)
+                    + timedelta(minutes=expired_minutes),
+                )
+                session.add(order)
+                await session.flush()
+                await session.commit()
+                await session.refresh(order)
+                return order, subscription
+
+        return run(_create())
+
+    return _factory
+
+
+class TestPaymentAPIPendingCheckoutPolicy:
+    """Task B: pending-checkout reuse/reject policy at the HTTP boundary."""
+
+    def _count_for_candidate(self):
+        from app.domain.enums import UserRole
+        from app.models import PaymentOrder, Subscription, User
+
+        async def _count():
+            from sqlalchemy import func
+            from app.database.session import async_session_factory
+
+            async with async_session_factory() as session:
+                user = await session.scalar(
+                    select(User).where(User.role == UserRole.CANDIDATE)
+                )
+                assert user is not None
+                order_count = await session.scalar(
+                    select(func.count())
+                    .select_from(PaymentOrder)
+                    .where(PaymentOrder.user_id == user.id)
+                )
+                sub_count = await session.scalar(
+                    select(func.count())
+                    .select_from(Subscription)
+                    .where(Subscription.user_id == user.id)
+                )
+                return order_count, sub_count
+
+        return run(_count())
+
+    def test_second_request_for_same_plan_reuses_the_order(
+        self, candidate_client, test_plan, pending_payment_order_factory,
+    ):
+        """A concurrent/duplicate request for an active pending checkout returns
+        the same order and does not create another one."""
+        order, _ = pending_payment_order_factory(plan=test_plan)
+        before = self._count_for_candidate()
+
+        response = _post(
+            candidate_client,
+            "/api/v1/payments/vnpay/create",
+            json={"plan_id": str(test_plan.id)},
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        data = response.json()
+        # Contract consumed by CheckoutPage must stay intact.
+        assert set(
+            ["payment_url", "internal_order_id", "payment_order_id", "subscription_id"]
+        ).issubset(data.keys())
+        assert data["internal_order_id"] == order.internal_order_id
+        assert data["payment_order_id"] == str(order.id)
+        assert data["payment_url"].startswith("http")
+        assert self._count_for_candidate() == before
+
+    def test_request_for_different_plan_conflicts(
+        self, candidate_client, test_plan, pending_payment_order_factory,
+    ):
+        from app.models import RecruitmentPlan
+
+        async def _make_other_plan():
+            from app.database.session import async_session_factory
+
+            async with async_session_factory() as session:
+                plan = RecruitmentPlan(
+                    id=uuid.uuid4(),
+                    name="Other Plan",
+                    description="other",
+                    price=500000,
+                    currency="VND",
+                    duration_days=30,
+                    max_job_posts=1,
+                    is_active=True,
+                    display_order=0,
+                )
+                session.add(plan)
+                await session.commit()
+                await session.refresh(plan)
+                return plan
+
+        other_plan = run(_make_other_plan())
+        pending_payment_order_factory(plan=other_plan)
+        before = self._count_for_candidate()
+
+        response = _post(
+            candidate_client,
+            "/api/v1/payments/vnpay/create",
+            json={"plan_id": str(test_plan.id)},
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert self._count_for_candidate() == before
+
+    def test_expired_pending_order_does_not_block(
+        self, candidate_client, test_plan, pending_payment_order_factory,
+    ):
+        pending_payment_order_factory(plan=test_plan, expired_minutes=-1)
+        before = self._count_for_candidate()
+
+        response = _post(
+            candidate_client,
+            "/api/v1/payments/vnpay/create",
+            json={"plan_id": str(test_plan.id)},
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        after_orders, after_subs = self._count_for_candidate()
+        # A new order+subscription is created; the expired one is untouched.
+        assert (after_orders, after_subs) == (before[0] + 1, before[1] + 1)
+
+    def test_same_price_renewal_is_rejected(
+        self, candidate_client, test_plan, active_subscription_factory,
+    ):
+        active_subscription_factory(price=test_plan.price)
+
+        response = _post(
+            candidate_client,
+            "/api/v1/payments/vnpay/create",
+            json={"plan_id": str(test_plan.id)},
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+
+    def test_currency_mismatch_is_rejected_even_when_price_is_higher(
+        self, candidate_client, test_plan, active_subscription_factory,
+    ):
+        # Cheaper active plan but in another currency: not a comparable upgrade.
+        active_subscription_factory(price=1, currency="USD")
+
+        response = _post(
+            candidate_client,
+            "/api/v1/payments/vnpay/create",
+            json={"plan_id": str(test_plan.id)},
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+
+
 class TestPaymentAPIDelete:
     """Tests for GET /api/v1/payments/vnpay/return endpoint."""
-
     def test_return_valid_signature(
         self, candidate_client,
     ):
@@ -572,6 +849,7 @@ class TestPaymentAPIStatus:
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["is_successful"] is False
+        assert data["is_activated"] is False
         assert data["payment_order"]["status"] == "pending"
 
     def test_get_payment_status_querydr_success_finalizes_order(
@@ -595,6 +873,7 @@ class TestPaymentAPIStatus:
         assert response.status_code == status.HTTP_200_OK
         data = response.json()
         assert data["is_successful"] is True
+        assert data["is_activated"] is False
         assert data["payment_order"]["status"] == "paid"
 
     def test_get_payment_status_querydr_success_activates_subscription(
@@ -618,6 +897,8 @@ class TestPaymentAPIStatus:
             )
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["is_successful"] is True
+        assert response.json()["is_activated"] is True
+        assert response.json()["subscription_status"] == "active"
 
         async def _check():
             from app.models import Subscription

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -89,6 +89,107 @@ class PaymentService:
         random_suffix = uuid.uuid4().hex[:8].upper()
         return f"VNPAY_{timestamp}_{random_suffix}"
 
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        """Return ``value`` as a timezone-aware UTC datetime.
+
+        SQL Server does not persist timezone offset, so a value read back from
+        a ``DateTime(timezone=True)`` column may be naive. The persisted intent
+        is always UTC, so a naive value is interpreted as UTC rather than as the
+        host machine's local time.
+        """
+        if value.tzinfo is None or value.utcoffset() is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+    async def _lock_user(self, user_id: uuid.UUID) -> User:
+        """Lock the owning user row to serialize checkout/finalize per user.
+
+        Every write path that can create or finalize a checkout acquires this
+        lock *first*, giving a single, consistent lock hierarchy of
+        ``User -> PaymentOrder``. This removes the previously possible
+        ``User -> PaymentOrder`` (checkout) vs ``PaymentOrder -> User``
+        (IPN/QueryDr) lock inversion. It is safe against concurrent checkout
+        requests for the same user and never held across an outbound HTTP call.
+        """
+        stmt = (
+            select(User)
+            .where(User.id == user_id)
+            .with_hint(User, "WITH (UPDLOCK, ROWLOCK)")
+        )
+        result = await self.session.execute(stmt)
+        user = result.scalar_one_or_none()
+        if user is None:
+            raise EntityNotFoundException(f"User {user_id} not found")
+        return user
+
+    async def _current_active_plan(
+        self,
+        user_id: uuid.UUID,
+    ) -> tuple[Subscription, RecruitmentPlan | None] | None:
+        """Return the user's current ACTIVE subscription together with its plan.
+
+        The plan is the authoritative upgrade rank source. Returns ``None`` when
+        the user has no active subscription. If the active subscription points at
+        a missing/inactive plan, the pair is returned with ``plan=None`` so the
+        caller can fail closed rather than silently treating it as a fresh
+        purchase.
+        """
+        existing_active = await self.subscriptions.get_active_by_user_id(user_id)
+        if existing_active is None:
+            return None
+
+        existing_plan = await self.plans.get_by_id(existing_active.plan_id)
+        return existing_active, existing_plan
+
+    @staticmethod
+    def _normalize_currency(currency: Any) -> str | None:
+        """Normalize a plan currency for comparison.
+
+        Returns ``None`` for a missing, null, empty, whitespace-only, or
+        non-string currency so callers can fail closed instead of comparing
+        unlike or absent values.
+        """
+        if not isinstance(currency, str):
+            return None
+        normalized = currency.strip().upper()
+        return normalized or None
+
+    def _is_supported_upgrade(
+        self,
+        target_plan: RecruitmentPlan | None,
+        current_plan: RecruitmentPlan | None,
+    ) -> bool:
+        """Whether buying ``target_plan`` over ``current_plan`` is a valid upgrade.
+
+        The upgrade rank is the server-side plan price only: a strictly higher
+        price is an upgrade. The same price (renewal) and lower prices
+        (downgrades) are intentionally unsupported so a payment can never be
+        accepted for a transition activation would later refuse.
+
+        Both plans must use the same currency (compared after a safe
+        ``strip().upper()`` normalization). A missing target/current plan, a
+        missing/blank/non-string currency, or a currency mismatch fails closed.
+        """
+        if target_plan is None or current_plan is None:
+            return False
+
+        target_currency = self._normalize_currency(getattr(target_plan, "currency", None))
+        current_currency = self._normalize_currency(getattr(current_plan, "currency", None))
+        if target_currency is None or current_currency is None:
+            return False
+        if target_currency != current_currency:
+            return False
+
+        target_price = getattr(target_plan, "price", None)
+        current_price = getattr(current_plan, "price", None)
+        if not isinstance(target_price, int) or isinstance(target_price, bool):
+            return False
+        if not isinstance(current_price, int) or isinstance(current_price, bool):
+            return False
+
+        return target_price > current_price
+
     async def create_vnpay_payment(
         self,
         user_id: uuid.UUID,
@@ -100,13 +201,10 @@ class PaymentService:
 
         Flow:
         1. Load RecruitmentPlan and verify it's valid/active
-        2. Read authoritative plan price
-        3. Create PENDING Subscription
-        4. Create PaymentOrder with provider=VNPAY
-        5. Generate unique internal_order_id (vnp_TxnRef)
-        6. Construct VNPAY parameters
-        7. Calculate vnp_SecureHash
-        8. Return payment URL
+        2. Lock the user row (serialize checkout per user)
+        3. Enforce the supported-upgrade and pending-checkout policies
+        4. Reuse a still-valid unpaid checkout for the same plan, if any
+        5. Otherwise create PENDING Subscription + PaymentOrder and return URL
 
         Args:
             user_id: Authenticated candidate user ID
@@ -122,10 +220,80 @@ class PaymentService:
         if plan is None:
             raise EntityNotFoundException(f"Plan {plan_id} not found or inactive")
 
-        # 2. Use authoritative plan price (do NOT accept from client)
+        # 2. Acquire the per-user serialization lock FIRST. Holding it for the
+        # remainder of this transaction makes the pending-checkout guard and the
+        # order creation atomic per user, and keeps a single lock hierarchy
+        # (User -> PaymentOrder) shared with the IPN/QueryDr finalize paths. It
+        # is never held across an outbound HTTP call (this path makes none).
+        await self._lock_user(user_id)
+
+        # Capture ONE authoritative creation instant (UTC-aware) and reuse it
+        # for the persisted order timestamp, the application expiration, the
+        # pending-expiry comparison, and the VNPAY PAY request. This prevents a
+        # cross-second clock read from making the stored created_at differ from
+        # the PAY vnp_CreateDate, which QueryDr relies on to reference the
+        # transaction.
+        now_utc = utc_now()
+
+        # 3a. Enforce the supported-purchase policy BEFORE creating any order.
+        # A user with an active subscription may only start a checkout for a
+        # strictly higher-priced (same-currency) plan. This mirrors the
+        # activation-time replacement check so a payment can never be accepted
+        # for a transition that activation would later refuse, which is exactly
+        # what orphaned the paid Professional upgrade. Enforced server-side; the
+        # frontend CTA is only an affordance.
+        current = await self._current_active_plan(user_id)
+        if current is not None:
+            _, current_plan = current
+            if not self._is_supported_upgrade(plan, current_plan):
+                raise ConflictException(
+                    "Bạn chỉ có thể nâng cấp lên gói có giá cao hơn gói hiện tại "
+                    "đang hoạt động."
+                )
+
+        # 3b. An order that is PAID while its subscription is still PENDING is an
+        # entitlement incident, not an unpaid checkout. Never start a new
+        # checkout (which would mask it): surface it for reconciliation.
+        if await self.payment_orders.has_paid_order_with_pending_subscription(user_id):
+            raise ConflictException(
+                "Hệ thống đang ghi nhận một giao dịch đã thanh toán nhưng chưa "
+                "kích hoạt được gói dịch vụ. Vui lòng liên hệ hỗ trợ để được xử "
+                "lý trước khi thực hiện giao dịch mới."
+            )
+
+        # 3c. Pending-checkout policy. A still-valid unpaid checkout for the same
+        # plan is reused (never a second order); a still-valid checkout for a
+        # different plan blocks a new one; expired checkouts never block.
+        pending_orders = await self.payment_orders.get_active_pending_for_user(
+            user_id, now_utc
+        )
+        if pending_orders:
+            same_plan = [o for o in pending_orders if o.plan_id == plan_id]
+            if same_plan:
+                existing_order = same_plan[0]
+                if existing_order.subscription_id is None:
+                    raise ConflictException(
+                        "Bạn đang có một giao dịch chưa hoàn tất. Vui lòng chờ "
+                        "liên kết thanh toán hiện tại hết hạn rồi thử lại."
+                    )
+                payment_url = self._rebuild_payment_url(
+                    existing_order, plan, client_ip, return_url
+                )
+                return (
+                    payment_url,
+                    existing_order.internal_order_id,
+                    existing_order.subscription_id,
+                )
+            raise ConflictException(
+                "Bạn đang có một giao dịch chưa hoàn tất cho gói khác. Vui lòng "
+                "hoàn tất giao dịch đó hoặc chờ liên kết thanh toán hết hạn "
+                "trước khi tạo giao dịch mới."
+            )
+
+        # 4. Use authoritative plan price (do NOT accept from client)
         amount = plan.price
 
-        # 3. Create PENDING subscription
+        # 4b. Create PENDING subscription
         subscription = Subscription(
             user_id=user_id,
             plan_id=plan_id,
@@ -134,21 +302,11 @@ class PaymentService:
         self.session.add(subscription)
         await self.session.flush()  # Get subscription ID
 
-        # 4. Create PaymentOrder
+        # 5. Create PaymentOrder. Resolve the timeout once from the configured
+        # provider (VNPAY_TIMEOUT, in minutes); the same value drives both the
+        # application-level expiration and the VNPAY gateway expiration.
         internal_order_id = self._generate_internal_order_id()
-
-        # Resolve the timeout once from the configured provider (VNPAY_TIMEOUT,
-        # in minutes). The same value is used for both the application-level
-        # expiration and the VNPAY gateway expiration so they represent the
-        # same instant.
         timeout = self.vnpay.timeout
-
-        # Capture ONE authoritative creation instant (UTC-aware) and reuse it
-        # for the persisted order timestamp, the application expiration, and
-        # the VNPAY PAY request. This prevents a cross-second clock read from
-        # making the stored created_at differ from the original PAY
-        # vnp_CreateDate, which QueryDr relies on to reference the transaction.
-        now_utc = utc_now()
 
         payment_order = PaymentOrder(
             user_id=user_id,
@@ -171,7 +329,7 @@ class PaymentService:
             await self.session.rollback()
             raise
 
-        # 5. Build VNPAY parameters (same timeout AND same creation instant as
+        # 7. Build VNPAY parameters (same timeout AND same creation instant as
         # the persisted order, so PAY vnp_CreateDate == created_at).
         order_info = f"Thanh toan goi tuyen dung {plan.name}"
         params = self.vnpay.build_payment_params(
@@ -184,10 +342,48 @@ class PaymentService:
             create_time=now_utc,
         )
 
-        # 6. Build payment URL with secure hash
+        # 8. Build payment URL with secure hash
         payment_url = self.vnpay.build_payment_url(params)
 
         return payment_url, internal_order_id, subscription.id
+
+    def _rebuild_payment_url(
+        self,
+        order: PaymentOrder,
+        plan: RecruitmentPlan,
+        client_ip: str,
+        return_url: str | None,
+    ) -> str:
+        """Rebuild a VNPAY PAY URL for an existing still-valid PENDING order.
+
+        The order's persisted ``internal_order_id``, ``amount`` and
+        ``created_at`` are reused so the PAY ``vnp_TxnRef``/``vnp_Amount`` and
+        ``vnp_CreateDate`` are identical to the original link; the expiration
+        window is preserved from ``expired_at - created_at`` so
+        ``vnp_ExpireDate`` matches too. Only the transient request fields that
+        are not part of the merchant's order identity (client IP and return URL)
+        are re-derived, which keeps the freshly signed link valid for the same
+        checkout without creating a second order.
+        """
+        created_at = self._as_utc(order.created_at)
+
+        expire_minutes: int | None = None
+        if order.expired_at is not None:
+            window = order.expired_at - order.created_at
+            minutes = int(round(window.total_seconds() / 60))
+            if minutes > 0:
+                expire_minutes = minutes
+
+        params = self.vnpay.build_payment_params(
+            amount=order.amount,
+            order_id=order.internal_order_id,
+            order_info=f"Thanh toan goi tuyen dung {plan.name}",
+            client_ip=client_ip,
+            return_url=return_url,
+            expire_minutes=expire_minutes,
+            create_time=created_at,
+        )
+        return self.vnpay.build_payment_url(params)
 
     async def process_vnpay_ipn(
         self,
@@ -218,38 +414,46 @@ class PaymentService:
         if not self.vnpay.verify_signature(params):
             return {"RspCode": "97", "Message": "Invalid signature"}
 
-        # 2. Lookup PaymentOrder by vnp_TxnRef with row-level locking for idempotency
+        # 2. Discover the owning user from an UNLOCKED read so the per-user lock
+        # can be acquired before any PaymentOrder row lock. This preserves the
+        # single lock hierarchy (User -> PaymentOrder) shared with the checkout
+        # path and prevents a User <-> PaymentOrder lock inversion. The read is
+        # only used to resolve the user and to validate immutable fields; the
+        # authoritative state is read again under lock below.
         txn_ref = params.get("vnp_TxnRef")
         if not txn_ref:
             return {"RspCode": "01", "Message": "Missing transaction reference"}
 
-        # Lock the PaymentOrder row to prevent concurrent IPN race conditions
-        stmt = (
-            select(PaymentOrder)
-            .where(PaymentOrder.internal_order_id == txn_ref)
-            .where(PaymentOrder.is_deleted == False)  # noqa: E712
-            .with_hint(PaymentOrder, "WITH (UPDLOCK, ROWLOCK)")
-        )
-        result = await self.session.execute(stmt)
-        payment_order = result.scalar_one_or_none()
+        discovered = await self.payment_orders.get_by_internal_order_id(txn_ref)
+        if discovered is None:
+            return {"RspCode": "01", "Message": "Order not found"}
 
         # 3. Validate merchant correlation (TNmnCode)
         tmn_code = params.get("vnp_TmnCode")
         if tmn_code != settings.VNPAY_TMN_CODE:
             return {"RspCode": "02", "Message": "Invalid merchant"}
 
-        # 4. Validate amount
+        # 4. Validate amount against the discovered order (amount is immutable)
         vnp_amount_str = params.get("vnp_Amount", "0")
         try:
             vnp_amount = int(vnp_amount_str)
         except ValueError:
             return {"RspCode": "04", "Message": "Invalid amount"}
 
-        expected_amount = payment_order.amount * 100
+        expected_amount = discovered.amount * 100
         if vnp_amount != expected_amount:
             return {"RspCode": "04", "Message": "Invalid amount"}
 
-        # 5. Check payment state for idempotency
+        # 5. Lock the user row FIRST, then re-load and lock the order
+        # authoritatively. A concurrent IPN/checkout for the same user
+        # serializes here instead of racing on the order row.
+        await self._lock_user(discovered.user_id)
+
+        payment_order = await self._lock_payment_order(txn_ref)
+        if payment_order is None:
+            return {"RspCode": "01", "Message": "Order not found"}
+
+        # 6. Check payment state for idempotency (authoritative, under lock)
         if payment_order.status == PaymentOrderStatus.PAID:
             # Already processed successfully - return success (idempotent)
             return {"RspCode": "00", "Message": "Confirm Success"}
@@ -340,9 +544,15 @@ class PaymentService:
         the order is still PENDING.
 
         Returns:
-            True if the subscription was activated, False if the payment was
-            recorded but activation requires manual reconciliation because the
-            user already has an active subscription.
+            True if the subscription was activated (including a supported
+            upgrade that retired the previous active subscription), False if the
+            payment was recorded but activation requires manual reconciliation
+            because the user already holds a non-lower-tier active subscription.
+            In the False case the PaymentOrder is PAID and the PaymentTransaction
+            is SUCCESS while the subscription stays PENDING; ``get_payment_status``
+            surfaces this as ``is_activated=False`` so clients never report a
+            false activation. The purchase guard in ``create_vnpay_payment``
+            prevents new orders from reaching this state.
         """
         payment_order.status = PaymentOrderStatus.PAID
         payment_order.paid_at = utc_now()
@@ -404,16 +614,27 @@ class PaymentService:
 
         now = utc_now()
 
-        # Check for existing active subscription BEFORE activating
-        existing_active = await self.subscriptions.get_active_by_user_id(sub.user_id, now)
-        if existing_active is not None and existing_active.id != sub.id:
-            raise ConflictException(
-                f"User already has an active subscription (id: {existing_active.id})"
-            )
-
         plan = await self.plans.get_active_by_id(sub.plan_id)
         if plan is None:
             raise EntityNotFoundException(f"Plan {sub.plan_id} not found or inactive")
+
+        # Check for an existing active subscription BEFORE activating. A
+        # supported (strictly higher-priced) upgrade retires the previous
+        # subscription as CANCELLED so exactly one ACTIVE subscription remains.
+        # Anything else (same tier renewal, downgrade, or an unresolvable
+        # current plan) is refused so a payment is never silently orphaned.
+        existing_active = await self.subscriptions.get_active_by_user_id(sub.user_id, now)
+        if existing_active is not None and existing_active.id != sub.id:
+            existing_plan = await self.plans.get_by_id(existing_active.plan_id)
+            if not self._is_supported_upgrade(plan, existing_plan):
+                raise ConflictException(
+                    f"User already has an active subscription (id: {existing_active.id}) "
+                    "that is not a lower-tier plan; upgrade refused"
+                )
+            # Superseded plan: retire the old subscription. Its usage counters
+            # are preserved as historical record; only the terminal status
+            # changes. The new subscription starts fresh from the plan snapshot.
+            existing_active.status = SubscriptionStatus.CANCELLED
 
         sub.status = SubscriptionStatus.ACTIVE
         sub.started_at = now
@@ -504,10 +725,35 @@ class PaymentService:
 
         transaction = await self.payment_transactions.get_latest_by_payment_order_id(payment_order.id)
 
+        # Distinguish "payment succeeded" from "entitlement granted". The only
+        # source of truth is the subscription bound to this order, read
+        # server-side; a paid order whose subscription never activated must
+        # never be presented to the client as a successful upgrade.
+        subscription = None
+        if payment_order.subscription_id:
+            subscription = await self.subscriptions.get_by_id_including_deleted(
+                payment_order.subscription_id
+            )
+
+        subscription_status = subscription.status.value if subscription is not None else None
+        is_activated = (
+            subscription is not None and subscription.status == SubscriptionStatus.ACTIVE
+        )
+
+        plan_name: str | None = None
+        if subscription is not None:
+            plan = subscription.plan
+            if plan is None:
+                plan = await self.plans.get_by_id(subscription.plan_id)
+            plan_name = plan.name if plan is not None else None
+
         return {
             "payment_order": payment_order,
             "transaction": transaction,
             "is_successful": payment_order.status == PaymentOrderStatus.PAID,
+            "is_activated": is_activated,
+            "subscription_status": subscription_status,
+            "plan_name": plan_name,
         }
 
     # ------------------------------------------------------------------
@@ -658,7 +904,15 @@ class PaymentService:
         payment_order: PaymentOrder,
         body: dict[str, Any],
     ) -> None:
-        """Finalize a QueryDr-verified success inside a short locked transaction."""
+        """Finalize a QueryDr-verified success inside a short locked transaction.
+
+        The lock hierarchy matches the IPN and checkout paths exactly: the
+        per-user lock is taken before the PaymentOrder row lock. The outbound
+        QueryDr HTTP request has already completed, so no DB lock is held across
+        the network call.
+        """
+        await self._lock_user(payment_order.user_id)
+
         locked = await self._lock_payment_order(payment_order.internal_order_id)
         if locked is None or locked.status != PaymentOrderStatus.PENDING:
             # Another request (e.g. a concurrent IPN) already finalized it.
@@ -696,7 +950,12 @@ class PaymentService:
         payment_order: PaymentOrder,
         body: dict[str, Any],
     ) -> None:
-        """Mark an order FAILED only for a documented, definitive terminal status."""
+        """Mark an order FAILED only for a documented, definitive terminal status.
+
+        Uses the same User -> PaymentOrder lock hierarchy as the success path.
+        """
+        await self._lock_user(payment_order.user_id)
+
         locked = await self._lock_payment_order(payment_order.internal_order_id)
         if locked is None or locked.status != PaymentOrderStatus.PENDING:
             return

@@ -50,7 +50,22 @@ function setMockCurrentUser(role: string | null) {
 function paidResponse(): PaymentStatusResponse {
   return {
     is_successful: true,
+    is_activated: true,
+    subscription_status: 'active',
+    plan_name: 'Gói Chuyên Nghiệp',
     message: 'Payment successful',
+    payment_order: { status: 'paid' } as unknown as PaymentStatusResponse['payment_order'],
+    transaction: null,
+  }
+}
+
+function paidNotActivatedResponse(): PaymentStatusResponse {
+  return {
+    is_successful: true,
+    is_activated: false,
+    subscription_status: 'pending',
+    plan_name: 'Gói Chuyên Nghiệp',
+    message: 'Payment received; subscription activation requires reconciliation',
     payment_order: { status: 'paid' } as unknown as PaymentStatusResponse['payment_order'],
     transaction: null,
   }
@@ -59,6 +74,9 @@ function paidResponse(): PaymentStatusResponse {
 function pendingResponse(): PaymentStatusResponse {
   return {
     is_successful: false,
+    is_activated: false,
+    subscription_status: 'pending',
+    plan_name: null,
     message: 'Payment pending or failed',
     payment_order: { status: 'pending' } as unknown as PaymentStatusResponse['payment_order'],
     transaction: null,
@@ -68,6 +86,9 @@ function pendingResponse(): PaymentStatusResponse {
 function failedResponse(): PaymentStatusResponse {
   return {
     is_successful: false,
+    is_activated: false,
+    subscription_status: 'pending',
+    plan_name: null,
     message: 'Giao dịch không thành công',
     payment_order: { status: 'failed' } as unknown as PaymentStatusResponse['payment_order'],
     transaction: null,
@@ -146,6 +167,20 @@ describe('PaymentResultPage - server-verified outcome', () => {
     mockedGetPaymentStatus.mockResolvedValue(failedResponse())
     renderPaymentPage()
     await waitFor(() => expect(screen.getByText('Thanh toán thất bại')).toBeInTheDocument())
+    expect(mockedRefreshCurrentUser).not.toHaveBeenCalled()
+  })
+
+  it('shows the activation-pending state for a paid but unactivated order', async () => {
+    setMockCurrentUser('recruiter')
+    mockedGetPaymentStatus.mockResolvedValue(paidNotActivatedResponse())
+    renderPaymentPage()
+    await waitFor(() =>
+      expect(screen.getByText('Đã nhận thanh toán, đang kích hoạt gói')).toBeInTheDocument(),
+    )
+    expect(screen.queryByText('Thanh toán thành công')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Bạn đã được nâng cấp lên Nhà tuyển dụng thành công'),
+    ).not.toBeInTheDocument()
     expect(mockedRefreshCurrentUser).not.toHaveBeenCalled()
   })
 

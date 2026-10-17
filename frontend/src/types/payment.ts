@@ -44,5 +44,8 @@ export interface PaymentStatusResponse {
   payment_order: PaymentOrderRead
   transaction: PaymentTransactionRead | null
   is_successful: boolean
+  is_activated: boolean
+  subscription_status: string | null
+  plan_name: string | null
   message: string
 }

@@ -106,9 +106,18 @@ class PaymentTransactionRead(BaseModel):
 
 
 class PaymentStatusResponse(BaseModel):
-    """Payment status response."""
+    """Payment status response.
+
+    ``is_successful`` reflects the verified payment (order is PAID).
+    ``is_activated`` reflects the entitlement (the bound subscription is
+    ACTIVE). They are deliberately separate so a paid-but-unactivated order is
+    never presented as a successful upgrade.
+    """
 
     payment_order: PaymentOrderRead
     transaction: Optional[PaymentTransactionRead] = None
     is_successful: bool
+    is_activated: bool = False
+    subscription_status: Optional[str] = None
+    plan_name: Optional[str] = None
     message: str

@@ -270,7 +270,15 @@ def _make_payment_service_session() -> MagicMock:
     session.commit = AsyncMock()
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
-    session.execute = AsyncMock()
+
+    # Default (un-side_effect-ed) execute result: a truthy "user row" for the
+    # per-user lock and safe empty/falsy values for aggregate queries. Tests
+    # that need specific rows still set ``session.execute.side_effect``.
+    default_result = MagicMock()
+    default_result.scalar_one_or_none.return_value = MagicMock()
+    default_result.scalar_one.return_value = 0
+    default_result.scalars.return_value.all.return_value = []
+    session.execute = AsyncMock(return_value=default_result)
 
     async def _fake_flush():
         # Mock flush assigns ids like a real database would on flush.
@@ -324,6 +332,8 @@ def _make_subscription(sub_id: uuid.UUID, user_id: uuid.UUID, plan_id: uuid.UUID
 def _make_plan(
     plan_id: uuid.UUID,
     *,
+    price: int = 0,
+    currency: object = "VND",
     duration_days: int = 30,
     max_job_posts: int = 5,
     max_candidate_searches: int | None = 10,
@@ -331,11 +341,34 @@ def _make_plan(
 ) -> MagicMock:
     plan = MagicMock()
     plan.id = plan_id
+    plan.price = price
+    plan.currency = currency
     plan.duration_days = duration_days
     plan.max_job_posts = max_job_posts
     plan.max_candidate_searches = max_candidate_searches
     plan.max_ai_features = max_ai_features
     return plan
+
+
+def _no_pending_checkout(service: PaymentService) -> None:
+    """Neutralize the pending-checkout guards for tests that only exercise the
+    create path (no pre-existing pending order / incident)."""
+    service.payment_orders.get_active_pending_for_user = AsyncMock(return_value=[])
+    service.payment_orders.has_paid_order_with_pending_subscription = AsyncMock(
+        return_value=False
+    )
+
+
+def _build_vnpay_provider(timeout_minutes: int = 15) -> VNPAYProvider:
+    with patch("app.services.payment_providers.vnpay.settings") as mock_settings:
+        mock_settings.VNPAY_TMN_CODE = "TEST_TMN_CODE"
+        mock_settings.VNPAY_HASH_SECRET = "TEST_HASH_SECRET"
+        mock_settings.VNPAY_PAYMENT_URL = "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
+        mock_settings.VNPAY_QUERY_URL = "https://sandbox.vnpayment.vn/merchant_webapi/api/transaction"
+        mock_settings.VNPAY_RETURN_URL = "http://localhost:3000/payment-result"
+        mock_settings.VNPAY_IPN_URL = "http://localhost:8000/api/v1/payments/vnpay/ipn"
+        mock_settings.VNPAY_TIMEOUT = timeout_minutes
+        return VNPAYProvider()
 
 
 class TestActivateSubscriptionForPaymentRoleTransition:
@@ -663,6 +696,479 @@ class TestActivateSubscriptionQuotaSnapshot:
         assert sub.max_job_posts == 9
 
 
+class TestPurchaseGuardCreateVnpayPayment:
+    """P0: a user with an ACTIVE subscription may only start a higher-priced plan."""
+
+    def _service(self, *, active, active_plan, target_plan):
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        service.plans.get_active_by_id = AsyncMock(return_value=target_plan)
+        service.plans.get_by_id = AsyncMock(return_value=active_plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=active)
+        service.vnpay = _build_vnpay_provider(15)
+        _no_pending_checkout(service)
+        return service, session
+
+    @staticmethod
+    def _added_orders(session: MagicMock) -> list[PaymentOrder]:
+        return [
+            c.args[0]
+            for c in session.add.call_args_list
+            if isinstance(c.args[0], PaymentOrder)
+        ]
+
+    def test_same_price_plan_rejected(self) -> None:
+        user_id = uuid.uuid4()
+        active = _make_subscription(
+            uuid.uuid4(), user_id, uuid.uuid4(), SubscriptionStatus.ACTIVE
+        )
+        active_plan = _make_plan(active.plan_id, price=299_000)
+        target_plan = _make_plan(uuid.uuid4(), price=299_000)
+        service, session = self._service(
+            active=active, active_plan=active_plan, target_plan=target_plan
+        )
+
+        with pytest.raises(ConflictException):
+            asyncio.run(service.create_vnpay_payment(user_id, target_plan.id, "127.0.0.1"))
+
+        assert self._added_orders(session) == []
+
+    def test_lower_price_plan_rejected(self) -> None:
+        user_id = uuid.uuid4()
+        active = _make_subscription(
+            uuid.uuid4(), user_id, uuid.uuid4(), SubscriptionStatus.ACTIVE
+        )
+        active_plan = _make_plan(active.plan_id, price=299_000)
+        target_plan = _make_plan(uuid.uuid4(), price=0)
+        service, session = self._service(
+            active=active, active_plan=active_plan, target_plan=target_plan
+        )
+
+        with pytest.raises(ConflictException):
+            asyncio.run(service.create_vnpay_payment(user_id, target_plan.id, "127.0.0.1"))
+
+        assert self._added_orders(session) == []
+
+    def test_unresolvable_current_plan_fails_closed(self) -> None:
+        user_id = uuid.uuid4()
+        active = _make_subscription(
+            uuid.uuid4(), user_id, uuid.uuid4(), SubscriptionStatus.ACTIVE
+        )
+        target_plan = _make_plan(uuid.uuid4(), price=299_000)
+        service, session = self._service(
+            active=active, active_plan=None, target_plan=target_plan
+        )
+
+        with pytest.raises(ConflictException):
+            asyncio.run(service.create_vnpay_payment(user_id, target_plan.id, "127.0.0.1"))
+
+        assert self._added_orders(session) == []
+
+    def test_strict_upgrade_allowed(self) -> None:
+        user_id = uuid.uuid4()
+        active = _make_subscription(
+            uuid.uuid4(), user_id, uuid.uuid4(), SubscriptionStatus.ACTIVE
+        )
+        active_plan = _make_plan(active.plan_id, price=0)
+        target_plan = _make_plan(uuid.uuid4(), price=299_000)
+        service, session = self._service(
+            active=active, active_plan=active_plan, target_plan=target_plan
+        )
+
+        url, internal_order_id, subscription_id = asyncio.run(
+            service.create_vnpay_payment(user_id, target_plan.id, "127.0.0.1")
+        )
+
+        orders = self._added_orders(session)
+        assert len(orders) == 1
+        assert orders[0].amount == 299_000
+        assert internal_order_id
+        assert subscription_id
+        assert isinstance(url, str) and url.startswith(
+            "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html?"
+        )
+
+
+class TestSupportedUpgradeCurrency:
+    """Task A: upgrade rank is currency-safe; prices are compared only within a
+    single normalized currency."""
+
+    def _service(self) -> PaymentService:
+        return PaymentService(_make_payment_service_session())
+
+    def test_same_currency_higher_price_supported(self) -> None:
+        service = self._service()
+        target = _make_plan(uuid.uuid4(), price=299_000, currency="VND")
+        current = _make_plan(uuid.uuid4(), price=0, currency="VND")
+        assert service._is_supported_upgrade(target, current) is True
+
+    @pytest.mark.parametrize(
+        "target_price,current_price", [(299_000, 299_000), (0, 299_000)]
+    )
+    def test_same_or_lower_price_rejected(
+        self, target_price: int, current_price: int
+    ) -> None:
+        service = self._service()
+        target = _make_plan(uuid.uuid4(), price=target_price, currency="VND")
+        current = _make_plan(uuid.uuid4(), price=current_price, currency="VND")
+        assert service._is_supported_upgrade(target, current) is False
+
+    def test_currency_is_normalized_before_comparison(self) -> None:
+        service = self._service()
+        target = _make_plan(uuid.uuid4(), price=299_000, currency=" vnd ")
+        current = _make_plan(uuid.uuid4(), price=0, currency="VND")
+        assert service._is_supported_upgrade(target, current) is True
+
+    def test_currency_mismatch_rejected(self) -> None:
+        service = self._service()
+        target = _make_plan(uuid.uuid4(), price=299_000, currency="USD")
+        current = _make_plan(uuid.uuid4(), price=0, currency="VND")
+        assert service._is_supported_upgrade(target, current) is False
+
+    @pytest.mark.parametrize("bad", [None, "", "   ", 123, ["VND"], object()])
+    def test_missing_or_invalid_currency_rejected(self, bad: object) -> None:
+        service = self._service()
+        valid = _make_plan(uuid.uuid4(), price=0, currency="VND")
+        invalid_target = _make_plan(uuid.uuid4(), price=299_000, currency=bad)
+        assert service._is_supported_upgrade(invalid_target, valid) is False
+
+        valid_target = _make_plan(uuid.uuid4(), price=299_000, currency="VND")
+        invalid_current = _make_plan(uuid.uuid4(), price=0, currency=bad)
+        assert service._is_supported_upgrade(valid_target, invalid_current) is False
+
+    def test_unresolvable_plan_fails_closed(self) -> None:
+        service = self._service()
+        target = _make_plan(uuid.uuid4(), price=299_000, currency="VND")
+        assert service._is_supported_upgrade(target, None) is False
+        assert service._is_supported_upgrade(None, target) is False
+
+
+class TestPendingCheckoutPolicy:
+    """Task B: reuse / reject / expiry policy for outstanding checkouts."""
+
+    def _service(
+        self,
+        *,
+        plan: MagicMock,
+        active: Subscription | None = None,
+        active_plan: MagicMock | None = None,
+        pending: tuple[PaymentOrder, ...] = (),
+        incident: bool = False,
+    ) -> tuple[PaymentService, MagicMock]:
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.plans.get_by_id = AsyncMock(return_value=active_plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=active)
+        service.payment_orders.get_active_pending_for_user = AsyncMock(
+            return_value=list(pending)
+        )
+        service.payment_orders.has_paid_order_with_pending_subscription = AsyncMock(
+            return_value=incident
+        )
+        service.vnpay = _build_vnpay_provider(15)
+        return service, session
+
+    @staticmethod
+    def _added_orders(session: MagicMock) -> list[PaymentOrder]:
+        return [
+            c.args[0]
+            for c in session.add.call_args_list
+            if isinstance(c.args[0], PaymentOrder)
+        ]
+
+    @staticmethod
+    def _pending_order(
+        user_id: uuid.UUID,
+        plan_id: uuid.UUID,
+        *,
+        sub_id: uuid.UUID | None,
+        internal_order_id: str = "VNPAY_PENDING_0001",
+        amount: int = 299_000,
+    ) -> PaymentOrder:
+        created = datetime(2026, 5, 5, 10, 0, 0, tzinfo=timezone.utc)
+        return PaymentOrder(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            plan_id=plan_id,
+            subscription_id=sub_id,
+            amount=amount,
+            currency="VND",
+            provider=PaymentProvider.VNPAY,
+            internal_order_id=internal_order_id,
+            status=PaymentOrderStatus.PENDING,
+            created_at=created,
+            expired_at=created + timedelta(minutes=15),
+        )
+
+    def test_same_plan_pending_order_is_reused_not_recreated(self) -> None:
+        user_id = uuid.uuid4()
+        plan = _make_plan(uuid.uuid4(), price=299_000, currency="VND")
+        sub_id = uuid.uuid4()
+        order = self._pending_order(user_id, plan.id, sub_id=sub_id)
+        service, session = self._service(plan=plan, pending=(order,))
+
+        url, internal_order_id, returned_sub = asyncio.run(
+            service.create_vnpay_payment(user_id, plan.id, "127.0.0.1")
+        )
+
+        assert internal_order_id == order.internal_order_id
+        assert returned_sub == sub_id
+        assert self._added_orders(session) == []
+
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        assert query["vnp_TxnRef"][0] == order.internal_order_id
+        # 10:00 UTC == 17:00 Vietnam; original 15-minute window preserved.
+        assert query["vnp_CreateDate"][0] == "20260505170000"
+        assert query["vnp_ExpireDate"][0] == "20260505171500"
+
+    def test_different_plan_pending_order_rejects_new_checkout(self) -> None:
+        user_id = uuid.uuid4()
+        plan = _make_plan(uuid.uuid4(), price=299_000, currency="VND")
+        other_order = self._pending_order(
+            user_id,
+            uuid.uuid4(),
+            sub_id=uuid.uuid4(),
+            internal_order_id="VNPAY_OTHER_0001",
+        )
+        service, session = self._service(plan=plan, pending=(other_order,))
+
+        with pytest.raises(ConflictException):
+            asyncio.run(service.create_vnpay_payment(user_id, plan.id, "127.0.0.1"))
+
+        assert self._added_orders(session) == []
+
+    def test_expired_pending_order_does_not_block_new_checkout(self) -> None:
+        user_id = uuid.uuid4()
+        plan = _make_plan(uuid.uuid4(), price=299_000, currency="VND")
+        # The repository only returns not-yet-expired PENDING orders.
+        service, session = self._service(plan=plan, pending=())
+
+        _, internal_order_id, sub_id = asyncio.run(
+            service.create_vnpay_payment(user_id, plan.id, "127.0.0.1")
+        )
+
+        assert len(self._added_orders(session)) == 1
+        assert internal_order_id
+        assert sub_id
+
+    def test_paid_order_with_pending_subscription_is_an_incident(self) -> None:
+        user_id = uuid.uuid4()
+        plan = _make_plan(uuid.uuid4(), price=299_000, currency="VND")
+        service, session = self._service(plan=plan, pending=(), incident=True)
+
+        with pytest.raises(ConflictException):
+            asyncio.run(service.create_vnpay_payment(user_id, plan.id, "127.0.0.1"))
+
+        assert self._added_orders(session) == []
+
+    def test_reused_order_without_subscription_is_not_duplicated(self) -> None:
+        user_id = uuid.uuid4()
+        plan = _make_plan(uuid.uuid4(), price=299_000, currency="VND")
+        order = self._pending_order(user_id, plan.id, sub_id=None)
+        service, session = self._service(plan=plan, pending=(order,))
+
+        with pytest.raises(ConflictException):
+            asyncio.run(service.create_vnpay_payment(user_id, plan.id, "127.0.0.1"))
+
+        assert self._added_orders(session) == []
+
+
+class TestActivateSubscriptionUpgrade:
+    """P0: activation replaces a strictly lower-tier ACTIVE subscription."""
+
+    def _service(self, *, new_sub, new_plan, old_sub, old_plan, user):
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=new_sub)
+        service.plans.get_active_by_id = AsyncMock(return_value=new_plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=old_sub)
+        service.plans.get_by_id = AsyncMock(return_value=old_plan)
+        session.execute.side_effect = [_make_lock_result(user)]
+        return service
+
+    def test_supported_upgrade_retires_previous_subscription(self) -> None:
+        user_id = uuid.uuid4()
+        old_sub = _make_subscription(
+            uuid.uuid4(), user_id, uuid.uuid4(), SubscriptionStatus.ACTIVE
+        )
+        old_sub.job_posts_used = 4
+        old_sub.max_job_posts = 3
+        new_sub = _make_subscription(
+            uuid.uuid4(), user_id, uuid.uuid4(), SubscriptionStatus.PENDING
+        )
+        new_plan = _make_plan(new_sub.plan_id, price=299_000, max_job_posts=20)
+        old_plan = _make_plan(old_sub.plan_id, price=0, max_job_posts=3)
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+
+        service = self._service(
+            new_sub=new_sub,
+            new_plan=new_plan,
+            old_sub=old_sub,
+            old_plan=old_plan,
+            user=user,
+        )
+        result = asyncio.run(service._activate_subscription_for_payment(new_sub.id))
+
+        assert result is new_sub
+        assert new_sub.status == SubscriptionStatus.ACTIVE
+        assert new_sub.max_job_posts == 20
+        assert old_sub.status == SubscriptionStatus.CANCELLED
+        # Historical usage on the retired subscription is preserved.
+        assert old_sub.job_posts_used == 4
+
+    def test_same_tier_or_downgrade_is_refused(self) -> None:
+        user_id = uuid.uuid4()
+        old_sub = _make_subscription(
+            uuid.uuid4(), user_id, uuid.uuid4(), SubscriptionStatus.ACTIVE
+        )
+        new_sub = _make_subscription(
+            uuid.uuid4(), user_id, uuid.uuid4(), SubscriptionStatus.PENDING
+        )
+        new_plan = _make_plan(new_sub.plan_id, price=0)
+        old_plan = _make_plan(old_sub.plan_id, price=299_000)
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+
+        service = self._service(
+            new_sub=new_sub,
+            new_plan=new_plan,
+            old_sub=old_sub,
+            old_plan=old_plan,
+            user=user,
+        )
+        with pytest.raises(ConflictException):
+            asyncio.run(service._activate_subscription_for_payment(new_sub.id))
+
+        assert old_sub.status == SubscriptionStatus.ACTIVE
+        assert new_sub.status == SubscriptionStatus.PENDING
+
+    def test_unresolvable_previous_plan_is_refused(self) -> None:
+        user_id = uuid.uuid4()
+        old_sub = _make_subscription(
+            uuid.uuid4(), user_id, uuid.uuid4(), SubscriptionStatus.ACTIVE
+        )
+        new_sub = _make_subscription(
+            uuid.uuid4(), user_id, uuid.uuid4(), SubscriptionStatus.PENDING
+        )
+        new_plan = _make_plan(new_sub.plan_id, price=299_000)
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+
+        service = self._service(
+            new_sub=new_sub,
+            new_plan=new_plan,
+            old_sub=old_sub,
+            old_plan=None,
+            user=user,
+        )
+        with pytest.raises(ConflictException):
+            asyncio.run(service._activate_subscription_for_payment(new_sub.id))
+
+        assert old_sub.status == SubscriptionStatus.ACTIVE
+        assert new_sub.status == SubscriptionStatus.PENDING
+
+
+class TestRecordSuccessRefusedActivation:
+    """P0: a refused activation still records the payment without a false success."""
+
+    def test_conflict_keeps_order_paid_and_reports_not_activated(self) -> None:
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        order = PaymentOrder(
+            id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            plan_id=uuid.uuid4(),
+            subscription_id=uuid.uuid4(),
+            amount=299_000,
+            provider=PaymentProvider.VNPAY,
+            internal_order_id="VNPAY_REFUSED_0001",
+            status=PaymentOrderStatus.PENDING,
+        )
+        service._activate_subscription_for_payment = AsyncMock(
+            side_effect=ConflictException("upgrade refused")
+        )
+
+        result = asyncio.run(
+            service._record_success_and_activate(
+                order,
+                provider_transaction_id="TXN1",
+                provider_result_code="00",
+                provider_message="ok",
+                provider_request_id=None,
+                provider_response_metadata="{}",
+            )
+        )
+
+        assert result is False
+        assert order.status == PaymentOrderStatus.PAID
+        session.commit.assert_awaited()
+
+
+class TestGetPaymentStatusActivation:
+    """P0: the status contract separates payment success from activation."""
+
+    def _service(self, *, order, subscription):
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        service.payment_orders.get_by_internal_order_id = AsyncMock(return_value=order)
+        service.payment_transactions.get_latest_by_payment_order_id = AsyncMock(
+            return_value=None
+        )
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(
+            return_value=subscription
+        )
+        return service
+
+    def _paid_order(self, user_id: uuid.UUID, subscription_id: uuid.UUID) -> PaymentOrder:
+        return PaymentOrder(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            plan_id=uuid.uuid4(),
+            subscription_id=subscription_id,
+            amount=299_000,
+            provider=PaymentProvider.VNPAY,
+            internal_order_id="VNPAY_STATUS_0001",
+            status=PaymentOrderStatus.PAID,
+        )
+
+    def test_active_subscription_reports_activated(self) -> None:
+        user_id = uuid.uuid4()
+        order = self._paid_order(user_id, uuid.uuid4())
+        sub = _make_subscription(
+            order.subscription_id, user_id, order.plan_id, SubscriptionStatus.ACTIVE
+        )
+        plan = _make_plan(order.plan_id, price=299_000)
+        plan.name = "Gói Chuyên Nghiệp"
+        sub.plan = plan
+        service = self._service(order=order, subscription=sub)
+
+        result = asyncio.run(service.get_payment_status(user_id, order.internal_order_id))
+
+        assert result is not None
+        assert result["is_successful"] is True
+        assert result["is_activated"] is True
+        assert result["subscription_status"] == SubscriptionStatus.ACTIVE.value
+        assert result["plan_name"] == "Gói Chuyên Nghiệp"
+
+    def test_paid_but_pending_subscription_reports_not_activated(self) -> None:
+        user_id = uuid.uuid4()
+        order = self._paid_order(user_id, uuid.uuid4())
+        sub = _make_subscription(
+            order.subscription_id, user_id, order.plan_id, SubscriptionStatus.PENDING
+        )
+        plan = _make_plan(order.plan_id, price=299_000)
+        plan.name = "Gói Chuyên Nghiệp"
+        sub.plan = plan
+        service = self._service(order=order, subscription=sub)
+
+        result = asyncio.run(service.get_payment_status(user_id, order.internal_order_id))
+
+        assert result is not None
+        assert result["is_successful"] is True
+        assert result["is_activated"] is False
+        assert result["subscription_status"] == SubscriptionStatus.PENDING.value
+        assert result["plan_name"] == "Gói Chuyên Nghiệp"
+
+
 class TestCreateVnpayPayment:
     """Tests for VNPAY payment creation timeout propagation (Fix B)."""
 
@@ -681,7 +1187,10 @@ class TestCreateVnpayPayment:
 
     def _make_service(self) -> tuple[PaymentService, MagicMock]:
         session = _make_payment_service_session()
-        return PaymentService(session), session
+        service = PaymentService(session)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+        _no_pending_checkout(service)
+        return service, session
 
     def test_expired_at_and_provider_timeout_use_configured_timeout(self) -> None:
         """VNPAY_TIMEOUT=30 → PaymentOrder.expired_at is +30 min and provider gets expire_minutes=30."""
@@ -947,6 +1456,8 @@ class TestAuthoritativeCreationTimestamp:
         the PAY vnp_CreateDate or the QueryDr vnp_TransactionDate."""
         session = _make_payment_service_session()
         service = PaymentService(session)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+        _no_pending_checkout(service)
 
         plan_id = uuid.uuid4()
         plan = MagicMock()

@@ -330,6 +330,35 @@ describe('CheckoutPage', () => {
     expect(screen.getByText(/đang có gói đăng tin đang hoạt động/i)).toBeInTheDocument()
   })
 
+  it('prefers the server-provided detail when a 409 is returned', async () => {
+    ;(mockedGetPlan as any).mockResolvedValueOnce(mockPlanData)
+    ;(mockedCreateVNPayPayment as any).mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: { detail: 'Bạn chỉ có thể nâng cấp lên gói có giá cao hơn gói hiện tại đang hoạt động.' },
+      },
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/checkout/plan-1']}>
+        {testRoutes}
+      </MemoryRouter>
+    )
+
+    await waitFor(() => {
+      const heading = screen.getByRole('heading', { name: 'Gói Standard', level: 2 })
+      expect(heading).toBeInTheDocument()
+    })
+
+    screen.getByRole('button', { name: /Thanh toán với VNPAY/i }).click()
+
+    await vi.waitFor(() => {
+      expect(screen.getByRole('alert')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText(/chỉ có thể nâng cấp lên gói có giá cao hơn/i)).toBeInTheDocument()
+  })
+
   it('shows error message when plan fetch fails', async () => {
     ;(mockedGetPlan as any).mockRejectedValueOnce(new Error('Failed to load plan'))
 

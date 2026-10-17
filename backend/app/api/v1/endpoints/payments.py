@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, get_current_active_user, require_candidate_recruiter_admin
 from app.core.config import settings
-from app.core.exceptions import EntityNotFoundException
+from app.core.exceptions import ConflictException, EntityNotFoundException
 from app.models import User
 from app.schemas.payment import (
     VNPayCreatePaymentRequest,
@@ -86,6 +86,11 @@ async def create_vnpay_payment(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Plan not found",
+        )
+    except ConflictException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc) or "Purchase not allowed",
         )
 
     # Find the payment order to get its ID
@@ -195,11 +200,22 @@ async def get_payment_status(
     payment_order = result["payment_order"]
     transaction = result["transaction"]
     is_successful = result["is_successful"]
+    is_activated = result.get("is_activated", False)
+
+    if not is_successful:
+        message = "Payment pending or failed"
+    elif is_activated:
+        message = "Payment successful"
+    else:
+        message = "Payment received; subscription activation requires reconciliation"
 
     # Build response
     return PaymentStatusResponse(
         payment_order=payment_order,
         transaction=transaction,
         is_successful=is_successful,
-        message="Payment successful" if is_successful else "Payment pending or failed",
+        is_activated=is_activated,
+        subscription_status=result.get("subscription_status"),
+        plan_name=result.get("plan_name"),
+        message=message,
     )

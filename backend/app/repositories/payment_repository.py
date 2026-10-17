@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import PaymentOrderStatus, PaymentProvider
-from app.models import PaymentOrder, PaymentTransaction
+from app.domain.enums import PaymentOrderStatus, PaymentProvider, SubscriptionStatus
+from app.models import PaymentOrder, PaymentTransaction, Subscription
 from app.repositories.base import BaseRepository
 
 
@@ -55,6 +56,60 @@ class PaymentOrderRepository(BaseRepository[PaymentOrder]):
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def get_active_pending_for_user(
+        self,
+        user_id: Any,
+        now: datetime,
+        provider: PaymentProvider = PaymentProvider.VNPAY,
+    ) -> list[PaymentOrder]:
+        """Unpaid checkout orders that are still valid (PENDING and not expired).
+
+        A previously abandoned/expired PENDING order must never lock a user out
+        of checkout forever, so only orders whose ``expired_at`` is present and
+        strictly in the future are returned. PAID orders are intentionally
+        excluded: a paid order awaiting activation is an entitlement incident,
+        not an unpaid checkout.
+        """
+        stmt = (
+            select(PaymentOrder)
+            .where(
+                PaymentOrder.user_id == user_id,
+                PaymentOrder.status == PaymentOrderStatus.PENDING,
+                PaymentOrder.provider == provider,
+                PaymentOrder.is_deleted == False,  # noqa: E712
+                PaymentOrder.expired_at.is_not(None),
+                PaymentOrder.expired_at > now,
+            )
+            .order_by(PaymentOrder.created_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def has_paid_order_with_pending_subscription(
+        self,
+        user_id: Any,
+    ) -> bool:
+        """Whether the user has a PAID order whose bound subscription is PENDING.
+
+        This is the entitlement-incident signal: the money was taken but the
+        subscription was never activated. It must not be mistaken for an unpaid
+        checkout, so it is surfaced separately and blocks new checkouts.
+        """
+        stmt = (
+            select(func.count())
+            .select_from(PaymentOrder)
+            .join(Subscription, PaymentOrder.subscription_id == Subscription.id)
+            .where(
+                PaymentOrder.user_id == user_id,
+                PaymentOrder.status == PaymentOrderStatus.PAID,
+                PaymentOrder.is_deleted == False,  # noqa: E712
+                Subscription.status == SubscriptionStatus.PENDING,
+                Subscription.is_deleted == False,  # noqa: E712
+            )
+        )
+        result = await self.session.execute(stmt)
+        return bool(result.scalar_one())
 
     async def get_by_id_including_deleted(
         self,
