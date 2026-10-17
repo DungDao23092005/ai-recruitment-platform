@@ -1227,6 +1227,7 @@ class TestGetPaymentStatusActivation:
         sub = _make_subscription(
             order.subscription_id, user_id, order.plan_id, SubscriptionStatus.ACTIVE
         )
+        sub.expires_at = datetime(2026, 2, 14, 3, 30, tzinfo=timezone.utc)
         plan = _make_plan(order.plan_id, price=299_000)
         plan.name = "Gói Chuyên Nghiệp"
         sub.plan = plan
@@ -1239,6 +1240,7 @@ class TestGetPaymentStatusActivation:
         assert result["is_activated"] is True
         assert result["subscription_status"] == SubscriptionStatus.ACTIVE.value
         assert result["plan_name"] == "Gói Chuyên Nghiệp"
+        assert result["subscription_expires_at"] == sub.expires_at
 
     def test_paid_but_pending_subscription_reports_not_activated(self) -> None:
         user_id = uuid.uuid4()
@@ -1246,6 +1248,7 @@ class TestGetPaymentStatusActivation:
         sub = _make_subscription(
             order.subscription_id, user_id, order.plan_id, SubscriptionStatus.PENDING
         )
+        sub.expires_at = datetime(2026, 2, 14, 3, 30, tzinfo=timezone.utc)
         plan = _make_plan(order.plan_id, price=299_000)
         plan.name = "Gói Chuyên Nghiệp"
         sub.plan = plan
@@ -1258,6 +1261,41 @@ class TestGetPaymentStatusActivation:
         assert result["is_activated"] is False
         assert result["subscription_status"] == SubscriptionStatus.PENDING.value
         assert result["plan_name"] == "Gói Chuyên Nghiệp"
+        # No entitlement period until the subscription is confirmed ACTIVE.
+        assert result["subscription_expires_at"] is None
+
+    def test_active_subscription_with_unsuccessful_payment_reports_no_expiry(self) -> None:
+        user_id = uuid.uuid4()
+        order = self._paid_order(user_id, uuid.uuid4())
+        order.status = PaymentOrderStatus.FAILED
+        sub = _make_subscription(
+            order.subscription_id, user_id, order.plan_id, SubscriptionStatus.ACTIVE
+        )
+        sub.expires_at = datetime(2026, 2, 14, 3, 30, tzinfo=timezone.utc)
+        sub.plan = _make_plan(order.plan_id, price=299_000)
+        service = self._service(order=order, subscription=sub)
+
+        result = asyncio.run(service.get_payment_status(user_id, order.internal_order_id))
+
+        assert result is not None
+        assert result["is_successful"] is False
+        assert result["subscription_expires_at"] is None
+
+    def test_activated_subscription_without_expiry_reports_none(self) -> None:
+        user_id = uuid.uuid4()
+        order = self._paid_order(user_id, uuid.uuid4())
+        sub = _make_subscription(
+            order.subscription_id, user_id, order.plan_id, SubscriptionStatus.ACTIVE
+        )
+        sub.expires_at = None
+        sub.plan = _make_plan(order.plan_id, price=299_000)
+        service = self._service(order=order, subscription=sub)
+
+        result = asyncio.run(service.get_payment_status(user_id, order.internal_order_id))
+
+        assert result is not None
+        assert result["is_activated"] is True
+        assert result["subscription_expires_at"] is None
 
 
 class TestCreateVnpayPayment:

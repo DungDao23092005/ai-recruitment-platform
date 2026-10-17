@@ -47,5 +47,6 @@ export interface PaymentStatusResponse {
   is_activated: boolean
   subscription_status: string | null
   plan_name: string | null
+  subscription_expires_at: string | null
   message: string
 }

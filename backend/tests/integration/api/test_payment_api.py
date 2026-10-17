@@ -851,6 +851,31 @@ class TestPaymentAPIStatus:
         assert data["is_successful"] is False
         assert data["is_activated"] is False
         assert data["payment_order"]["status"] == "pending"
+        assert data["subscription_expires_at"] is None
+
+    def test_get_payment_status_pending_subscription_has_no_expiry(
+        self, candidate_client, test_payment_order_and_pending_sub,
+    ):
+        """A paid-but-unactivated order never exposes an entitlement period."""
+        from unittest.mock import AsyncMock, patch
+        from app.services.payment_service import PaymentService
+
+        order, _subscription = test_payment_order_and_pending_sub
+
+        with patch.object(
+            PaymentService,
+            "_send_querydr_request",
+            new=AsyncMock(side_effect=RuntimeError("querydr unavailable")),
+        ):
+            response = _get(
+                candidate_client,
+                f"/api/v1/payments/vnpay/status/{order.internal_order_id}",
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        data = response.json()
+        assert data["is_activated"] is False
+        assert data["subscription_expires_at"] is None
 
     def test_get_payment_status_querydr_success_finalizes_order(
         self, candidate_client, test_payment_order,
@@ -899,6 +924,14 @@ class TestPaymentAPIStatus:
         assert response.json()["is_successful"] is True
         assert response.json()["is_activated"] is True
         assert response.json()["subscription_status"] == "active"
+
+        # The entitlement period is surfaced only once activation is confirmed
+        # and is serialized as an ISO-8601 timestamp.
+        expires_at = response.json()["subscription_expires_at"]
+        assert expires_at is not None
+        parsed_expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        assert parsed_expiry.tzinfo is not None
+        assert parsed_expiry > datetime.now(parsed_expiry.tzinfo) + timedelta(days=20)
 
         async def _check():
             from app.models import Subscription

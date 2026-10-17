@@ -755,6 +755,7 @@ class PaymentService:
         is_activated = (
             subscription is not None and subscription.status == SubscriptionStatus.ACTIVE
         )
+        is_successful = payment_order.status == PaymentOrderStatus.PAID
 
         plan_name: str | None = None
         if subscription is not None:
@@ -763,13 +764,22 @@ class PaymentService:
                 plan = await self.plans.get_by_id(subscription.plan_id)
             plan_name = plan.name if plan is not None else None
 
+        # The entitlement period is only meaningful once the payment is verified
+        # successful AND the bound subscription is confirmed ACTIVE. For a
+        # pending/unactivated or failed order this stays None so the client can
+        # never render a benefit period that was not actually granted.
+        subscription_expires_at: datetime | None = None
+        if is_successful and is_activated and subscription is not None:
+            subscription_expires_at = subscription.expires_at
+
         return {
             "payment_order": payment_order,
             "transaction": transaction,
-            "is_successful": payment_order.status == PaymentOrderStatus.PAID,
+            "is_successful": is_successful,
             "is_activated": is_activated,
             "subscription_status": subscription_status,
             "plan_name": plan_name,
+            "subscription_expires_at": subscription_expires_at,
         }
 
     # ------------------------------------------------------------------

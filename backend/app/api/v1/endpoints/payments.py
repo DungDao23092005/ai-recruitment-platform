@@ -217,5 +217,6 @@ async def get_payment_status(
         is_activated=is_activated,
         subscription_status=result.get("subscription_status"),
         plan_name=result.get("plan_name"),
+        subscription_expires_at=result.get("subscription_expires_at"),
         message=message,
     )

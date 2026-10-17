@@ -120,4 +120,9 @@ class PaymentStatusResponse(BaseModel):
     is_activated: bool = False
     subscription_status: Optional[str] = None
     plan_name: Optional[str] = None
+    # Entitlement end date, surfaced only when the payment is verified
+    # successful AND the bound subscription is confirmed ACTIVE. It is ``None``
+    # for pending/unactivated or failed orders so the client never renders a
+    # benefit period for an entitlement that was not granted.
+    subscription_expires_at: Optional[datetime] = None
     message: str
