@@ -25,6 +25,7 @@ import { AdminJobsPage } from '@/features/admin/pages/AdminJobsPage'
 import { AdminJobEditPage } from '@/features/admin/pages/AdminJobEditPage'
 import { AdminJobApplicantsPage } from '@/features/admin/pages/AdminJobApplicantsPage'
 import { AdminPlansPage } from '@/features/admin/pages/AdminPlansPage'
+import { AdminSubscriptionsPage } from '@/features/admin/pages/AdminSubscriptionsPage'
 import { RecruiterPortalPage } from '@/features/recruiter/pages/RecruiterPortalPage'
 import { RecruiterCompanyPage } from '@/features/recruiter/pages/RecruiterCompanyPage'
 import { RecruiterJobsPage } from '@/features/recruiter/pages/RecruiterJobsPage'
@@ -289,6 +290,14 @@ export function AppRouter() {
             element={
               <RoleGuard allowedRoles={['admin']}>
                 <AdminPlansPage />
+              </RoleGuard>
+            }
+          />
+          <Route
+            path="/admin/subscriptions"
+            element={
+              <RoleGuard allowedRoles={['admin']}>
+                <AdminSubscriptionsPage />
               </RoleGuard>
             }
           />

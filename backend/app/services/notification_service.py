@@ -20,6 +20,12 @@ SUBSCRIPTION_ACTIVATED_TYPE = "subscription_activated"
 SUBSCRIPTION_ENTITY_TYPE = "subscription"
 SUBSCRIPTION_ACTIVATED_TITLE = "Kích hoạt gói dịch vụ thành công"
 
+SUBSCRIPTION_PLAN_CHANGED_TYPE = "subscription_plan_changed"
+SUBSCRIPTION_PLAN_CHANGED_TITLE = "Thay đổi gói dịch vụ"
+
+SUBSCRIPTION_REVOKED_TYPE = "subscription_revoked"
+SUBSCRIPTION_REVOKED_TITLE = "Thu hồi gói dịch vụ"
+
 
 def _format_expiry_date(expires_at: datetime | None) -> str:
     """Render an activation expiry date in Vietnam local time (dd/mm/yyyy).
@@ -123,6 +129,51 @@ class NotificationService:
                 f"Thời hạn sử dụng đến {_format_expiry_date(expires_at)}."
             ),
             notification_type=SUBSCRIPTION_ACTIVATED_TYPE,
+            entity_type=SUBSCRIPTION_ENTITY_TYPE,
+            entity_id=subscription_id,
+        )
+
+    async def notify_subscription_plan_changed(
+        self,
+        user_id: uuid.UUID,
+        subscription_id: uuid.UUID,
+        old_plan_name: str | None,
+        new_plan_name: str,
+        expires_at: datetime | None,
+    ) -> NotificationRead:
+        """Notify the buyer that an admin changed their subscription plan.
+
+        No dedupe guard: every admin mutation is a distinct, auditable event and
+        must produce its own notification.
+        """
+        previous = old_plan_name or "gói hiện tại"
+        return await self.create_notification(
+            user_id=user_id,
+            title=SUBSCRIPTION_PLAN_CHANGED_TITLE,
+            content=(
+                f'Gói dịch vụ của bạn đã được thay đổi từ "{previous}" '
+                f'sang "{new_plan_name}". '
+                f"Thời hạn sử dụng đến {_format_expiry_date(expires_at)}."
+            ),
+            notification_type=SUBSCRIPTION_PLAN_CHANGED_TYPE,
+            entity_type=SUBSCRIPTION_ENTITY_TYPE,
+            entity_id=subscription_id,
+        )
+
+    async def notify_subscription_revoked(
+        self,
+        user_id: uuid.UUID,
+        subscription_id: uuid.UUID,
+        plan_name: str | None,
+        reason: str,
+    ) -> NotificationRead:
+        """Notify the buyer that an admin revoked their subscription."""
+        subject = f'Gói "{plan_name}"' if plan_name else "Gói dịch vụ của bạn"
+        return await self.create_notification(
+            user_id=user_id,
+            title=SUBSCRIPTION_REVOKED_TITLE,
+            content=f"{subject} đã bị thu hồi. Lý do: {reason}.",
+            notification_type=SUBSCRIPTION_REVOKED_TYPE,
             entity_type=SUBSCRIPTION_ENTITY_TYPE,
             entity_id=subscription_id,
         )

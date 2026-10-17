@@ -13,6 +13,12 @@ import type {
   AdminPlanCreate,
   AdminPlanUpdate,
   AdminPlanStatusUpdate,
+  AdminSubscriptionList,
+  AdminSubscriptionListParams,
+  AdminSubscriptionDetail,
+  AdminSubscriptionChangePlan,
+  AdminSubscriptionRevoke,
+  AdminSubscriptionListItem,
 } from '@/types/admin'
 
 export async function getAdminStats(): Promise<AdminStats> {
@@ -100,4 +106,41 @@ export async function updateAdminPlanStatus(
 
 export async function deleteAdminPlan(id: string): Promise<void> {
   await apiClient.delete(`/admin/plans/${id}`)
+}
+
+export async function getAdminSubscriptions(
+  params: AdminSubscriptionListParams,
+): Promise<AdminSubscriptionList> {
+  return apiClient.get<AdminSubscriptionList, AdminSubscriptionList>(
+    '/admin/subscriptions',
+    { params },
+  )
+}
+
+export async function getAdminSubscription(
+  id: string,
+): Promise<AdminSubscriptionDetail> {
+  return apiClient.get<AdminSubscriptionDetail, AdminSubscriptionDetail>(
+    `/admin/subscriptions/${id}`,
+  )
+}
+
+export async function changeAdminSubscriptionPlan(
+  id: string,
+  data: AdminSubscriptionChangePlan,
+): Promise<AdminSubscriptionListItem> {
+  return apiClient.post<AdminSubscriptionChangePlan, AdminSubscriptionListItem>(
+    `/admin/subscriptions/${id}/change-plan`,
+    data,
+  )
+}
+
+export async function revokeAdminSubscription(
+  id: string,
+  data: AdminSubscriptionRevoke,
+): Promise<AdminSubscriptionListItem> {
+  return apiClient.post<AdminSubscriptionRevoke, AdminSubscriptionListItem>(
+    `/admin/subscriptions/${id}/revoke`,
+    data,
+  )
 }

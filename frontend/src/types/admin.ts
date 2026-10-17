@@ -140,3 +140,76 @@ export interface AdminPlanUpdate {
 export interface AdminPlanStatusUpdate {
   is_active: boolean
 }
+
+export type AdminSubscriptionStatus = 'active' | 'expired' | 'cancelled' | 'pending'
+
+export type AdminSubscriptionAuditAction = 'provision' | 'change_plan' | 'revoke'
+
+export interface AdminSubscriptionListItem {
+  id: string
+  user_id: string
+  user_email: string | null
+  plan_id: string
+  plan_name: string | null
+  status: AdminSubscriptionStatus
+  started_at: string | null
+  expires_at: string | null
+  created_at: string
+  updated_at: string
+  max_job_posts: number
+  max_candidate_searches: number
+  max_ai_features: number
+  job_posts_used: number
+  candidate_searches_used: number
+  ai_features_used: number
+}
+
+export interface AdminSubscriptionList {
+  items: AdminSubscriptionListItem[]
+  total: number
+  skip: number
+  limit: number
+}
+
+export interface AdminSubscriptionListParams {
+  skip: number
+  limit: number
+  search?: string
+  status_filter?: AdminSubscriptionStatus
+}
+
+export interface AdminSubscriptionAuditLog {
+  id: string
+  admin_id: string
+  admin_email: string | null
+  user_id: string
+  subscription_id: string
+  action: AdminSubscriptionAuditAction
+  old_plan_id: string | null
+  new_plan_id: string | null
+  reason: string
+  created_at: string
+}
+
+export interface AdminSubscriptionSummary {
+  id: string
+  plan_id: string
+  status: AdminSubscriptionStatus
+  started_at: string | null
+  expires_at: string | null
+}
+
+export interface AdminSubscriptionDetail {
+  subscription: AdminSubscriptionListItem
+  history: AdminSubscriptionSummary[]
+  audit_logs: AdminSubscriptionAuditLog[]
+}
+
+export interface AdminSubscriptionChangePlan {
+  target_plan_id: string
+  reason: string
+}
+
+export interface AdminSubscriptionRevoke {
+  reason: string
+}

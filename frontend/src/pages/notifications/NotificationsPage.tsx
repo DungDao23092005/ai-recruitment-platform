@@ -421,10 +421,12 @@ function getBadgeVariant(type: string): 'success' | 'warning' | 'info' | 'destru
       return 'success';
     case 'interview_updated':
     case 'new_application':
+    case 'subscription_plan_changed':
       return 'info';
     case 'interview_cancelled':
     case 'application_withdrawn':
     case 'interview_declined':
+    case 'subscription_revoked':
       return 'warning';
     default:
       return 'neutral';
@@ -442,6 +444,8 @@ function formatNotificationType(type: string): string {
     interview_confirmed: 'Xác nhận phỏng vấn',
     interview_declined: 'Từ chối phỏng vấn',
     subscription_activated: 'Kích hoạt gói',
+    subscription_plan_changed: 'Đổi gói dịch vụ',
+    subscription_revoked: 'Thu hồi gói dịch vụ',
   };
   return typeMap[type] || type;
 }

@@ -5,13 +5,12 @@ from fastapi import Depends
 import httpx
 from sqlalchemy import select
 
-from app.api.v1.endpoints import admin_subscriptions as admin_subs_endpoints
 from app.api.v1.endpoints import subscriptions as subs_endpoints
 from app.main import app
 from app.services.subscription_service import SubscriptionService
 from app.core.security import get_password_hash, decode_access_token
-from app.domain.enums import UserRole
-from app.models import User, RecruiterProfile
+from app.domain.enums import SubscriptionAuditAction, UserRole
+from app.models import SubscriptionAuditLog, User, RecruiterProfile
 from app.database.session import async_session_factory
 from tests.integration.api.conftest import API_V1, run
 
@@ -24,10 +23,8 @@ def subscription_service_override():
         return SubscriptionService(db)
 
     app.dependency_overrides[subs_endpoints._get_subscription_service] = _override
-    app.dependency_overrides[admin_subs_endpoints._get_subscription_service] = _override
     yield
     app.dependency_overrides.pop(subs_endpoints._get_subscription_service, None)
-    app.dependency_overrides.pop(admin_subs_endpoints._get_subscription_service, None)
 
 
 @pytest.fixture
@@ -183,7 +180,8 @@ class TestAdminSubscriptionAccess:
         resp = run_async(admin_sub_client.get(f"{API_V1}/admin/subscriptions"))
         assert resp.status_code == 200
         data = resp.json()
-        assert isinstance(data, list)
+        assert isinstance(data["items"], list)
+        assert data["total"] >= len(data["items"])
 
     def test_admin_can_provision_subscription(self, admin_sub_client, run_async, subscription_service_override, candidate_client):
         """Admin can provision an active subscription for a user.
@@ -237,7 +235,7 @@ class TestAdminSubscriptionAccess:
         }))
         # The service should reject this due to existing active subscription
         # (ConflictException: "User already has an active subscription")
-        assert resp2.status_code == 400, f"Expected 400 for duplicate active subscription, got {resp2.status_code}: {resp2.text}"
+        assert resp2.status_code == 409, f"Expected 409 for duplicate active subscription, got {resp2.status_code}: {resp2.text}"
         assert "already has an active subscription" in resp2.json().get("detail", "")
 
         # Verify NO duplicate RecruiterProfile was created
@@ -262,7 +260,7 @@ class TestAdminSubscriptionAccess:
         # Verify the original subscription is still active
         resp3 = run_async(admin_sub_client.get(f"{API_V1}/admin/subscriptions/{subscription_id}"))
         assert resp3.status_code == 200
-        assert resp3.json()["status"] == "active"
+        assert resp3.json()["subscription"]["status"] == "active"
 
 
 class TestCandidateTokenContinuityAfterRoleTransition:
@@ -429,28 +427,115 @@ class TestCandidateTokenContinuityAfterRoleTransition:
         resp = run_async(admin_sub_client.get(f"{API_V1}/admin/subscriptions/{sub_id}"))
         assert resp.status_code == 200
         data = resp.json()
-        assert data["id"] == sub_id
+        assert data["subscription"]["id"] == sub_id
+        assert data["subscription"]["plan_name"] is not None
+        assert data["subscription"]["user_email"] is not None
+        assert data["history"][0]["id"] == sub_id
+        # Provisioning is audited.
+        assert len(data["audit_logs"]) == 1
+        assert data["audit_logs"][0]["action"] == "provision"
+        assert data["audit_logs"][0]["new_plan_id"] == plan["id"]
+        assert data["audit_logs"][0]["admin_email"] is not None
 
-    def test_admin_can_cancel_subscription(self, admin_sub_client, run_async, subscription_service_override):
-        """Admin can cancel a subscription."""
+    def test_admin_can_revoke_subscription(self, admin_sub_client, candidate_client, run_async, subscription_service_override):
+        """Admin revokes a subscription through the audited /revoke route."""
         from tests.integration.api.test_plans import _create_plan
 
         plan = _create_plan(admin_sub_client, run_async)
-        candidate_user = run(_get_candidate_user())
-        if not candidate_user:
-            pytest.skip("No candidate user available")
+        candidate_user_id = run(_get_candidate_user_id(candidate_client))
 
         prov = run_async(admin_sub_client.post(f"{API_V1}/admin/subscriptions", json={
-            "user_id": str(candidate_user.id),
+            "user_id": str(candidate_user_id),
             "plan_id": str(plan["id"]),
         }))
-        assert prov.status_code == 201
+        assert prov.status_code == 201, prov.text
         sub_id = prov.json()["id"]
 
-        resp = run_async(admin_sub_client.post(f"{API_V1}/admin/subscriptions/{sub_id}/cancel"))
+        reason = "Hủy gói theo yêu cầu của quản trị viên"
+        resp = run_async(admin_sub_client.post(
+            f"{API_V1}/admin/subscriptions/{sub_id}/revoke",
+            json={"reason": reason},
+        ))
         assert resp.status_code == 200, resp.text
-        data = resp.json()
-        assert data["status"] == "cancelled"
+        assert resp.json()["status"] == "cancelled"
+
+        # The revoke is recorded as an append-only audit row.
+        async def _get_audit_logs():
+            async with async_session_factory() as session:
+                result = await session.execute(
+                    select(SubscriptionAuditLog).where(
+                        SubscriptionAuditLog.subscription_id == uuid.UUID(sub_id)
+                    )
+                )
+                return list(result.scalars().all())
+
+        logs = run(_get_audit_logs())
+        revoke_logs = [
+            log for log in logs if log.action == SubscriptionAuditAction.REVOKE
+        ]
+        assert len(revoke_logs) == 1, f"expected one revoke audit row: {logs}"
+        audit = revoke_logs[0]
+        assert str(audit.user_id) == str(candidate_user_id)
+        assert audit.admin_id is not None
+        assert audit.reason == reason
+
+        # The buyer receives exactly one revoke notification.
+        listing = run_async(candidate_client.get(f"{API_V1}/notifications"))
+        assert listing.status_code == 200, listing.text
+        revoked = [
+            n
+            for n in listing.json()
+            if n["notification_type"] == "subscription_revoked"
+        ]
+        assert len(revoked) == 1, f"expected one revoke notification: {revoked}"
+        assert revoked[0]["entity_id"] == sub_id
+
+    def test_admin_revoke_requires_reason(self, admin_sub_client, candidate_client, run_async, subscription_service_override):
+        """Revoke rejects a missing/short reason and does not mutate state."""
+        from tests.integration.api.test_plans import _create_plan
+
+        plan = _create_plan(admin_sub_client, run_async)
+        candidate_user_id = run(_get_candidate_user_id(candidate_client))
+
+        prov = run_async(admin_sub_client.post(f"{API_V1}/admin/subscriptions", json={
+            "user_id": str(candidate_user_id),
+            "plan_id": str(plan["id"]),
+        }))
+        assert prov.status_code == 201, prov.text
+        sub_id = prov.json()["id"]
+
+        resp = run_async(admin_sub_client.post(
+            f"{API_V1}/admin/subscriptions/{sub_id}/revoke",
+            json={"reason": "abc"},
+        ))
+        assert resp.status_code == 422, resp.text
+
+        detail = run_async(admin_sub_client.get(f"{API_V1}/admin/subscriptions/{sub_id}"))
+        assert detail.status_code == 200
+        assert detail.json()["subscription"]["status"] == "active"
+
+    def test_legacy_cancel_route_no_longer_exists(self, admin_sub_client, candidate_client, run_async, subscription_service_override):
+        """The legacy POST /{id}/cancel route is gone and cannot cancel a subscription."""
+        from tests.integration.api.test_plans import _create_plan
+
+        plan = _create_plan(admin_sub_client, run_async)
+        candidate_user_id = run(_get_candidate_user_id(candidate_client))
+
+        prov = run_async(admin_sub_client.post(f"{API_V1}/admin/subscriptions", json={
+            "user_id": str(candidate_user_id),
+            "plan_id": str(plan["id"]),
+        }))
+        assert prov.status_code == 201, prov.text
+        sub_id = prov.json()["id"]
+
+        legacy = run_async(
+            admin_sub_client.post(f"{API_V1}/admin/subscriptions/{sub_id}/cancel")
+        )
+        assert legacy.status_code in (404, 405), legacy.text
+
+        detail = run_async(admin_sub_client.get(f"{API_V1}/admin/subscriptions/{sub_id}"))
+        assert detail.status_code == 200
+        assert detail.json()["subscription"]["status"] == "active"
 
     def test_cannot_provision_for_inactive_plan(self, admin_sub_client, run_async, subscription_service_override):
         """Admin cannot provision subscription for inactive plan."""

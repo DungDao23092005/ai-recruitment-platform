@@ -9,6 +9,7 @@ from app.repositories.payment_repository import PaymentOrderRepository, PaymentT
 from app.repositories.recruitment_plan_repository import RecruitmentPlanRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.subscription_repository import SubscriptionRepository
+from app.repositories.subscription_audit_repository import SubscriptionAuditLogRepository
 from app.repositories.user_repository import UserRepository
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "NotificationRepository",
     "RecruitmentPlanRepository",
     "SubscriptionRepository",
+    "SubscriptionAuditLogRepository",
     "PaymentOrderRepository",
     "PaymentTransactionRepository",
 ]

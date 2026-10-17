@@ -5,6 +5,7 @@ import {
   Briefcase,
   Building,
   ClipboardList,
+  CreditCard,
   FileText,
   LayoutDashboard,
   LogOut,
@@ -105,6 +106,7 @@ function useAppNav(role?: UserRole): NavSection[] {
         { to: '/admin/users', label: 'Quản lý người dùng', icon: Users },
         { to: '/admin/companies', label: 'Quản lý công ty', icon: Building },
         { to: '/admin/plans', label: 'Gói dịch vụ', icon: Sparkles },
+        { to: '/admin/subscriptions', label: 'Thuê bao người dùng', icon: CreditCard },
       ],
     },
     {

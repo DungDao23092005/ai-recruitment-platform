@@ -247,6 +247,7 @@ class TestDeletePlan:
         service.plans.get_by_id.return_value = plan
         service.plans.count_subscriptions.return_value = 0
         service.plans.count_payment_orders.return_value = 0
+        service.plans.count_audit_logs.return_value = 0
         service.plans.delete.return_value = True
 
         asyncio.run(service.delete_plan(plan.id))
@@ -254,6 +255,7 @@ class TestDeletePlan:
         service.plans.get_by_id.assert_awaited_once_with(plan.id)
         service.plans.count_subscriptions.assert_awaited_once_with(plan.id)
         service.plans.count_payment_orders.assert_awaited_once_with(plan.id)
+        service.plans.count_audit_logs.assert_awaited_once_with(plan.id)
         service.plans.delete.assert_awaited_once_with(plan.id)
 
     def test_raises_not_found_when_plan_missing(self):
@@ -291,6 +293,21 @@ class TestDeletePlan:
         assert "lịch sử thanh toán" in str(exc_info.value)
         service.plans.delete.assert_not_awaited()
 
+    def test_raises_conflict_when_audit_logs_exist(self):
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        service.plans.get_by_id.return_value = plan
+        service.plans.count_subscriptions.return_value = 0
+        service.plans.count_payment_orders.return_value = 0
+        service.plans.count_audit_logs.return_value = 1
+
+        with pytest.raises(ConflictException) as exc_info:
+            asyncio.run(service.delete_plan(plan.id))
+
+        assert "lịch sử thay đổi gói" in str(exc_info.value)
+        service.plans.delete.assert_not_awaited()
+
     def test_raises_conflict_on_integrity_error_from_repository(self):
         """IntegrityError from repository.delete() is caught and mapped to ConflictException."""
         import sqlalchemy.exc
@@ -300,6 +317,7 @@ class TestDeletePlan:
         service.plans.get_by_id.return_value = plan
         service.plans.count_subscriptions.return_value = 0
         service.plans.count_payment_orders.return_value = 0
+        service.plans.count_audit_logs.return_value = 0
         # Repository delete raises IntegrityError (simulating concurrent FK violation)
         service.plans.delete.side_effect = sqlalchemy.exc.IntegrityError("FK violation", "", None)
 
@@ -317,6 +335,7 @@ class TestDeletePlan:
         service.plans.get_by_id.return_value = plan
         service.plans.count_subscriptions.return_value = 0
         service.plans.count_payment_orders.return_value = 0
+        service.plans.count_audit_logs.return_value = 0
         service.plans.delete.side_effect = RuntimeError("unexpected db error")
 
         with pytest.raises(RuntimeError, match="unexpected db error"):

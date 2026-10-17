@@ -113,6 +113,26 @@ class RecruitmentPlanRepository(BaseRepository[RecruitmentPlan]):
         result = await self.session.execute(stmt)
         return result.scalar_one()
 
+    async def count_audit_logs(self, plan_id: Any) -> int:
+        """Count subscription audit logs referencing a plan.
+
+        Audit logs are append-only and never deleted, so a plan that appears as
+        the previous or new plan of any admin mutation can never be hard
+        deleted without breaking the audit trail.
+        """
+        from app.models import SubscriptionAuditLog
+
+        stmt = (
+            select(func.count())
+            .select_from(SubscriptionAuditLog)
+            .where(
+                (SubscriptionAuditLog.old_plan_id == plan_id)
+                | (SubscriptionAuditLog.new_plan_id == plan_id)
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
     async def delete(self, plan_id: Any) -> bool:
         """Hard delete a plan (only if no subscriptions or payment orders exist)."""
         plan = await self.get_by_id(plan_id)

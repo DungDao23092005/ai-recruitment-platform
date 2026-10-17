@@ -81,7 +81,11 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         limit: int,
         user_id: Optional[Any] = None,
         status_filter: Optional[SubscriptionStatus] = None,
+        plan_id: Optional[Any] = None,
+        search: Optional[str] = None,
     ) -> tuple[list[Subscription], int]:
+        from app.models import User
+
         filters = [
             Subscription.is_deleted == False,  # noqa: E712
         ]
@@ -89,9 +93,25 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             filters.append(Subscription.user_id == user_id)
         if status_filter is not None:
             filters.append(Subscription.status == status_filter)
+        if plan_id is not None:
+            filters.append(Subscription.plan_id == plan_id)
+        if search:
+            term = f"%{search.strip()}%"
+            filters.append(
+                Subscription.user_id.in_(
+                    select(User.id).where(User.email.ilike(term))
+                )
+            )
 
         count_stmt = select(func.count()).select_from(Subscription)
-        list_stmt = select(Subscription).order_by(Subscription.created_at.desc())
+        list_stmt = (
+            select(Subscription)
+            .options(
+                selectinload(Subscription.plan),
+                selectinload(Subscription.user),
+            )
+            .order_by(Subscription.created_at.desc())
+        )
 
         if filters:
             count_stmt = count_stmt.where(*filters)
@@ -101,3 +121,17 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         list_stmt = list_stmt.offset(skip).limit(limit)
         rows = (await self.session.execute(list_stmt)).scalars().all()
         return list(rows), total
+
+    async def get_pending_by_user_and_plan(
+        self,
+        user_id: Any,
+        plan_id: Any,
+    ) -> Subscription | None:
+        stmt = select(Subscription).where(
+            Subscription.user_id == user_id,
+            Subscription.plan_id == plan_id,
+            Subscription.is_deleted == False,  # noqa: E712
+            Subscription.status == SubscriptionStatus.PENDING,
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()

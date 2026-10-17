@@ -97,6 +97,12 @@ class PaymentTransactionStatus(str, Enum):
     PENDING = "pending"
 
 
+class SubscriptionAuditAction(str, Enum):
+    PROVISION = "provision"
+    CHANGE_PLAN = "change_plan"
+    REVOKE = "revoke"
+
+
 class SubscriptionUsageFeatureType(str, Enum):
     JOB_POST = "job_post"
     CANDIDATE_SEARCH = "candidate_search"

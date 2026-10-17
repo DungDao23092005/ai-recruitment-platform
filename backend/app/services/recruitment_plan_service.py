@@ -142,6 +142,15 @@ class RecruitmentPlanService:
                 "Không thể xóa gói này vì đã có lịch sử thanh toán. Hãy khóa gói thay vì xóa."
             )
 
+        # Check for audit-log references (previous or new plan of an admin
+        # subscription mutation). The audit trail is append-only, so a
+        # referenced plan must never be hard-deleted.
+        audit_log_count = await self.plans.count_audit_logs(plan.id)
+        if audit_log_count > 0:
+            raise ConflictException(
+                "Không thể xóa gói này vì đã có lịch sử thay đổi gói. Hãy khóa gói thay vì xóa."
+            )
+
         # Hard delete the plan - repository commits internally,
         # so wrap the call to catch potential IntegrityError from FK constraints.
         try:
