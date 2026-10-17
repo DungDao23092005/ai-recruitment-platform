@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.domain.enums import SubscriptionStatus
 from app.models import Subscription
@@ -24,11 +25,15 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             from app.domain.models.base import utc_now
             now = utc_now()
 
-        stmt = select(Subscription).where(
-            Subscription.user_id == user_id,
-            Subscription.is_deleted == False,  # noqa: E712
-            Subscription.status == SubscriptionStatus.ACTIVE,
-            Subscription.expires_at > now,
+        stmt = (
+            select(Subscription)
+            .options(selectinload(Subscription.plan))
+            .where(
+                Subscription.user_id == user_id,
+                Subscription.is_deleted == False,  # noqa: E712
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                Subscription.expires_at > now,
+            )
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
@@ -62,7 +67,11 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         return list(result.scalars().all())
 
     async def get_by_id_including_deleted(self, subscription_id: Any) -> Subscription | None:
-        stmt = select(Subscription).where(Subscription.id == subscription_id)
+        stmt = (
+            select(Subscription)
+            .options(selectinload(Subscription.plan))
+            .where(Subscription.id == subscription_id)
+        )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 

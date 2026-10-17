@@ -26,6 +26,7 @@ from app.schemas import (
     RecruiterProfileCreate,
     SkillCreate,
     SkillRead,
+    SubscriptionRead,
     Token,
     TokenPayload,
     UserCreate,
@@ -246,3 +247,57 @@ class TestSkillSchemas:
         skill = SkillRead.model_validate(FakeSkill())
 
         assert skill.name == "Python"
+
+
+class TestSubscriptionReadSchema:
+    def _make_source(self, plan):
+        class FakeSubscription:
+            def __init__(self):
+                self.id = uuid.uuid4()
+                self.user_id = uuid.uuid4()
+                self.plan_id = uuid.uuid4()
+                self.status = "active"
+                self.started_at = datetime.now(timezone.utc)
+                self.expires_at = datetime.now(timezone.utc)
+                self.created_at = datetime.now(timezone.utc)
+                self.updated_at = datetime.now(timezone.utc)
+                self.max_job_posts = 5
+                self.max_candidate_searches = 10
+                self.max_ai_features = 3
+                self.job_posts_used = 0
+                self.candidate_searches_used = 0
+                self.ai_features_used = 0
+                if plan is not None:
+                    self.plan = plan
+
+        return FakeSubscription()
+
+    def test_plan_defaults_to_none_when_absent(self):
+        sub = SubscriptionRead.model_validate(self._make_source(plan=None))
+        assert sub.plan is None
+
+    def test_plan_serialized_when_present(self):
+        class FakePlan:
+            def __init__(self):
+                self.id = uuid.uuid4()
+                self.name = "Gói Standard"
+                self.description = "desc"
+                self.price = 5000000
+                self.currency = "VND"
+                self.duration_days = 30
+                self.max_job_posts = 5
+                self.max_candidate_searches = 10
+                self.max_ai_features = 3
+                self.is_active = True
+                self.display_order = 0
+                self.created_at = datetime.now(timezone.utc)
+                self.updated_at = datetime.now(timezone.utc)
+
+        fake_plan = FakePlan()
+        sub = SubscriptionRead.model_validate(self._make_source(plan=fake_plan))
+
+        assert sub.plan is not None
+        assert sub.plan.id == fake_plan.id
+        assert sub.plan.name == "Gói Standard"
+        assert sub.plan.duration_days == 30
+        assert sub.model_dump()["plan"]["max_job_posts"] == 5

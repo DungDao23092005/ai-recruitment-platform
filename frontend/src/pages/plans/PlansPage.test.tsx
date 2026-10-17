@@ -127,6 +127,87 @@ describe('PlansPage', () => {
     expect(subscriptionCard).toBeInTheDocument()
   })
 
+  it('shows plan name from the subscription.plan object', async () => {
+    const subscriptionWithPlan = {
+      ...subscription,
+      plan_id: 'plan-premium',
+      plan: { ...subscription.plan, id: 'plan-premium', name: 'Gói Premium' },
+    }
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(subscriptionWithPlan as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => expect(screen.getByText('Đang hoạt động')).toBeInTheDocument())
+    expect(screen.getByText('Gói Premium')).toBeInTheDocument()
+    expect(screen.queryByText('Gói không xác định')).not.toBeInTheDocument()
+  })
+
+  it('falls back to plan_id lookup when subscription.plan is absent', async () => {
+    const subscriptionWithoutPlan = {
+      id: 'sub-2',
+      user_id: 'user-1',
+      plan_id: 'plan-1',
+      status: 'active' as const,
+      started_at: '2024-01-01',
+      expires_at: '2025-01-01',
+    }
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(subscriptionWithoutPlan as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => expect(screen.getByText('Đang hoạt động')).toBeInTheDocument())
+    // Plan card for plan-1 + subscription card resolved via fallback
+    expect(screen.getAllByText('Gói Standard').length).toBe(2)
+    expect(screen.queryByText('Gói không xác định')).not.toBeInTheDocument()
+  })
+
+  it('shows unknown-plan fallback when plan cannot be resolved', async () => {
+    const subscriptionUnknownPlan = {
+      id: 'sub-3',
+      user_id: 'user-1',
+      plan_id: 'plan-missing',
+      status: 'active' as const,
+      started_at: '2024-01-01',
+      expires_at: '2025-01-01',
+    }
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(subscriptionUnknownPlan as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => expect(screen.getByText('Gói không xác định')).toBeInTheDocument())
+  })
+
+  it('shows active status and expiry for the current subscription', async () => {
+    const activeSubscription = { ...subscription, expires_at: '2099-01-01' }
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription.mockResolvedValueOnce(activeSubscription as any)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    await waitFor(() => expect(screen.getByText('Đang hoạt động')).toBeInTheDocument())
+    expect(screen.getByText(/Hết hạn vào/)).toBeInTheDocument()
+    expect(screen.getByText(/01\/01\/2099/)).toBeInTheDocument()
+  })
+
 it('renders multiple plan cards with correct data', async () => {
     mockedGetPlans.mockResolvedValueOnce(plans as any)
     mockedGetMySubscription.mockResolvedValueOnce(subscription as any)

@@ -321,10 +321,20 @@ def _make_subscription(sub_id: uuid.UUID, user_id: uuid.UUID, plan_id: uuid.UUID
     )
 
 
-def _make_plan(plan_id: uuid.UUID) -> MagicMock:
+def _make_plan(
+    plan_id: uuid.UUID,
+    *,
+    duration_days: int = 30,
+    max_job_posts: int = 5,
+    max_candidate_searches: int | None = 10,
+    max_ai_features: int | None = 3,
+) -> MagicMock:
     plan = MagicMock()
     plan.id = plan_id
-    plan.duration_days = 30
+    plan.duration_days = duration_days
+    plan.max_job_posts = max_job_posts
+    plan.max_candidate_searches = max_candidate_searches
+    plan.max_ai_features = max_ai_features
     return plan
 
 
@@ -532,6 +542,125 @@ class TestActivateSubscriptionForPaymentRoleTransition:
         add_calls = [call for call in session.add.call_args_list
                      if call.args and hasattr(call.args[0], '__class__') and call.args[0].__class__.__name__ == 'RecruiterProfile']
         assert len(add_calls) == 0  # No new profile created
+
+
+class TestActivateSubscriptionQuotaSnapshot:
+    """Bug B: quota limits must be snapshotted from the authoritative plan."""
+
+    def _setup(self, *, plan, sub, user):
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+        session.execute.side_effect = [_make_lock_result(user)]
+        return session, service
+
+    def test_copies_all_quota_limits_from_plan(self):
+        sub_id, user_id, plan_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        plan = _make_plan(
+            plan_id, max_job_posts=7, max_candidate_searches=11, max_ai_features=4
+        )
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.PENDING)
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+        _, service = self._setup(plan=plan, sub=sub, user=user)
+
+        result = asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        assert result is sub
+        assert sub.status == SubscriptionStatus.ACTIVE
+        assert sub.max_job_posts == 7
+        assert sub.max_candidate_searches == 11
+        assert sub.max_ai_features == 4
+
+    def test_optional_plan_limits_default_to_zero(self):
+        sub_id, user_id, plan_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        plan = _make_plan(
+            plan_id,
+            max_job_posts=3,
+            max_candidate_searches=None,
+            max_ai_features=None,
+        )
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.PENDING)
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+        _, service = self._setup(plan=plan, sub=sub, user=user)
+
+        asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        assert sub.max_job_posts == 3
+        assert sub.max_candidate_searches == 0
+        assert sub.max_ai_features == 0
+
+    def test_plan_is_authoritative_over_existing_subscription_values(self):
+        """Quota must come from the plan, not from values already on the row."""
+        sub_id, user_id, plan_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        plan = _make_plan(
+            plan_id, max_job_posts=2, max_candidate_searches=4, max_ai_features=6
+        )
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.PENDING)
+        sub.max_job_posts = 999
+        sub.max_candidate_searches = 999
+        sub.max_ai_features = 999
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+        _, service = self._setup(plan=plan, sub=sub, user=user)
+
+        asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        assert (
+            sub.max_job_posts,
+            sub.max_candidate_searches,
+            sub.max_ai_features,
+        ) == (2, 4, 6)
+
+    def test_activation_resets_usage_counters(self):
+        sub_id, user_id, plan_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        plan = _make_plan(plan_id)
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.PENDING)
+        sub.job_posts_used = 5
+        sub.candidate_searches_used = 6
+        sub.ai_features_used = 7
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+        _, service = self._setup(plan=plan, sub=sub, user=user)
+
+        asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        assert sub.job_posts_used == 0
+        assert sub.candidate_searches_used == 0
+        assert sub.ai_features_used == 0
+
+    def test_missing_plan_does_not_activate_with_zero_quota(self):
+        """A missing/inactive plan must never silently activate a zero-quota sub."""
+        sub_id, user_id, plan_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.PENDING)
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service.plans.get_active_by_id = AsyncMock(return_value=None)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+        session.execute.side_effect = [_make_lock_result(user)]
+
+        with pytest.raises(EntityNotFoundException):
+            asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        assert sub.status == SubscriptionStatus.PENDING
+        assert not sub.max_job_posts
+
+    def test_already_active_subscription_usage_is_not_reset(self):
+        """Repeated activation attempts must not reset an ACTIVE sub's usage."""
+        sub_id, user_id, plan_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        plan = _make_plan(plan_id)
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.ACTIVE)
+        sub.max_job_posts = 9
+        sub.job_posts_used = 3
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+        _, service = self._setup(plan=plan, sub=sub, user=user)
+
+        with pytest.raises(InvalidTransitionException):
+            asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        assert sub.job_posts_used == 3
+        assert sub.max_job_posts == 9
 
 
 class TestCreateVnpayPayment:

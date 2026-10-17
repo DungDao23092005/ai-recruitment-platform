@@ -3,10 +3,11 @@ import { cn } from '@/utils/cn'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { AlertCircle, Calendar, Package } from 'lucide-react'
-import type { Subscription } from '@/types/subscription'
+import type { RecruitmentPlan, Subscription } from '@/types/subscription'
 
 export interface CurrentSubscriptionCardProps {
   subscription: Subscription | null
+  plans?: RecruitmentPlan[]
   onRenew?: () => void
   className?: string
 }
@@ -62,12 +63,17 @@ function getStatusInfo(status: string): { label: string; variant: 'success' | 'd
 }
 
 const CurrentSubscriptionCard = React.forwardRef<HTMLDivElement, CurrentSubscriptionCardProps>(
-  ({ subscription, onRenew, className }, ref) => {
+  ({ subscription, plans, onRenew, className }, ref) => {
     if (!subscription) {
       return null
     }
 
-    const plan = subscription.plan
+    // Prefer the plan embedded in the subscription API response; fall back to
+    // resolving plan_id against already-loaded plans before giving up.
+    const plan =
+      subscription.plan ??
+      plans?.find((candidate) => candidate.id === subscription.plan_id) ??
+      null
     const planName = plan?.name || 'Gói không xác định'
     const planDuration = plan?.duration_days
     const { label: statusLabel, variant: statusVariant, icon: statusIcon } = getStatusInfo(subscription.status)

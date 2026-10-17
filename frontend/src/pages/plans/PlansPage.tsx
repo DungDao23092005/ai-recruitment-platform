@@ -55,6 +55,7 @@ export function PlansPage() {
         {activeSubscription && (
           <CurrentSubscriptionCard
             subscription={activeSubscription}
+            plans={plans}
             onRenew={() => refetchSub()}
           />
         )}

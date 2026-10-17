@@ -7,6 +7,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict
 
 from app.domain.enums import SubscriptionStatus
+from app.schemas.recruitment_plan import RecruitmentPlanRead
 
 
 class SubscriptionRead(BaseModel):
@@ -28,6 +29,9 @@ class SubscriptionRead(BaseModel):
     job_posts_used: int
     candidate_searches_used: int
     ai_features_used: int
+    # Linked plan (eager-loaded). Optional so serialization stays safe if the
+    # plan row is genuinely absent.
+    plan: Optional[RecruitmentPlanRead] = None
 
 
 class SubscriptionSummary(BaseModel):

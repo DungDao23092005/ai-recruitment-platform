@@ -131,6 +131,37 @@ class TestUserSubscriptionAccess:
         assert resp.status_code == 404
 
 
+class TestSubscriptionReadPlanContract:
+    """Bug A: /subscriptions response must embed the linked plan object."""
+
+    def test_me_returns_plan_object(self, recruiter_client, run_async, subscription_service_override):
+        """GET /subscriptions/me serializes plan without MissingGreenlet."""
+        resp = run_async(recruiter_client.get(f"{API_V1}/subscriptions/me"))
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+
+        assert data["plan"] is not None
+        assert data["plan"]["id"] == data["plan_id"]
+        assert isinstance(data["plan"]["name"], str) and data["plan"]["name"]
+        assert data["plan"]["duration_days"] == 30
+        # conftest provisions this plan with 10/10/10 quota
+        assert data["plan"]["max_job_posts"] == 10
+        assert data["plan"]["max_candidate_searches"] == 10
+        assert data["plan"]["max_ai_features"] == 10
+
+    def test_get_by_id_returns_plan_object(self, recruiter_client, run_async, subscription_service_override):
+        """GET /subscriptions/{id} eager-loads the plan via get_by_id_including_deleted."""
+        me = run_async(recruiter_client.get(f"{API_V1}/subscriptions/me"))
+        assert me.status_code == 200, me.text
+        sub_id = me.json()["id"]
+
+        resp = run_async(recruiter_client.get(f"{API_V1}/subscriptions/{sub_id}"))
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["plan"] is not None
+        assert data["plan"]["id"] == data["plan_id"]
+
+
 class TestAdminSubscriptionAccess:
     def test_anonymous_admin_access_401(self, client, run_async):
         """Admin subscription endpoints require admin auth."""
