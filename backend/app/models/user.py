@@ -5,6 +5,7 @@ from datetime import datetime
 from enum import Enum
 
 from sqlalchemy import Boolean, ForeignKey, Index, String, Uuid, text
+from sqlalchemy.dialects.mssql import NVARCHAR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
@@ -58,7 +59,9 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     role: Mapped[UserRole] = mapped_column(StringEnum(UserRole), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_password_reset: Mapped[datetime | None] = mapped_column(nullable=True)
-    lock_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    lock_reason: Mapped[str | None] = mapped_column(
+        String(500).with_variant(NVARCHAR(500), "mssql"), nullable=True
+    )
     locked_at: Mapped[datetime | None] = mapped_column(nullable=True)
     locked_by: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
