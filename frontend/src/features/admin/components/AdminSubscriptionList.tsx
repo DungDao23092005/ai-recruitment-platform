@@ -208,7 +208,19 @@ export function AdminSubscriptionList({
                     </tr>
                   </thead>
                   <tbody>
-                    {items.map((item) => (
+                    {items.map((item) => {
+                      const actionBlocked =
+                        item.has_multiple_active || item.has_unresolved_payment
+                      const changePlanDisabled =
+                        item.effective_status !== 'active' || actionBlocked
+                      const revokeDisabled =
+                        (item.effective_status !== 'active' &&
+                          item.effective_status !== 'pending') ||
+                        actionBlocked
+                      const blockedTitle = actionBlocked
+                        ? 'Không thể thao tác khi người dùng có nhiều gói hoạt động hoặc giao dịch chưa xử lý.'
+                        : undefined
+                      return (
                       <tr
                         key={item.id}
                         className="border-b last:border-b-0 hover:bg-muted/40"
@@ -217,12 +229,55 @@ export function AdminSubscriptionList({
                           <span className="font-medium">
                             {item.user_email ?? item.user_id}
                           </span>
+                          {item.total_subscriptions > 1 ||
+                          item.has_multiple_active ||
+                          item.has_unresolved_payment ? (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {item.total_subscriptions > 1 ? (
+                                <Badge
+                                  variant="neutral"
+                                  title={`Người dùng có ${item.total_subscriptions} thuê bao trong lịch sử`}
+                                >
+                                  {item.total_subscriptions} thuê bao
+                                </Badge>
+                              ) : null}
+                              {item.has_multiple_active ? (
+                                <Badge
+                                  variant="warning"
+                                  title="Người dùng có nhiều hơn một gói đang hoạt động"
+                                >
+                                  Nhiều gói hoạt động
+                                </Badge>
+                              ) : null}
+                              {item.is_entitlement_incident ? (
+                                <Badge
+                                  variant="destructive"
+                                  title={`Có giao dịch đã thanh toán nhưng gói chưa được kích hoạt${
+                                    item.incident_internal_order_id
+                                      ? ` (${item.incident_internal_order_id})`
+                                      : ''
+                                  }`}
+                                >
+                                  Sự cố quyền lợi
+                                </Badge>
+                              ) : null}
+                              {item.has_unresolved_payment &&
+                              !item.is_entitlement_incident ? (
+                                <Badge
+                                  variant="warning"
+                                  title="Đang có giao dịch VNPAY chờ xử lý"
+                                >
+                                  Thanh toán treo
+                                </Badge>
+                              ) : null}
+                            </div>
+                          ) : null}
                         </td>
                         <td className="px-4 py-3">
                           {item.plan_name ?? '—'}
                         </td>
                         <td className="px-4 py-3">
-                          <SubscriptionStatusBadge status={item.status} />
+                          <SubscriptionStatusBadge status={item.effective_status} />
                         </td>
                         <td className="px-4 py-3 text-muted-foreground">
                           {formatSubscriptionDate(item.expires_at)}
@@ -256,7 +311,8 @@ export function AdminSubscriptionList({
                             size="sm"
                             className="ml-1"
                             aria-label={`Đổi gói cho ${item.user_email ?? item.id}`}
-                            disabled={item.status !== 'active'}
+                            disabled={changePlanDisabled}
+                            title={blockedTitle}
                             onClick={() => onChangePlan(item)}
                           >
                             <Sparkles className="h-4 w-4 mr-1" aria-hidden="true" />
@@ -268,7 +324,8 @@ export function AdminSubscriptionList({
                             size="sm"
                             className="ml-1"
                             aria-label={`Thu hồi gói của ${item.user_email ?? item.id}`}
-                            disabled={item.status !== 'active' && item.status !== 'pending'}
+                            disabled={revokeDisabled}
+                            title={blockedTitle}
                             onClick={() => onRevoke(item)}
                           >
                             <ShieldOff className="h-4 w-4 mr-1" aria-hidden="true" />
@@ -276,7 +333,8 @@ export function AdminSubscriptionList({
                           </Button>
                         </td>
                       </tr>
-                    ))}
+                      )
+                    })}
                   </tbody>
                 </table>
               </CardContent>

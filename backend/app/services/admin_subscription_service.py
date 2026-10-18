@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -14,7 +15,7 @@ from app.core.exceptions import (
 )
 from app.domain.enums import SubscriptionAuditAction, SubscriptionStatus
 from app.domain.models.base import utc_now
-from app.models import Subscription, SubscriptionAuditLog, User
+from app.models import PaymentOrder, Subscription, SubscriptionAuditLog, User
 from app.repositories import (
     PaymentOrderRepository,
     RecruitmentPlanRepository,
@@ -25,6 +26,8 @@ from app.schemas.subscription import (
     AdminSubscriptionDetail,
     AdminSubscriptionListItem,
     SubscriptionAuditLogRead,
+    SubscriptionPaymentSummary,
+    SubscriptionSummary,
 )
 from app.services.notification_service import NotificationService
 from app.services.recruiter_access import ensure_recruiter_access
@@ -33,6 +36,25 @@ from app.services.recruiter_access import ensure_recruiter_access
 # endpoint. The endpoint does not require an operator-supplied reason, so this
 # keeps the audit trail non-null and human-readable.
 _PROVISION_REASON = "Khởi tạo gói bởi quản trị viên"
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Interpret a naive SQL Server datetime as UTC for comparison."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _effective_status(sub: Subscription, now: datetime) -> SubscriptionStatus:
+    """Display status without mutating the DB.
+
+    A row stored as ACTIVE but already past ``expires_at`` is surfaced as
+    EXPIRED (lazy expiry), matching the read-time entitlement checks elsewhere.
+    """
+    if sub.status == SubscriptionStatus.ACTIVE and sub.expires_at is not None:
+        if _as_utc(sub.expires_at) <= _as_utc(now):
+            return SubscriptionStatus.EXPIRED
+    return sub.status
 
 
 class AdminSubscriptionService:
@@ -67,36 +89,78 @@ class AdminSubscriptionService:
         status_filter: Optional[SubscriptionStatus] = None,
         plan_id: Optional[uuid.UUID] = None,
     ) -> tuple[list[AdminSubscriptionListItem], int]:
-        subscriptions, total = await self.subscriptions.list_admin(
+        """One representative row per user, ranked before filter/pagination."""
+        now = utc_now()
+        representatives, total = await self.subscriptions.list_admin(
             skip=skip,
             limit=limit,
             status_filter=status_filter,
             plan_id=plan_id,
             search=search,
+            now=now,
         )
-        items = [self._to_list_item(sub) for sub in subscriptions]
+        user_ids = [rep.subscription.user_id for rep in representatives]
+        payments = await self._payment_diagnostics(user_ids, now)
+        items = []
+        for rep in representatives:
+            uid = rep.subscription.user_id
+            has_unresolved, incident = payments.get(uid, (False, None))
+            items.append(
+                self._to_list_item(
+                    rep.subscription,
+                    total_subscriptions=rep.total_subscriptions,
+                    active_count=rep.active_count,
+                    has_unresolved_payment=has_unresolved,
+                    incident=incident,
+                    now=now,
+                )
+            )
         return items, total
 
     async def get_detail(self, subscription_id: uuid.UUID) -> AdminSubscriptionDetail:
+        """Detail of the user owning ``subscription_id``: representative row
+        plus the whole user's subscription history, payments and audit trail."""
         sub = await self.subscriptions.get_by_id_including_deleted(subscription_id)
         if sub is None:
             raise EntityNotFoundException(f"Subscription {subscription_id} not found")
 
-        user_email = await self._user_email(sub.user_id)
-        audit_logs = await self.audit.list_by_subscription(subscription_id)
-        history = await self.subscriptions.get_by_user_id(sub.user_id)
+        now = utc_now()
+        user_id = sub.user_id
+        user_email = await self._user_email(user_id)
+
+        representative = await self.subscriptions.get_representative_for_user(
+            user_id, now
+        )
+        if representative is None:
+            representative = sub
+
+        counts = await self.subscriptions.count_by_user_ids([user_id], now)
+        total_subscriptions, active_count = counts.get(user_id, (0, 0))
+        payments_diag = await self._payment_diagnostics([user_id], now)
+        has_unresolved, incident = payments_diag.get(user_id, (False, None))
+
+        history_subs = await self.subscriptions.get_by_user_id(user_id)
+        payments_by_sub: dict[uuid.UUID, list[PaymentOrder]] = defaultdict(list)
+        for order in await self.payment_orders.list_by_subscription_ids(
+            [item.id for item in history_subs]
+        ):
+            payments_by_sub[order.subscription_id].append(order)
+
+        audit_logs = await self.audit.list_by_user(user_id)
 
         return AdminSubscriptionDetail(
-            subscription=self._to_list_item(sub, user_email=user_email),
+            subscription=self._to_list_item(
+                representative,
+                total_subscriptions=total_subscriptions,
+                active_count=active_count,
+                has_unresolved_payment=has_unresolved,
+                incident=incident,
+                now=now,
+                user_email=user_email,
+            ),
             history=[
-                {
-                    "id": item.id,
-                    "plan_id": item.plan_id,
-                    "status": item.status,
-                    "started_at": item.started_at,
-                    "expires_at": item.expires_at,
-                }
-                for item in history
+                self._to_history_item(item, payments_by_sub.get(item.id, []))
+                for item in history_subs
             ],
             audit_logs=[self._to_audit_read(log) for log in audit_logs],
         )
@@ -393,8 +457,16 @@ class AdminSubscriptionService:
     def _to_list_item(
         self,
         sub: Subscription,
+        *,
+        total_subscriptions: int = 1,
+        active_count: int = 0,
+        has_unresolved_payment: bool = False,
+        incident: Optional[PaymentOrder] = None,
+        now: Optional[datetime] = None,
         user_email: Optional[str] = None,
     ) -> AdminSubscriptionListItem:
+        if now is None:
+            now = utc_now()
         if user_email is None and getattr(sub, "user", None) is not None:
             user_email = sub.user.email
         plan = getattr(sub, "plan", None)
@@ -405,6 +477,7 @@ class AdminSubscriptionService:
             plan_id=sub.plan_id,
             plan_name=plan.name if plan is not None else None,
             status=sub.status,
+            effective_status=_effective_status(sub, now),
             started_at=sub.started_at,
             expires_at=sub.expires_at,
             created_at=sub.created_at,
@@ -415,7 +488,83 @@ class AdminSubscriptionService:
             job_posts_used=sub.job_posts_used,
             candidate_searches_used=sub.candidate_searches_used,
             ai_features_used=sub.ai_features_used,
+            total_subscriptions=total_subscriptions,
+            has_multiple_active=active_count >= 2,
+            has_unresolved_payment=has_unresolved_payment,
+            is_entitlement_incident=incident is not None,
+            incident_subscription_id=(
+                incident.subscription_id if incident is not None else None
+            ),
+            incident_internal_order_id=(
+                incident.internal_order_id if incident is not None else None
+            ),
+            incident_amount=incident.amount if incident is not None else None,
         )
+
+    def _to_history_item(
+        self,
+        sub: Subscription,
+        payments: list[PaymentOrder],
+    ) -> SubscriptionSummary:
+        plan = getattr(sub, "plan", None)
+        return SubscriptionSummary(
+            id=sub.id,
+            plan_id=sub.plan_id,
+            plan_name=plan.name if plan is not None else None,
+            status=sub.status,
+            started_at=sub.started_at,
+            expires_at=sub.expires_at,
+            created_at=sub.created_at,
+            max_job_posts=sub.max_job_posts,
+            max_candidate_searches=sub.max_candidate_searches,
+            max_ai_features=sub.max_ai_features,
+            job_posts_used=sub.job_posts_used,
+            candidate_searches_used=sub.candidate_searches_used,
+            ai_features_used=sub.ai_features_used,
+            payments=[self._to_payment_summary(order) for order in payments],
+        )
+
+    def _to_payment_summary(self, order: PaymentOrder) -> SubscriptionPaymentSummary:
+        return SubscriptionPaymentSummary(
+            id=order.id,
+            plan_id=order.plan_id,
+            subscription_id=order.subscription_id,
+            internal_order_id=order.internal_order_id,
+            provider=order.provider,
+            status=order.status,
+            amount=order.amount,
+            currency=order.currency,
+            paid_at=order.paid_at,
+            expired_at=order.expired_at,
+            created_at=order.created_at,
+        )
+
+    async def _payment_diagnostics(
+        self,
+        user_ids: list[uuid.UUID],
+        now: datetime,
+    ) -> dict[uuid.UUID, tuple[bool, Optional[PaymentOrder]]]:
+        """Batch ``{user_id: (has_unresolved_payment, incident_order)}``.
+
+        ``has_unresolved_payment`` mirrors ``_assert_no_unresolved_payment``:
+        an unexpired PENDING VNPAY order OR a PAID order bound to a PENDING
+        subscription. The incident is the newest per user (deterministic).
+        """
+        if not user_ids:
+            return {}
+        pending_user_ids = await self.payment_orders.list_active_pending_user_ids(
+            user_ids, now
+        )
+        incident_by_user: dict[uuid.UUID, PaymentOrder] = {}
+        for order in await self.payment_orders.list_entitlement_incidents(user_ids):
+            incident_by_user.setdefault(order.user_id, order)
+        return {
+            uid: (
+                (uid in pending_user_ids) or (uid in incident_by_user),
+                incident_by_user.get(uid),
+            )
+            for uid in user_ids
+        }
 
     def _to_audit_read(self, log: SubscriptionAuditLog) -> SubscriptionAuditLogRead:
         return SubscriptionAuditLogRead(

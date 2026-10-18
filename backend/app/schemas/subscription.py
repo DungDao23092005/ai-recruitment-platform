@@ -6,7 +6,12 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.domain.enums import SubscriptionAuditAction, SubscriptionStatus
+from app.domain.enums import (
+    PaymentOrderStatus,
+    PaymentProvider,
+    SubscriptionAuditAction,
+    SubscriptionStatus,
+)
 from app.schemas.recruitment_plan import RecruitmentPlanRead
 
 
@@ -34,14 +39,43 @@ class SubscriptionRead(BaseModel):
     plan: Optional[RecruitmentPlanRead] = None
 
 
-class SubscriptionSummary(BaseModel):
+class SubscriptionPaymentSummary(BaseModel):
+    """A payment order attached to a subscription, for admin drill-down."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     plan_id: uuid.UUID
+    subscription_id: Optional[uuid.UUID]
+    internal_order_id: str
+    provider: PaymentProvider
+    status: PaymentOrderStatus
+    amount: int
+    currency: str
+    paid_at: Optional[datetime]
+    expired_at: Optional[datetime]
+    created_at: datetime
+
+
+class SubscriptionSummary(BaseModel):
+    """One subscription in a user's history, with plan, quota and payments."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    plan_id: uuid.UUID
+    plan_name: Optional[str] = None
     status: SubscriptionStatus
     started_at: Optional[datetime]
     expires_at: Optional[datetime]
+    created_at: datetime
+    max_job_posts: int
+    max_candidate_searches: int
+    max_ai_features: int
+    job_posts_used: int
+    candidate_searches_used: int
+    ai_features_used: int
+    payments: list[SubscriptionPaymentSummary] = Field(default_factory=list)
 
 
 class SubscriptionCreate(BaseModel):
@@ -95,6 +129,9 @@ class AdminSubscriptionListItem(BaseModel):
     plan_id: uuid.UUID
     plan_name: Optional[str] = None
     status: SubscriptionStatus
+    # Effective status for display: a DB-ACTIVE row past ``expires_at`` is shown
+    # as EXPIRED without mutating the stored status.
+    effective_status: SubscriptionStatus
     started_at: Optional[datetime]
     expires_at: Optional[datetime]
     created_at: datetime
@@ -105,6 +142,14 @@ class AdminSubscriptionListItem(BaseModel):
     job_posts_used: int
     candidate_searches_used: int
     ai_features_used: int
+    # Per-user diagnostics (computed across ALL the user's subscriptions).
+    total_subscriptions: int = 1
+    has_multiple_active: bool = False
+    has_unresolved_payment: bool = False
+    is_entitlement_incident: bool = False
+    incident_subscription_id: Optional[uuid.UUID] = None
+    incident_internal_order_id: Optional[str] = None
+    incident_amount: Optional[int] = None
 
 
 class AdminSubscriptionList(BaseModel):

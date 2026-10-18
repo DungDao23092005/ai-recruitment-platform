@@ -55,6 +55,7 @@ export function AdminSubscriptionsPage() {
         <AdminSubscriptionDetailModal
           subscription={dialog.subscription}
           onClose={() => setDialog(null)}
+          onRevoked={handleSuccess}
         />
       ) : null}
     </div>

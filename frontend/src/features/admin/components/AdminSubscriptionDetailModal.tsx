@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { FileText, RefreshCw, X } from 'lucide-react'
+import { AlertTriangle, FileText, RefreshCw, ShieldOff, X } from 'lucide-react'
 import { getAdminSubscription } from '@/api/admin'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
@@ -10,10 +10,12 @@ import {
   formatSubscriptionDate,
   SubscriptionStatusBadge,
 } from '@/features/admin/components/AdminSubscriptionList'
+import { AdminSubscriptionRevokeModal } from '@/features/admin/components/AdminSubscriptionRevokeModal'
 import type {
   AdminSubscriptionAuditAction,
   AdminSubscriptionDetail,
   AdminSubscriptionListItem,
+  AdminSubscriptionSummary,
 } from '@/types/admin'
 
 const ACTION_LABELS: Record<AdminSubscriptionAuditAction, string> = {
@@ -30,13 +32,31 @@ type DetailState =
 interface AdminSubscriptionDetailModalProps {
   subscription: AdminSubscriptionListItem
   onClose: () => void
+  onRevoked?: () => void
+}
+
+function formatAmount(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat('vi-VN', {
+      style: 'currency',
+      currency: currency || 'VND',
+      maximumFractionDigits: 0,
+    }).format(amount)
+  } catch {
+    return `${amount} ${currency}`
+  }
 }
 
 export function AdminSubscriptionDetailModal({
   subscription,
   onClose,
+  onRevoked,
 }: AdminSubscriptionDetailModalProps) {
   const [state, setState] = useState<DetailState>({ kind: 'loading' })
+  const [reloadKey, setReloadKey] = useState(0)
+  const [revokeTarget, setRevokeTarget] = useState<AdminSubscriptionSummary | null>(
+    null,
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -55,9 +75,15 @@ export function AdminSubscriptionDetailModal({
     return () => {
       cancelled = true
     }
-  }, [subscription.id])
+  }, [subscription.id, reloadKey])
 
   const detail = state.kind === 'success' ? state.data.subscription : subscription
+
+  const handleRevoked = () => {
+    setRevokeTarget(null)
+    setReloadKey((value) => value + 1)
+    onRevoked?.()
+  }
 
   return (
     <Modal
@@ -94,14 +120,18 @@ export function AdminSubscriptionDetailModal({
         <div className="space-y-6">
           <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <dt className="text-xs uppercase text-muted-foreground">Gói hiện tại</dt>
+              <dt className="text-xs uppercase text-muted-foreground">Gói đại diện</dt>
               <dd className="text-sm font-medium">{detail.plan_name ?? '—'}</dd>
             </div>
             <div>
               <dt className="text-xs uppercase text-muted-foreground">Trạng thái</dt>
               <dd className="mt-1">
-                <SubscriptionStatusBadge status={detail.status} />
+                <SubscriptionStatusBadge status={detail.effective_status} />
               </dd>
+            </div>
+            <div>
+              <dt className="text-xs uppercase text-muted-foreground">Tổng số thuê bao</dt>
+              <dd className="text-sm">{detail.total_subscriptions}</dd>
             </div>
             <div>
               <dt className="text-xs uppercase text-muted-foreground">Bắt đầu</dt>
@@ -130,6 +160,45 @@ export function AdminSubscriptionDetailModal({
               </dd>
             </div>
           </dl>
+
+          {detail.is_entitlement_incident ? (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+            >
+              <AlertTriangle className="mt-0.5 h-4 w-4" aria-hidden="true" />
+              <div>
+                <p className="font-medium">Sự cố quyền lợi</p>
+                <p className="text-xs">
+                  Người dùng có giao dịch đã thanh toán nhưng gói chưa được kích
+                  hoạt.
+                  {detail.incident_internal_order_id
+                    ? ` Mã đơn: ${detail.incident_internal_order_id}.`
+                    : ''}
+                  {detail.incident_amount != null
+                    ? ` Số tiền: ${formatAmount(detail.incident_amount, 'VND')}.`
+                    : ''}{' '}
+                  Cần xử lý trước khi đổi gói hoặc thu hồi.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          {detail.has_multiple_active ? (
+            <div
+              role="status"
+              className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-warning"
+            >
+              <AlertTriangle className="mt-0.5 h-4 w-4" aria-hidden="true" />
+              <div>
+                <p className="font-medium">Nhiều gói đang hoạt động</p>
+                <p className="text-xs">
+                  Người dùng có nhiều hơn một gói đang hoạt động. Chỉ có thể thao
+                  tác khi còn một gói hoặc xử lý từng thuê bao bên dưới.
+                </p>
+              </div>
+            </div>
+          ) : null}
 
           <div>
             <h3 className="mb-2 text-sm font-semibold">Lịch sử thay đổi (audit trail)</h3>
@@ -166,20 +235,64 @@ export function AdminSubscriptionDetailModal({
               <p className="text-sm text-muted-foreground">Không có dữ liệu.</p>
             ) : (
               <ul className="space-y-2" aria-label="Danh sách thuê bao của người dùng">
-                {state.data.history.map((item) => (
-                  <li
-                    key={item.id}
-                    className="flex items-center justify-between rounded-md border p-3 text-sm"
-                  >
-                    <span className="text-xs text-muted-foreground">{item.id}</span>
-                    <span className="flex items-center gap-2">
-                      <SubscriptionStatusBadge status={item.status} />
-                      <span className="text-xs text-muted-foreground">
-                        {formatSubscriptionDate(item.expires_at)}
-                      </span>
-                    </span>
-                  </li>
-                ))}
+                {state.data.history.map((item) => {
+                  const revocable =
+                    item.status === 'active' || item.status === 'pending'
+                  const blocked = detail.has_unresolved_payment
+                  return (
+                    <li key={item.id} className="rounded-md border p-3 text-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-medium">{item.plan_name ?? '—'}</span>
+                        <span className="flex items-center gap-2">
+                          <SubscriptionStatusBadge status={item.status} />
+                          <span className="text-xs text-muted-foreground">
+                            {formatSubscriptionDate(item.expires_at)}
+                          </span>
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Mã thuê bao: {item.id}
+                      </p>
+                      {item.payments.length > 0 ? (
+                        <ul className="mt-2 space-y-1">
+                          {item.payments.map((payment) => (
+                            <li
+                              key={payment.id}
+                              className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"
+                            >
+                              <span>{payment.internal_order_id}</span>
+                              <span>
+                                {formatAmount(payment.amount, payment.currency)} ·{' '}
+                                {payment.status} ·{' '}
+                                {formatSubscriptionDate(payment.paid_at)}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {revocable ? (
+                        <div className="mt-2 flex justify-end">
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            disabled={blocked}
+                            title={
+                              blocked
+                                ? 'Không thể thu hồi khi người dùng còn giao dịch chưa xử lý.'
+                                : undefined
+                            }
+                            aria-label={`Thu hồi thuê bao ${item.id}`}
+                            onClick={() => setRevokeTarget(item)}
+                          >
+                            <ShieldOff className="h-4 w-4 mr-1" aria-hidden="true" />
+                            Thu hồi
+                          </Button>
+                        </div>
+                      ) : null}
+                    </li>
+                  )
+                })}
               </ul>
             )}
           </div>
@@ -191,6 +304,19 @@ export function AdminSubscriptionDetailModal({
           <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
           Đang tải chi tiết...
         </div>
+      ) : null}
+
+      {revokeTarget ? (
+        <AdminSubscriptionRevokeModal
+          subscription={{
+            id: revokeTarget.id,
+            user_email: detail.user_email,
+            user_id: detail.user_id,
+            plan_name: revokeTarget.plan_name,
+          }}
+          onClose={() => setRevokeTarget(null)}
+          onSuccess={handleRevoked}
+        />
       ) : null}
     </Modal>
   )

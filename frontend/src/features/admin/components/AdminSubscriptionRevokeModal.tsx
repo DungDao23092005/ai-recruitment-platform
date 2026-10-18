@@ -5,10 +5,16 @@ import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
 import { Textarea } from '@/components/ui/textarea'
 import { getFriendlyErrorMessage } from '@/utils/errors'
-import type { AdminSubscriptionListItem } from '@/types/admin'
+
+export interface RevocableSubscription {
+  id: string
+  user_email: string | null
+  user_id: string
+  plan_name: string | null
+}
 
 interface AdminSubscriptionRevokeModalProps {
-  subscription: AdminSubscriptionListItem
+  subscription: RevocableSubscription
   onClose: () => void
   onSuccess: () => void
 }

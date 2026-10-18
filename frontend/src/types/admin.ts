@@ -152,6 +152,7 @@ export interface AdminSubscriptionListItem {
   plan_id: string
   plan_name: string | null
   status: AdminSubscriptionStatus
+  effective_status: AdminSubscriptionStatus
   started_at: string | null
   expires_at: string | null
   created_at: string
@@ -162,6 +163,13 @@ export interface AdminSubscriptionListItem {
   job_posts_used: number
   candidate_searches_used: number
   ai_features_used: number
+  total_subscriptions: number
+  has_multiple_active: boolean
+  has_unresolved_payment: boolean
+  is_entitlement_incident: boolean
+  incident_subscription_id: string | null
+  incident_internal_order_id: string | null
+  incident_amount: number | null
 }
 
 export interface AdminSubscriptionList {
@@ -191,12 +199,35 @@ export interface AdminSubscriptionAuditLog {
   created_at: string
 }
 
+export interface AdminSubscriptionPaymentSummary {
+  id: string
+  plan_id: string
+  subscription_id: string | null
+  internal_order_id: string
+  provider: string
+  status: string
+  amount: number
+  currency: string
+  paid_at: string | null
+  expired_at: string | null
+  created_at: string
+}
+
 export interface AdminSubscriptionSummary {
   id: string
   plan_id: string
+  plan_name: string | null
   status: AdminSubscriptionStatus
   started_at: string | null
   expires_at: string | null
+  created_at: string
+  max_job_posts: number
+  max_candidate_searches: number
+  max_ai_features: number
+  job_posts_used: number
+  candidate_searches_used: number
+  ai_features_used: number
+  payments: AdminSubscriptionPaymentSummary[]
 }
 
 export interface AdminSubscriptionDetail {

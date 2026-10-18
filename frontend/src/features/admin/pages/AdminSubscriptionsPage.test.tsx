@@ -25,6 +25,7 @@ const mockList: AdminSubscriptionList = {
       plan_id: 'plan-1',
       plan_name: 'Gói cơ bản',
       status: 'active',
+      effective_status: 'active',
       started_at: '2026-01-01T00:00:00Z',
       expires_at: '2026-02-01T00:00:00Z',
       created_at: '2026-01-01T00:00:00Z',
@@ -35,6 +36,13 @@ const mockList: AdminSubscriptionList = {
       job_posts_used: 1,
       candidate_searches_used: 2,
       ai_features_used: 0,
+      total_subscriptions: 1,
+      has_multiple_active: false,
+      has_unresolved_payment: false,
+      is_entitlement_incident: false,
+      incident_subscription_id: null,
+      incident_internal_order_id: null,
+      incident_amount: null,
     },
   ],
   total: 1,
@@ -61,14 +69,57 @@ const mockPlans: AdminPlanRead[] = [
 ]
 
 const mockDetail: AdminSubscriptionDetail = {
-  subscription: mockList.items[0],
+  subscription: {
+    ...mockList.items[0],
+    total_subscriptions: 2,
+    has_multiple_active: true,
+  },
   history: [
     {
       id: 'sub-1',
       plan_id: 'plan-1',
+      plan_name: 'Gói cơ bản',
       status: 'active',
       started_at: '2026-01-01T00:00:00Z',
       expires_at: '2026-02-01T00:00:00Z',
+      created_at: '2026-01-01T00:00:00Z',
+      max_job_posts: 5,
+      max_candidate_searches: 10,
+      max_ai_features: 3,
+      job_posts_used: 1,
+      candidate_searches_used: 2,
+      ai_features_used: 0,
+      payments: [
+        {
+          id: 'order-1',
+          plan_id: 'plan-1',
+          subscription_id: 'sub-1',
+          internal_order_id: 'VNPAY_ABC123',
+          provider: 'vnpay',
+          status: 'paid',
+          amount: 199000,
+          currency: 'VND',
+          paid_at: '2026-01-01T00:00:00Z',
+          expired_at: null,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    },
+    {
+      id: 'sub-2',
+      plan_id: 'plan-0',
+      plan_name: 'Gói cũ',
+      status: 'cancelled',
+      started_at: '2025-01-01T00:00:00Z',
+      expires_at: '2025-02-01T00:00:00Z',
+      created_at: '2025-01-01T00:00:00Z',
+      max_job_posts: 1,
+      max_candidate_searches: 1,
+      max_ai_features: 0,
+      job_posts_used: 1,
+      candidate_searches_used: 1,
+      ai_features_used: 0,
+      payments: [],
     },
   ],
   audit_logs: [
@@ -234,5 +285,93 @@ describe('AdminSubscriptionsPage', () => {
     expect(within(dialog).getByText('2 / 10')).toBeInTheDocument()
     expect(within(dialog).getByText('Tính năng AI')).toBeInTheDocument()
     expect(within(dialog).getByText('0 / 3')).toBeInTheDocument()
+
+    // One row per user: total + full history with plan names and payments.
+    expect(within(dialog).getByText('Tổng số thuê bao')).toBeInTheDocument()
+    expect(within(dialog).getByText('2')).toBeInTheDocument()
+    expect(within(dialog).getByText('Gói cũ')).toBeInTheDocument()
+    expect(within(dialog).getByText('VNPAY_ABC123')).toBeInTheDocument()
+  })
+
+  it('surfaces multi-active and incident badges and blocks list actions', async () => {
+    vi.mocked(getAdminSubscriptions).mockResolvedValueOnce({
+      ...mockList,
+      items: [
+        {
+          ...mockList.items[0],
+          total_subscriptions: 3,
+          has_multiple_active: true,
+          has_unresolved_payment: true,
+          is_entitlement_incident: true,
+          incident_subscription_id: 'sub-9',
+          incident_internal_order_id: 'VNPAY_INCIDENT',
+          incident_amount: 250000,
+        },
+      ],
+    })
+
+    render(<AdminSubscriptionsPage />)
+    await waitFor(() => {
+      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText('3 thuê bao')).toBeInTheDocument()
+    expect(screen.getByText('Nhiều gói hoạt động')).toBeInTheDocument()
+    expect(screen.getByText('Sự cố quyền lợi')).toBeInTheDocument()
+
+    expect(
+      screen.getByRole('button', { name: /đổi gói cho buyer@example.com/i }),
+    ).toBeDisabled()
+    expect(
+      screen.getByRole('button', { name: /thu hồi gói của buyer@example.com/i }),
+    ).toBeDisabled()
+  })
+
+  it('shows effective expired status for a stale active row', async () => {
+    vi.mocked(getAdminSubscriptions).mockResolvedValueOnce({
+      ...mockList,
+      items: [{ ...mockList.items[0], status: 'active', effective_status: 'expired' }],
+    })
+
+    render(<AdminSubscriptionsPage />)
+    await waitFor(() => {
+      expect(screen.getAllByText('Hết hạn').length).toBeGreaterThanOrEqual(2)
+    })
+  })
+
+  it('revokes a specific subscription from the detail history', async () => {
+    render(<AdminSubscriptionsPage />)
+    await waitFor(() => {
+      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /xem chi tiết thuê bao buyer@example.com/i,
+      }),
+    )
+    await waitFor(() => {
+      expect(getAdminSubscription).toHaveBeenCalledWith('sub-1')
+    })
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /thu hồi thuê bao sub-1/i }),
+    )
+
+    const revokeDialog = await screen.findByRole('dialog', {
+      name: /thu hồi gói thuê bao/i,
+    })
+    fireEvent.change(within(revokeDialog).getByLabelText(/lý do thu hồi/i), {
+      target: { value: 'Thu hồi đúng thuê bao cần thiết' },
+    })
+    fireEvent.click(
+      within(revokeDialog).getByRole('button', { name: /xác nhận thu hồi/i }),
+    )
+
+    await waitFor(() => {
+      expect(revokeAdminSubscription).toHaveBeenCalledWith('sub-1', {
+        reason: 'Thu hồi đúng thuê bao cần thiết',
+      })
+    })
   })
 })

@@ -111,6 +111,84 @@ class PaymentOrderRepository(BaseRepository[PaymentOrder]):
         result = await self.session.execute(stmt)
         return bool(result.scalar_one())
 
+    async def list_active_pending_user_ids(
+        self,
+        user_ids: list[Any],
+        now: datetime,
+        provider: PaymentProvider = PaymentProvider.VNPAY,
+    ) -> set[Any]:
+        """Batch: users with at least one live PENDING VNPAY checkout order.
+
+        Uses the exact predicate of ``get_active_pending_for_user`` so the
+        admin list flag stays consistent with the guard that raises 409.
+        """
+        if not user_ids:
+            return set()
+        stmt = (
+            select(PaymentOrder.user_id)
+            .where(
+                PaymentOrder.user_id.in_(user_ids),
+                PaymentOrder.status == PaymentOrderStatus.PENDING,
+                PaymentOrder.provider == provider,
+                PaymentOrder.is_deleted == False,  # noqa: E712
+                PaymentOrder.expired_at.is_not(None),
+                PaymentOrder.expired_at > now,
+            )
+            .distinct()
+        )
+        result = await self.session.execute(stmt)
+        return set(result.scalars().all())
+
+    async def list_entitlement_incidents(
+        self,
+        user_ids: list[Any],
+    ) -> list[PaymentOrder]:
+        """Batch: PAID orders bound to still-PENDING subscriptions.
+
+        Mirrors ``has_paid_order_with_pending_subscription`` so incident flags in
+        the admin list match the fail-closed guard. Ordered deterministically
+        (newest per user first) so a single incident can be summarised while the
+        rest stay visible in the detail history.
+        """
+        if not user_ids:
+            return []
+        stmt = (
+            select(PaymentOrder)
+            .join(Subscription, PaymentOrder.subscription_id == Subscription.id)
+            .where(
+                PaymentOrder.user_id.in_(user_ids),
+                PaymentOrder.status == PaymentOrderStatus.PAID,
+                PaymentOrder.is_deleted == False,  # noqa: E712
+                Subscription.status == SubscriptionStatus.PENDING,
+                Subscription.is_deleted == False,  # noqa: E712
+            )
+            .order_by(
+                PaymentOrder.user_id,
+                PaymentOrder.created_at.desc(),
+                PaymentOrder.id.desc(),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_by_subscription_ids(
+        self,
+        subscription_ids: list[Any],
+    ) -> list[PaymentOrder]:
+        """All non-deleted orders bound to the given subscriptions."""
+        if not subscription_ids:
+            return []
+        stmt = (
+            select(PaymentOrder)
+            .where(
+                PaymentOrder.subscription_id.in_(subscription_ids),
+                PaymentOrder.is_deleted == False,  # noqa: E712
+            )
+            .order_by(PaymentOrder.created_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_by_id_including_deleted(
         self,
         payment_order_id: Any,
