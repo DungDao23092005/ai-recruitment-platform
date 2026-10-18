@@ -29,7 +29,11 @@ from app.services.notification_service import NotificationService
 from app.services.payment_providers import VNPAYProvider
 from app.services.payment_providers.vnpay import VIETNAM_TZ
 from app.services.recruiter_access import ensure_recruiter_access
-from app.services.subscription_email_service import schedule_activation_email
+from app.services.subscription_email_service import (
+    PaymentReceipt,
+    schedule_activation_email,
+    schedule_payment_receipt_email,
+)
 from app.services.subscription_realtime import (
     ACTION_ACTIVATED,
     ACTION_ORDER_CREATED,
@@ -584,8 +588,23 @@ class PaymentService:
         self.session.add(transaction)
 
         if payment_order.subscription_id:
+            # Only a VNPAY purchase gets the enriched receipt. The snapshot is
+            # built from persisted, primitive values now so the after-commit task
+            # never relies on a live ORM instance. Other providers keep the
+            # existing generic activation email.
+            receipt: PaymentReceipt | None = None
+            if payment_order.provider == PaymentProvider.VNPAY:
+                receipt = PaymentReceipt(
+                    amount=payment_order.amount,
+                    currency=payment_order.currency,
+                    order_reference=payment_order.internal_order_id,
+                    provider_transaction_id=provider_transaction_id,
+                    paid_at=payment_order.paid_at,
+                )
             try:
-                await self._activate_subscription_for_payment(payment_order.subscription_id)
+                await self._activate_subscription_for_payment(
+                    payment_order.subscription_id, receipt=receipt
+                )
             except ConflictException:
                 await self.session.commit()
                 return False
@@ -597,10 +616,17 @@ class PaymentService:
     async def _activate_subscription_for_payment(
         self,
         subscription_id: uuid.UUID,
+        *,
+        receipt: PaymentReceipt | None = None,
     ) -> Subscription:
         """Activate subscription for successful payment.
 
         Uses the same locking and validation logic as SubscriptionService.activate_subscription.
+
+        When ``receipt`` is supplied (a verified VNPAY purchase) the enriched
+        payment receipt is sent instead of the generic activation email; direct
+        activation and admin provisioning pass no receipt and keep the generic
+        email.
         """
         sub = await self.subscriptions.get_by_id_including_deleted(subscription_id)
         if sub is None:
@@ -684,14 +710,25 @@ class PaymentService:
 
         # Best-effort lifecycle email + admin invalidation are scheduled on
         # after_commit. The email only goes out when this task actually created a
-        # fresh in-app notification, so IPN/QueryDr retries cannot resend it.
+        # fresh in-app notification, so IPN/QueryDr retries cannot resend it. A
+        # verified VNPAY purchase sends the enriched receipt; everything else
+        # keeps the existing generic activation email.
         if notification is not None:
-            schedule_activation_email(
-                self.session,
-                to_email=user.email,
-                plan_name=plan.name,
-                expires_at=sub.expires_at,
-            )
+            if receipt is not None:
+                schedule_payment_receipt_email(
+                    self.session,
+                    to_email=user.email,
+                    plan_name=plan.name,
+                    expires_at=sub.expires_at,
+                    receipt=receipt,
+                )
+            else:
+                schedule_activation_email(
+                    self.session,
+                    to_email=user.email,
+                    plan_name=plan.name,
+                    expires_at=sub.expires_at,
+                )
         schedule_admin_subscription_event(
             self.session,
             user_id=sub.user_id,

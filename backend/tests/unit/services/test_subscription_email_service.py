@@ -13,8 +13,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.services import subscription_email_service as module
 from app.services.subscription_email_service import (
     SUBJECT_ACTIVATED,
+    SUBJECT_PAYMENT_RECEIPT,
     SUBJECT_PLAN_CHANGED,
     SUBJECT_REVOKED,
+    PaymentReceipt,
     SubscriptionEmailService,
 )
 
@@ -171,5 +173,121 @@ def test_scheduler_noops_without_recipient():
             to_email=None,
             plan_name="Professional",
             expires_at=EXPIRES_AT,
+        )
+        scheduler.assert_not_called()
+
+
+# 2026-05-05 03:15:30 UTC == 10:15 05/05/2026 Asia/Ho_Chi_Minh.
+PAID_AT = datetime(2026, 5, 5, 3, 15, 30, tzinfo=timezone.utc)
+ORDER_REFERENCE = "VNPAY_20260505_031530_ABCD1234"
+
+
+def _receipt(**overrides) -> PaymentReceipt:
+    values = {
+        "amount": 1_000_000,
+        "currency": "VND",
+        "order_reference": ORDER_REFERENCE,
+        "provider_transaction_id": "13524458",
+        "paid_at": PAID_AT,
+    }
+    values.update(overrides)
+    return PaymentReceipt(**values)
+
+
+async def test_payment_receipt_has_expected_subject_and_fields():
+    recorder, service = _service()
+
+    await service.send_payment_receipt_email(
+        to_email="buyer@example.com",
+        plan_name="Professional",
+        expires_at=EXPIRES_AT,
+        receipt=_receipt(),
+    )
+
+    assert len(recorder.calls) == 1
+    to_email, subject, html, text = recorder.calls[0]
+    assert to_email == "buyer@example.com"
+    assert subject == SUBJECT_PAYMENT_RECEIPT.format(plan_name="Professional")
+    assert subject == "Thanh toán thành công — Professional | AI Recruitment Platform"
+
+    for body in (html, text):
+        assert "Professional" in body
+        assert "1.000.000 ₫" in body
+        assert "Đã thanh toán" in body
+        assert "Đang hoạt động" in body
+        assert ORDER_REFERENCE in body
+        assert "13524458" in body
+        # Payment timestamp in Vietnam local time (HH:mm DD/MM/YYYY).
+        assert "10:15 05/05/2026" in body
+        # Expiry date in Vietnam local time (DD/MM/YYYY).
+        assert "15/01/2026" in body
+
+
+async def test_payment_receipt_renders_vietnam_local_time_across_date_boundary():
+    recorder, service = _service()
+    # 2026-06-04 17:00 UTC == 2026-06-05 00:00 Asia/Ho_Chi_Minh.
+    boundary_expiry = datetime(2026, 6, 4, 17, 0, tzinfo=timezone.utc)
+
+    await service.send_payment_receipt_email(
+        to_email="buyer@example.com",
+        plan_name="Professional",
+        expires_at=boundary_expiry,
+        receipt=_receipt(),
+    )
+
+    _, _, html, text = recorder.calls[0]
+    assert "05/06/2026" in html and "05/06/2026" in text
+
+
+async def test_payment_receipt_missing_transaction_id_renders_placeholder():
+    recorder, service = _service()
+
+    await service.send_payment_receipt_email(
+        to_email="buyer@example.com",
+        plan_name="Professional",
+        expires_at=EXPIRES_AT,
+        receipt=_receipt(provider_transaction_id=None),
+    )
+
+    _, _, html, text = recorder.calls[0]
+    assert "—" in html
+    assert "Mã giao dịch VNPAY: —" in text
+
+
+def test_payment_receipt_unknown_currency_falls_back_to_iso_code():
+    assert module._format_currency(1_000_000, "JPY") == "1.000.000 JPY"
+    assert module._format_currency(1_000_000, None) == "1.000.000"
+
+
+async def test_payment_receipt_escapes_dynamic_values():
+    recorder, service = _service()
+
+    await service.send_payment_receipt_email(
+        to_email="buyer@example.com",
+        plan_name='<script>alert("xss")</script>',
+        expires_at=EXPIRES_AT,
+        receipt=_receipt(
+            order_reference='<img src=x onerror="steal()">',
+            provider_transaction_id="<b>txn</b>",
+        ),
+    )
+
+    _, _, html, _ = recorder.calls[0]
+    assert "<script>" not in html
+    assert "<img src=x" not in html
+    assert "<b>txn</b>" not in html
+    assert "&lt;script&gt;" in html
+    assert "&lt;img src=x" in html
+    assert "&lt;b&gt;txn&lt;/b&gt;" in html
+
+
+def test_payment_receipt_scheduler_noops_without_recipient():
+    with patch.object(module, "_schedule_email_after_commit") as scheduler:
+        module.schedule_payment_receipt_email(
+            MagicMock(),
+            to_email=None,
+            plan_name="Professional",
+            expires_at=EXPIRES_AT,
+            receipt=_receipt(),
         )
         scheduler.assert_not_called()

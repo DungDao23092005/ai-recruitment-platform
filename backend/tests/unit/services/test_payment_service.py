@@ -392,6 +392,9 @@ def _patch_activation_notifier(monkeypatch):
         "app.services.payment_service.schedule_activation_email", MagicMock()
     )
     monkeypatch.setattr(
+        "app.services.payment_service.schedule_payment_receipt_email", MagicMock()
+    )
+    monkeypatch.setattr(
         "app.services.payment_service.schedule_admin_subscription_event",
         MagicMock(),
     )
@@ -1201,6 +1204,154 @@ class TestRecordSuccessRefusedActivation:
         assert result is False
         assert order.status == PaymentOrderStatus.PAID
         session.commit.assert_awaited()
+
+    def test_conflict_schedules_no_receipt(self) -> None:
+        """A refused activation must never send the success receipt."""
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        order = PaymentOrder(
+            id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            plan_id=uuid.uuid4(),
+            subscription_id=uuid.uuid4(),
+            amount=299_000,
+            currency="VND",
+            provider=PaymentProvider.VNPAY,
+            internal_order_id="VNPAY_REFUSED_0002",
+            status=PaymentOrderStatus.PENDING,
+        )
+        service._activate_subscription_for_payment = AsyncMock(
+            side_effect=ConflictException("upgrade refused")
+        )
+
+        with patch(
+            "app.services.payment_service.schedule_payment_receipt_email"
+        ) as receipt_sched:
+            result = asyncio.run(
+                service._record_success_and_activate(
+                    order,
+                    provider_transaction_id="TXN1",
+                    provider_result_code="00",
+                    provider_message="ok",
+                    provider_request_id=None,
+                    provider_response_metadata="{}",
+                )
+            )
+
+        assert result is False
+        receipt_sched.assert_not_called()
+
+
+class TestVnpayReceiptEmail:
+    """The verified VNPAY success path schedules the enriched receipt once."""
+
+    PLAN_NAME = "Professional"
+    AMOUNT = 1_000_000
+    TRANSACTION_ID = "13524458"
+
+    def _setup(self, *, provider: PaymentProvider = PaymentProvider.VNPAY):
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        user_id, plan_id, sub_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        plan = _make_plan(plan_id, price=self.AMOUNT, currency="VND")
+        plan.name = self.PLAN_NAME
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.PENDING)
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+        session.execute.side_effect = [_make_lock_result(user)]
+        order = PaymentOrder(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            plan_id=plan_id,
+            subscription_id=sub_id,
+            amount=self.AMOUNT,
+            currency="VND",
+            provider=provider,
+            internal_order_id="VNPAY_RECEIPT_0001",
+            status=PaymentOrderStatus.PENDING,
+        )
+        return session, service, order, user
+
+    @staticmethod
+    def _record(service, order, transaction_id):
+        return asyncio.run(
+            service._record_success_and_activate(
+                order,
+                provider_transaction_id=transaction_id,
+                provider_result_code="00",
+                provider_message="ok",
+                provider_request_id="BANK123",
+                provider_response_metadata="{}",
+            )
+        )
+
+    def test_vnpay_success_schedules_enriched_receipt_once(self) -> None:
+        _, service, order, user = self._setup()
+
+        with patch(
+            "app.services.payment_service.schedule_payment_receipt_email"
+        ) as receipt_sched, patch(
+            "app.services.payment_service.schedule_activation_email"
+        ) as generic_sched:
+            result = self._record(service, order, self.TRANSACTION_ID)
+
+        assert result is True
+        receipt_sched.assert_called_once()
+        generic_sched.assert_not_called()
+
+        kwargs = receipt_sched.call_args.kwargs
+        assert kwargs["to_email"] == user.email
+        assert kwargs["plan_name"] == self.PLAN_NAME
+        assert kwargs["expires_at"] is not None
+
+        receipt = kwargs["receipt"]
+        assert receipt.amount == self.AMOUNT
+        assert receipt.currency == "VND"
+        assert receipt.order_reference == order.internal_order_id
+        assert receipt.provider_transaction_id == self.TRANSACTION_ID
+        assert receipt.paid_at == order.paid_at
+        assert order.paid_at is not None
+
+    def test_missing_provider_transaction_id_is_preserved_as_none(self) -> None:
+        _, service, order, _ = self._setup()
+
+        with patch(
+            "app.services.payment_service.schedule_payment_receipt_email"
+        ) as receipt_sched:
+            result = self._record(service, order, None)
+
+        assert result is True
+        assert receipt_sched.call_args.kwargs["receipt"].provider_transaction_id is None
+
+    def test_non_vnpay_activation_keeps_generic_email(self) -> None:
+        _, service, order, _ = self._setup(provider=PaymentProvider.MOMO)
+
+        with patch(
+            "app.services.payment_service.schedule_payment_receipt_email"
+        ) as receipt_sched, patch(
+            "app.services.payment_service.schedule_activation_email"
+        ) as generic_sched:
+            result = self._record(service, order, self.TRANSACTION_ID)
+
+        assert result is True
+        receipt_sched.assert_not_called()
+        generic_sched.assert_called_once()
+
+    def test_direct_activation_without_receipt_keeps_generic_email(self) -> None:
+        """Direct activation (no receipt) must keep the generic activation email."""
+        _, service, order, _ = self._setup()
+
+        with patch(
+            "app.services.payment_service.schedule_payment_receipt_email"
+        ) as receipt_sched, patch(
+            "app.services.payment_service.schedule_activation_email"
+        ) as generic_sched:
+            asyncio.run(service._activate_subscription_for_payment(order.subscription_id))
+
+        receipt_sched.assert_not_called()
+        generic_sched.assert_called_once()
 
 
 class TestGetPaymentStatusActivation:
