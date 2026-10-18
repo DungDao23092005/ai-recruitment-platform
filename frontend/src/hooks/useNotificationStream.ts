@@ -8,12 +8,38 @@ export const ADMIN_SUBSCRIPTION_CHANGED_EVENT = 'admin.subscription.changed';
 // DOM events rebroadcast by this hook for interested UI components.
 export const ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT = 'admin:subscription:changed';
 export const STREAM_CONNECTED_DOM_EVENT = 'stream:connected';
+// DOM event rebroadcast when a subscription-related notification reaches the
+// current user (activation, plan change or revocation), so subscription views
+// can silently invalidate their cached state without a manual reload. The
+// detail is an invalidation signal only - never authoritative entitlement data.
+export const USER_SUBSCRIPTION_CHANGED_DOM_EVENT = 'subscription:changed';
+
+const SUBSCRIPTION_ENTITY_TYPE = 'subscription';
+const SUBSCRIPTION_NOTIFICATION_TYPE_PREFIX = 'subscription_';
 
 export interface AdminSubscriptionChangedDetail {
   user_id?: string;
   subscription_id?: string | null;
   action?: string;
   timestamp?: string;
+}
+
+export interface SubscriptionNotificationDetail {
+  notification_type?: string;
+  entity_type?: string | null;
+  entity_id?: string | null;
+}
+
+function isSubscriptionNotification(
+  data: unknown,
+): data is SubscriptionNotificationDetail {
+  if (!data || typeof data !== 'object') return false;
+  const candidate = data as SubscriptionNotificationDetail;
+  if (candidate.entity_type === SUBSCRIPTION_ENTITY_TYPE) return true;
+  return (
+    typeof candidate.notification_type === 'string' &&
+    candidate.notification_type.startsWith(SUBSCRIPTION_NOTIFICATION_TYPE_PREFIX)
+  );
 }
 
 export function useNotificationStream() {
@@ -202,6 +228,14 @@ export function useNotificationStream() {
 
           // Still dispatch custom event for UI components that need it
           window.dispatchEvent(new CustomEvent('notification:created', { detail: data }));
+
+          // Bridge subscription notifications so subscription views (e.g. the
+          // Plans page) invalidate their state without a manual reload.
+          if (isSubscriptionNotification(data)) {
+            window.dispatchEvent(
+              new CustomEvent(USER_SUBSCRIPTION_CHANGED_DOM_EVENT, { detail: data })
+            );
+          }
         } catch (error) {
           console.warn('Failed to process notification:', error);
         }

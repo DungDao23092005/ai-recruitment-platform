@@ -821,4 +821,79 @@ describe('useNotificationStream', () => {
       window.removeEventListener('stream:connected', listener);
     });
   });
+
+  describe('Subscription invalidation bridge', () => {
+    it('rebroadcasts subscription notifications as subscription:changed', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const listener = vi.fn();
+      window.addEventListener('subscription:changed', listener);
+      const detail = {
+        notification_id: 'notif-1',
+        notification_type: 'subscription_revoked',
+        entity_type: 'subscription',
+        entity_id: 'sub-1',
+      };
+      act(() => { es.emitEvent('notification.created', detail); });
+      await flushMicrotasks();
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual(detail);
+      window.removeEventListener('subscription:changed', listener);
+    });
+
+    it('rebroadcasts when notification_type uses the subscription_ prefix', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const listener = vi.fn();
+      window.addEventListener('subscription:changed', listener);
+      act(() => {
+        es.emitEvent('notification.created', {
+          notification_id: 'notif-2',
+          notification_type: 'subscription_activated',
+          entity_type: null,
+        });
+      });
+      await flushMicrotasks();
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      window.removeEventListener('subscription:changed', listener);
+    });
+
+    it('does not rebroadcast unrelated notifications', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const listener = vi.fn();
+      window.addEventListener('subscription:changed', listener);
+      act(() => {
+        es.emitEvent('notification.created', {
+          notification_id: 'notif-3',
+          notification_type: 'application_received',
+          entity_type: 'application',
+        });
+      });
+      await flushMicrotasks();
+
+      expect(listener).not.toHaveBeenCalled();
+      window.removeEventListener('subscription:changed', listener);
+    });
+  });
 });

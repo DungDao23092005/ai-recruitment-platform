@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 import { PlansPage } from '@/pages/plans/PlansPage'
@@ -445,5 +445,58 @@ it('renders multiple plan cards with correct data', async () => {
 
     const currentButton = await screen.findByText('Gói hiện tại của bạn')
     expect(currentButton).toBeDisabled()
+  })
+
+  it('updates the current plan when a subscription invalidation arrives without a reload', async () => {
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription
+      .mockResolvedValueOnce(subscription as any)
+      .mockResolvedValueOnce(null)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    const currentButton = await screen.findByText('Gói hiện tại của bạn')
+    expect(currentButton).toBeDisabled()
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('subscription:changed', {
+          detail: { notification_type: 'subscription_revoked', entity_type: 'subscription' },
+        }),
+      )
+    })
+
+    await waitFor(
+      () => expect(screen.getAllByText('Chọn gói này').length).toBe(2),
+      { timeout: 2000 },
+    )
+    expect(screen.queryByText('Gói hiện tại của bạn')).not.toBeInTheDocument()
+    expect(screen.queryByText('Đang hoạt động')).not.toBeInTheDocument()
+    // Pricing for the unaffected plan cards is unchanged.
+    expect(screen.getByText('5.000.000 ₫')).toBeInTheDocument()
+    expect(screen.getByText('10.000.000 ₫')).toBeInTheDocument()
+  })
+
+  it('refreshes the subscription state when the renew button is clicked', async () => {
+    mockedGetPlans.mockResolvedValueOnce(plans as any)
+    mockedGetMySubscription
+      .mockResolvedValueOnce(subscription as any)
+      .mockResolvedValueOnce(null)
+
+    render(
+      <MemoryRouter initialEntries={['/plans']}>
+        <PlansPage />
+      </MemoryRouter>
+    )
+
+    const renewButton = await screen.findByText('Làm mới trạng thái')
+    fireEvent.click(renewButton)
+
+    await waitFor(() => expect(screen.getAllByText('Chọn gói này').length).toBe(2))
+    expect(mockedGetMySubscription).toHaveBeenCalledTimes(2)
   })
 })
