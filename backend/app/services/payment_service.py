@@ -29,6 +29,12 @@ from app.services.notification_service import NotificationService
 from app.services.payment_providers import VNPAYProvider
 from app.services.payment_providers.vnpay import VIETNAM_TZ
 from app.services.recruiter_access import ensure_recruiter_access
+from app.services.subscription_email_service import schedule_activation_email
+from app.services.subscription_realtime import (
+    ACTION_ACTIVATED,
+    ACTION_ORDER_CREATED,
+    schedule_admin_subscription_event,
+)
 
 
 # Lightweight, in-process throttle for server-to-server QueryDr reconciliation.
@@ -322,6 +328,12 @@ class PaymentService:
             expired_at=now_utc + timedelta(minutes=timeout),
         )
         self.session.add(payment_order)
+        schedule_admin_subscription_event(
+            self.session,
+            user_id=user_id,
+            subscription_id=subscription.id,
+            action=ACTION_ORDER_CREATED,
+        )
         try:
             await self.session.commit()
             await self.session.refresh(payment_order)
@@ -661,11 +673,30 @@ class PaymentService:
         # successful payment; the notification's own entity guard is only
         # defense-in-depth. Redis/SSE publishing is deferred to after commit and
         # cannot fail the committed transaction.
-        await NotificationService(self.session).notify_subscription_activated(
+        notification = await NotificationService(
+            self.session
+        ).notify_subscription_activated(
             user_id=sub.user_id,
             subscription_id=sub.id,
             plan_name=plan.name,
             expires_at=sub.expires_at,
+        )
+
+        # Best-effort lifecycle email + admin invalidation are scheduled on
+        # after_commit. The email only goes out when this task actually created a
+        # fresh in-app notification, so IPN/QueryDr retries cannot resend it.
+        if notification is not None:
+            schedule_activation_email(
+                self.session,
+                to_email=user.email,
+                plan_name=plan.name,
+                expires_at=sub.expires_at,
+            )
+        schedule_admin_subscription_event(
+            self.session,
+            user_id=sub.user_id,
+            subscription_id=sub.id,
+            action=ACTION_ACTIVATED,
         )
 
         await self.session.commit()

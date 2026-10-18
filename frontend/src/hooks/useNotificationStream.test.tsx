@@ -778,4 +778,47 @@ describe('useNotificationStream', () => {
       expect(mockStoreState.setUnreadCount).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('Admin subscription invalidation', () => {
+    it('rebroadcasts admin.subscription.changed as a DOM event with parsed detail', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const listener = vi.fn();
+      window.addEventListener('admin:subscription:changed', listener);
+      const detail = {
+        user_id: 'user-1',
+        subscription_id: 'sub-1',
+        action: 'revoked',
+        timestamp: '2026-01-01T00:00:00Z',
+      };
+      act(() => { es.emitEvent('admin.subscription.changed', detail); });
+      await flushMicrotasks();
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual(detail);
+      window.removeEventListener('admin:subscription:changed', listener);
+    });
+
+    it('dispatches stream:connected on (re)open so listeners can catch up', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const listener = vi.fn();
+      window.addEventListener('stream:connected', listener);
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      window.removeEventListener('stream:connected', listener);
+    });
+  });
 });

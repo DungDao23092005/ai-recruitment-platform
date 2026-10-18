@@ -20,6 +20,11 @@ from app.repositories import RecruitmentPlanRepository, SubscriptionRepository
 from app.schemas.subscription import SubscriptionCreate
 from app.services.notification_service import NotificationService
 from app.services.recruiter_access import ensure_recruiter_access
+from app.services.subscription_email_service import schedule_activation_email
+from app.services.subscription_realtime import (
+    ACTION_ACTIVATED,
+    schedule_admin_subscription_event,
+)
 
 
 class SubscriptionService:
@@ -211,11 +216,30 @@ class SubscriptionService:
         # the PENDING -> ACTIVE transition so the two commit or roll back
         # together. Publishing to Redis/SSE is scheduled for after commit and a
         # publish failure cannot invalidate the committed activation.
-        await NotificationService(self.session).notify_subscription_activated(
+        notification = await NotificationService(
+            self.session
+        ).notify_subscription_activated(
             user_id=sub.user_id,
             subscription_id=sub.id,
             plan_name=plan.name,
             expires_at=sub.expires_at,
+        )
+
+        # Best-effort lifecycle email + admin invalidation scheduled after commit.
+        # Email is gated on a freshly created notification so re-entrant callers
+        # cannot resend it.
+        if notification is not None:
+            schedule_activation_email(
+                self.session,
+                to_email=user.email,
+                plan_name=plan.name,
+                expires_at=sub.expires_at,
+            )
+        schedule_admin_subscription_event(
+            self.session,
+            user_id=sub.user_id,
+            subscription_id=sub.id,
+            action=ACTION_ACTIVATED,
         )
 
         try:

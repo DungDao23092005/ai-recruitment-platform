@@ -28,9 +28,14 @@ class MailpitProvider(EmailProvider):
         try:
             with smtplib.SMTP(self.host, self.port, timeout=10) as server:
                 server.send_message(message)
-        except Exception as e:
-            logger.error("ERROR: Password reset email delivery failed via Mailpit")
+        except Exception:
+            logger.error("ERROR: Email delivery failed via Mailpit")
             raise
+
+    async def send_email(
+        self, to_email: str, subject: str, html: str, text: str
+    ) -> None:
+        await asyncio.to_thread(self._send_sync, to_email, subject, html, text)
 
     async def send_password_reset_otp(self, to_email: str, otp: str) -> None:
         subject = "Đặt lại mật khẩu — AI Recruitment Platform"
@@ -55,4 +60,4 @@ class MailpitProvider(EmailProvider):
         </body>
         </html>
         '''
-        await asyncio.to_thread(self._send_sync, to_email, subject, html, text)
+        await self.send_email(to_email, subject, html, text)

@@ -31,6 +31,17 @@ from app.schemas.subscription import (
 )
 from app.services.notification_service import NotificationService
 from app.services.recruiter_access import ensure_recruiter_access
+from app.services.subscription_email_service import (
+    schedule_activation_email,
+    schedule_plan_changed_email,
+    schedule_revoked_email,
+)
+from app.services.subscription_realtime import (
+    ACTION_ACTIVATED,
+    ACTION_PLAN_CHANGED,
+    ACTION_REVOKED,
+    schedule_admin_subscription_event,
+)
 
 # Reason recorded when an admin provisions a subscription through the support
 # endpoint. The endpoint does not require an operator-supplied reason, so this
@@ -215,11 +226,26 @@ class AdminSubscriptionService:
             new_plan_id=plan.id,
             reason=_PROVISION_REASON,
         )
-        await NotificationService(self.session).notify_subscription_activated(
+        notification = await NotificationService(
+            self.session
+        ).notify_subscription_activated(
             user_id=sub.user_id,
             subscription_id=sub.id,
             plan_name=plan.name,
             expires_at=sub.expires_at,
+        )
+        if notification is not None:
+            schedule_activation_email(
+                self.session,
+                to_email=user.email,
+                plan_name=plan.name,
+                expires_at=sub.expires_at,
+            )
+        schedule_admin_subscription_event(
+            self.session,
+            user_id=sub.user_id,
+            subscription_id=sub.id,
+            action=ACTION_ACTIVATED,
         )
 
         await self._commit_and_refresh(sub)
@@ -286,6 +312,21 @@ class AdminSubscriptionService:
             expires_at=sub.expires_at,
         )
 
+        schedule_plan_changed_email(
+            self.session,
+            to_email=await self._user_email(sub.user_id),
+            previous_plan_name=old_plan_name,
+            new_plan_name=target.name,
+            expires_at=sub.expires_at,
+            reason=reason,
+        )
+        schedule_admin_subscription_event(
+            self.session,
+            user_id=sub.user_id,
+            subscription_id=sub.id,
+            action=ACTION_PLAN_CHANGED,
+        )
+
         await self._commit_and_refresh(sub)
         return sub
 
@@ -334,6 +375,20 @@ class AdminSubscriptionService:
             subscription_id=sub.id,
             plan_name=plan_name,
             reason=reason,
+        )
+
+        schedule_revoked_email(
+            self.session,
+            to_email=await self._user_email(sub.user_id),
+            plan_name=plan_name or "Gói dịch vụ",
+            reason=reason,
+            effective_at=utc_now(),
+        )
+        schedule_admin_subscription_event(
+            self.session,
+            user_id=sub.user_id,
+            subscription_id=sub.id,
+            action=ACTION_REVOKED,
         )
 
         await self._commit_and_refresh(sub)

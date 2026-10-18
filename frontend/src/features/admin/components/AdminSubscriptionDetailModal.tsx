@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, FileText, RefreshCw, ShieldOff, X } from 'lucide-react'
 import { getAdminSubscription } from '@/api/admin'
 import { Button } from '@/components/ui/button'
@@ -6,6 +6,7 @@ import { Modal } from '@/components/ui/modal'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorBanner } from '@/components/ui/error-banner'
 import { getFriendlyErrorMessage } from '@/utils/errors'
+import { ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT } from '@/hooks/useNotificationStream'
 import {
   formatSubscriptionDate,
   SubscriptionStatusBadge,
@@ -57,6 +58,7 @@ export function AdminSubscriptionDetailModal({
   const [revokeTarget, setRevokeTarget] = useState<AdminSubscriptionSummary | null>(
     null,
   )
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -76,6 +78,33 @@ export function AdminSubscriptionDetailModal({
       cancelled = true
     }
   }, [subscription.id, reloadKey])
+
+  // Refresh the open detail (representative + history + quota + payments +
+  // audit) when a realtime event targets the same user, without closing or
+  // remounting the modal.
+  useEffect(() => {
+    const handleChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ user_id?: string }>).detail
+      if (!detail?.user_id || detail.user_id !== subscription.user_id) return
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      debounceRef.current = setTimeout(() => {
+        debounceRef.current = null
+        setReloadKey((value) => value + 1)
+      }, 300)
+    }
+
+    window.addEventListener(ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT, handleChanged)
+    return () => {
+      window.removeEventListener(
+        ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT,
+        handleChanged,
+      )
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current)
+        debounceRef.current = null
+      }
+    }
+  }, [subscription.user_id])
 
   const detail = state.kind === 'success' ? state.data.subscription : subscription
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChevronLeft,
   ChevronRight,
@@ -17,12 +17,17 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorBanner } from '@/components/ui/error-banner'
 import { getFriendlyErrorMessage } from '@/utils/errors'
+import {
+  ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT,
+  STREAM_CONNECTED_DOM_EVENT,
+} from '@/hooks/useNotificationStream'
 import type {
   AdminSubscriptionListItem,
   AdminSubscriptionStatus,
 } from '@/types/admin'
 
 export const ADMIN_SUBSCRIPTION_PAGE_SIZE = 10
+export const ADMIN_SUBSCRIPTION_REFRESH_DEBOUNCE_MS = 300
 
 type ListState =
   | { kind: 'loading' }
@@ -75,12 +80,18 @@ interface AdminSubscriptionListProps {
   onChangePlan: (subscription: AdminSubscriptionListItem) => void
   onRevoke: (subscription: AdminSubscriptionListItem) => void
   onViewDetail: (subscription: AdminSubscriptionListItem) => void
+  /**
+   * Monotonic counter bumped by the parent after a local mutation so the list
+   * silently refetches without unmounting (keeping page/search/filter state).
+   */
+  refreshSignal?: number
 }
 
 export function AdminSubscriptionList({
   onChangePlan,
   onRevoke,
   onViewDetail,
+  refreshSignal = 0,
 }: AdminSubscriptionListProps) {
   const [listState, setListState] = useState<ListState>({ kind: 'loading' })
   const [page, setPage] = useState(1)
@@ -90,24 +101,93 @@ export function AdminSubscriptionList({
     '' | AdminSubscriptionStatus
   >('')
 
-  const load = useCallback(async () => {
-    setListState({ kind: 'loading' })
+  // Latest query params, read by the silent-refresh path so event-driven
+  // refetches use the current page/search/filter without re-binding listeners.
+  const paramsRef = useRef({ page, searchQuery, statusFilter })
+  paramsRef.current = { page, searchQuery, statusFilter }
+
+  // Monotonic request generation: only the newest in-flight request may write
+  // state, so a slow earlier response can never clobber a newer one.
+  const loadGenerationRef = useRef(0)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const fetchList = useCallback(async (mode: 'initial' | 'silent') => {
+    const generation = ++loadGenerationRef.current
+    const {
+      page: currentPage,
+      searchQuery: currentSearch,
+      statusFilter: currentStatus,
+    } = paramsRef.current
+
+    if (mode === 'initial') {
+      setListState({ kind: 'loading' })
+    }
+
     try {
       const data = await getAdminSubscriptions({
-        skip: (page - 1) * ADMIN_SUBSCRIPTION_PAGE_SIZE,
+        skip: (currentPage - 1) * ADMIN_SUBSCRIPTION_PAGE_SIZE,
         limit: ADMIN_SUBSCRIPTION_PAGE_SIZE,
-        search: searchQuery.trim() || undefined,
-        status_filter: statusFilter || undefined,
+        search: currentSearch.trim() || undefined,
+        status_filter: currentStatus || undefined,
       })
+      if (generation !== loadGenerationRef.current) return
       setListState({ kind: 'success', items: data.items, total: data.total })
     } catch (err) {
-      setListState({ kind: 'error', message: getFriendlyErrorMessage(err) })
+      if (generation !== loadGenerationRef.current) return
+      if (mode === 'initial') {
+        setListState({ kind: 'error', message: getFriendlyErrorMessage(err) })
+      } else {
+        // A silent refresh must never clear the table or surface a fake error.
+        console.warn('Silent subscription refresh failed:', err)
+      }
     }
-  }, [page, searchQuery, statusFilter])
+  }, [])
 
   useEffect(() => {
-    void load()
-  }, [load])
+    void fetchList('initial')
+  }, [page, searchQuery, statusFilter, fetchList])
+
+  const scheduleSilentRefresh = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      debounceRef.current = null
+      void fetchList('silent')
+    }, ADMIN_SUBSCRIPTION_REFRESH_DEBOUNCE_MS)
+  }, [fetchList])
+
+  // Realtime + lifecycle refresh: coalesce bursts of change events, catch up on
+  // (re)connect, and refetch when the tab becomes visible again.
+  useEffect(() => {
+    const handleChanged = () => scheduleSilentRefresh()
+    const handleConnected = () => scheduleSilentRefresh()
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') scheduleSilentRefresh()
+    }
+
+    window.addEventListener(ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT, handleChanged)
+    window.addEventListener(STREAM_CONNECTED_DOM_EVENT, handleConnected)
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      window.removeEventListener(ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT, handleChanged)
+      window.removeEventListener(STREAM_CONNECTED_DOM_EVENT, handleConnected)
+      document.removeEventListener('visibilitychange', handleVisibility)
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current)
+        debounceRef.current = null
+      }
+    }
+  }, [scheduleSilentRefresh])
+
+  // Local mutation refresh without remounting (preserves page/search/filter).
+  const didMountRef = useRef(false)
+  useEffect(() => {
+    if (!didMountRef.current) {
+      didMountRef.current = true
+      return
+    }
+    void fetchList('silent')
+  }, [refreshSignal, fetchList])
 
   const handleSearchSubmit = (event: React.FormEvent) => {
     event.preventDefault()
@@ -178,7 +258,7 @@ export function AdminSubscriptionList({
       ) : null}
 
       {listState.kind === 'error' ? (
-        <ErrorBanner message={listState.message} onRetry={load} />
+        <ErrorBanner message={listState.message} onRetry={() => void fetchList('initial')} />
       ) : null}
 
       {listState.kind === 'success' ? (

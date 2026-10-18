@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 import secrets
 import asyncio
@@ -12,13 +14,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, get_current_active_user
 from app.core.exceptions import EntityNotFoundException
 from app.core.pubsub import get_pubsub_manager, PubSubManager
+from app.domain.enums import UserRole
 from app.models import User
 from app.schemas.notification import NotificationRead, UnreadCountResponse
 from app.services.notification_service import NotificationService
-from app.core.security import decode_access_token
+from app.services.subscription_realtime import (
+    ADMIN_SUBSCRIPTIONS_CHANNEL,
+    ADMIN_SUBSCRIPTION_CHANGED_EVENT,
+)
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+TICKET_TTL_SECONDS = 10
+# Bound the stream lifetime so long-lived connections periodically re-authenticate
+# through a fresh ticket, re-checking the user's role for admin-channel access.
+STREAM_MAX_SECONDS = 1800
 
 
 @router.get(
@@ -96,16 +109,20 @@ async def create_stream_ticket(
     current_user: User = Depends(get_current_active_user),
     pubsub: PubSubManager = Depends(get_pubsub_manager),
 ) -> dict:
-    """Create a short-lived ticket for SSE stream authentication."""
+    """Create a short-lived ticket for SSE stream authentication.
+
+    The ticket stores the server-derived role so the stream can authorize the
+    admin channel without trusting any client-supplied flag.
+    """
     ticket = secrets.token_urlsafe(32)
-    # Store ticket with user_id in Redis with 10 second TTL
-    # Using a simple key-value store with TTL
     ticket_key = f"notification:stream_ticket:{ticket}"
-    await pubsub._redis.setex(
-        f"notification:stream_ticket:{ticket}",
-        10,  # 10 seconds TTL
-        str(current_user.id),
+    payload = json.dumps(
+        {
+            "user_id": str(current_user.id),
+            "is_admin": current_user.role == UserRole.ADMIN,
+        }
     )
+    await pubsub._redis.setex(ticket_key, TICKET_TTL_SECONDS, payload)
     return {"ticket": ticket}
 
 
@@ -120,37 +137,43 @@ async def notification_stream(
     """SSE endpoint for real-time notifications with heartbeat."""
     # Validate and consume ticket
     ticket_key = f"notification:stream_ticket:{ticket}"
-    user_id_str = await pubsub._redis.get(ticket_key)
-    if not user_id_str:
+    raw_ticket = await pubsub._redis.get(ticket_key)
+    if not raw_ticket:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired ticket",
         )
 
     # Delete ticket immediately (single-use)
-    await pubsub._redis.delete(f"notification:stream_ticket:{ticket}")
+    await pubsub._redis.delete(ticket_key)
 
     try:
-        user_id = uuid.UUID(user_id_str)
-    except ValueError:
+        ticket_data = json.loads(raw_ticket)
+        user_id = uuid.UUID(str(ticket_data["user_id"]))
+        is_admin = bool(ticket_data.get("is_admin", False))
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid ticket",
         )
 
-    channel = f"notifications:user:{user_id_str}"
+    user_id_str = str(user_id)
+    personal_channel = f"notifications:user:{user_id_str}"
+    channels = [personal_channel]
+    if is_admin:
+        channels.append(ADMIN_SUBSCRIPTIONS_CHANNEL)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         pubsub_client = pubsub._redis.pubsub()
         try:
-            await pubsub_client.subscribe(channel)
+            await pubsub_client.subscribe(*channels)
 
             # Send initial connection confirmation
-            import json
-            connected_data = json.dumps({"type": "connected", "user_id": str(user_id_str)})
+            connected_data = json.dumps({"type": "connected", "user_id": user_id_str})
             yield f"event: connected\ndata: {connected_data}\n\n"
 
-            last_heartbeat = asyncio.get_event_loop().time()
+            started_at = asyncio.get_event_loop().time()
+            last_heartbeat = started_at
 
             try:
                 while True:
@@ -166,15 +189,23 @@ async def notification_stream(
                     if message is not None and message["type"] == "message":
                         try:
                             data = message["data"]
-                            yield f"event: notification.created\ndata: {data}\n\n"
+                            if message.get("channel") == ADMIN_SUBSCRIPTIONS_CHANNEL:
+                                event_name = ADMIN_SUBSCRIPTION_CHANGED_EVENT
+                            else:
+                                event_name = "notification.created"
+                            yield f"event: {event_name}\ndata: {data}\n\n"
                         except Exception as e:
-                            import logging
-                            logging.getLogger(__name__).warning(f"Failed to process SSE message: {e}")
+                            logger.warning("Failed to process SSE message: %s", e)
 
                     # Independent heartbeat check - runs every iteration
                     if current_time - last_heartbeat >= 30.0:
                         yield ": keepalive\n\n"
                         last_heartbeat = current_time
+
+                    # Re-check role/stream age: bounded lifetime forces the client
+                    # to reconnect with a fresh ticket.
+                    if current_time - started_at >= STREAM_MAX_SECONDS:
+                        break
 
                     # Small sleep to prevent tight loop when no message
                     if message is None:
@@ -183,14 +214,12 @@ async def notification_stream(
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"SSE stream error: {e}")
+                logger.error("SSE stream error: %s", e)
             finally:
-                await pubsub_client.unsubscribe(channel)
+                await pubsub_client.unsubscribe(*channels)
                 await pubsub_client.close()
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"SSE stream error: {e}")
+            logger.error("SSE stream error: %s", e)
 
     return StreamingResponse(
         event_generator(),

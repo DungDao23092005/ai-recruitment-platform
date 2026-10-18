@@ -34,6 +34,16 @@ class EmailService:
             port = getattr(settings, 'MAILPIT_PORT', 1025)
             self.provider = MailpitProvider(host=host, port=port, from_email=self.from_email)
 
+    async def send_email(
+        self, to_email: str, subject: str, html: str, text: str
+    ) -> None:
+        """Send an email with an HTML body and plain-text fallback."""
+        try:
+            await self.provider.send_email(to_email, subject, html, text)
+        except Exception:
+            logger.error("ERROR: Email delivery failed via %s", self.provider_name)
+            raise
+
     async def send_password_reset_otp(self, to_email: str, otp: str) -> None:
         """Send a password reset OTP email using the configured provider."""
         try:

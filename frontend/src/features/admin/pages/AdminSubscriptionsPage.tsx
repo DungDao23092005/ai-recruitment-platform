@@ -29,7 +29,7 @@ export function AdminSubscriptionsPage() {
       />
 
       <AdminSubscriptionList
-        key={refreshKey}
+        refreshSignal={refreshKey}
         onChangePlan={(subscription) => setDialog({ kind: 'change-plan', subscription })}
         onRevoke={(subscription) => setDialog({ kind: 'revoke', subscription })}
         onViewDetail={(subscription) => setDialog({ kind: 'detail', subscription })}

@@ -386,6 +386,15 @@ def _patch_activation_notifier(monkeypatch):
     monkeypatch.setattr(
         "app.services.payment_service.NotificationService", mock_cls
     )
+    # These helpers also register after_commit listeners on session.sync_session,
+    # which a MagicMock session cannot satisfy. Patch them at the usage site too.
+    monkeypatch.setattr(
+        "app.services.payment_service.schedule_activation_email", MagicMock()
+    )
+    monkeypatch.setattr(
+        "app.services.payment_service.schedule_admin_subscription_event",
+        MagicMock(),
+    )
     return mock_cls
 
 

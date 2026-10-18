@@ -11,6 +11,33 @@ class ResendProvider(EmailProvider):
         self.from_email = from_email
         self.api_url = "https://api.resend.com/emails"
 
+    async def send_email(
+        self, to_email: str, subject: str, html: str, text: str
+    ) -> None:
+        if not self.api_key:
+            logger.error("ERROR: Email delivery failed (missing Resend API key)")
+            raise ValueError("Missing API key")
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "from": self.from_email,
+            "to": [to_email],
+            "subject": subject,
+            "html": html,
+            "text": text
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(self.api_url, headers=headers, json=payload)
+                response.raise_for_status()
+        except Exception:
+            logger.error("ERROR: Email delivery failed via Resend")
+            raise
+
     async def send_password_reset_otp(self, to_email: str, otp: str) -> None:
         subject = "Đặt lại mật khẩu — AI Recruitment Platform"
         text = f"Xin chào,\n\nBạn vừa yêu cầu đặt lại mật khẩu cho tài khoản AI Recruitment Platform.\n\nMã OTP của bạn:\n{otp}\n\nMã này có hiệu lực trong 5 phút.\nKhông chia sẻ mã OTP này với bất kỳ ai.\nNếu bạn không yêu cầu đặt lại mật khẩu, hãy bỏ qua email này.\n\nAI Recruitment Platform"
@@ -35,27 +62,5 @@ class ResendProvider(EmailProvider):
         </html>
         '''
 
-        if not self.api_key:
-            logger.error("ERROR: Password reset email delivery failed (missing Resend API key)")
-            raise ValueError("Missing API key")
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "from": self.from_email,
-            "to": [to_email],
-            "subject": subject,
-            "html": html,
-            "text": text
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(self.api_url, headers=headers, json=payload)
-                response.raise_for_status()
-        except Exception as e:
-            logger.error("ERROR: Password reset email delivery failed via Resend")
-            raise
+        await self.send_email(to_email, subject, html, text)
 

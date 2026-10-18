@@ -3,6 +3,19 @@ import { useAuth } from '@/contexts/AuthContext';
 import { getUnreadNotificationCount, getStreamTicket } from '@/api/notifications';
 import { useUnreadCountStore } from '@/stores/useUnreadCountStore';
 
+// Server-sent named event for admin subscription invalidations.
+export const ADMIN_SUBSCRIPTION_CHANGED_EVENT = 'admin.subscription.changed';
+// DOM events rebroadcast by this hook for interested UI components.
+export const ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT = 'admin:subscription:changed';
+export const STREAM_CONNECTED_DOM_EVENT = 'stream:connected';
+
+export interface AdminSubscriptionChangedDetail {
+  user_id?: string;
+  subscription_id?: string | null;
+  action?: string;
+  timestamp?: string;
+}
+
 export function useNotificationStream() {
   const { isAuthenticated } = useAuth();
   const { setUnreadCount } = useUnreadCountStore();
@@ -162,6 +175,9 @@ export function useNotificationStream() {
         // Trigger resync on successful reconnect
         if (isMountedRef.current) {
           resyncUnreadCount();
+          // Notify listeners (e.g. admin subscription list) that the stream is
+          // live again so they can silently catch up on missed changes.
+          window.dispatchEvent(new CustomEvent(STREAM_CONNECTED_DOM_EVENT));
         }
       };
 
@@ -188,6 +204,17 @@ export function useNotificationStream() {
           window.dispatchEvent(new CustomEvent('notification:created', { detail: data }));
         } catch (error) {
           console.warn('Failed to process notification:', error);
+        }
+      });
+
+      eventSource.addEventListener(ADMIN_SUBSCRIPTION_CHANGED_EVENT, (event) => {
+        try {
+          const data = JSON.parse(event.data) as AdminSubscriptionChangedDetail;
+          window.dispatchEvent(
+            new CustomEvent(ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT, { detail: data })
+          );
+        } catch (error) {
+          console.warn('Failed to process admin subscription event:', error);
         }
       });
 
