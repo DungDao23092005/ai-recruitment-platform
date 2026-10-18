@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -212,3 +213,165 @@ class TestAdminServiceActivateDeactivate:
         assert result.is_active is False
         # Soft delete should NOT be called
         service.users.soft_delete.assert_not_awaited()
+
+
+class TestAdminServiceAccountLifecycleEmails:
+    """Lock/delete operations schedule at most one primitive-only email."""
+
+    def make_session(self) -> MagicMock:
+        session = MagicMock()
+        session.add = MagicMock()
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+        session.rollback = AsyncMock()
+        return session
+
+    def make_user(
+        self,
+        role: UserRole = UserRole.CANDIDATE,
+        is_active: bool = True,
+        is_deleted: bool = False,
+    ) -> User:
+        user = User(
+            id=uuid.uuid4(),
+            email=f"{uuid.uuid4()}@example.com",
+            password_hash="hashed",
+            role=role,
+            is_active=is_active,
+        )
+        user.is_deleted = is_deleted
+        return user
+
+    def make_service(self, session) -> AdminService:
+        service = AdminService(session)
+        service.users = AsyncMock(spec=type(service.users))
+        return service
+
+    def test_active_lock_schedules_email_to_owner(self):
+        session = self.make_session()
+        service = self.make_service(session)
+        user = self.make_user(is_active=True)
+        service.users.get_admin_user.return_value = user
+        admin_id = uuid.uuid4()
+        original_email = user.email
+
+        with patch(
+            "app.services.admin_service.schedule_account_locked_email"
+        ) as scheduler:
+            result = asyncio.run(
+                AdminService.deactivate_user(service, user.id, "Lý do khóa", admin_id)
+            )
+
+        scheduler.assert_called_once()
+        _, kwargs = scheduler.call_args
+        assert kwargs["to_email"] == original_email
+        assert kwargs["reason"] == "Lý do khóa"
+        assert isinstance(kwargs["locked_at"], datetime)
+        # Primitives only - no ORM instance leaks into the deferred task.
+        assert not hasattr(kwargs["to_email"], "is_active")
+        assert result.is_active is False
+        session.commit.assert_awaited_once()
+
+    def test_repeated_lock_updates_audit_but_sends_no_email(self):
+        session = self.make_session()
+        service = self.make_service(session)
+        user = self.make_user(is_active=False)
+        service.users.get_admin_user.return_value = user
+
+        with patch(
+            "app.services.admin_service.schedule_account_locked_email"
+        ) as scheduler:
+            result = asyncio.run(
+                AdminService.deactivate_user(
+                    service, user.id, "Second reason", uuid.uuid4()
+                )
+            )
+
+        scheduler.assert_not_called()
+        # Existing behaviour preserved: audit fields still overwritten.
+        assert user.lock_reason == "Second reason"
+        assert result.is_active is False
+        session.commit.assert_awaited_once()
+
+    def test_lock_on_soft_deleted_user_sends_no_email(self):
+        session = self.make_session()
+        service = self.make_service(session)
+        user = self.make_user(is_active=True, is_deleted=True)
+        service.users.get_admin_user.return_value = user
+
+        with patch(
+            "app.services.admin_service.schedule_account_locked_email"
+        ) as scheduler:
+            asyncio.run(
+                AdminService.deactivate_user(service, user.id, "Lý do", uuid.uuid4())
+            )
+
+        scheduler.assert_not_called()
+
+    def test_missing_user_lock_raises_and_schedules_nothing(self):
+        session = self.make_session()
+        service = self.make_service(session)
+        service.users.get_admin_user.return_value = None
+
+        with patch(
+            "app.services.admin_service.schedule_account_locked_email"
+        ) as scheduler:
+            with pytest.raises(EntityNotFoundException):
+                asyncio.run(
+                    AdminService.deactivate_user(
+                        service, uuid.uuid4(), "Lý do", uuid.uuid4()
+                    )
+                )
+
+        scheduler.assert_not_called()
+        session.commit.assert_not_awaited()
+
+    def test_delete_schedules_email_to_original_address_before_anonymization(self):
+        session = self.make_session()
+        service = self.make_service(session)
+        user = self.make_user()
+        original_email = user.email
+        service.users.get_admin_user.return_value = user
+
+        with patch(
+            "app.services.admin_service.schedule_account_deleted_email"
+        ) as scheduler:
+            result = asyncio.run(AdminService.delete_user(service, user.id))
+
+        scheduler.assert_called_once()
+        _, kwargs = scheduler.call_args
+        assert kwargs["to_email"] == original_email
+        assert not kwargs["to_email"].endswith("@anonymized.local")
+        assert isinstance(kwargs["deleted_at"], datetime)
+        # The database row is still anonymized after the operation.
+        assert result.email == f"deleted_{user.id}@anonymized.local"
+        service.users.soft_delete.assert_awaited_once_with(user)
+        session.commit.assert_awaited_once()
+
+    def test_repeated_delete_sends_no_email(self):
+        session = self.make_session()
+        service = self.make_service(session)
+        user = self.make_user(is_deleted=True)
+        user.email = f"deleted_{user.id}@anonymized.local"
+        service.users.get_admin_user.return_value = user
+
+        with patch(
+            "app.services.admin_service.schedule_account_deleted_email"
+        ) as scheduler:
+            asyncio.run(AdminService.delete_user(service, user.id))
+
+        scheduler.assert_not_called()
+
+    def test_missing_user_delete_raises_and_schedules_nothing(self):
+        session = self.make_session()
+        service = self.make_service(session)
+        service.users.get_admin_user.return_value = None
+
+        with patch(
+            "app.services.admin_service.schedule_account_deleted_email"
+        ) as scheduler:
+            with pytest.raises(EntityNotFoundException):
+                asyncio.run(AdminService.delete_user(service, uuid.uuid4()))
+
+        scheduler.assert_not_called()
+        session.commit.assert_not_awaited()

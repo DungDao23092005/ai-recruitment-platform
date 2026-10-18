@@ -44,8 +44,17 @@ class UserRepository(BaseRepository[User]):
         return result.scalar_one_or_none()
 
     async def get_admin_user(self, user_id: Any) -> User | None:
-        """Fetch a user for admin views, including soft-deleted users."""
-        stmt = select(User).where(User.id == user_id)
+        """Fetch a user for admin views, including soft-deleted users.
+
+        The candidate profile is eagerly loaded so admin mutation flows (notably
+        account deletion) can inspect it without triggering a lazy load, which
+        would raise ``MissingGreenlet`` under an AsyncSession.
+        """
+        stmt = (
+            select(User)
+            .options(joinedload(User.candidate_profile))
+            .where(User.id == user_id)
+        )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 

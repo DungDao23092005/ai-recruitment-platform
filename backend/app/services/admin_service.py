@@ -23,6 +23,10 @@ from app.schemas.admin import (
     AdminUserRead,
     ApplicationStatusCounts,
 )
+from app.services.account_email_service import (
+    schedule_account_deleted_email,
+    schedule_account_locked_email,
+)
 from app.services.ai_matching_service import AIMatchingService
 
 
@@ -128,10 +132,24 @@ class AdminService:
         user = await self.users.get_admin_user(user_id)
         if user is None:
             raise EntityNotFoundException(f"User {user_id} not found")
+        was_active = user.is_active
+        locked_at = datetime.now(timezone.utc)
         user.is_active = False
         user.lock_reason = reason
-        user.locked_at = datetime.now(timezone.utc)
+        user.locked_at = locked_at
         user.locked_by = admin_id
+
+        # Only a genuine active -> locked transition notifies the owner. A
+        # repeated request still updates the reason/audit fields (existing
+        # behaviour) but must not resend the lock email.
+        if was_active and not user.is_deleted:
+            schedule_account_locked_email(
+                self.session,
+                to_email=user.email,
+                reason=reason,
+                locked_at=locked_at,
+            )
+
         await self.session.commit()
         await self.session.refresh(user)
         return user
@@ -166,7 +184,16 @@ class AdminService:
         if user is None:
             raise EntityNotFoundException(f"User {user_id} not found")
 
-        # Check if user is a candidate with a primary resume before deletion
+        # Capture the recipient and operation timestamp as primitives BEFORE the
+        # ORM row is mutated/anonymized. The async email task must never receive
+        # a live, detached, expired or lazily loaded ORM instance.
+        already_deleted = bool(user.is_deleted)
+        original_email = user.email
+        deleted_at = datetime.now(timezone.utc)
+
+        # Check if user is a candidate with a primary resume before deletion.
+        # ``get_admin_user`` eagerly loads ``candidate_profile``, so this access
+        # is async-safe (a lazy load would raise MissingGreenlet).
         candidate_id = None
         if user.candidate_profile is not None:
             # Check for primary resume
@@ -182,6 +209,21 @@ class AdminService:
         user.email = f"deleted_{user.id}@anonymized.local"
         # Soft delete
         await self.users.soft_delete(user)
+
+        # Notify the original address only on a real, first-time deletion. A
+        # repeated request on an already deleted account sends nothing, and an
+        # already-anonymized address is never used as a recipient.
+        if (
+            not already_deleted
+            and original_email
+            and not original_email.endswith("@anonymized.local")
+        ):
+            schedule_account_deleted_email(
+                self.session,
+                to_email=original_email,
+                deleted_at=deleted_at,
+            )
+
         await self.session.commit()
         await self.session.refresh(user)
 
