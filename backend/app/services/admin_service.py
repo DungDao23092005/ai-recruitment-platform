@@ -27,6 +27,7 @@ from app.services.account_email_service import (
     schedule_account_deleted_email,
     schedule_account_locked_email,
 )
+from app.services.account_lock_realtime import schedule_account_locked_event
 from app.services.ai_matching_service import AIMatchingService
 
 
@@ -141,11 +142,18 @@ class AdminService:
 
         # Only a genuine active -> locked transition notifies the owner. A
         # repeated request still updates the reason/audit fields (existing
-        # behaviour) but must not resend the lock email.
+        # behaviour) but must not resend the lock email or re-emit the
+        # forced-logout signal.
         if was_active and not user.is_deleted:
             schedule_account_locked_email(
                 self.session,
                 to_email=user.email,
+                reason=reason,
+                locked_at=locked_at,
+            )
+            schedule_account_locked_event(
+                self.session,
+                user_id=user.id,
                 reason=reason,
                 locked_at=locked_at,
             )

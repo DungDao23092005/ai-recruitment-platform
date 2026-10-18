@@ -26,6 +26,7 @@ import {
 import { useJobs } from '@/features/jobs/hooks/useJobs'
 import { JobCard } from '@/features/jobs/components/JobCard'
 import { AnimatedSection } from '@/components/common/AnimatedSection'
+import { LockNoticeBanner } from '@/components/common/LockNoticeBanner'
 import { Hero3DMatchPreview } from '@/components/home/Hero3DMatchPreview'
 
 const HERO_HIGHLIGHTS = [
@@ -175,6 +176,10 @@ export function HomePage() {
   return (
     <div className="relative">
       <div className="bg-grid-fade pointer-events-none absolute inset-x-0 top-0 h-[560px]" aria-hidden="true" />
+
+      <div className="container relative pt-6">
+        <LockNoticeBanner />
+      </div>
 
       <section className="container relative pb-16 pt-14 sm:pt-20">
         <div className="grid items-center gap-12 lg:grid-cols-2 lg:gap-16">

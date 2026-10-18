@@ -18,6 +18,7 @@ from app.domain.enums import UserRole
 from app.models import User
 from app.schemas.notification import NotificationRead, UnreadCountResponse
 from app.services.notification_service import NotificationService
+from app.services.account_lock_realtime import ACCOUNT_LOCKED_EVENT
 from app.services.subscription_realtime import (
     ADMIN_SUBSCRIPTIONS_CHANNEL,
     ADMIN_SUBSCRIPTION_CHANGED_EVENT,
@@ -32,6 +33,32 @@ TICKET_TTL_SECONDS = 10
 # Bound the stream lifetime so long-lived connections periodically re-authenticate
 # through a fresh ticket, re-checking the user's role for admin-channel access.
 STREAM_MAX_SECONDS = 1800
+
+# Default SSE event for a personal-channel message.
+NOTIFICATION_CREATED_EVENT = "notification.created"
+
+
+def _personal_event_name(raw_data: object) -> str:
+    """Classify a personal-channel payload into its SSE event name.
+
+    Only the account-locked signal is promoted to a named event; ordinary
+    notification payloads - and anything malformed or unrecognised - keep the
+    default ``notification.created`` event so existing consumers are unaffected.
+    """
+    if isinstance(raw_data, (bytes, bytearray)):
+        try:
+            raw_data = raw_data.decode("utf-8")
+        except UnicodeDecodeError:
+            return NOTIFICATION_CREATED_EVENT
+    if not isinstance(raw_data, str):
+        return NOTIFICATION_CREATED_EVENT
+    try:
+        payload = json.loads(raw_data)
+    except (TypeError, ValueError):
+        return NOTIFICATION_CREATED_EVENT
+    if isinstance(payload, dict) and payload.get("type") == ACCOUNT_LOCKED_EVENT:
+        return ACCOUNT_LOCKED_EVENT
+    return NOTIFICATION_CREATED_EVENT
 
 
 @router.get(
@@ -192,7 +219,7 @@ async def notification_stream(
                             if message.get("channel") == ADMIN_SUBSCRIPTIONS_CHANNEL:
                                 event_name = ADMIN_SUBSCRIPTION_CHANGED_EVENT
                             else:
-                                event_name = "notification.created"
+                                event_name = _personal_event_name(data)
                             yield f"event: {event_name}\ndata: {data}\n\n"
                         except Exception as e:
                             logger.warning("Failed to process SSE message: %s", e)

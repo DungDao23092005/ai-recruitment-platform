@@ -5,6 +5,7 @@ import { useNotificationStream } from '@/hooks/useNotificationStream';
 import { useUnreadCountStore } from '@/stores/useUnreadCountStore';
 import * as notificationsApi from '@/api/notifications';
 import { useAuth } from '@/contexts/AuthContext';
+import { formatLockNotice, getLockNotice } from '@/utils/lockNotice';
 
 vi.mock('@/contexts/AuthContext', () => ({ useAuth: vi.fn() }));
 vi.mock('@/api/notifications', () => ({ getUnreadNotificationCount: vi.fn(), getStreamTicket: vi.fn() }));
@@ -894,6 +895,65 @@ describe('useNotificationStream', () => {
 
       expect(listener).not.toHaveBeenCalled();
       window.removeEventListener('subscription:changed', listener);
+    });
+  });
+
+  describe('Account lock (forced logout)', () => {
+    it('stores a one-time notice and clears the session on account.locked', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      localStorage.setItem('ai_recruitment_token', 'token');
+      const logoutListener = vi.fn();
+      window.addEventListener('ai-recruitment:logout', logoutListener);
+
+      act(() => {
+        es.emitEvent('account.locked', {
+          type: 'account.locked',
+          user_id: '1',
+          reason: 'Vi phạm điều khoản',
+          locked_at: null,
+        });
+      });
+      await flushMicrotasks();
+
+      expect(getLockNotice()).toBe(formatLockNotice('Vi phạm điều khoản'));
+      expect(localStorage.getItem('ai_recruitment_token')).toBeNull();
+      expect(logoutListener).toHaveBeenCalled();
+
+      window.removeEventListener('ai-recruitment:logout', logoutListener);
+    });
+
+    it('still evicts the session when the lock payload is malformed', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      localStorage.setItem('ai_recruitment_token', 'token');
+      const logoutListener = vi.fn();
+      window.addEventListener('ai-recruitment:logout', logoutListener);
+
+      const malformed = new Event('account.locked');
+      (malformed as unknown as { data: string }).data = '{not json';
+      act(() => {
+        es.eventListeners.get('account.locked')?.forEach((listener) => listener(malformed));
+      });
+      await flushMicrotasks();
+
+      expect(getLockNotice()).toBe(formatLockNotice(null));
+      expect(localStorage.getItem('ai_recruitment_token')).toBeNull();
+      expect(logoutListener).toHaveBeenCalled();
+
+      window.removeEventListener('ai-recruitment:logout', logoutListener);
     });
   });
 });

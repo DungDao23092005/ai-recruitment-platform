@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 from app.api.v1.endpoints import notifications as notifications_module
 from app.api.v1.endpoints.notifications import notification_stream
+from app.services.account_lock_realtime import ACCOUNT_LOCKED_EVENT
 from app.services.subscription_realtime import (
     ADMIN_SUBSCRIPTIONS_CHANNEL,
     ADMIN_SUBSCRIPTION_CHANGED_EVENT,
@@ -133,6 +134,47 @@ async def test_personal_channel_messages_keep_notification_event_name():
 
     assert "event: notification.created" in personal_event
     assert ADMIN_SUBSCRIPTION_CHANGED_EVENT not in personal_event
+
+
+async def test_personal_account_locked_message_uses_named_event():
+    user_id = uuid.uuid4()
+    payload = {
+        "type": ACCOUNT_LOCKED_EVENT,
+        "user_id": str(user_id),
+        "reason": "Lý do khóa",
+        "locked_at": None,
+    }
+    pubsub = _FakePubSub([_message(f"notifications:user:{user_id}", payload)])
+    manager = _FakePubSubManager(_ticket(user_id, is_admin=False), pubsub)
+
+    response = await notification_stream(ticket="t", pubsub=manager)  # type: ignore[arg-type]
+    generator = response.body_iterator
+    await _next(generator)
+    personal_event = await _next(generator)
+    await generator.aclose()
+
+    assert f"event: {ACCOUNT_LOCKED_EVENT}" in personal_event
+    assert "event: notification.created" not in personal_event
+    data_line = next(
+        line for line in personal_event.splitlines() if line.startswith("data: ")
+    )
+    parsed = json.loads(data_line[len("data: ") :])
+    assert parsed["type"] == ACCOUNT_LOCKED_EVENT
+    assert parsed["reason"] == "Lý do khóa"
+
+
+def test_personal_event_name_classifier_defaults_safely():
+    from app.api.v1.endpoints.notifications import _personal_event_name
+
+    assert _personal_event_name('{"type": "account.locked"}') == ACCOUNT_LOCKED_EVENT
+    assert (
+        _personal_event_name(b'{"type": "account.locked"}') == ACCOUNT_LOCKED_EVENT
+    )
+    assert _personal_event_name('{"type": "other"}') == "notification.created"
+    assert _personal_event_name('{"notification_type": "x"}') == "notification.created"
+    assert _personal_event_name("not-json") == "notification.created"
+    assert _personal_event_name(None) == "notification.created"
+    assert _personal_event_name([1, 2, 3]) == "notification.created"
 
 
 async def test_ticket_is_consumed_single_use():

@@ -9,6 +9,11 @@ import apiClient, {
   storeToken,
   clearToken,
 } from './client'
+import {
+  formatLockNotice,
+  getLockNotice,
+  storeLockNotice,
+} from '@/utils/lockNotice'
 
 vi.mock('axios', async (importOriginal) => {
   const actual = await importOriginal<typeof import('axios')>()
@@ -37,7 +42,9 @@ type RequestFulfilled = (
 ) => { headers: Record<string, string> }
 
 type ResponseFulfilled = (response: unknown) => unknown
-type ResponseRejected = (error: { response?: { status: number } }) => unknown
+type ResponseRejected = (error: {
+  response?: { status: number; data?: unknown }
+}) => unknown
 
 function getHandlers() {
   const instance = mockAxiosInstance.mock.results[0].value
@@ -128,5 +135,66 @@ describe('apiClient', () => {
 
     await expect(responseRejected(error)).rejects.toEqual(error)
     expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBe('still-valid')
+  })
+
+  it('evicts and stores a one-time notice on exact 403 Inactive user', async () => {
+    const { responseRejected } = getHandlers()
+
+    localStorage.setItem(TOKEN_STORAGE_KEY, 'locked-token')
+    const listener = vi.fn()
+    window.addEventListener(LOGOUT_EVENT, listener)
+
+    const error = { response: { status: 403, data: { detail: 'Inactive user' } } }
+
+    await expect(responseRejected(error)).rejects.toEqual(error)
+    expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull()
+    expect(listener).toHaveBeenCalled()
+    expect(getLockNotice()).toBe(formatLockNotice(null))
+
+    window.removeEventListener(LOGOUT_EVENT, listener)
+  })
+
+  it('does not evict on a non-lock 403', async () => {
+    const { responseRejected } = getHandlers()
+
+    localStorage.setItem(TOKEN_STORAGE_KEY, 'still-valid')
+    const listener = vi.fn()
+    window.addEventListener(LOGOUT_EVENT, listener)
+
+    const error = {
+      response: { status: 403, data: { detail: 'Not enough permissions' } },
+    }
+
+    await expect(responseRejected(error)).rejects.toEqual(error)
+    expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBe('still-valid')
+    expect(listener).not.toHaveBeenCalled()
+    expect(getLockNotice()).toBeNull()
+
+    window.removeEventListener(LOGOUT_EVENT, listener)
+  })
+
+  it('does not evict on a malformed 403 response', async () => {
+    const { responseRejected } = getHandlers()
+
+    localStorage.setItem(TOKEN_STORAGE_KEY, 'still-valid')
+
+    const error = { response: { status: 403 } }
+
+    await expect(responseRejected(error)).rejects.toEqual(error)
+    expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBe('still-valid')
+    expect(getLockNotice()).toBeNull()
+  })
+
+  it('does not overwrite a specific lock reason with the generic 403 fallback', async () => {
+    const { responseRejected } = getHandlers()
+
+    const specific = formatLockNotice('Vi phạm điều khoản sử dụng')
+    storeLockNotice(specific)
+    localStorage.setItem(TOKEN_STORAGE_KEY, 'locked-token')
+
+    const error = { response: { status: 403, data: { detail: 'Inactive user' } } }
+
+    await expect(responseRejected(error)).rejects.toEqual(error)
+    expect(getLockNotice()).toBe(specific)
   })
 })

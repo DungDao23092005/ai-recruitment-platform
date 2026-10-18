@@ -275,6 +275,40 @@ describe('AppRouter public routes', () => {
   })
 })
 
+describe('AppRouter lock-triggered redirect', () => {
+  it('redirects an unauthenticated locked user to the homepage with the notice', async () => {
+    localStorage.removeItem('ai_recruitment_token')
+    localStorage.setItem(
+      'ai_recruitment_lock_notice',
+      'Tài khoản của bạn đã bị khóa. Lý do: Vi phạm điều khoản.',
+    )
+
+    renderAt('/candidate/portal')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Tài khoản của bạn đã bị khóa. Lý do: Vi phạm điều khoản.',
+    )
+    expect(
+      screen.queryByRole('heading', { name: 'Đăng nhập' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('still redirects to /login when there is no pending lock notice', async () => {
+    localStorage.removeItem('ai_recruitment_token')
+
+    renderAt('/candidate/portal')
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Đăng nhập' })).toBeInTheDocument()
+    })
+  })
+})
+
 describe('AppRouter role guards', () => {
   it('redirects anonymous users to /login for protected routes', async () => {
     mockedGetCurrentUser.mockRejectedValue(new Error('401'))

@@ -1,10 +1,15 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { getUnreadNotificationCount, getStreamTicket } from '@/api/notifications';
+import { clearToken, dispatchLogoutEvent } from '@/api/client';
+import { formatLockNotice, storeLockNotice } from '@/utils/lockNotice';
 import { useUnreadCountStore } from '@/stores/useUnreadCountStore';
 
 // Server-sent named event for admin subscription invalidations.
 export const ADMIN_SUBSCRIPTION_CHANGED_EVENT = 'admin.subscription.changed';
+// Server-sent named event emitted on the locked user's private channel when an
+// admin locks the account that is currently in use.
+export const ACCOUNT_LOCKED_EVENT = 'account.locked';
 // DOM events rebroadcast by this hook for interested UI components.
 export const ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT = 'admin:subscription:changed';
 export const STREAM_CONNECTED_DOM_EVENT = 'stream:connected';
@@ -22,6 +27,12 @@ export interface AdminSubscriptionChangedDetail {
   subscription_id?: string | null;
   action?: string;
   timestamp?: string;
+}
+
+export interface AccountLockedDetail {
+  user_id?: string;
+  reason?: string | null;
+  locked_at?: string | null;
 }
 
 export interface SubscriptionNotificationDetail {
@@ -250,6 +261,25 @@ export function useNotificationStream() {
         } catch (error) {
           console.warn('Failed to process admin subscription event:', error);
         }
+      });
+
+      eventSource.addEventListener(ACCOUNT_LOCKED_EVENT, (event) => {
+        // The named event itself is authoritative for eviction: even a malformed
+        // payload must never leave a locked user signed in.
+        let reason: string | null = null;
+        try {
+          const data = JSON.parse(event.data) as AccountLockedDetail;
+          reason = data?.reason ?? null;
+        } catch (error) {
+          console.warn('Failed to parse account lock event:', error);
+        }
+
+        // Persist a one-time notice, then evict immediately through the existing
+        // local logout mechanism. Never await the server logout here: a slow or
+        // failing request must not delay forced eviction.
+        storeLockNotice(formatLockNotice(reason));
+        clearToken();
+        dispatchLogoutEvent();
       });
 
 eventSource.onerror = (error) => {

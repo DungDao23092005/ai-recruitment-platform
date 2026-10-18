@@ -375,3 +375,108 @@ class TestAdminServiceAccountLifecycleEmails:
 
         scheduler.assert_not_called()
         session.commit.assert_not_awaited()
+
+
+class TestAdminServiceAccountLockEvent:
+    """A genuine lock schedules exactly one post-commit forced-logout signal."""
+
+    def make_session(self) -> MagicMock:
+        session = MagicMock()
+        session.add = MagicMock()
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+        session.rollback = AsyncMock()
+        return session
+
+    def make_user(
+        self,
+        role: UserRole = UserRole.CANDIDATE,
+        is_active: bool = True,
+        is_deleted: bool = False,
+    ) -> User:
+        user = User(
+            id=uuid.uuid4(),
+            email=f"{uuid.uuid4()}@example.com",
+            password_hash="hashed",
+            role=role,
+            is_active=is_active,
+        )
+        user.is_deleted = is_deleted
+        return user
+
+    def make_service(self, session) -> AdminService:
+        service = AdminService(session)
+        service.users = AsyncMock(spec=type(service.users))
+        return service
+
+    def test_active_lock_schedules_forced_logout_event(self):
+        session = self.make_session()
+        service = self.make_service(session)
+        user = self.make_user(is_active=True)
+        service.users.get_admin_user.return_value = user
+        admin_id = uuid.uuid4()
+
+        with patch(
+            "app.services.admin_service.schedule_account_locked_event"
+        ) as scheduler:
+            result = asyncio.run(
+                AdminService.deactivate_user(service, user.id, "Lý do khóa", admin_id)
+            )
+
+        scheduler.assert_called_once()
+        _, kwargs = scheduler.call_args
+        assert kwargs["user_id"] == user.id
+        assert kwargs["reason"] == "Lý do khóa"
+        assert isinstance(kwargs["locked_at"], datetime)
+        assert result.is_active is False
+        session.commit.assert_awaited_once()
+
+    def test_repeated_lock_schedules_no_event(self):
+        session = self.make_session()
+        service = self.make_service(session)
+        user = self.make_user(is_active=False)
+        service.users.get_admin_user.return_value = user
+
+        with patch(
+            "app.services.admin_service.schedule_account_locked_event"
+        ) as scheduler:
+            asyncio.run(
+                AdminService.deactivate_user(
+                    service, user.id, "Second reason", uuid.uuid4()
+                )
+            )
+
+        scheduler.assert_not_called()
+
+    def test_lock_on_soft_deleted_user_schedules_no_event(self):
+        session = self.make_session()
+        service = self.make_service(session)
+        user = self.make_user(is_active=True, is_deleted=True)
+        service.users.get_admin_user.return_value = user
+
+        with patch(
+            "app.services.admin_service.schedule_account_locked_event"
+        ) as scheduler:
+            asyncio.run(
+                AdminService.deactivate_user(service, user.id, "Lý do", uuid.uuid4())
+            )
+
+        scheduler.assert_not_called()
+
+    def test_missing_user_lock_schedules_no_event(self):
+        session = self.make_session()
+        service = self.make_service(session)
+        service.users.get_admin_user.return_value = None
+
+        with patch(
+            "app.services.admin_service.schedule_account_locked_event"
+        ) as scheduler:
+            with pytest.raises(EntityNotFoundException):
+                asyncio.run(
+                    AdminService.deactivate_user(
+                        service, uuid.uuid4(), "Lý do", uuid.uuid4()
+                    )
+                )
+
+        scheduler.assert_not_called()
+        session.commit.assert_not_awaited()
