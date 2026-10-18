@@ -290,9 +290,9 @@ describe('AppRouter lock-triggered redirect', () => {
         screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
-    expect(screen.getByRole('alert')).toHaveTextContent(
-      'Tài khoản của bạn đã bị khóa. Lý do: Vi phạm điều khoản.',
-    )
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Tài khoản của bạn đã bị khóa.')
+    expect(alert).toHaveTextContent('Vi phạm điều khoản')
     expect(
       screen.queryByRole('heading', { name: 'Đăng nhập' }),
     ).not.toBeInTheDocument()

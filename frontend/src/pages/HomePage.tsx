@@ -177,9 +177,7 @@ export function HomePage() {
     <div className="relative">
       <div className="bg-grid-fade pointer-events-none absolute inset-x-0 top-0 h-[560px]" aria-hidden="true" />
 
-      <div className="container relative pt-6">
-        <LockNoticeBanner />
-      </div>
+      <LockNoticeBanner />
 
       <section className="container relative pb-16 pt-14 sm:pt-20">
         <div className="grid items-center gap-12 lg:grid-cols-2 lg:gap-16">
