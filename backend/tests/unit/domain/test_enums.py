@@ -5,6 +5,7 @@ from enum import Enum
 import pytest
 
 from app.domain.enums import (
+    SCREENING_STAGE_ALIASES,
     ApplicationStatus,
     CompanySize,
     JobStatus,
@@ -12,6 +13,7 @@ from app.domain.enums import (
     ProficiencyLevel,
     UserRole,
     WorkplaceType,
+    canonical_stage,
 )
 
 ALL_ENUM_CLASSES = [
@@ -39,6 +41,7 @@ ALL_ENUM_CLASSES = [
                 "UNDER_REVIEW",
                 "SHORTLISTED",
                 "INTERVIEWING",
+                "OFFERED",
                 "ACCEPTED",
                 "REJECTED",
                 "WITHDRAWN",
@@ -73,6 +76,7 @@ def test_enum_members_exist(enum_class, expected_members):
         (ApplicationStatus.UNDER_REVIEW, "under_review"),
         (ApplicationStatus.SHORTLISTED, "shortlisted"),
         (ApplicationStatus.INTERVIEWING, "interviewing"),
+        (ApplicationStatus.OFFERED, "offered"),
         (ApplicationStatus.ACCEPTED, "accepted"),
         (ApplicationStatus.REJECTED, "rejected"),
         (ApplicationStatus.WITHDRAWN, "withdrawn"),
@@ -128,6 +132,40 @@ def test_enum_values_are_unique():
     for enum_class in ALL_ENUM_CLASSES:
         values = [member.value for member in enum_class]
         assert len(values) == len(set(values))
+
+
+class TestCanonicalStage:
+    """Legacy statuses collapse onto a canonical stage for display only."""
+
+    def test_shortlisted_presents_as_under_review(self):
+        assert (
+            canonical_stage(ApplicationStatus.SHORTLISTED)
+            is ApplicationStatus.UNDER_REVIEW
+        )
+
+    @pytest.mark.parametrize(
+        "status",
+        [
+            ApplicationStatus.APPLIED,
+            ApplicationStatus.UNDER_REVIEW,
+            ApplicationStatus.INTERVIEWING,
+            ApplicationStatus.OFFERED,
+            ApplicationStatus.ACCEPTED,
+            ApplicationStatus.REJECTED,
+            ApplicationStatus.WITHDRAWN,
+        ],
+    )
+    def test_canonical_statuses_are_unchanged(self, status):
+        assert canonical_stage(status) is status
+
+    def test_screening_aliases_cover_both_screening_statuses(self):
+        assert SCREENING_STAGE_ALIASES == frozenset(
+            {ApplicationStatus.UNDER_REVIEW, ApplicationStatus.SHORTLISTED}
+        )
+
+    def test_shortlisted_value_is_preserved(self):
+        # Backward compatibility: the stored/API value is never rewritten.
+        assert ApplicationStatus.SHORTLISTED.value == "shortlisted"
 
 
 def test_domain_enums_module_has_no_orm_or_framework_dependency():

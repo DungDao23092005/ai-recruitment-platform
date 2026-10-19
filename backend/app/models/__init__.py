@@ -1,8 +1,11 @@
 from app.models.application import Application
+from app.models.application_activity import ApplicationActivity
+from app.models.application_note import ApplicationNote
 from app.models.candidate import CandidateProfile
 from app.models.company import Company
 from app.models.email_outbox import EmailOutbox
 from app.models.interview import Interview
+from app.models.interview_evaluation import InterviewEvaluation
 from app.models.job import Job
 from app.models.junctions import JobSkill
 from app.models.knowledge import KnowledgeDocument
@@ -21,10 +24,13 @@ from app.models.user import User
 
 __all__ = [
     "Application",
+    "ApplicationActivity",
+    "ApplicationNote",
     "CandidateProfile",
     "Company",
     "EmailOutbox",
     "Interview",
+    "InterviewEvaluation",
     "Job",
     "JobSkill",
     "KnowledgeDocument",

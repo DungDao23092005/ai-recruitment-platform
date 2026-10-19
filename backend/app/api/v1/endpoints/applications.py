@@ -29,7 +29,13 @@ from app.schemas.application import (
     ApplicationWithJobRead,
     CandidateProfileReadMinimal,
 )
-from app.schemas.interview import InterviewCreate, InterviewRead, InterviewUpdate, InterviewActionRequest
+from app.schemas.interview import (
+    CandidateInterviewRead,
+    InterviewActionRequest,
+    InterviewCreate,
+    InterviewRead,
+    InterviewUpdate,
+)
 from app.schemas.resume import ResumeRead
 from app.services.ai_matching_service import AIMatchingService
 from app.services.application_service import ApplicationService
@@ -68,7 +74,11 @@ def to_application_with_job_read(
         status=application.status,
         created_at=application.created_at,
         updated_at=application.updated_at,
-        interviews=[InterviewRead.model_validate(i) for i in application.interviews if not i.is_deleted],
+        interviews=[
+            CandidateInterviewRead.model_validate(i)
+            for i in application.interviews
+            if not i.is_deleted
+        ],
     )
 
 
@@ -477,7 +487,7 @@ async def cancel_interview(
 
 @router.patch(
     "/{application_id}/interviews/{interview_id}/action",
-    response_model=InterviewRead,
+    response_model=CandidateInterviewRead,
 )
 async def candidate_action_interview(
     application_id: uuid.UUID,
@@ -485,7 +495,7 @@ async def candidate_action_interview(
     data: InterviewActionRequest,
     current_user: User = Depends(require_candidate),
     db: AsyncSession = Depends(get_db),
-) -> InterviewRead:
+) -> CandidateInterviewRead:
     """Candidate confirms or declines a scheduled interview.
 
     Candidate only. Ownership enforced via application -> candidate.

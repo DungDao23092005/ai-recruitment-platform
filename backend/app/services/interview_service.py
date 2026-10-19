@@ -14,7 +14,13 @@ from app.domain.models import Application as DomainApplication
 from app.domain.models.base import DomainException
 from app.models import Application, Interview, Job, User
 from app.repositories import ApplicationRepository, InterviewRepository
-from app.schemas.interview import InterviewCreate, InterviewRead, InterviewUpdate, InterviewActionRequest
+from app.schemas.interview import (
+    CandidateInterviewRead,
+    InterviewActionRequest,
+    InterviewCreate,
+    InterviewRead,
+    InterviewUpdate,
+)
 from app.services.job_service import JobService
 from app.services.notification_service import NotificationService
 from app.services.user_service import UserService
@@ -255,11 +261,12 @@ class InterviewService:
         interview_id: uuid.UUID,
         action: str,
         candidate_notes: str | None = None,
-    ) -> InterviewRead:
+    ) -> CandidateInterviewRead:
         """Candidate confirms or declines a scheduled interview.
 
         Candidate only. Ownership enforced via application -> candidate profile.
-        Interview must be in SCHEDULED status.
+        Interview must be in SCHEDULED status. Returns the candidate-facing
+        projection, which excludes internal recruiter notes.
         """
         # Get candidate profile for the current user
         user_with_profile = await UserService(self.session).get_user_with_profile(current_user.id)
@@ -331,7 +338,7 @@ class InterviewService:
             await self.session.rollback()
             raise
 
-        return InterviewRead.model_validate(interview)
+        return CandidateInterviewRead.model_validate(interview)
 
 
     async def list_interviews(

@@ -161,6 +161,7 @@ class TestAdminStatsResponse:
             "under_review",
             "shortlisted",
             "interviewing",
+            "offered",
             "accepted",
             "rejected",
             "withdrawn",

@@ -721,6 +721,72 @@ class TestUpdateApplicationStatus:
         session.commit.assert_not_awaited()
 
 
+class TestPublishedTransitionGuard:
+    """New pipeline transitions stay unreachable from the public endpoint.
+
+    The domain accepts these transitions, but they must not be published until
+    the follow-on phase records atomic activities alongside status changes.
+    """
+
+    @pytest.mark.parametrize(
+        "initial,new_status",
+        [
+            (ApplicationStatus.INTERVIEWING, ApplicationStatus.UNDER_REVIEW),
+            (ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFERED),
+            (ApplicationStatus.OFFERED, ApplicationStatus.ACCEPTED),
+            (ApplicationStatus.OFFERED, ApplicationStatus.REJECTED),
+        ],
+    )
+    def test_new_transitions_are_rejected(self, initial, new_status):
+        session = make_session()
+        service = make_service(session)
+        application = make_application(status=initial)
+        service.applications.get_by_id_with_candidate.return_value = application
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=make_job()
+            )
+            with pytest.raises(InvalidTransitionException):
+                asyncio.run(
+                    service.update_application_status(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        new_status=new_status,
+                    )
+                )
+
+        assert application.status == initial
+        service.applications.try_update_status.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "initial,new_status",
+        [
+            (ApplicationStatus.INTERVIEWING, ApplicationStatus.UNDER_REVIEW),
+            (ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFERED),
+            (ApplicationStatus.OFFERED, ApplicationStatus.ACCEPTED),
+            (ApplicationStatus.OFFERED, ApplicationStatus.REJECTED),
+        ],
+    )
+    def test_domain_still_accepts_them(self, initial, new_status):
+        # Documents that the block is a deliberate publication guard, not a
+        # missing domain rule.
+        from app.domain.models import Application as DomainApplication
+
+        domain = DomainApplication(
+            candidate_id=uuid.uuid4(),
+            job_id=uuid.uuid4(),
+            status=initial,
+        )
+        assert new_status in DomainApplication._ALLOWED_TRANSITIONS[initial]
+
+        domain.transition_to(new_status)
+        assert domain.status is new_status
+
+
 def make_candidate_user(candidate_id: uuid.UUID) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid.uuid4(),

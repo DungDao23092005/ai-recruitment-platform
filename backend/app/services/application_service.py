@@ -33,8 +33,30 @@ RECRUITER_MANAGED_STATUSES = frozenset(
         ApplicationStatus.UNDER_REVIEW,
         ApplicationStatus.SHORTLISTED,
         ApplicationStatus.INTERVIEWING,
+        ApplicationStatus.OFFERED,
         ApplicationStatus.ACCEPTED,
         ApplicationStatus.REJECTED,
+    }
+)
+
+# Transitions that the public recruiter status endpoint is allowed to publish
+# today. The domain now models a richer pipeline (for example
+# ``INTERVIEWING -> UNDER_REVIEW``, ``INTERVIEWING -> OFFERED`` and
+# ``OFFERED -> ACCEPTED/REJECTED``), but those new transitions must stay
+# unreachable from the API until the follow-on phase records an atomic
+# ``ApplicationActivity`` alongside each change. Until then this allow-list
+# preserves the exact externally observable behaviour that existed before the
+# pipeline model was introduced.
+_PUBLISHED_RECRUITER_TRANSITIONS = frozenset(
+    {
+        (ApplicationStatus.APPLIED, ApplicationStatus.UNDER_REVIEW),
+        (ApplicationStatus.APPLIED, ApplicationStatus.REJECTED),
+        (ApplicationStatus.UNDER_REVIEW, ApplicationStatus.SHORTLISTED),
+        (ApplicationStatus.UNDER_REVIEW, ApplicationStatus.REJECTED),
+        (ApplicationStatus.SHORTLISTED, ApplicationStatus.INTERVIEWING),
+        (ApplicationStatus.SHORTLISTED, ApplicationStatus.REJECTED),
+        (ApplicationStatus.INTERVIEWING, ApplicationStatus.ACCEPTED),
+        (ApplicationStatus.INTERVIEWING, ApplicationStatus.REJECTED),
     }
 )
 
@@ -132,6 +154,17 @@ class ApplicationService:
             domain.transition_to(new_status)
         except DomainException as exc:
             raise InvalidTransitionException(str(exc)) from exc
+
+        # The domain accepts richer pipeline transitions than the API is
+        # allowed to publish yet (see ``_PUBLISHED_RECRUITER_TRANSITIONS``).
+        # Keep the pre-existing externally reachable behaviour until atomic
+        # activity logging lands in the follow-on phase.
+        if (old_status, new_status) not in _PUBLISHED_RECRUITER_TRANSITIONS:
+            raise InvalidTransitionException(
+                f"Invalid Application status transition from "
+                f"{old_status.value!r} to {new_status.value!r}: this "
+                f"transition is not available through this endpoint yet."
+            )
 
         # Atomic conditional update to prevent lost updates
         # Only proceed if the status is still what we validated

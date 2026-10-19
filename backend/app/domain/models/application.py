@@ -31,10 +31,24 @@ class Application(BaseDomainEntity):
             ApplicationStatus.WITHDRAWN,
         },
         ApplicationStatus.INTERVIEWING: {
+            # A candidate can be moved back to screening after an interview
+            # (e.g. another round is required), advanced to an offer, or
+            # accepted/rejected directly (legacy behaviour).
+            ApplicationStatus.UNDER_REVIEW,
+            ApplicationStatus.OFFERED,
             ApplicationStatus.ACCEPTED,
             ApplicationStatus.REJECTED,
             ApplicationStatus.WITHDRAWN,
         },
+        ApplicationStatus.OFFERED: {
+            ApplicationStatus.ACCEPTED,
+            ApplicationStatus.REJECTED,
+            ApplicationStatus.WITHDRAWN,
+        },
+        # Terminal recruiter-initiated outcomes. ``ACCEPTED`` and ``REJECTED``
+        # have no outgoing transitions; reopening a rejected application
+        # requires an explicit, auditable follow-up action that is not modelled
+        # yet, so it must not be reachable through the generic status endpoint.
         ApplicationStatus.ACCEPTED: set(),
         ApplicationStatus.REJECTED: set(),
         ApplicationStatus.WITHDRAWN: set(),

@@ -80,6 +80,7 @@ class AdminService:
                 under_review=status_counts[ApplicationStatus.UNDER_REVIEW],
                 shortlisted=status_counts[ApplicationStatus.SHORTLISTED],
                 interviewing=status_counts[ApplicationStatus.INTERVIEWING],
+                offered=status_counts[ApplicationStatus.OFFERED],
                 accepted=status_counts[ApplicationStatus.ACCEPTED],
                 rejected=status_counts[ApplicationStatus.REJECTED],
                 withdrawn=status_counts[ApplicationStatus.WITHDRAWN],

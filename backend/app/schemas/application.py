@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.domain.enums import ApplicationStatus
 from app.schemas.ai_job import ParsedJobSchema
-from app.schemas.interview import InterviewRead
+from app.schemas.interview import CandidateInterviewRead, RecruiterInterviewRead
 from app.schemas.resume import ResumeRead
 
 
@@ -47,7 +47,7 @@ class ApplicationDetailRead(BaseModel):
     candidate: CandidateProfileReadMinimal | None = None
     resume: ResumeRead | None = None
     parsed_job: ParsedJobSchema | None = None
-    interviews: list[InterviewRead] = []
+    interviews: list[RecruiterInterviewRead] = []
 
 
 class ApplicationStatusUpdate(BaseModel):
@@ -64,4 +64,4 @@ class ApplicationWithJobRead(BaseModel):
     status: ApplicationStatus
     created_at: datetime
     updated_at: datetime
-    interviews: list[InterviewRead] = []
+    interviews: list[CandidateInterviewRead] = []

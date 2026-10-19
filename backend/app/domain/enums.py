@@ -28,13 +28,48 @@ class WorkplaceType(str, Enum):
 
 
 class ApplicationStatus(str, Enum):
+    """Lifecycle of a job application.
+
+    The canonical recruiting pipeline is ``APPLIED`` -> ``UNDER_REVIEW`` ->
+    ``INTERVIEWING`` -> ``OFFERED`` -> ``ACCEPTED`` / ``REJECTED``, with
+    ``WITHDRAWN`` available as a candidate-initiated terminal state.
+
+    ``SHORTLISTED`` predates the explicit ``OFFERED`` stage. It is retained for
+    storage and API backward compatibility and is presented as a screening
+    stage (see :func:`canonical_stage`); it is never mass-rewritten to a new
+    value.
+    """
+
     APPLIED = "applied"
     UNDER_REVIEW = "under_review"
     SHORTLISTED = "shortlisted"
     INTERVIEWING = "interviewing"
+    OFFERED = "offered"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     WITHDRAWN = "withdrawn"
+
+
+# Statuses a candidate moves through during screening. ``SHORTLISTED`` is a
+# legacy alias that belongs to the same screening stage as ``UNDER_REVIEW``.
+SCREENING_STAGE_ALIASES = frozenset(
+    {ApplicationStatus.UNDER_REVIEW, ApplicationStatus.SHORTLISTED}
+)
+
+# Maps legacy/alias statuses onto the canonical pipeline stage used for display.
+_CANONICAL_STAGE: dict[ApplicationStatus, ApplicationStatus] = {
+    ApplicationStatus.SHORTLISTED: ApplicationStatus.UNDER_REVIEW,
+}
+
+
+def canonical_stage(status: ApplicationStatus) -> ApplicationStatus:
+    """Return the display stage for ``status``.
+
+    Legacy statuses (currently only ``SHORTLISTED``) collapse onto their
+    canonical stage so the pipeline reads as the six documented stages, while
+    the stored value is preserved untouched.
+    """
+    return _CANONICAL_STAGE.get(status, status)
 
 
 class ProficiencyLevel(str, Enum):

@@ -56,7 +56,14 @@ class InterviewUpdate(BaseModel):
     notes: str | None = None
 
 
-class InterviewRead(BaseModel):
+class RecruiterInterviewRead(BaseModel):
+    """Recruiter/admin view of an interview.
+
+    Includes ``notes`` (internal recruiter notes). Only recruiter-authorised
+    endpoints may serialise this schema; candidate-facing responses must use
+    :class:`CandidateInterviewRead` so internal notes are never leaked.
+    """
+
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -71,6 +78,34 @@ class InterviewRead(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+
+
+class CandidateInterviewRead(BaseModel):
+    """Candidate-facing view of an interview.
+
+    Deliberately excludes the recruiter-only ``notes`` field (and any future
+    internal scorecards). ``candidate_notes`` is the candidate's own input and
+    remains visible to them.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    application_id: uuid.UUID
+    scheduled_at: datetime
+    duration_minutes: int
+    interview_type: str
+    meeting_url: str | None = None
+    location: str | None = None
+    candidate_notes: str | None = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+# Backward-compatible alias: existing recruiter-facing code paths import
+# ``InterviewRead`` and must keep the full (recruiter) projection.
+InterviewRead = RecruiterInterviewRead
 
 
 class InterviewActionRequest(BaseModel):

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, Uuid
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base_class import Base, SoftDeleteMixin, TimestampMixin
@@ -40,3 +40,9 @@ class Interview(Base, TimestampMixin, SoftDeleteMixin):
     )
 
     application: Mapped["Application"] = relationship(back_populates="interviews")
+
+    __table_args__ = (
+        # Target for the composite FK from ``interview_evaluations`` so an
+        # evaluation can never point at an interview/application mismatch.
+        UniqueConstraint("id", "application_id", name="uq_interviews_id_application_id"),
+    )

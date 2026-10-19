@@ -13,6 +13,7 @@ class ApplicationStatusCounts(BaseModel):
     under_review: int = 0
     shortlisted: int = 0
     interviewing: int = 0
+    offered: int = 0
     accepted: int = 0
     rejected: int = 0
     withdrawn: int = 0
