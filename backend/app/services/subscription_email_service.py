@@ -5,15 +5,22 @@ import html as html_module
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Optional
 
-from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.email_outbox_service import enqueue_email
+from app.services.email_outbox_worker import signal_dispatch_after_commit
 from app.services.email_service import EmailService
 from app.services.notification_service import VIETNAM_TZ, _format_expiry_date
 
 logger = logging.getLogger(__name__)
+
+# Outbox event types (stable identifiers used by the worker and admin API).
+EVENT_ACTIVATION = "activation"
+EVENT_PLAN_CHANGED = "plan_changed"
+EVENT_REVOKED = "revoked"
+EVENT_PAYMENT_RECEIPT = "payment_receipt"
 
 # Fixed subjects (Vietnamese, matching the existing product copy).
 SUBJECT_ACTIVATED = (
@@ -324,9 +331,9 @@ def _render_payment_receipt(
 class SubscriptionEmailService:
     """Sends subscription lifecycle emails through the existing EmailService.
 
-    Delivery is best-effort: it runs after the surrounding transaction commits,
-    retries a bounded number of times, and never raises into the caller. There
-    is no durable outbox, so a process restart can drop a pending send.
+    Business flows no longer call this directly; they enqueue a durable outbox
+    message instead. This class remains the direct, best-effort sender used for
+    rendering/testing and is retained as a low-level utility.
     """
 
     def __init__(self, email_service: Optional[EmailService] = None) -> None:
@@ -426,40 +433,33 @@ class SubscriptionEmailService:
                 await asyncio.sleep(backoff)
 
 
-def _schedule_email_after_commit(
-    session: AsyncSession, factory: Callable[[], object], label: str
-) -> None:
-    """Schedule a best-effort email task once ``session`` commits."""
-
-    def _run_after_commit(sync_session) -> None:  # noqa: ARG001
-        try:
-            asyncio.create_task(factory())
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("Failed to schedule subscription %s email: %s", label, exc)
-
-    event.listen(session.sync_session, "after_commit", _run_after_commit, once=True)
-
-
-def schedule_activation_email(
+async def schedule_activation_email(
     session: AsyncSession,
     *,
     to_email: Optional[str],
     plan_name: str,
     expires_at: datetime | None,
+    idempotency_key: Optional[str] = None,
 ) -> None:
     if not to_email:
         logger.warning("Skipping activation email: subscription owner has no email")
         return
 
-    def _factory() -> object:
-        return SubscriptionEmailService().send_activation_email(
-            to_email=to_email, plan_name=plan_name, expires_at=expires_at
-        )
+    subject = SUBJECT_ACTIVATED.format(plan_name=plan_name)
+    html, text = _render_activation(plan_name, expires_at)
+    await enqueue_email(
+        session,
+        event_type=EVENT_ACTIVATION,
+        to_email=to_email,
+        subject=subject,
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)
 
-    _schedule_email_after_commit(session, _factory, "activation")
 
-
-def schedule_plan_changed_email(
+async def schedule_plan_changed_email(
     session: AsyncSession,
     *,
     to_email: Optional[str],
@@ -467,69 +467,88 @@ def schedule_plan_changed_email(
     new_plan_name: str,
     expires_at: datetime | None,
     reason: Optional[str],
+    idempotency_key: Optional[str] = None,
 ) -> None:
     if not to_email:
         logger.warning("Skipping plan-change email: subscription owner has no email")
         return
 
-    def _factory() -> object:
-        return SubscriptionEmailService().send_plan_changed_email(
-            to_email=to_email,
-            previous_plan_name=previous_plan_name,
-            new_plan_name=new_plan_name,
-            expires_at=expires_at,
-            reason=reason,
-        )
+    html, text = _render_plan_changed(
+        previous_plan_name, new_plan_name, expires_at, reason
+    )
+    await enqueue_email(
+        session,
+        event_type=EVENT_PLAN_CHANGED,
+        to_email=to_email,
+        subject=SUBJECT_PLAN_CHANGED,
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)
 
-    _schedule_email_after_commit(session, _factory, "plan_changed")
 
-
-def schedule_revoked_email(
+async def schedule_revoked_email(
     session: AsyncSession,
     *,
     to_email: Optional[str],
     plan_name: str,
     reason: Optional[str],
     effective_at: datetime | None,
+    idempotency_key: Optional[str] = None,
 ) -> None:
     if not to_email:
         logger.warning("Skipping revoke email: subscription owner has no email")
         return
 
-    def _factory() -> object:
-        return SubscriptionEmailService().send_revoked_email(
-            to_email=to_email,
-            plan_name=plan_name,
-            reason=reason,
-            effective_at=effective_at,
-        )
+    html, text = _render_revoked(plan_name, reason, effective_at)
+    await enqueue_email(
+        session,
+        event_type=EVENT_REVOKED,
+        to_email=to_email,
+        subject=SUBJECT_REVOKED,
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)
 
-    _schedule_email_after_commit(session, _factory, "revoked")
 
-
-def schedule_payment_receipt_email(
+async def schedule_payment_receipt_email(
     session: AsyncSession,
     *,
     to_email: Optional[str],
     plan_name: str,
     expires_at: datetime | None,
     receipt: PaymentReceipt,
+    idempotency_key: Optional[str] = None,
 ) -> None:
-    """Schedule the enriched VNPAY receipt for after the transaction commits.
+    """Durably enqueue the enriched VNPAY receipt in the caller's transaction.
 
     ``receipt`` and the other arguments are already-captured primitives, so the
-    deferred task never touches a live ORM instance.
+    queued message never touches a live ORM instance.
     """
     if not to_email:
         logger.warning("Skipping payment receipt email: subscription owner has no email")
         return
 
-    def _factory() -> object:
-        return SubscriptionEmailService().send_payment_receipt_email(
-            to_email=to_email,
-            plan_name=plan_name,
-            expires_at=expires_at,
-            receipt=receipt,
-        )
-
-    _schedule_email_after_commit(session, _factory, "payment_receipt")
+    subject = SUBJECT_PAYMENT_RECEIPT.format(plan_name=plan_name)
+    html, text = _render_payment_receipt(
+        plan_name=plan_name,
+        amount=receipt.amount,
+        currency=receipt.currency,
+        order_reference=receipt.order_reference,
+        provider_transaction_id=receipt.provider_transaction_id,
+        paid_at=receipt.paid_at,
+        expires_at=expires_at,
+    )
+    await enqueue_email(
+        session,
+        event_type=EVENT_PAYMENT_RECEIPT,
+        to_email=to_email,
+        subject=subject,
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)

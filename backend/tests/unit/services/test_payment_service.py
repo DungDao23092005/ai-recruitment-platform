@@ -386,13 +386,14 @@ def _patch_activation_notifier(monkeypatch):
     monkeypatch.setattr(
         "app.services.payment_service.NotificationService", mock_cls
     )
-    # These helpers also register after_commit listeners on session.sync_session,
-    # which a MagicMock session cannot satisfy. Patch them at the usage site too.
+    # These helpers also enqueue into the outbox (an async call) and would
+    # register after-commit signals on session.sync_session, which a MagicMock
+    # session cannot satisfy. Patch them at the usage site too.
     monkeypatch.setattr(
-        "app.services.payment_service.schedule_activation_email", MagicMock()
+        "app.services.payment_service.schedule_activation_email", AsyncMock()
     )
     monkeypatch.setattr(
-        "app.services.payment_service.schedule_payment_receipt_email", MagicMock()
+        "app.services.payment_service.schedule_payment_receipt_email", AsyncMock()
     )
     monkeypatch.setattr(
         "app.services.payment_service.schedule_admin_subscription_event",
@@ -1225,7 +1226,8 @@ class TestRecordSuccessRefusedActivation:
         )
 
         with patch(
-            "app.services.payment_service.schedule_payment_receipt_email"
+            "app.services.payment_service.schedule_payment_receipt_email",
+            new_callable=AsyncMock,
         ) as receipt_sched:
             result = asyncio.run(
                 service._record_success_and_activate(
@@ -1291,9 +1293,11 @@ class TestVnpayReceiptEmail:
         _, service, order, user = self._setup()
 
         with patch(
-            "app.services.payment_service.schedule_payment_receipt_email"
+            "app.services.payment_service.schedule_payment_receipt_email",
+            new_callable=AsyncMock,
         ) as receipt_sched, patch(
-            "app.services.payment_service.schedule_activation_email"
+            "app.services.payment_service.schedule_activation_email",
+            new_callable=AsyncMock,
         ) as generic_sched:
             result = self._record(service, order, self.TRANSACTION_ID)
 
@@ -1318,7 +1322,8 @@ class TestVnpayReceiptEmail:
         _, service, order, _ = self._setup()
 
         with patch(
-            "app.services.payment_service.schedule_payment_receipt_email"
+            "app.services.payment_service.schedule_payment_receipt_email",
+            new_callable=AsyncMock,
         ) as receipt_sched:
             result = self._record(service, order, None)
 
@@ -1329,9 +1334,11 @@ class TestVnpayReceiptEmail:
         _, service, order, _ = self._setup(provider=PaymentProvider.MOMO)
 
         with patch(
-            "app.services.payment_service.schedule_payment_receipt_email"
+            "app.services.payment_service.schedule_payment_receipt_email",
+            new_callable=AsyncMock,
         ) as receipt_sched, patch(
-            "app.services.payment_service.schedule_activation_email"
+            "app.services.payment_service.schedule_activation_email",
+            new_callable=AsyncMock,
         ) as generic_sched:
             result = self._record(service, order, self.TRANSACTION_ID)
 
@@ -1344,9 +1351,11 @@ class TestVnpayReceiptEmail:
         _, service, order, _ = self._setup()
 
         with patch(
-            "app.services.payment_service.schedule_payment_receipt_email"
+            "app.services.payment_service.schedule_payment_receipt_email",
+            new_callable=AsyncMock,
         ) as receipt_sched, patch(
-            "app.services.payment_service.schedule_activation_email"
+            "app.services.payment_service.schedule_activation_email",
+            new_callable=AsyncMock,
         ) as generic_sched:
             asyncio.run(service._activate_subscription_for_payment(order.subscription_id))
 

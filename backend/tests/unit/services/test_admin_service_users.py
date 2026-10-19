@@ -20,6 +20,9 @@ class TestAdminServiceUsers:
         session.commit = AsyncMock()
         session.refresh = AsyncMock()
         session.rollback = AsyncMock()
+        session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
         return session
 
     def make_user(self, role: UserRole = UserRole.CANDIDATE) -> User:
@@ -82,6 +85,9 @@ class TestAdminServiceUsersLegacy:
         session.commit = AsyncMock()
         session.refresh = AsyncMock()
         session.rollback = AsyncMock()
+        session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
         return session
 
     def make_user(self, role: UserRole = UserRole.CANDIDATE) -> User:
@@ -136,6 +142,9 @@ class TestAdminServiceActivateDeactivate:
         session.commit = AsyncMock()
         session.refresh = AsyncMock()
         session.rollback = AsyncMock()
+        session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
         return session
 
     def make_user(self, role: UserRole = UserRole.CANDIDATE, is_active: bool = True) -> User:
@@ -224,6 +233,9 @@ class TestAdminServiceAccountLifecycleEmails:
         session.commit = AsyncMock()
         session.refresh = AsyncMock()
         session.rollback = AsyncMock()
+        session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
         return session
 
     def make_user(
@@ -256,7 +268,8 @@ class TestAdminServiceAccountLifecycleEmails:
         original_email = user.email
 
         with patch(
-            "app.services.admin_service.schedule_account_locked_email"
+            "app.services.admin_service.schedule_account_locked_email",
+            new_callable=AsyncMock,
         ) as scheduler:
             result = asyncio.run(
                 AdminService.deactivate_user(service, user.id, "Lý do khóa", admin_id)
@@ -279,7 +292,8 @@ class TestAdminServiceAccountLifecycleEmails:
         service.users.get_admin_user.return_value = user
 
         with patch(
-            "app.services.admin_service.schedule_account_locked_email"
+            "app.services.admin_service.schedule_account_locked_email",
+            new_callable=AsyncMock,
         ) as scheduler:
             result = asyncio.run(
                 AdminService.deactivate_user(
@@ -300,7 +314,8 @@ class TestAdminServiceAccountLifecycleEmails:
         service.users.get_admin_user.return_value = user
 
         with patch(
-            "app.services.admin_service.schedule_account_locked_email"
+            "app.services.admin_service.schedule_account_locked_email",
+            new_callable=AsyncMock,
         ) as scheduler:
             asyncio.run(
                 AdminService.deactivate_user(service, user.id, "Lý do", uuid.uuid4())
@@ -314,7 +329,8 @@ class TestAdminServiceAccountLifecycleEmails:
         service.users.get_admin_user.return_value = None
 
         with patch(
-            "app.services.admin_service.schedule_account_locked_email"
+            "app.services.admin_service.schedule_account_locked_email",
+            new_callable=AsyncMock,
         ) as scheduler:
             with pytest.raises(EntityNotFoundException):
                 asyncio.run(
@@ -334,7 +350,8 @@ class TestAdminServiceAccountLifecycleEmails:
         service.users.get_admin_user.return_value = user
 
         with patch(
-            "app.services.admin_service.schedule_account_deleted_email"
+            "app.services.admin_service.schedule_account_deleted_email",
+            new_callable=AsyncMock,
         ) as scheduler:
             result = asyncio.run(AdminService.delete_user(service, user.id))
 
@@ -356,7 +373,8 @@ class TestAdminServiceAccountLifecycleEmails:
         service.users.get_admin_user.return_value = user
 
         with patch(
-            "app.services.admin_service.schedule_account_deleted_email"
+            "app.services.admin_service.schedule_account_deleted_email",
+            new_callable=AsyncMock,
         ) as scheduler:
             asyncio.run(AdminService.delete_user(service, user.id))
 
@@ -368,7 +386,8 @@ class TestAdminServiceAccountLifecycleEmails:
         service.users.get_admin_user.return_value = None
 
         with patch(
-            "app.services.admin_service.schedule_account_deleted_email"
+            "app.services.admin_service.schedule_account_deleted_email",
+            new_callable=AsyncMock,
         ) as scheduler:
             with pytest.raises(EntityNotFoundException):
                 asyncio.run(AdminService.delete_user(service, uuid.uuid4()))
@@ -386,6 +405,9 @@ class TestAdminServiceAccountLockEvent:
         session.commit = AsyncMock()
         session.refresh = AsyncMock()
         session.rollback = AsyncMock()
+        session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
         return session
 
     def make_user(

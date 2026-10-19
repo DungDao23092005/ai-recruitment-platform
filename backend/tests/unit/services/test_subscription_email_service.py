@@ -1,12 +1,13 @@
 """Unit tests for subscription lifecycle emails.
 
 These focus on rendering, HTML escaping, payload hygiene, retry/backoff and the
-best-effort scheduler contract. Provider transports are exercised separately in
+durable outbox enqueue contract. Provider transports are exercised separately in
 ``test_email_service.py``; here ``EmailService`` is replaced with a recorder.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -167,14 +168,40 @@ async def test_retry_is_bounded_and_swallows_failures():
 
 
 def test_scheduler_noops_without_recipient():
-    with patch.object(module, "_schedule_email_after_commit") as scheduler:
-        module.schedule_activation_email(
-            MagicMock(),
-            to_email=None,
-            plan_name="Professional",
-            expires_at=EXPIRES_AT,
+    with patch.object(module, "enqueue_email", new=AsyncMock()) as enqueue:
+        asyncio.run(
+            module.schedule_activation_email(
+                MagicMock(),
+                to_email=None,
+                plan_name="Professional",
+                expires_at=EXPIRES_AT,
+            )
         )
-        scheduler.assert_not_called()
+        enqueue.assert_not_awaited()
+
+
+def test_activation_scheduler_enqueues_with_idempotency_key():
+    with patch.object(module, "enqueue_email", new=AsyncMock()) as enqueue, patch.object(
+        module, "signal_dispatch_after_commit"
+    ) as signal:
+        asyncio.run(
+            module.schedule_activation_email(
+                MagicMock(),
+                to_email="buyer@example.com",
+                plan_name="Professional",
+                expires_at=EXPIRES_AT,
+                idempotency_key="subscription_activated:abc",
+            )
+        )
+
+    enqueue.assert_awaited_once()
+    kwargs = enqueue.call_args.kwargs
+    assert kwargs["event_type"] == module.EVENT_ACTIVATION
+    assert kwargs["to_email"] == "buyer@example.com"
+    assert kwargs["subject"] == SUBJECT_ACTIVATED.format(plan_name="Professional")
+    assert kwargs["idempotency_key"] == "subscription_activated:abc"
+    assert "Professional" in kwargs["html_body"]
+    signal.assert_called_once()
 
 
 # 2026-05-05 03:15:30 UTC == 10:15 05/05/2026 Asia/Ho_Chi_Minh.
@@ -282,12 +309,14 @@ async def test_payment_receipt_escapes_dynamic_values():
 
 
 def test_payment_receipt_scheduler_noops_without_recipient():
-    with patch.object(module, "_schedule_email_after_commit") as scheduler:
-        module.schedule_payment_receipt_email(
-            MagicMock(),
-            to_email=None,
-            plan_name="Professional",
-            expires_at=EXPIRES_AT,
-            receipt=_receipt(),
+    with patch.object(module, "enqueue_email", new=AsyncMock()) as enqueue:
+        asyncio.run(
+            module.schedule_payment_receipt_email(
+                MagicMock(),
+                to_email=None,
+                plan_name="Professional",
+                expires_at=EXPIRES_AT,
+                receipt=_receipt(),
+            )
         )
-        scheduler.assert_not_called()
+        enqueue.assert_not_awaited()

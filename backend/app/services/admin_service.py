@@ -145,11 +145,12 @@ class AdminService:
         # behaviour) but must not resend the lock email or re-emit the
         # forced-logout signal.
         if was_active and not user.is_deleted:
-            schedule_account_locked_email(
+            await schedule_account_locked_email(
                 self.session,
                 to_email=user.email,
                 reason=reason,
                 locked_at=locked_at,
+                idempotency_key=f"account_locked:{user.id}:{locked_at.isoformat()}",
             )
             schedule_account_locked_event(
                 self.session,
@@ -226,10 +227,11 @@ class AdminService:
             and original_email
             and not original_email.endswith("@anonymized.local")
         ):
-            schedule_account_deleted_email(
+            await schedule_account_deleted_email(
                 self.session,
                 to_email=original_email,
                 deleted_at=deleted_at,
+                idempotency_key=f"account_deleted:{user.id}",
             )
 
         await self.session.commit()

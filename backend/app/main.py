@@ -102,9 +102,27 @@ async def lifespan(app: FastAPI):
             "Failed to initialize PubSub manager: %s", exc
         )
 
+    # Start the durable transactional-outbox worker for notification emails.
+    try:
+        from app.services.email_outbox_worker import start_default_worker
+
+        await start_default_worker()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to start email outbox worker: %s", exc
+        )
+
     yield
 
     # Shutdown
+    try:
+        from app.services.email_outbox_worker import stop_default_worker
+
+        await stop_default_worker()
+    except Exception:
+        pass
+
     try:
         await pubsub_manager.disconnect()
         logger.info("PubSub manager disconnected")

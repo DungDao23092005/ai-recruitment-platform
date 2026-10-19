@@ -235,11 +235,12 @@ class AdminSubscriptionService:
             expires_at=sub.expires_at,
         )
         if notification is not None:
-            schedule_activation_email(
+            await schedule_activation_email(
                 self.session,
                 to_email=user.email,
                 plan_name=plan.name,
                 expires_at=sub.expires_at,
+                idempotency_key=f"subscription_activated:{sub.id}",
             )
         schedule_admin_subscription_event(
             self.session,
@@ -312,13 +313,14 @@ class AdminSubscriptionService:
             expires_at=sub.expires_at,
         )
 
-        schedule_plan_changed_email(
+        await schedule_plan_changed_email(
             self.session,
             to_email=await self._user_email(sub.user_id),
             previous_plan_name=old_plan_name,
             new_plan_name=target.name,
             expires_at=sub.expires_at,
             reason=reason,
+            idempotency_key=f"subscription_plan_changed:{sub.id}:{now.isoformat()}",
         )
         schedule_admin_subscription_event(
             self.session,
@@ -377,12 +379,14 @@ class AdminSubscriptionService:
             reason=reason,
         )
 
-        schedule_revoked_email(
+        revoked_at = utc_now()
+        await schedule_revoked_email(
             self.session,
             to_email=await self._user_email(sub.user_id),
             plan_name=plan_name or "Gói dịch vụ",
             reason=reason,
-            effective_at=utc_now(),
+            effective_at=revoked_at,
+            idempotency_key=f"subscription_revoked:{sub.id}",
         )
         schedule_admin_subscription_event(
             self.session,

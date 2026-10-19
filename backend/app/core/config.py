@@ -85,6 +85,16 @@ class Settings(BaseSettings):
     GMAIL_HOST: str = "smtp.gmail.com"
     GMAIL_PORT: int = 587
 
+    # Transactional outbox worker (durable notification email delivery).
+    EMAIL_OUTBOX_ENABLED: bool = True
+    EMAIL_OUTBOX_POLL_INTERVAL_SECONDS: float = 30.0
+    EMAIL_OUTBOX_BATCH_SIZE: int = 20
+    EMAIL_OUTBOX_LEASE_SECONDS: int = 300
+    EMAIL_OUTBOX_MAX_ATTEMPTS: int = 3
+    EMAIL_OUTBOX_RETRY_BASE_SECONDS: float = 2.0
+    EMAIL_OUTBOX_RETRY_MAX_SECONDS: float = 300.0
+    EMAIL_OUTBOX_SENT_RETENTION_DAYS: int = 30
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

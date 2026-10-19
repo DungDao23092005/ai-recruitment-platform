@@ -708,26 +708,29 @@ class PaymentService:
             expires_at=sub.expires_at,
         )
 
-        # Best-effort lifecycle email + admin invalidation are scheduled on
-        # after_commit. The email only goes out when this task actually created a
-        # fresh in-app notification, so IPN/QueryDr retries cannot resend it. A
-        # verified VNPAY purchase sends the enriched receipt; everything else
-        # keeps the existing generic activation email.
+        # Durable lifecycle email + admin invalidation. The email is enqueued in
+        # the SAME transaction as the activation (so it commits or rolls back
+        # with it) and only when this call actually created a fresh in-app
+        # notification, so IPN/QueryDr retries cannot resend it. A verified
+        # VNPAY purchase enqueues the enriched receipt; everything else keeps
+        # the existing generic activation email.
         if notification is not None:
             if receipt is not None:
-                schedule_payment_receipt_email(
+                await schedule_payment_receipt_email(
                     self.session,
                     to_email=user.email,
                     plan_name=plan.name,
                     expires_at=sub.expires_at,
                     receipt=receipt,
+                    idempotency_key=f"payment_receipt:{receipt.order_reference}",
                 )
             else:
-                schedule_activation_email(
+                await schedule_activation_email(
                     self.session,
                     to_email=user.email,
                     plan_name=plan.name,
                     expires_at=sub.expires_at,
+                    idempotency_key=f"subscription_activated:{sub.id}",
                 )
         schedule_admin_subscription_event(
             self.session,

@@ -1,7 +1,7 @@
 """Unit tests for account lifecycle emails (admin lock and deletion).
 
 These focus on rendering, HTML escaping, payload hygiene, retry/backoff and the
-best-effort scheduler contract. Provider transports are exercised separately in
+durable outbox enqueue contract. Provider transports are exercised separately in
 ``test_email_service.py``; here ``EmailService`` is replaced with a recorder.
 """
 
@@ -246,80 +246,79 @@ async def test_retry_is_bounded_and_swallows_failures():
 
 
 # ---------------------------------------------------------------------------
-# Scheduler contract
+# Outbox enqueue contract
 # ---------------------------------------------------------------------------
 
 
 def test_lock_scheduler_noops_without_recipient():
-    with patch.object(module, "_schedule_email_after_commit") as scheduler:
-        module.schedule_account_locked_email(
-            MagicMock(),
-            to_email=None,
-            reason="Lý do",
-            locked_at=LOCKED_AT,
+    with patch.object(module, "enqueue_email", new=AsyncMock()) as enqueue:
+        asyncio.run(
+            module.schedule_account_locked_email(
+                MagicMock(),
+                to_email=None,
+                reason="Lý do",
+                locked_at=LOCKED_AT,
+            )
         )
-        scheduler.assert_not_called()
+        enqueue.assert_not_awaited()
 
 
 def test_delete_scheduler_noops_without_recipient():
-    with patch.object(module, "_schedule_email_after_commit") as scheduler:
-        module.schedule_account_deleted_email(
-            MagicMock(),
-            to_email=None,
-            deleted_at=DELETED_AT,
+    with patch.object(module, "enqueue_email", new=AsyncMock()) as enqueue:
+        asyncio.run(
+            module.schedule_account_deleted_email(
+                MagicMock(),
+                to_email=None,
+                deleted_at=DELETED_AT,
+            )
         )
-        scheduler.assert_not_called()
+        enqueue.assert_not_awaited()
 
 
-def test_lock_scheduler_captures_only_primitives():
-    captured: dict[str, object] = {}
-
-    def _fake_register(session, factory, label):
-        captured["factory"] = factory
-        captured["label"] = label
-
-    with patch.object(module, "_schedule_email_after_commit", _fake_register):
-        module.schedule_account_locked_email(
-            MagicMock(),
-            to_email="user@example.com",
-            reason="Lý do",
-            locked_at=LOCKED_AT,
-        )
-
-    assert captured["label"] == "account_locked"
-    recorder = MagicMock()
-    recorder.send_account_locked_email = AsyncMock()
-    with patch.object(module, "AccountEmailService", return_value=recorder):
-        asyncio.run(captured["factory"]())  # type: ignore[operator]
-
-    recorder.send_account_locked_email.assert_awaited_once_with(
-        to_email="user@example.com",
-        reason="Lý do",
-        locked_at=LOCKED_AT,
-    )
-
-
-def test_delete_scheduler_captures_only_primitives():
-    captured: dict[str, object] = {}
-
-    def _fake_register(session, factory, label):
-        captured["factory"] = factory
-        captured["label"] = label
-
-    with patch.object(module, "_schedule_email_after_commit", _fake_register):
-        module.schedule_account_deleted_email(
-            MagicMock(),
-            to_email="original@example.com",
-            deleted_at=DELETED_AT,
+def test_lock_scheduler_enqueues_rendered_primitives():
+    with patch.object(module, "enqueue_email", new=AsyncMock()) as enqueue, patch.object(
+        module, "signal_dispatch_after_commit"
+    ) as signal:
+        asyncio.run(
+            module.schedule_account_locked_email(
+                MagicMock(),
+                to_email="user@example.com",
+                reason="Lý do",
+                locked_at=LOCKED_AT,
+                idempotency_key="account_locked:1",
+            )
         )
 
-    assert captured["label"] == "account_deleted"
-    recorder = MagicMock()
-    recorder.send_account_deleted_email = AsyncMock()
-    with patch.object(module, "AccountEmailService", return_value=recorder):
-        asyncio.run(captured["factory"]())  # type: ignore[operator]
+    enqueue.assert_awaited_once()
+    kwargs = enqueue.call_args.kwargs
+    assert kwargs["event_type"] == module.EVENT_ACCOUNT_LOCKED
+    assert kwargs["to_email"] == "user@example.com"
+    assert kwargs["subject"] == SUBJECT_ACCOUNT_LOCKED
+    assert kwargs["idempotency_key"] == "account_locked:1"
+    # The rendered payload carries the reason, and only primitives are captured.
+    assert not hasattr(kwargs["to_email"], "is_active")
+    for body in (kwargs["html_body"], kwargs["text_body"]):
+        assert "Lý do" in body
+    signal.assert_called_once()
 
-    recorder.send_account_deleted_email.assert_awaited_once_with(
-        to_email="original@example.com",
-        deleted_at=DELETED_AT,
-    )
+
+def test_delete_scheduler_enqueues_rendered_primitives():
+    with patch.object(module, "enqueue_email", new=AsyncMock()) as enqueue, patch.object(
+        module, "signal_dispatch_after_commit"
+    ) as signal:
+        asyncio.run(
+            module.schedule_account_deleted_email(
+                MagicMock(),
+                to_email="original@example.com",
+                deleted_at=DELETED_AT,
+                idempotency_key="account_deleted:1",
+            )
+        )
+
+    enqueue.assert_awaited_once()
+    kwargs = enqueue.call_args.kwargs
+    assert kwargs["event_type"] == module.EVENT_ACCOUNT_DELETED
+    assert kwargs["to_email"] == "original@example.com"
+    assert kwargs["subject"] == SUBJECT_ACCOUNT_DELETED
+    assert kwargs["idempotency_key"] == "account_deleted:1"
+    signal.assert_called_once()

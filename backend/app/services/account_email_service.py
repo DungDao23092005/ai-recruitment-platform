@@ -5,11 +5,13 @@ Two polished Vietnamese templates are provided:
 * an account-lock notification (amber warning treatment), and
 * an account-deletion / anonymization notification (muted red treatment).
 
-They follow the same best-effort contract as
-``subscription_email_service``: the send runs *after* the surrounding
-transaction commits, retries a bounded number of times, and never raises into
-the caller. There is no durable outbox, so a process restart can drop a pending
-send - this limitation is intentional and shared with the subscription emails.
+Delivery is durable: :func:`schedule_account_locked_email` and
+:func:`schedule_account_deleted_email` render the message and enqueue it in the
+caller's transaction via the shared transactional outbox, so the intent commits
+atomically with the account change. The outbox worker delivers it after commit
+and retries with backoff across process restarts. The templates and the
+best-effort sender (:class:`AccountEmailService`) are retained for rendering and
+direct use.
 """
 
 from __future__ import annotations
@@ -18,11 +20,12 @@ import asyncio
 import html as html_module
 import logging
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Optional
 
-from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.email_outbox_service import enqueue_email
+from app.services.email_outbox_worker import signal_dispatch_after_commit
 from app.services.email_service import EmailService
 from app.services.notification_service import VIETNAM_TZ
 # Best-effort delivery bounds are shared with the subscription lifecycle emails
@@ -33,6 +36,10 @@ from app.services.subscription_email_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Outbox event types (stable identifiers used by the worker and admin API).
+EVENT_ACCOUNT_LOCKED = "account_locked"
+EVENT_ACCOUNT_DELETED = "account_deleted"
 
 # Fixed subjects (Vietnamese, matching the existing product copy).
 SUBJECT_ACCOUNT_LOCKED = "[AI Recruitment Platform] Thông báo khóa tài khoản"
@@ -286,8 +293,9 @@ def _render_account_deleted(deleted_at: datetime | None) -> tuple[str, str]:
 class AccountEmailService:
     """Sends account lock/deletion emails through the existing EmailService.
 
-    Delivery is best-effort: it runs after the surrounding transaction commits,
-    retries a bounded number of times, and never raises into the caller.
+    Business flows no longer call this directly; they enqueue a durable outbox
+    message instead. This class remains the direct, best-effort sender used for
+    rendering/testing and is retained as a low-level utility.
     """
 
     def __init__(self, email_service: Optional[EmailService] = None) -> None:
@@ -351,78 +359,61 @@ class AccountEmailService:
                 await asyncio.sleep(backoff)
 
 
-def _schedule_email_after_commit(
-    session: AsyncSession, factory: Callable[[], object], label: str
-) -> None:
-    """Schedule a best-effort email task once ``session`` commits.
-
-    Registration is defensive: a session that cannot host event listeners (for
-    example a mock in a unit test) must never make the admin operation fail.
-    The registered callback only fires on a successful commit, so a rolled-back
-    operation never triggers a success email.
-    """
-
-    def _run_after_commit(sync_session) -> None:  # noqa: ARG001
-        try:
-            asyncio.create_task(factory())
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("Failed to schedule account %s email: %s", label, exc)
-
-    try:
-        event.listen(session.sync_session, "after_commit", _run_after_commit, once=True)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning(
-            "Failed to register after-commit hook for account %s email: %s",
-            label,
-            exc,
-        )
-
-
-def schedule_account_locked_email(
+async def schedule_account_locked_email(
     session: AsyncSession,
     *,
     to_email: Optional[str],
     reason: Optional[str],
     locked_at: datetime | None,
+    idempotency_key: Optional[str] = None,
 ) -> None:
-    """Schedule the account-lock email for after the transaction commits.
+    """Durably enqueue the account-lock email in the caller's transaction.
 
     ``to_email``, ``reason`` and ``locked_at`` are already-captured primitives,
-    so the deferred task never touches a live ORM instance.
+    so nothing here depends on a live ORM instance. The row commits (or rolls
+    back) with the account change; delivery is the worker's responsibility.
     """
     if not to_email:
         logger.warning("Skipping account-lock email: user has no email")
         return
 
-    def _factory() -> object:
-        return AccountEmailService().send_account_locked_email(
-            to_email=to_email,
-            reason=reason,
-            locked_at=locked_at,
-        )
+    html, text = _render_account_locked(reason, locked_at)
+    await enqueue_email(
+        session,
+        event_type=EVENT_ACCOUNT_LOCKED,
+        to_email=to_email,
+        subject=SUBJECT_ACCOUNT_LOCKED,
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)
 
-    _schedule_email_after_commit(session, _factory, "account_locked")
 
-
-def schedule_account_deleted_email(
+async def schedule_account_deleted_email(
     session: AsyncSession,
     *,
     to_email: Optional[str],
     deleted_at: datetime | None,
+    idempotency_key: Optional[str] = None,
 ) -> None:
-    """Schedule the account-deletion email for after the transaction commits.
+    """Durably enqueue the account-deletion email in the caller's transaction.
 
     The caller must pass the *original* email captured before anonymization, so
-    the deferred task never addresses the anonymized placeholder.
+    the queued message never addresses the anonymized placeholder.
     """
     if not to_email:
         logger.warning("Skipping account-deletion email: user has no email")
         return
 
-    def _factory() -> object:
-        return AccountEmailService().send_account_deleted_email(
-            to_email=to_email,
-            deleted_at=deleted_at,
-        )
-
-    _schedule_email_after_commit(session, _factory, "account_deleted")
+    html, text = _render_account_deleted(deleted_at)
+    await enqueue_email(
+        session,
+        event_type=EVENT_ACCOUNT_DELETED,
+        to_email=to_email,
+        subject=SUBJECT_ACCOUNT_DELETED,
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)

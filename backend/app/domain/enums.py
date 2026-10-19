@@ -113,3 +113,18 @@ class SubscriptionUsageStatus(str, Enum):
     RESERVED = "reserved"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class OutboxStatus(str, Enum):
+    """Lifecycle of a durable transactional-outbox email.
+
+    ``PENDING``   - stored and waiting for a free worker, or scheduled to retry.
+    ``PROCESSING``- claimed by a worker (a lease is held until it is released).
+    ``SENT``      - the provider accepted the message; terminal success.
+    ``FAILED``    - the retry budget was exhausted; terminal failure.
+    """
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    SENT = "sent"
+    FAILED = "failed"

@@ -225,15 +225,16 @@ class SubscriptionService:
             expires_at=sub.expires_at,
         )
 
-        # Best-effort lifecycle email + admin invalidation scheduled after commit.
-        # Email is gated on a freshly created notification so re-entrant callers
-        # cannot resend it.
+        # Durable lifecycle email + admin invalidation. Email is enqueued in the
+        # SAME transaction (gated on a freshly created notification) so a
+        # re-entrant caller cannot resend it.
         if notification is not None:
-            schedule_activation_email(
+            await schedule_activation_email(
                 self.session,
                 to_email=user.email,
                 plan_name=plan.name,
                 expires_at=sub.expires_at,
+                idempotency_key=f"subscription_activated:{sub.id}",
             )
         schedule_admin_subscription_event(
             self.session,

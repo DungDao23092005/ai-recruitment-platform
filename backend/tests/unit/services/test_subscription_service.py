@@ -119,10 +119,11 @@ def _patch_activation_notifier(monkeypatch):
     monkeypatch.setattr(
         "app.services.subscription_service.NotificationService", mock_cls
     )
-    # These helpers also register after_commit listeners on session.sync_session,
-    # which a MagicMock session cannot satisfy. Patch them at the usage site too.
+    # These helpers also enqueue into the outbox (an async call) and would
+    # register after-commit signals on session.sync_session, which a MagicMock
+    # session cannot satisfy. Patch them at the usage site too.
     monkeypatch.setattr(
-        "app.services.subscription_service.schedule_activation_email", MagicMock()
+        "app.services.subscription_service.schedule_activation_email", AsyncMock()
     )
     monkeypatch.setattr(
         "app.services.subscription_service.schedule_admin_subscription_event",

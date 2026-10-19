@@ -9,6 +9,7 @@ import {
   FileText,
   LayoutDashboard,
   LogOut,
+  Mail,
   Menu,
   PlusCircle,
   Search,
@@ -107,6 +108,7 @@ function useAppNav(role?: UserRole): NavSection[] {
         { to: '/admin/companies', label: 'Quản lý công ty', icon: Building },
         { to: '/admin/plans', label: 'Gói dịch vụ', icon: Sparkles },
         { to: '/admin/subscriptions', label: 'Thuê bao người dùng', icon: CreditCard },
+        { to: '/admin/emails', label: 'Hàng đợi email', icon: Mail },
       ],
     },
     {

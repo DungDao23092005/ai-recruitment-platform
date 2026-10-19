@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
     admin,
+    admin_emails,
     admin_plans,
     admin_subscriptions,
     ai,
@@ -34,6 +35,7 @@ api_router.include_router(
 api_router.include_router(ai.router, prefix="/ai", tags=["AI Engine"])
 api_router.include_router(payments.router, tags=["VNPAY Payments"])
 api_router.include_router(admin.router)
+api_router.include_router(admin_emails.router)
 api_router.include_router(plans.router)
 api_router.include_router(subscriptions.router)
 api_router.include_router(admin_plans.router)

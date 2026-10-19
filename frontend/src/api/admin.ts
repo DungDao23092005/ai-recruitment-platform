@@ -19,6 +19,10 @@ import type {
   AdminSubscriptionChangePlan,
   AdminSubscriptionRevoke,
   AdminSubscriptionListItem,
+  AdminEmailOutboxList,
+  AdminEmailOutboxListParams,
+  AdminEmailOutboxMessage,
+  AdminEmailOutboxStats,
 } from '@/types/admin'
 
 export async function getAdminStats(): Promise<AdminStats> {
@@ -142,5 +146,28 @@ export async function revokeAdminSubscription(
   return apiClient.post<AdminSubscriptionRevoke, AdminSubscriptionListItem>(
     `/admin/subscriptions/${id}/revoke`,
     data,
+  )
+}
+
+export async function getAdminEmails(
+  params: AdminEmailOutboxListParams,
+): Promise<AdminEmailOutboxList> {
+  return apiClient.get<AdminEmailOutboxList, AdminEmailOutboxList>(
+    '/admin/emails',
+    { params },
+  )
+}
+
+export async function getAdminEmailStats(): Promise<AdminEmailOutboxStats> {
+  return apiClient.get<AdminEmailOutboxStats, AdminEmailOutboxStats>(
+    '/admin/emails/stats',
+  )
+}
+
+export async function retryAdminEmail(
+  messageId: string,
+): Promise<AdminEmailOutboxMessage> {
+  return apiClient.post<undefined, AdminEmailOutboxMessage>(
+    `/admin/emails/${messageId}/retry`,
   )
 }

@@ -244,3 +244,45 @@ export interface AdminSubscriptionChangePlan {
 export interface AdminSubscriptionRevoke {
   reason: string
 }
+
+export type AdminEmailStatus = 'pending' | 'processing' | 'sent' | 'failed'
+
+export interface AdminEmailOutboxMessage {
+  id: string
+  event_type: string
+  to_email: string
+  subject: string
+  status: AdminEmailStatus
+  attempts: number
+  max_attempts: number
+  next_attempt_at: string
+  processing_started_at: string | null
+  sent_at: string | null
+  last_error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AdminEmailOutboxList {
+  items: AdminEmailOutboxMessage[]
+  total: number
+  skip: number
+  limit: number
+}
+
+export interface AdminEmailOutboxListParams {
+  skip: number
+  limit: number
+  status?: AdminEmailStatus
+  event_type?: string
+  search?: string
+}
+
+export interface AdminEmailOutboxStats {
+  pending: number
+  processing: number
+  sent: number
+  failed: number
+  total: number
+  oldest_pending_created_at: string | null
+}
