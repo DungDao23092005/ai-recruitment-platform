@@ -806,6 +806,36 @@ describe('useNotificationStream', () => {
       window.removeEventListener('admin:subscription:changed', listener);
     });
 
+    it('rebroadcasts email.outbox.updated as admin:email_outbox:updated', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const listener = vi.fn();
+      window.addEventListener('admin:email_outbox:updated', listener);
+      const detail = {
+        message_id: 'msg-1',
+        status: 'sent',
+        action: 'sent',
+        attempts: 1,
+        max_attempts: 3,
+        next_attempt_at: null,
+        sent_at: '2026-01-03T00:00:00Z',
+        has_error: false,
+        timestamp: '2026-01-03T00:00:01Z',
+      };
+      act(() => { es.emitEvent('email.outbox.updated', detail); });
+      await flushMicrotasks();
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual(detail);
+      window.removeEventListener('admin:email_outbox:updated', listener);
+    });
+
     it('dispatches stream:connected on (re)open so listeners can catch up', async () => {
       setupUnreadCountMock(1);
       renderHook();

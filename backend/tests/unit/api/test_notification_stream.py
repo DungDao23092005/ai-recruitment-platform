@@ -17,6 +17,10 @@ from fastapi import HTTPException
 from app.api.v1.endpoints import notifications as notifications_module
 from app.api.v1.endpoints.notifications import notification_stream
 from app.services.account_lock_realtime import ACCOUNT_LOCKED_EVENT
+from app.services.email_outbox_realtime import (
+    ADMIN_EMAILS_CHANNEL,
+    EMAIL_OUTBOX_UPDATED_EVENT,
+)
 from app.services.subscription_realtime import (
     ADMIN_SUBSCRIPTIONS_CHANNEL,
     ADMIN_SUBSCRIPTION_CHANGED_EVENT,
@@ -98,9 +102,39 @@ async def test_admin_ticket_subscribes_personal_and_admin_channels():
     assert set(pubsub.subscribed) == {
         f"notifications:user:{user_id}",
         ADMIN_SUBSCRIPTIONS_CHANNEL,
+        ADMIN_EMAILS_CHANNEL,
     }
     assert f"event: {ADMIN_SUBSCRIPTION_CHANGED_EVENT}" in admin_event
     assert '"action": "activated"' in admin_event
+
+
+async def test_admin_email_outbox_message_uses_named_event():
+    user_id = uuid.uuid4()
+    payload = {
+        "type": EMAIL_OUTBOX_UPDATED_EVENT,
+        "message_id": str(uuid.uuid4()),
+        "status": "sent",
+        "action": "sent",
+    }
+    pubsub = _FakePubSub([_message(ADMIN_EMAILS_CHANNEL, payload)])
+    manager = _FakePubSubManager(_ticket(user_id, is_admin=True), pubsub)
+
+    response = await notification_stream(ticket="t", pubsub=manager)  # type: ignore[arg-type]
+    generator = response.body_iterator
+
+    await _next(generator)
+    outbox_event = await _next(generator)
+    await generator.aclose()
+
+    assert ADMIN_EMAILS_CHANNEL in pubsub.subscribed
+    assert f"event: {EMAIL_OUTBOX_UPDATED_EVENT}" in outbox_event
+    assert "event: notification.created" not in outbox_event
+    assert f"event: {ADMIN_SUBSCRIPTION_CHANGED_EVENT}" not in outbox_event
+    data_line = next(
+        line for line in outbox_event.splitlines() if line.startswith("data: ")
+    )
+    parsed = json.loads(data_line[len("data: ") :])
+    assert parsed["status"] == "sent"
 
 
 async def test_non_admin_ticket_never_subscribes_admin_channel():
@@ -116,6 +150,7 @@ async def test_non_admin_ticket_never_subscribes_admin_channel():
 
     assert pubsub.subscribed == [f"notifications:user:{user_id}"]
     assert ADMIN_SUBSCRIPTIONS_CHANNEL not in pubsub.subscribed
+    assert ADMIN_EMAILS_CHANNEL not in pubsub.subscribed
     assert "event: notification.created" in personal_event
 
 
@@ -227,6 +262,7 @@ async def test_bounded_stream_lifetime_terminates(monkeypatch):
     assert set(pubsub.unsubscribed) == {
         f"notifications:user:{user_id}",
         ADMIN_SUBSCRIPTIONS_CHANNEL,
+        ADMIN_EMAILS_CHANNEL,
     }
 
 

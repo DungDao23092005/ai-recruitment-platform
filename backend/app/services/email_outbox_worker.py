@@ -23,6 +23,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import settings
 from app.database.base_class import utc_now
 from app.database.session import async_session_factory
+from app.domain.enums import OutboxStatus
+from app.services.email_outbox_realtime import (
+    ACTION_CLAIMED,
+    ACTION_FAILED,
+    ACTION_LEASE_RECOVERED,
+    ACTION_RETRY_SCHEDULED,
+    ACTION_SENT,
+    schedule_email_outbox_event,
+)
 from app.services.email_outbox_service import (
     claim_due_messages,
     compute_backoff_seconds,
@@ -147,6 +156,15 @@ class EmailOutboxWorker:
                 recovered = await recover_stale_leases(
                     session, lease_seconds=self.lease_seconds
                 )
+                if recovered:
+                    # One aggregate signal for the whole sweep: stale rows carry
+                    # no usable identity here and per-row noise is unwanted.
+                    schedule_email_outbox_event(
+                        session,
+                        message_id=None,
+                        status=OutboxStatus.PENDING.value,
+                        action=ACTION_LEASE_RECOVERED,
+                    )
                 await session.commit()
             except Exception:
                 await session.rollback()
@@ -163,6 +181,16 @@ class EmailOutboxWorker:
                 messages = await claim_due_messages(
                     session, batch_size=self.batch_size, lock_hints=hints
                 )
+                # Bounded by ``batch_size``: one PROCESSING event per claimed row.
+                for message in messages:
+                    schedule_email_outbox_event(
+                        session,
+                        message_id=message["id"],
+                        status=OutboxStatus.PROCESSING.value,
+                        action=ACTION_CLAIMED,
+                        attempts=int(message["attempts"]),
+                        max_attempts=int(message["max_attempts"]),
+                    )
                 # Commit the claim BEFORE any provider call so a concurrent
                 # worker can never see these rows as pending again.
                 await session.commit()
@@ -196,7 +224,15 @@ class EmailOutboxWorker:
     async def _record_sent(self, message_id: Any) -> None:
         try:
             async with self._session_factory() as session:
-                await mark_sent(session, message_id=message_id)
+                moment = utc_now()
+                await mark_sent(session, message_id=message_id, now=moment)
+                schedule_email_outbox_event(
+                    session,
+                    message_id=message_id,
+                    status=OutboxStatus.SENT.value,
+                    action=ACTION_SENT,
+                    sent_at=moment,
+                )
                 await session.commit()
             logger.info(
                 "Email outbox message %s delivered",
@@ -228,6 +264,22 @@ class EmailOutboxWorker:
                     max_attempts=max_attempts,
                     error=str(exc),
                     next_attempt_at=next_attempt_at,
+                )
+                schedule_email_outbox_event(
+                    session,
+                    message_id=message["id"],
+                    status=status,
+                    action=(
+                        ACTION_RETRY_SCHEDULED
+                        if status == OutboxStatus.PENDING.value
+                        else ACTION_FAILED
+                    ),
+                    attempts=attempts,
+                    max_attempts=max_attempts,
+                    next_attempt_at=next_attempt_at,
+                    # A failure occurred, but the provider error text is never
+                    # included - only a boolean flag crosses the wire.
+                    has_error=True,
                 )
                 await session.commit()
             logger.info(

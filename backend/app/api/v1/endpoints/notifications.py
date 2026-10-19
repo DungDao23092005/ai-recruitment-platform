@@ -19,6 +19,10 @@ from app.models import User
 from app.schemas.notification import NotificationRead, UnreadCountResponse
 from app.services.notification_service import NotificationService
 from app.services.account_lock_realtime import ACCOUNT_LOCKED_EVENT
+from app.services.email_outbox_realtime import (
+    ADMIN_EMAILS_CHANNEL,
+    EMAIL_OUTBOX_UPDATED_EVENT,
+)
 from app.services.subscription_realtime import (
     ADMIN_SUBSCRIPTIONS_CHANNEL,
     ADMIN_SUBSCRIPTION_CHANGED_EVENT,
@@ -189,6 +193,7 @@ async def notification_stream(
     channels = [personal_channel]
     if is_admin:
         channels.append(ADMIN_SUBSCRIPTIONS_CHANNEL)
+        channels.append(ADMIN_EMAILS_CHANNEL)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         pubsub_client = pubsub._redis.pubsub()
@@ -216,8 +221,11 @@ async def notification_stream(
                     if message is not None and message["type"] == "message":
                         try:
                             data = message["data"]
-                            if message.get("channel") == ADMIN_SUBSCRIPTIONS_CHANNEL:
+                            channel = message.get("channel")
+                            if channel == ADMIN_SUBSCRIPTIONS_CHANNEL:
                                 event_name = ADMIN_SUBSCRIPTION_CHANGED_EVENT
+                            elif channel == ADMIN_EMAILS_CHANNEL:
+                                event_name = EMAIL_OUTBOX_UPDATED_EVENT
                             else:
                                 event_name = _personal_event_name(data)
                             yield f"event: {event_name}\ndata: {data}\n\n"

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react'
 import { vi } from 'vitest'
 import { AdminEmailsPage } from '@/features/admin/pages/AdminEmailsPage'
 import { getAdminEmails, getAdminEmailStats, retryAdminEmail } from '@/api/admin'
@@ -158,5 +158,184 @@ describe('AdminEmailsPage', () => {
     expect(
       screen.getByRole('button', { name: /gửi lại email msg-1/i }),
     ).toBeDisabled()
+  })
+})
+
+const OUTBOX_UPDATED_EVENT = 'admin:email_outbox:updated'
+const STREAM_CONNECTED_EVENT = 'stream:connected'
+
+function emitOutboxUpdate(detail: Record<string, unknown>) {
+  act(() => {
+    window.dispatchEvent(
+      new CustomEvent(OUTBOX_UPDATED_EVENT, { detail }),
+    )
+  })
+}
+
+describe('AdminEmailsPage realtime', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getAdminEmails).mockResolvedValue(mockList)
+    vi.mocked(getAdminEmailStats).mockResolvedValue(mockStats)
+    vi.mocked(retryAdminEmail).mockResolvedValue({ ...mockMessage, status: 'pending' })
+  })
+
+  it('updates a visible row in place on an outbox event without a reload', async () => {
+    render(<AdminEmailsPage />)
+    await waitFor(() =>
+      expect(screen.getByText('buyer@example.com')).toBeInTheDocument(),
+    )
+
+    const rowBefore = screen
+      .getByText('buyer@example.com')
+      .closest('tr') as HTMLElement
+    expect(within(rowBefore).getByText('Thất bại')).toBeInTheDocument()
+
+    emitOutboxUpdate({
+      message_id: 'msg-1',
+      status: 'sent',
+      action: 'sent',
+      attempts: 3,
+      max_attempts: 3,
+      sent_at: '2026-01-03T10:00:00Z',
+      timestamp: '2026-01-03T10:00:01Z',
+    })
+
+    // The row flips without waiting for the debounced reconciliation.
+    const rowAfter = screen
+      .getByText('buyer@example.com')
+      .closest('tr') as HTMLElement
+    expect(within(rowAfter).getByText('Đã gửi')).toBeInTheDocument()
+    expect(within(rowAfter).queryByText('Thất bại')).not.toBeInTheDocument()
+  })
+
+  it('coalesces a burst of events into a single silent refetch', async () => {
+    render(<AdminEmailsPage />)
+    await waitFor(() => expect(getAdminEmails).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      for (let index = 0; index < 5; index += 1) {
+        window.dispatchEvent(
+          new CustomEvent(OUTBOX_UPDATED_EVENT, {
+            detail: {
+              message_id: `off-page-${index}`,
+              status: 'pending',
+              timestamp: `2026-01-03T10:00:0${index}Z`,
+            },
+          }),
+        )
+      }
+    })
+
+    await waitFor(() => expect(getAdminEmails).toHaveBeenCalledTimes(2))
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    })
+    expect(getAdminEmails).toHaveBeenCalledTimes(2)
+  })
+
+  it('silently refetches when the stream reconnects', async () => {
+    render(<AdminEmailsPage />)
+    await waitFor(() => expect(getAdminEmails).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(STREAM_CONNECTED_EVENT))
+    })
+    await waitFor(() => expect(getAdminEmails).toHaveBeenCalledTimes(2))
+  })
+
+  it('silently refetches when the tab becomes visible again', async () => {
+    const original = Object.getOwnPropertyDescriptor(
+      Document.prototype,
+      'visibilityState',
+    )
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+
+    render(<AdminEmailsPage />)
+    await waitFor(() => expect(getAdminEmails).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await waitFor(() => expect(getAdminEmails).toHaveBeenCalledTimes(2))
+
+    if (original) {
+      Object.defineProperty(Document.prototype, 'visibilityState', original)
+    }
+  })
+
+  it('reflects PENDING locally after a manual retry', async () => {
+    vi.mocked(getAdminEmails)
+      .mockResolvedValueOnce({
+        ...mockList,
+        items: [{ ...mockMessage, status: 'failed' }],
+      })
+      .mockResolvedValue({
+        ...mockList,
+        items: [{ ...mockMessage, status: 'pending', attempts: 0 }],
+      })
+    vi.mocked(retryAdminEmail).mockResolvedValue({
+      ...mockMessage,
+      status: 'pending',
+      attempts: 0,
+    })
+
+    render(<AdminEmailsPage />)
+    await waitFor(() =>
+      expect(screen.getByText('buyer@example.com')).toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /gửi lại email msg-1/i }))
+
+    await waitFor(() => expect(retryAdminEmail).toHaveBeenCalledWith('msg-1'))
+    await waitFor(() => {
+      const row = screen
+        .getByText('buyer@example.com')
+        .closest('tr') as HTMLElement
+      expect(within(row).getByText('Chờ gửi')).toBeInTheDocument()
+    })
+  })
+
+  it('drops a row immediately when an event makes it stop matching the filter', async () => {
+    let call = 0
+    vi.mocked(getAdminEmails).mockImplementation(() => {
+      call += 1
+      if (call <= 2) {
+        return Promise.resolve({
+          ...mockList,
+          items: [{ ...mockMessage, status: 'failed' }],
+        })
+      }
+      return Promise.resolve({ ...mockList, items: [], total: 0 })
+    })
+
+    render(<AdminEmailsPage />)
+    await waitFor(() =>
+      expect(screen.getByText('buyer@example.com')).toBeInTheDocument(),
+    )
+
+    fireEvent.change(screen.getByLabelText('Lọc theo trạng thái'), {
+      target: { value: 'failed' },
+    })
+    await waitFor(() =>
+      expect(getAdminEmails).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed' }),
+      ),
+    )
+    await waitFor(() =>
+      expect(screen.getByText('buyer@example.com')).toBeInTheDocument(),
+    )
+
+    emitOutboxUpdate({
+      message_id: 'msg-1',
+      status: 'sent',
+      action: 'sent',
+      timestamp: '2026-01-03T10:05:00Z',
+    })
+
+    expect(screen.queryByText('buyer@example.com')).not.toBeInTheDocument()
   })
 })

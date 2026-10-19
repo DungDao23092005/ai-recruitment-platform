@@ -15,6 +15,11 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorBanner } from '@/components/ui/error-banner'
 import { getFriendlyErrorMessage } from '@/utils/errors'
+import {
+  ADMIN_EMAIL_OUTBOX_UPDATED_DOM_EVENT,
+  STREAM_CONNECTED_DOM_EVENT,
+  type AdminEmailOutboxUpdatedDetail,
+} from '@/hooks/useNotificationStream'
 import type {
   AdminEmailOutboxMessage,
   AdminEmailOutboxStats,
@@ -22,6 +27,7 @@ import type {
 } from '@/types/admin'
 
 export const ADMIN_EMAIL_PAGE_SIZE = 10
+export const ADMIN_EMAIL_REFRESH_DEBOUNCE_MS = 150
 
 type ListState =
   | { kind: 'loading' }
@@ -50,6 +56,20 @@ const STATUS_FILTERS: { value: '' | AdminEmailStatus; label: string }[] = [
   { value: 'sent', label: 'Đã gửi' },
   { value: 'failed', label: 'Thất bại' },
 ]
+
+const KNOWN_STATUSES: readonly AdminEmailStatus[] = [
+  'pending',
+  'processing',
+  'sent',
+  'failed',
+]
+
+function isAdminEmailStatus(value: unknown): value is AdminEmailStatus {
+  return (
+    typeof value === 'string' &&
+    (KNOWN_STATUSES as readonly string[]).includes(value)
+  )
+}
 
 export function formatEmailDateTime(value: string | null): string {
   if (!value) return '—'
@@ -126,21 +146,35 @@ export function AdminEmailList() {
   const [retryError, setRetryError] = useState<string | null>(null)
   const [retryingId, setRetryingId] = useState<string | null>(null)
 
+  // Latest query params, read by the realtime/silent paths so event-driven
+  // refetches use the current page/search/filter without rebinding listeners.
   const paramsRef = useRef({ page, searchQuery, statusFilter })
   paramsRef.current = { page, searchQuery, statusFilter }
 
+  // Monotonic request generation: only the newest in-flight request may write
+  // state, so a slow earlier response can never clobber a newer one.
   const loadGenerationRef = useRef(0)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Per-message last-applied event timestamp, so an out-of-order or duplicate
+  // event can never overwrite a newer state.
+  const lastEventTimestampRef = useRef<Map<string, string>>(new Map())
 
-  const fetchStats = useCallback(async () => {
+  const fetchStats = useCallback(async (mode: 'initial' | 'silent' = 'initial') => {
+    if (mode === 'initial') setStatsState({ kind: 'loading' })
     try {
       const stats = await getAdminEmailStats()
       setStatsState({ kind: 'success', stats })
-    } catch {
-      setStatsState({ kind: 'error' })
+    } catch (err) {
+      if (mode === 'initial') {
+        setStatsState({ kind: 'error' })
+      } else {
+        // A silent refresh must never replace good numbers with an error card.
+        console.warn('Silent email stats refresh failed:', err)
+      }
     }
   }, [])
 
-  const fetchList = useCallback(async () => {
+  const fetchList = useCallback(async (mode: 'initial' | 'silent' = 'initial') => {
     const generation = ++loadGenerationRef.current
     const {
       page: currentPage,
@@ -148,7 +182,9 @@ export function AdminEmailList() {
       statusFilter: currentStatus,
     } = paramsRef.current
 
-    setListState({ kind: 'loading' })
+    if (mode === 'initial') {
+      setListState({ kind: 'loading' })
+    }
 
     try {
       const data = await getAdminEmails({
@@ -161,17 +197,128 @@ export function AdminEmailList() {
       setListState({ kind: 'success', items: data.items, total: data.total })
     } catch (err) {
       if (generation !== loadGenerationRef.current) return
-      setListState({ kind: 'error', message: getFriendlyErrorMessage(err) })
+      if (mode === 'initial') {
+        setListState({ kind: 'error', message: getFriendlyErrorMessage(err) })
+      } else {
+        console.warn('Silent email list refresh failed:', err)
+      }
     }
   }, [])
 
   useEffect(() => {
-    void fetchStats()
+    void fetchStats('initial')
   }, [fetchStats])
 
   useEffect(() => {
-    void fetchList()
+    void fetchList('initial')
   }, [page, searchQuery, statusFilter, fetchList])
+
+  // Apply a single event's status/field change to the visible page in place.
+  // Off-page identifiers are ignored (the debounced refetch is authoritative).
+  const applyStatusTransition = useCallback(
+    (
+      messageId: string,
+      status: AdminEmailStatus,
+      patch: Partial<AdminEmailOutboxMessage>,
+    ) => {
+      setListState((prev) => {
+        if (prev.kind !== 'success') return prev
+        const index = prev.items.findIndex((item) => item.id === messageId)
+        if (index === -1) return prev
+
+        const currentFilter = paramsRef.current.statusFilter
+        if (currentFilter && status !== currentFilter) {
+          // No longer matches the server-side filter: drop it and let the
+          // debounced reconciliation restore an authoritative page.
+          const items = prev.items.filter((item) => item.id !== messageId)
+          return { kind: 'success', items, total: Math.max(0, prev.total - 1) }
+        }
+
+        const items = prev.items.slice()
+        items[index] = { ...prev.items[index], ...patch, status }
+        return { kind: 'success', items, total: prev.total }
+      })
+    },
+    [],
+  )
+
+  const reconcile = useCallback(() => {
+    void fetchList('silent')
+    void fetchStats('silent')
+  }, [fetchList, fetchStats])
+
+  const scheduleSilentReconcile = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      debounceRef.current = null
+      reconcile()
+    }, ADMIN_EMAIL_REFRESH_DEBOUNCE_MS)
+  }, [reconcile])
+
+  const handleRealtimeUpdate = useCallback(
+    (event: Event) => {
+      const detail = (event as CustomEvent<AdminEmailOutboxUpdatedDetail>).detail
+      const messageId =
+        typeof detail?.message_id === 'string' ? detail.message_id : null
+      const status = detail?.status
+
+      if (messageId && isAdminEmailStatus(status)) {
+        const timestamp =
+          typeof detail.timestamp === 'string' ? detail.timestamp : null
+        const lastTimestamp = lastEventTimestampRef.current.get(messageId)
+        if (timestamp && lastTimestamp && timestamp < lastTimestamp) {
+          // Stale/duplicate event: a newer state was already applied.
+          return
+        }
+        if (timestamp) lastEventTimestampRef.current.set(messageId, timestamp)
+
+        const patch: Partial<AdminEmailOutboxMessage> = {}
+        if (typeof detail.attempts === 'number') patch.attempts = detail.attempts
+        if (typeof detail.max_attempts === 'number') {
+          patch.max_attempts = detail.max_attempts
+        }
+        if (detail.next_attempt_at != null) {
+          patch.next_attempt_at = detail.next_attempt_at
+        }
+        if (detail.sent_at != null) patch.sent_at = detail.sent_at
+        applyStatusTransition(messageId, status, patch)
+      }
+
+      // Always reconcile: covers new rows, off-page changes, filter changes,
+      // aggregate lease-recovery signals and authoritative counts.
+      scheduleSilentReconcile()
+    },
+    [applyStatusTransition, scheduleSilentReconcile],
+  )
+
+  // Realtime + lifecycle refresh: apply events immediately, coalesce bursts,
+  // catch up on (re)connect, and refetch when the tab becomes visible again.
+  useEffect(() => {
+    const handleConnected = () => scheduleSilentReconcile()
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') scheduleSilentReconcile()
+    }
+
+    window.addEventListener(
+      ADMIN_EMAIL_OUTBOX_UPDATED_DOM_EVENT,
+      handleRealtimeUpdate,
+    )
+    window.addEventListener(STREAM_CONNECTED_DOM_EVENT, handleConnected)
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      window.removeEventListener(
+        ADMIN_EMAIL_OUTBOX_UPDATED_DOM_EVENT,
+        handleRealtimeUpdate,
+      )
+      window.removeEventListener(STREAM_CONNECTED_DOM_EVENT, handleConnected)
+      document.removeEventListener('visibilitychange', handleVisibility)
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current)
+        debounceRef.current = null
+      }
+    }
+  }, [handleRealtimeUpdate, scheduleSilentReconcile])
 
   const handleSearchSubmit = (event: React.FormEvent) => {
     event.preventDefault()
@@ -188,8 +335,18 @@ export function AdminEmailList() {
     setRetryError(null)
     setRetryingId(message.id)
     try {
-      await retryAdminEmail(message.id)
-      await Promise.all([fetchList(), fetchStats()])
+      const updated = await retryAdminEmail(message.id)
+      // Reflect the authoritative requeue immediately; do NOT report SENT - the
+      // outbox worker still has to deliver it. Keep listening for progress.
+      applyStatusTransition(updated.id, updated.status, {
+        attempts: updated.attempts,
+        max_attempts: updated.max_attempts,
+        next_attempt_at: updated.next_attempt_at,
+        sent_at: updated.sent_at,
+        last_error: updated.last_error,
+        processing_started_at: updated.processing_started_at,
+      })
+      await Promise.all([fetchList('silent'), fetchStats('silent')])
     } catch (err) {
       setRetryError(getFriendlyErrorMessage(err))
     } finally {
@@ -261,7 +418,7 @@ export function AdminEmailList() {
       {listState.kind === 'error' ? (
         <ErrorBanner
           message={listState.message}
-          onRetry={() => void fetchList()}
+          onRetry={() => void fetchList('initial')}
         />
       ) : null}
 

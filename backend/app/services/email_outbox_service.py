@@ -35,6 +35,11 @@ from app.models.email_outbox import (
     TO_EMAIL_MAX_LENGTH,
     EmailOutbox,
 )
+from app.services.email_outbox_realtime import (
+    ACTION_ADMIN_RETRY,
+    ACTION_ENQUEUED,
+    schedule_email_outbox_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +139,9 @@ async def enqueue_email(
             return None
 
     row = EmailOutbox(
+        # Assign the identifier up front so the realtime PENDING event can name
+        # the row before the surrounding transaction flushes.
+        id=uuid.uuid4(),
         event_type=event_type,
         to_email=_truncate(str(to_email), TO_EMAIL_MAX_LENGTH),
         subject=_truncate(subject, SUBJECT_MAX_LENGTH),
@@ -146,6 +154,16 @@ async def enqueue_email(
         idempotency_key=normalized_key,
     )
     session.add(row)
+    # Admins see the new message as soon as (and only if) the transaction commits.
+    schedule_email_outbox_event(
+        session,
+        message_id=row.id,
+        status=OutboxStatus.PENDING.value,
+        action=ACTION_ENQUEUED,
+        attempts=0,
+        max_attempts=row.max_attempts,
+        next_attempt_at=row.next_attempt_at,
+    )
     return row
 
 
@@ -394,6 +412,16 @@ class EmailOutboxService:
         message.processing_started_at = None
         message.last_error = None
         message.sent_at = None
+        # Broadcast the requeued state once the reset is durably committed.
+        schedule_email_outbox_event(
+            self.session,
+            message_id=message.id,
+            status=OutboxStatus.PENDING.value,
+            action=ACTION_ADMIN_RETRY,
+            attempts=0,
+            max_attempts=message.max_attempts,
+            next_attempt_at=now,
+        )
         await self.session.commit()
         await self.session.refresh(message)
         return message

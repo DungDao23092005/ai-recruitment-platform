@@ -7,11 +7,14 @@ import { useUnreadCountStore } from '@/stores/useUnreadCountStore';
 
 // Server-sent named event for admin subscription invalidations.
 export const ADMIN_SUBSCRIPTION_CHANGED_EVENT = 'admin.subscription.changed';
+// Server-sent named event for admin email-outbox status transitions.
+export const EMAIL_OUTBOX_UPDATED_EVENT = 'email.outbox.updated';
 // Server-sent named event emitted on the locked user's private channel when an
 // admin locks the account that is currently in use.
 export const ACCOUNT_LOCKED_EVENT = 'account.locked';
 // DOM events rebroadcast by this hook for interested UI components.
 export const ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT = 'admin:subscription:changed';
+export const ADMIN_EMAIL_OUTBOX_UPDATED_DOM_EVENT = 'admin:email_outbox:updated';
 export const STREAM_CONNECTED_DOM_EVENT = 'stream:connected';
 // DOM event rebroadcast when a subscription-related notification reaches the
 // current user (activation, plan change or revocation), so subscription views
@@ -26,6 +29,18 @@ export interface AdminSubscriptionChangedDetail {
   user_id?: string;
   subscription_id?: string | null;
   action?: string;
+  timestamp?: string;
+}
+
+export interface AdminEmailOutboxUpdatedDetail {
+  message_id?: string | null;
+  status?: string;
+  action?: string;
+  attempts?: number | null;
+  max_attempts?: number | null;
+  next_attempt_at?: string | null;
+  sent_at?: string | null;
+  has_error?: boolean;
   timestamp?: string;
 }
 
@@ -260,6 +275,17 @@ export function useNotificationStream() {
           );
         } catch (error) {
           console.warn('Failed to process admin subscription event:', error);
+        }
+      });
+
+      eventSource.addEventListener(EMAIL_OUTBOX_UPDATED_EVENT, (event) => {
+        try {
+          const data = JSON.parse(event.data) as AdminEmailOutboxUpdatedDetail;
+          window.dispatchEvent(
+            new CustomEvent(ADMIN_EMAIL_OUTBOX_UPDATED_DOM_EVENT, { detail: data })
+          );
+        } catch (error) {
+          console.warn('Failed to process admin email outbox event:', error);
         }
       });
 
