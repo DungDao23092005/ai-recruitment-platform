@@ -56,11 +56,43 @@ describe('StatusUpdateModal', () => {
   it('only contains valid transitions for an interviewing application', () => {
     renderModal('interviewing')
 
+    expect(selectOptions()).toEqual([
+      'under_review',
+      'offered',
+      'accepted',
+      'rejected',
+    ])
+  })
+
+  it('only contains valid transitions for an offered application', () => {
+    renderModal('offered')
+
     expect(selectOptions()).toEqual(['accepted', 'rejected'])
+  })
+
+  it('does not expose statuses forbidden by the published pipeline', () => {
+    renderModal('interviewing')
+
+    const options = selectOptions()
+    expect(options).toContain('offered')
+    ;['shortlisted', 'withdrawn', 'interviewing', 'applied'].forEach(
+      (status) => {
+        expect(options).not.toContain(status)
+      },
+    )
   })
 
   it('shows a notice for terminal states with no further transitions', () => {
     renderModal('accepted')
+
+    expect(screen.queryByLabelText('Trạng thái')).not.toBeInTheDocument()
+    expect(
+      screen.getByText(/không còn trạng thái tuyển dụng nào/),
+    ).toBeInTheDocument()
+  })
+
+  it('shows a notice for the offered terminal transition source', () => {
+    renderModal('rejected')
 
     expect(screen.queryByLabelText('Trạng thái')).not.toBeInTheDocument()
     expect(

@@ -2,8 +2,15 @@ import apiClient from '@/api/client'
 import type { MatchResult } from '@/types/ai'
 import type {
   Application,
+  ApplicationActivity,
   ApplicationDetail,
+  ApplicationNote,
+  ApplicationStatus,
   ApplicationWithJob,
+  InterviewEvaluation,
+  InterviewEvaluationCreate,
+  InterviewEvaluationUpdate,
+  PageParams,
 } from '@/types/application'
 
 export async function applyJob(jobId: string): Promise<Application> {
@@ -67,4 +74,112 @@ export async function getMyApplicationForJob(
     { params: { job_id: jobId } },
   )
   return result[0] ?? null
+}
+
+export async function updateApplicationStatus(
+  applicationId: string,
+  status: ApplicationStatus,
+): Promise<Application> {
+  return apiClient.patch<Application, Application>(
+    `/applications/${applicationId}/status`,
+    { status },
+  )
+}
+
+export async function listApplicationNotes(
+  applicationId: string,
+  params: PageParams = {},
+): Promise<ApplicationNote[]> {
+  return apiClient.get<ApplicationNote[], ApplicationNote[]>(
+    `/applications/${applicationId}/notes`,
+    { params },
+  )
+}
+
+export async function createApplicationNote(
+  applicationId: string,
+  content: string,
+): Promise<ApplicationNote> {
+  return apiClient.post<ApplicationNote, ApplicationNote>(
+    `/applications/${applicationId}/notes`,
+    { content },
+  )
+}
+
+export async function updateApplicationNote(
+  applicationId: string,
+  noteId: string,
+  content: string,
+): Promise<ApplicationNote> {
+  return apiClient.patch<ApplicationNote, ApplicationNote>(
+    `/applications/${applicationId}/notes/${noteId}`,
+    { content },
+  )
+}
+
+export async function deleteApplicationNote(
+  applicationId: string,
+  noteId: string,
+): Promise<void> {
+  await apiClient.delete<void, void>(
+    `/applications/${applicationId}/notes/${noteId}`,
+  )
+}
+
+export async function listApplicationEvaluations(
+  applicationId: string,
+): Promise<InterviewEvaluation[]> {
+  return apiClient.get<InterviewEvaluation[], InterviewEvaluation[]>(
+    `/applications/${applicationId}/evaluations`,
+  )
+}
+
+export async function listInterviewEvaluations(
+  applicationId: string,
+  interviewId: string,
+): Promise<InterviewEvaluation[]> {
+  return apiClient.get<InterviewEvaluation[], InterviewEvaluation[]>(
+    `/applications/${applicationId}/interviews/${interviewId}/evaluations`,
+  )
+}
+
+export async function createInterviewEvaluation(
+  applicationId: string,
+  interviewId: string,
+  data: InterviewEvaluationCreate,
+): Promise<InterviewEvaluation> {
+  return apiClient.post<InterviewEvaluation, InterviewEvaluation>(
+    `/applications/${applicationId}/interviews/${interviewId}/evaluations`,
+    data,
+  )
+}
+
+export async function updateInterviewEvaluation(
+  applicationId: string,
+  evaluationId: string,
+  data: InterviewEvaluationUpdate,
+): Promise<InterviewEvaluation> {
+  return apiClient.patch<InterviewEvaluation, InterviewEvaluation>(
+    `/applications/${applicationId}/evaluations/${evaluationId}`,
+    data,
+  )
+}
+
+export async function deleteInterviewEvaluation(
+  applicationId: string,
+  evaluationId: string,
+): Promise<void> {
+  await apiClient.delete<void, void>(
+    `/applications/${applicationId}/evaluations/${evaluationId}`,
+  )
+}
+
+export async function listApplicationActivities(
+  applicationId: string,
+  params: PageParams = {},
+): Promise<ApplicationActivity[]> {
+  return apiClient.get<ApplicationActivity[], ApplicationActivity[]>(
+    `/applications/${applicationId}/activities`,
+    { params },
+  )
 }

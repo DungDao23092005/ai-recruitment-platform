@@ -4,20 +4,18 @@ import apiClient from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
-import { ApplicationStatusBadge } from '@/components/common/ApplicationStatusBadge'
+import {
+  APPLICATION_STATUS_LABELS,
+  ApplicationStatusBadge,
+} from '@/components/common/ApplicationStatusBadge'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { Application, ApplicationStatus } from '@/types/application'
 
-export const APPLICATION_STATUS_LABELS: Record<ApplicationStatus, string> = {
-  applied: 'Đã nộp',
-  under_review: 'Đang xem xét',
-  shortlisted: 'Lọt vòng ngắn',
-  interviewing: 'Đang phỏng vấn',
-  accepted: 'Đã chấp nhận',
-  rejected: 'Từ chối',
-  withdrawn: 'Đã rút',
-}
+export { APPLICATION_STATUS_LABELS }
 
+// Mirrors the backend ``_PUBLISHED_RECRUITER_TRANSITIONS`` map. Only states a
+// recruiter/admin may move an application to are listed; ``withdrawn`` is
+// candidate-only and terminal states have no outgoing transitions.
 export const RECRUITER_STATUS_TRANSITIONS: Record<
   ApplicationStatus,
   ApplicationStatus[]
@@ -25,7 +23,8 @@ export const RECRUITER_STATUS_TRANSITIONS: Record<
   applied: ['under_review', 'rejected'],
   under_review: ['shortlisted', 'rejected'],
   shortlisted: ['interviewing', 'rejected'],
-  interviewing: ['accepted', 'rejected'],
+  interviewing: ['under_review', 'offered', 'accepted', 'rejected'],
+  offered: ['accepted', 'rejected'],
   accepted: [],
   rejected: [],
   withdrawn: [],

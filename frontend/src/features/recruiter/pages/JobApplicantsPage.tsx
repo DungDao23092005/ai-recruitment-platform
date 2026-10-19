@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ChevronLeft, RefreshCw, Users } from 'lucide-react'
+import { ChevronLeft, LayoutGrid, RefreshCw, List, Users } from 'lucide-react'
 import { getMyJobById } from '@/api/jobs'
 import { getApplicationsByJob } from '@/api/applications'
 import { PageHeader } from '@/components/common/PageHeader'
@@ -10,12 +10,12 @@ import { EmptyState } from '@/components/ui/empty-state'
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { ApplicantList } from '@/features/recruiter/components/ApplicantList'
+import { HiringPipelineBoard } from '@/features/recruiter/components/HiringPipelineBoard'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { JOB_STATUS_LABELS, JOB_TYPE_LABELS } from '@/types/job'
 import type { Job, JobStatus } from '@/types/job'
@@ -37,9 +37,12 @@ interface JobApplicantsPageProps {
   backPath?: string
 }
 
+type ApplicantView = 'board' | 'list'
+
 export function JobApplicantsPage({ backPath = '/recruiter/jobs' }: JobApplicantsPageProps) {
   const { id } = useParams<{ id: string }>()
   const [state, setState] = useState<PageState>({ kind: 'loading' })
+  const [view, setView] = useState<ApplicantView>('board')
 
   const load = useCallback(() => {
     if (!id) {
@@ -80,6 +83,19 @@ export function JobApplicantsPage({ backPath = '/recruiter/jobs' }: JobApplicant
   useEffect(() => {
     return load()
   }, [load])
+
+  // Recompute the pipeline from server state after a status change without
+  // dropping the board into a full-page skeleton.
+  const refresh = useCallback(() => {
+    if (!id) return
+    Promise.all([getMyJobById(id), getApplicationsByJob(id)])
+      .then(([job, applications]) => {
+        setState({ kind: 'success', job, applications })
+      })
+      .catch(() => {
+        // Keep the last known good state; the user can retry manually.
+      })
+  }, [id])
 
   if (state.kind === 'loading') {
     return (
@@ -145,14 +161,14 @@ export function JobApplicantsPage({ backPath = '/recruiter/jobs' }: JobApplicant
       <Card>
         <CardHeader>
           <CardTitle className="text-xl">{job.title}</CardTitle>
-          <CardDescription className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
             <Badge variant={JOB_STATUS_VARIANT[job.status]}>
               {JOB_STATUS_LABELS[job.status]}
             </Badge>
             <span className="text-xs uppercase text-muted-foreground">
               {JOB_TYPE_LABELS[job.job_type]}
             </span>
-          </CardDescription>
+          </div>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
           {job.location}
@@ -166,7 +182,46 @@ export function JobApplicantsPage({ backPath = '/recruiter/jobs' }: JobApplicant
           description="Tin tuyển dụng này chưa nhận được đơn ứng tuyển nào."
         />
       ) : (
-        <ApplicantList applications={applications} />
+        <div className="space-y-4">
+          <div
+            role="group"
+            aria-label="Chế độ xem ứng viên"
+            className="flex items-center justify-end gap-1 rounded-lg border bg-muted/30 p-1"
+          >
+            <Button
+              type="button"
+              variant={view === 'board' ? 'secondary' : 'ghost'}
+              size="sm"
+              aria-pressed={view === 'board'}
+              onClick={() => setView('board')}
+            >
+              <LayoutGrid className="h-4 w-4" aria-hidden="true" />
+              Bảng tuyển dụng
+            </Button>
+            <Button
+              type="button"
+              variant={view === 'list' ? 'secondary' : 'ghost'}
+              size="sm"
+              aria-pressed={view === 'list'}
+              onClick={() => setView('list')}
+            >
+              <List className="h-4 w-4" aria-hidden="true" />
+              Danh sách
+            </Button>
+          </div>
+
+          {view === 'board' ? (
+            <HiringPipelineBoard
+              applications={applications}
+              onStatusChange={refresh}
+            />
+          ) : (
+            <ApplicantList
+              applications={applications}
+              onStatusChange={refresh}
+            />
+          )}
+        </div>
       )}
     </div>
   )

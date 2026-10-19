@@ -4,8 +4,10 @@ import {
   Briefcase,
   Building2,
   CalendarDays,
+  ClipboardList,
   FileText,
   GraduationCap,
+  History,
   Languages,
   Mail,
   Phone,
@@ -26,6 +28,18 @@ import { StatusUpdateModal } from './StatusUpdateModal'
 import type { MatchResult } from '@/types/ai'
 import type { Application, ApplicationDetail } from '@/types/application'
 import { InterviewManager } from './InterviewManager'
+import { ApplicationNoteList } from './ApplicationNoteList'
+import { InterviewEvaluationList } from './InterviewEvaluationList'
+import { ApplicationActivityTimeline } from './ApplicationActivityTimeline'
+
+type DetailTab = 'profile' | 'interviews' | 'notes' | 'activity'
+
+const DETAIL_TABS: { id: DetailTab; label: string; icon: React.ReactNode }[] = [
+  { id: 'profile', label: 'Hồ sơ & Match', icon: <FileText className="h-3.5 w-3.5" aria-hidden="true" /> },
+  { id: 'interviews', label: 'Phỏng vấn & Đánh giá', icon: <ClipboardList className="h-3.5 w-3.5" aria-hidden="true" /> },
+  { id: 'notes', label: 'Ghi chú nội bộ', icon: <Wrench className="h-3.5 w-3.5" aria-hidden="true" /> },
+  { id: 'activity', label: 'Lịch sử hoạt động', icon: <History className="h-3.5 w-3.5" aria-hidden="true" /> },
+]
 
 export interface ApplicationDetailModalProps {
   application: Application
@@ -276,6 +290,7 @@ export function ApplicationDetailModal({
     message?: string
   }>({ kind: 'loading' })
   const [showStatusUpdate, setShowStatusUpdate] = useState(false)
+  const [activeTab, setActiveTab] = useState<DetailTab>('profile')
   const [matchState, setMatchState] = useState<
     | { kind: 'idle' }
     | { kind: 'loading' }
@@ -399,83 +414,140 @@ export function ApplicationDetailModal({
               </div>
             </div>
 
-            <div className="space-y-3">
-              <SectionTitle icon={<FileText className="h-3.5 w-3.5" aria-hidden="true" />}>
-                Hồ sơ CV
-              </SectionTitle>
-              <DigitalCV parsedData={detail.resume} />
-            </div>
+            <div className="space-y-4">
+              <div
+                role="tablist"
+                aria-label="Chi tiết đơn ứng tuyển"
+                className="flex flex-wrap gap-1 border-b"
+              >
+                {DETAIL_TABS.map((tab) => {
+                  const isActive = activeTab === tab.id
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      role="tab"
+                      id={`detail-tab-${tab.id}`}
+                      aria-selected={isActive}
+                      aria-controls={`detail-panel-${tab.id}`}
+                      onClick={() => setActiveTab(tab.id)}
+                      className={
+                        'flex items-center gap-1.5 rounded-t-lg border-b-2 px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
+                        (isActive
+                          ? 'border-primary text-primary'
+                          : 'border-transparent text-muted-foreground hover:text-foreground')
+                      }
+                    >
+                      {tab.icon}
+                      {tab.label}
+                    </button>
+                  )
+                })}
+              </div>
 
-            <div className="space-y-3">
-              <SectionTitle icon={<Sparkles className="h-3.5 w-3.5" aria-hidden="true" />}>
-                AI Match
-              </SectionTitle>
-              {!detail.resume?.parsed_data ? (
-                <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/30 px-6 py-8 text-center">
-                  <Sparkles className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
-                  <p className="text-sm font-medium text-foreground">
-                    Chưa có dữ liệu CV để phân tích
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    Ứng viên chưa có CV được trích xuất, chưa thể tính điểm đối sánh.
-                  </p>
-                </div>
-              ) : matchState.kind === 'idle' ? (
-                <div className="rounded-xl border bg-muted/20 px-4 py-4">
-                  <p className="text-sm text-muted-foreground">
-                    Phân tích mức độ phù hợp của ứng viên với công việc bằng AI.
-                  </p>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="mt-3"
-                    onClick={runMatch}
-                  >
-                    <Sparkles className="h-4 w-4" aria-hidden="true" />
-                    Phân tích AI
-                  </Button>
-                </div>
-              ) : matchState.kind === 'loading' ? (
-                <div className="flex items-center gap-3 rounded-xl border bg-muted/30 px-4 py-6 text-sm text-muted-foreground">
-                  <Spinner size="md" />
-                  <span>Đang phân tích mức độ phù hợp...</span>
-                </div>
-              ) : matchState.kind === 'error' ? (
-                <div className="space-y-3 rounded-xl border border-destructive/30 bg-muted/20 px-4 py-4">
-                  <p role="alert" className="text-sm font-medium text-destructive">
-                    {matchState.message}
-                  </p>
-                  <Button variant="outline" size="sm" onClick={runMatch}>
-                    <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                    Thử lại
-                  </Button>
-                </div>
-              ) : matchState.kind === 'success' && matchState.result ? (
-                <MatchScoreCard
-                  matchResult={matchState.result}
-                  candidate={detail.resume.parsed_data}
-                  job={detail.parsed_job}
-                />
-              ) : null}
-            </div>
+              <div
+                role="tabpanel"
+                id={`detail-panel-${activeTab}`}
+                aria-labelledby={`detail-tab-${activeTab}`}
+                className="space-y-6"
+              >
+                {activeTab === 'profile' ? (
+                  <>
+                    <div className="space-y-3">
+                      <SectionTitle icon={<FileText className="h-3.5 w-3.5" aria-hidden="true" />}>
+                        Hồ sơ CV
+                      </SectionTitle>
+                      <DigitalCV parsedData={detail.resume} />
+                    </div>
 
-            <div className="mt-4">
-              <InterviewManager 
-                applicationId={application.id} 
-                jobId={detail.job_id}
-                initialInterviews={detail.interviews || []}
-                applicationStatus={detail.status}
-                onInterviewUpdated={(newInterviews) => {
-                  setState(prev => prev.kind === 'success' && prev.detail ? {
-                    ...prev,
-                    detail: { ...prev.detail, interviews: newInterviews }
-                  } : prev)
-                  // Also refresh the modal status if scheduling auto-transitioned it
-                  // We can reload the detail completely to get the updated status
-                  load()
-                }}
-              />
+                    <div className="space-y-3">
+                      <SectionTitle icon={<Sparkles className="h-3.5 w-3.5" aria-hidden="true" />}>
+                        AI Match
+                      </SectionTitle>
+                      {!detail.resume?.parsed_data ? (
+                        <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/30 px-6 py-8 text-center">
+                          <Sparkles className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+                          <p className="text-sm font-medium text-foreground">
+                            Chưa có dữ liệu CV để phân tích
+                          </p>
+                          <p className="text-sm text-muted-foreground">
+                            Ứng viên chưa có CV được trích xuất, chưa thể tính điểm đối sánh.
+                          </p>
+                        </div>
+                      ) : matchState.kind === 'idle' ? (
+                        <div className="rounded-xl border bg-muted/20 px-4 py-4">
+                          <p className="text-sm text-muted-foreground">
+                            Phân tích mức độ phù hợp của ứng viên với công việc bằng AI.
+                          </p>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="mt-3"
+                            onClick={runMatch}
+                          >
+                            <Sparkles className="h-4 w-4" aria-hidden="true" />
+                            Phân tích AI
+                          </Button>
+                        </div>
+                      ) : matchState.kind === 'loading' ? (
+                        <div className="flex items-center gap-3 rounded-xl border bg-muted/30 px-4 py-6 text-sm text-muted-foreground">
+                          <Spinner size="md" />
+                          <span>Đang phân tích mức độ phù hợp...</span>
+                        </div>
+                      ) : matchState.kind === 'error' ? (
+                        <div className="space-y-3 rounded-xl border border-destructive/30 bg-muted/20 px-4 py-4">
+                          <p role="alert" className="text-sm font-medium text-destructive">
+                            {matchState.message}
+                          </p>
+                          <Button variant="outline" size="sm" onClick={runMatch}>
+                            <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                            Thử lại
+                          </Button>
+                        </div>
+                      ) : matchState.kind === 'success' && matchState.result ? (
+                        <MatchScoreCard
+                          matchResult={matchState.result}
+                          candidate={detail.resume.parsed_data}
+                          job={detail.parsed_job}
+                        />
+                      ) : null}
+                    </div>
+                  </>
+                ) : null}
+
+                {activeTab === 'interviews' ? (
+                  <div className="space-y-6">
+                    <InterviewManager
+                      applicationId={application.id}
+                      jobId={detail.job_id}
+                      initialInterviews={detail.interviews || []}
+                      applicationStatus={detail.status}
+                      onInterviewUpdated={(newInterviews) => {
+                        setState(prev => prev.kind === 'success' && prev.detail ? {
+                          ...prev,
+                          detail: { ...prev.detail, interviews: newInterviews }
+                        } : prev)
+                        // Also refresh the modal status if scheduling auto-transitioned it
+                        // We can reload the detail completely to get the updated status
+                        load()
+                      }}
+                    />
+                    <InterviewEvaluationList
+                      applicationId={application.id}
+                      interviews={detail.interviews || []}
+                    />
+                  </div>
+                ) : null}
+
+                {activeTab === 'notes' ? (
+                  <ApplicationNoteList applicationId={application.id} />
+                ) : null}
+
+                {activeTab === 'activity' ? (
+                  <ApplicationActivityTimeline applicationId={application.id} />
+                ) : null}
+              </div>
             </div>
           </>
         ) : null}

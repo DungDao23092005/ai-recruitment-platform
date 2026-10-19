@@ -92,10 +92,35 @@ vi.mock('@/api/client', () => ({
 vi.mock('@/api/applications', () => ({
   getApplicationDetail: vi.fn(),
   getApplicationMatch: vi.fn(),
+  listApplicationNotes: vi.fn(),
+  createApplicationNote: vi.fn(),
+  updateApplicationNote: vi.fn(),
+  deleteApplicationNote: vi.fn(),
+  listApplicationEvaluations: vi.fn(),
+  listApplicationActivities: vi.fn(),
 }))
 
 vi.mock('@/api/ai', () => ({
   explainMatch: vi.fn(),
+}))
+
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: vi.fn(() => ({
+    currentUser: {
+      id: 'user-1',
+      email: 'r@example.com',
+      role: 'recruiter',
+      is_active: true,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    },
+    token: 'token',
+    isAuthenticated: true,
+    isLoading: false,
+    login: vi.fn(),
+    logout: vi.fn(),
+    refreshCurrentUser: vi.fn(),
+  })),
 }))
 
 const mockedGetApplicationDetail = vi.mocked(
@@ -103,6 +128,10 @@ const mockedGetApplicationDetail = vi.mocked(
 )
 const mockedGetApplicationMatch = vi.mocked(
   applicationsApi.getApplicationMatch,
+)
+const mockedListNotes = vi.mocked(applicationsApi.listApplicationNotes)
+const mockedListActivities = vi.mocked(
+  applicationsApi.listApplicationActivities,
 )
 const mockedExplainMatch = vi.mocked(aiApi.explainMatch)
 const mockedPatch = vi.mocked(apiClient.patch)
@@ -461,6 +490,61 @@ describe('ApplicationDetailModal', () => {
       expect(
         screen.getByText('Ứng viên phù hợp tốt.'),
       ).toBeInTheDocument()
+    })
+  })
+
+  it('renders the detail tabs and defaults to the profile tab', async () => {
+    mockedGetApplicationDetail.mockResolvedValue(mockDetail)
+
+    renderModal()
+
+    await waitFor(() => {
+      expect(screen.getByText('Backend Engineer · Acme Corp')).toBeInTheDocument()
+    })
+
+    expect(screen.getAllByRole('tab')).toHaveLength(4)
+    expect(screen.getByRole('tab', { name: /Hồ sơ & Match/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.getByText('AI Match')).toBeInTheDocument()
+  })
+
+  it('does not load internal notes until the notes tab is opened', async () => {
+    mockedGetApplicationDetail.mockResolvedValue(mockDetail)
+    mockedListNotes.mockResolvedValue([])
+
+    renderModal()
+
+    await waitFor(() => {
+      expect(screen.getByText('Backend Engineer · Acme Corp')).toBeInTheDocument()
+    })
+
+    expect(mockedListNotes).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('tab', { name: /Ghi chú nội bộ/i }))
+
+    await waitFor(() => {
+      expect(mockedListNotes).toHaveBeenCalledWith('app-1', { limit: 50 })
+    })
+  })
+
+  it('loads activity history only when the activity tab is opened', async () => {
+    mockedGetApplicationDetail.mockResolvedValue(mockDetail)
+    mockedListActivities.mockResolvedValue([])
+
+    renderModal()
+
+    await waitFor(() => {
+      expect(screen.getByText('Backend Engineer · Acme Corp')).toBeInTheDocument()
+    })
+
+    expect(mockedListActivities).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('tab', { name: /Lịch sử hoạt động/i }))
+
+    await waitFor(() => {
+      expect(mockedListActivities).toHaveBeenCalledWith('app-1', { limit: 50 })
     })
   })
 

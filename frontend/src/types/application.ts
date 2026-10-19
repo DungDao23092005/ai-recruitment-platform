@@ -5,6 +5,7 @@ export type ApplicationStatus =
   | 'under_review'
   | 'shortlisted'
   | 'interviewing'
+  | 'offered'
   | 'accepted'
   | 'rejected'
   | 'withdrawn'
@@ -128,4 +129,76 @@ export interface ApplicationDetail {
   resume: Resume | null
   parsed_job: ParsedJob | null
   interviews: Interview[]
+}
+
+export type EvaluationRecommendation =
+  | 'strong_hire'
+  | 'hire'
+  | 'no_hire'
+  | 'strong_no_hire'
+
+export const EVALUATION_RECOMMENDATION_LABELS: Record<
+  EvaluationRecommendation,
+  string
+> = {
+  strong_hire: 'Rất nên tuyển',
+  hire: 'Nên tuyển',
+  no_hire: 'Không nên tuyển',
+  strong_no_hire: 'Hoàn toàn không nên tuyển',
+}
+
+export interface ApplicationNote {
+  id: string
+  application_id: string
+  author_id: string
+  content: string
+  created_at: string
+  updated_at: string
+}
+
+export interface InterviewEvaluation {
+  id: string
+  interview_id: string
+  application_id: string
+  evaluator_id: string
+  rating: number
+  strengths: string | null
+  weaknesses: string | null
+  recommendation: EvaluationRecommendation | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface InterviewEvaluationCreate {
+  rating: number
+  strengths?: string | null
+  weaknesses?: string | null
+  recommendation?: EvaluationRecommendation | null
+  notes?: string | null
+}
+
+export interface InterviewEvaluationUpdate {
+  rating?: number
+  strengths?: string | null
+  weaknesses?: string | null
+  recommendation?: EvaluationRecommendation | null
+  notes?: string | null
+}
+
+export interface ApplicationActivity {
+  id: string
+  application_id: string
+  actor_id: string
+  action_type: string
+  from_status: string | null
+  to_status: string | null
+  note: string | null
+  metadata_json: string | null
+  created_at: string
+}
+
+export interface PageParams {
+  skip?: number
+  limit?: number
 }

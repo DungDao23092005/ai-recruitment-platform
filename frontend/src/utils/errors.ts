@@ -22,6 +22,18 @@ export function isNotFoundError(error: unknown): boolean {
   return isResponseError(error) && error.response?.status === 404
 }
 
+export function isForbiddenError(error: unknown): boolean {
+  return isResponseError(error) && error.response?.status === 403
+}
+
+export function isConflictError(error: unknown): boolean {
+  return isResponseError(error) && error.response?.status === 409
+}
+
+export function getErrorStatus(error: unknown): number | undefined {
+  return isResponseError(error) ? error.response?.status : undefined
+}
+
 export function getFriendlyErrorMessage(error: unknown): string {
   if (!isResponseError(error)) {
     return 'Không thể kết nối tới máy chủ. Vui lòng kiểm tra kết nối và thử lại.'
