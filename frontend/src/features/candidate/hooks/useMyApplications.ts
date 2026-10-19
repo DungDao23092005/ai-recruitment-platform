@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getMyApplications } from '@/api/applications'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type {
@@ -20,8 +20,11 @@ export function useMyApplications(): UseMyApplicationsResult {
   const [applications, setApplications] = useState<ApplicationWithJob[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const requestIdRef = useRef(0)
 
   const load = useCallback(async () => {
+    const requestId = requestIdRef.current + 1
+    requestIdRef.current = requestId
     setIsLoading(true)
     setError(null)
     try {
@@ -29,11 +32,17 @@ export function useMyApplications(): UseMyApplicationsResult {
         skip: 0,
         limit: APPLICATIONS_PAGE_SIZE,
       })
-      setApplications(data)
+      if (requestIdRef.current === requestId) {
+        setApplications(data)
+      }
     } catch (err) {
-      setError(getFriendlyErrorMessage(err))
+      if (requestIdRef.current === requestId) {
+        setError(getFriendlyErrorMessage(err))
+      }
     } finally {
-      setIsLoading(false)
+      if (requestIdRef.current === requestId) {
+        setIsLoading(false)
+      }
     }
   }, [])
 

@@ -12,6 +12,7 @@ vi.mock('@/api/applications', () => ({
   withdrawApplication: vi.fn(),
   getApplicationsByJob: vi.fn(),
   getMyApplications: vi.fn(),
+  getMyApplicationTimeline: vi.fn(),
 }))
 
 vi.mock('@/api/interviews', () => ({
@@ -21,6 +22,8 @@ vi.mock('@/api/interviews', () => ({
 const mockedWithdrawApplication = vi.mocked(
   applicationsApi.withdrawApplication,
 )
+
+const mockedGetTimeline = vi.mocked(applicationsApi.getMyApplicationTimeline)
 
 const mockedCandidateActionInterview = vi.mocked(
   interviewsApi.candidateActionInterview,
@@ -66,6 +69,7 @@ function renderCard(overrides: Partial<ApplicationWithJob> = {}) {
 describe('ApplicationCard', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockedGetTimeline.mockResolvedValue([])
   })
 
   it('renders job title, company and application date', () => {
@@ -76,10 +80,13 @@ describe('ApplicationCard', () => {
     expect(screen.getByText(/Ứng tuyển:/)).toBeInTheDocument()
   })
 
-  it('renders the existing status badge', () => {
+  it('renders the existing status badge and the progress tracker', () => {
     renderCard()
 
     expect(screen.getByText('Đang phỏng vấn')).toBeInTheDocument()
+    expect(
+      screen.getByRole('group', { name: 'Tiến trình ứng tuyển' }),
+    ).toBeInTheDocument()
   })
 
   it('links to the candidate job detail route', () => {
@@ -89,7 +96,7 @@ describe('ApplicationCard', () => {
     expect(link).toHaveAttribute('href', '/candidate/jobs/job-1')
   })
 
-  it.each(['applied', 'under_review', 'shortlisted', 'interviewing'])(
+  it.each(['applied', 'under_review', 'shortlisted', 'interviewing', 'offered'])(
     'shows the withdraw button for %s',
     (status) => {
       renderCard({ status: status as ApplicationWithJob['status'] })
@@ -109,6 +116,15 @@ describe('ApplicationCard', () => {
     },
   )
 
+  it('opens a confirmation dialog before withdrawing', () => {
+    renderCard()
+
+    fireEvent.click(screen.getByRole('button', { name: /Rút đơn/i }))
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(mockedWithdrawApplication).not.toHaveBeenCalled()
+  })
+
   it('withdraws and notifies the parent on success', async () => {
     mockedWithdrawApplication.mockResolvedValue({
       id: 'app-1',
@@ -127,6 +143,7 @@ describe('ApplicationCard', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: /Rút đơn/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Xác nhận rút đơn/i }))
 
     await waitFor(() => {
       expect(mockedWithdrawApplication).toHaveBeenCalledWith('app-1')
@@ -135,21 +152,40 @@ describe('ApplicationCard', () => {
   })
 
   it('shows an error when withdraw fails', async () => {
-    mockedWithdrawApplication.mockRejectedValue(new Error('boom'))
-    const onWithdrawn = vi.fn()
-
-    render(
-      <MemoryRouter>
-        <ApplicationCard application={mockApplication} onWithdrawn={onWithdrawn} />
-      </MemoryRouter>,
+    mockedWithdrawApplication.mockRejectedValue(
+      Object.assign(new Error('boom'), {
+        response: { status: 500, data: { detail: 'Server error' } },
+      }),
     )
 
+    renderCard()
+
     fireEvent.click(screen.getByRole('button', { name: /Rút đơn/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Xác nhận rút đơn/i }))
 
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeInTheDocument()
+      expect(screen.getByRole('alert')).toHaveTextContent('Server error')
     })
-    expect(onWithdrawn).not.toHaveBeenCalled()
+  })
+
+  it('toggles the candidate activity timeline', async () => {
+    renderCard()
+
+    expect(
+      screen.queryByText('Chưa có hoạt động'),
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Xem lịch sử hoạt động/i }),
+    )
+
+    await waitFor(() => {
+      expect(mockedGetTimeline).toHaveBeenCalledWith('app-1', { limit: 20 })
+    })
+    expect(await screen.findByText('Chưa có hoạt động')).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /Ẩn lịch sử hoạt động/i }),
+    ).toBeInTheDocument()
   })
 
   describe('Candidate interview actions', () => {
@@ -188,118 +224,73 @@ describe('ApplicationCard', () => {
           'app-1',
           'interview-1',
           'confirm',
-          undefined
         )
       })
     })
 
-    it('prompts for reason when Decline clicked', async () => {
+    it('opens a decline dialog and submits the reason', async () => {
       mockedCandidateActionInterview.mockResolvedValue({
         ...mockInterview,
         status: 'candidate_declined',
         candidate_notes: 'Not interested',
       } as never)
 
-      const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('Not interested')
-
       renderCard()
 
       fireEvent.click(screen.getByRole('button', { name: /Từ chối/i }))
+      expect(mockedCandidateActionInterview).not.toHaveBeenCalled()
 
-      await waitFor(() => {
-        expect(promptSpy).toHaveBeenCalledWith(expect.stringContaining('lý do'))
+      fireEvent.change(screen.getByLabelText(/Lý do từ chối/i), {
+        target: { value: 'Not interested' },
       })
+      fireEvent.click(screen.getByRole('button', { name: /Xác nhận từ chối/i }))
 
       await waitFor(() => {
         expect(mockedCandidateActionInterview).toHaveBeenCalledWith(
           'app-1',
           'interview-1',
           'decline',
-          'Not interested'
+          'Not interested',
         )
       })
-
-      promptSpy.mockRestore()
     })
 
-    it('does not send request when decline prompt is cancelled', async () => {
-      vi.spyOn(window, 'prompt').mockReturnValue(null)
-
+    it('does not send a decline request when the reason is empty', async () => {
       renderCard()
 
       fireEvent.click(screen.getByRole('button', { name: /Từ chối/i }))
+      fireEvent.click(screen.getByRole('button', { name: /Xác nhận từ chối/i }))
 
-      await waitFor(() => {
-        expect(mockedCandidateActionInterview).not.toHaveBeenCalled()
-      })
-    })
-
-    it('does not send request when decline prompt is empty', async () => {
-      vi.spyOn(window, 'prompt').mockReturnValue('')
-
-      renderCard()
-
-      fireEvent.click(screen.getByRole('button', { name: /Từ chối/i }))
-
-      await waitFor(() => {
-        expect(mockedCandidateActionInterview).not.toHaveBeenCalled()
-      })
+      expect(
+        await screen.findByText(/Vui lòng nhập lý do từ chối/i),
+      ).toBeInTheDocument()
+      expect(mockedCandidateActionInterview).not.toHaveBeenCalled()
     })
 
     it('shows loading state isolated by interview ID when confirming', async () => {
-      let resolveConfirm: (value: any) => void
-      mockedCandidateActionInterview.mockImplementation(
-        () =>
-          new Promise((resolve) => {
-            resolveConfirm = resolve
-          }),
-      )
+      mockedCandidateActionInterview.mockReturnValue(new Promise(() => {}))
 
       renderCard()
 
       fireEvent.click(screen.getByRole('button', { name: /Xác nhận/i }))
 
-      // Check loading state is shown for this interview - both buttons show loading since they share interview ID
-      expect(screen.getAllByRole('button', { name: /Đang tải/i })).toHaveLength(2)
-
-      resolveConfirm!({
-        ...mockInterview,
-        status: 'candidate_confirmed',
-        candidate_notes: 'Looking forward to it',
-      } as never)
-
-      await waitFor(() => {
-        expect(screen.queryAllByRole('button', { name: /Đang tải/i })).toHaveLength(0)
-      })
+      expect(screen.getAllByRole('button', { name: /Đang tải/i })).toHaveLength(1)
     })
 
-    it('shows loading state isolated by interview ID when declining', async () => {
-      let resolveDecline: (value: any) => void
-      mockedCandidateActionInterview.mockImplementation(
-        () =>
-          new Promise((resolve) => {
-            resolveDecline = resolve
-          }),
-      )
-
-      vi.spyOn(window, 'prompt').mockReturnValue('Not interested')
+    it('shows loading state in the decline dialog while submitting', async () => {
+      mockedCandidateActionInterview.mockReturnValue(new Promise(() => {}))
 
       renderCard()
 
       fireEvent.click(screen.getByRole('button', { name: /Từ chối/i }))
-
-      // Check loading state is shown for this interview - both buttons show loading since they share interview ID
-      expect(screen.getAllByRole('button', { name: /Đang tải/i })).toHaveLength(2)
-
-      resolveDecline!({
-        ...mockInterview,
-        status: 'candidate_declined',
-        candidate_notes: 'Not interested',
-      } as never)
-
-      await waitFor(() => {
-        expect(screen.queryAllByRole('button', { name: /Đang tải/i })).toHaveLength(0)
+      fireEvent.change(screen.getByLabelText(/Lý do từ chối/i), {
+        target: { value: 'Not interested' },
       })
+      fireEvent.click(screen.getByRole('button', { name: /Xác nhận từ chối/i }))
+
+      expect(
+        await screen.findByRole('button', { name: /Đang gửi/i }),
+      ).toBeDisabled()
     })
 
     it('shows error state isolated by interview ID when confirm fails', async () => {
@@ -316,54 +307,46 @@ describe('ApplicationCard', () => {
       })
     })
 
-    it('shows error state isolated by interview ID when decline fails', async () => {
+    it('shows an error in the decline dialog when decline fails', async () => {
       mockedCandidateActionInterview.mockRejectedValue({
         response: { status: 400, data: { detail: 'Không thể từ chối' } },
       })
-      vi.spyOn(window, 'prompt').mockReturnValue('Not interested')
 
       renderCard()
 
       fireEvent.click(screen.getByRole('button', { name: /Từ chối/i }))
+      fireEvent.change(screen.getByLabelText(/Lý do từ chối/i), {
+        target: { value: 'Not interested' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: /Xác nhận từ chối/i }))
 
       await waitFor(() => {
-        expect(screen.getByText(/Không thể từ chối/i)).toBeInTheDocument()
+        expect(screen.getByRole('alert')).toHaveTextContent('Không thể từ chối')
       })
     })
 
-    it('hides Confirm/Decline buttons after successful confirm', async () => {
-      mockedCandidateActionInterview.mockResolvedValue({
-        ...mockInterview,
-        status: 'candidate_confirmed',
-        candidate_notes: 'Looking forward to it',
-      } as never)
-
-      renderCard()
-
-      fireEvent.click(screen.getByRole('button', { name: /Xác nhận/i }))
-
-      await waitFor(() => {
-        expect(screen.queryByRole('button', { name: /Xác nhận/i })).not.toBeInTheDocument()
-        expect(screen.queryByRole('button', { name: /Từ chối/i })).not.toBeInTheDocument()
-      })
-    })
-
-    it('hides Confirm/Decline buttons after successful decline', async () => {
+    it('refreshes the parent after a successful decline', async () => {
       mockedCandidateActionInterview.mockResolvedValue({
         ...mockInterview,
         status: 'candidate_declined',
         candidate_notes: 'Not interested',
       } as never)
+      const onUpdated = vi.fn()
 
-      vi.spyOn(window, 'prompt').mockReturnValue('Not interested')
-
-      renderCard()
+      render(
+        <MemoryRouter>
+          <ApplicationCard application={mockApplication} onUpdated={onUpdated} />
+        </MemoryRouter>,
+      )
 
       fireEvent.click(screen.getByRole('button', { name: /Từ chối/i }))
+      fireEvent.change(screen.getByLabelText(/Lý do từ chối/i), {
+        target: { value: 'Not interested' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: /Xác nhận từ chối/i }))
 
       await waitFor(() => {
-        expect(screen.queryByRole('button', { name: /Xác nhận/i })).not.toBeInTheDocument()
-        expect(screen.queryByRole('button', { name: /Từ chối/i })).not.toBeInTheDocument()
+        expect(onUpdated).toHaveBeenCalled()
       })
     })
 
@@ -382,22 +365,6 @@ describe('ApplicationCard', () => {
       })
 
       expect(screen.getByText(/Đã từ chối/)).toBeInTheDocument()
-      expect(screen.getByText(/Lý do: Not interested/)).toBeInTheDocument()
-    })
-
-    it('displays candidate_notes when available for confirmed interview', () => {
-      renderCard({
-        interviews: [mockConfirmedInterview],
-      })
-
-      expect(screen.getByText(/Phản hồi: Looking forward to it/)).toBeInTheDocument()
-    })
-
-    it('displays candidate_notes when available for declined interview', () => {
-      renderCard({
-        interviews: [mockDeclinedInterview],
-      })
-
       expect(screen.getByText(/Lý do: Not interested/)).toBeInTheDocument()
     })
   })

@@ -7,6 +7,7 @@ import type {
   ApplicationNote,
   ApplicationStatus,
   ApplicationWithJob,
+  CandidateActivity,
   InterviewEvaluation,
   InterviewEvaluationCreate,
   InterviewEvaluationUpdate,
@@ -62,6 +63,16 @@ export async function getMyApplications(
 ): Promise<ApplicationWithJob[]> {
   return apiClient.get<ApplicationWithJob[], ApplicationWithJob[]>(
     '/applications/mine',
+    { params },
+  )
+}
+
+export async function getMyApplicationTimeline(
+  applicationId: string,
+  params: PageParams = {},
+): Promise<CandidateActivity[]> {
+  return apiClient.get<CandidateActivity[], CandidateActivity[]>(
+    `/applications/mine/${applicationId}/timeline`,
     { params },
   )
 }

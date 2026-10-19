@@ -11,12 +11,14 @@ vi.mock('@/api/applications', () => ({
   withdrawApplication: vi.fn(),
   getApplicationsByJob: vi.fn(),
   getMyApplications: vi.fn(),
+  getMyApplicationTimeline: vi.fn(),
 }))
 
 const mockedGetMyApplications = vi.mocked(applicationsApi.getMyApplications)
 const mockedWithdrawApplication = vi.mocked(
   applicationsApi.withdrawApplication,
 )
+const mockedGetTimeline = vi.mocked(applicationsApi.getMyApplicationTimeline)
 
 const mockApplications: ApplicationWithJob[] = [
   {
@@ -37,6 +39,15 @@ const mockApplications: ApplicationWithJob[] = [
     created_at: '2026-08-10T00:00:00Z',
     updated_at: '2026-08-10T00:00:00Z',
   },
+  {
+    id: 'app-3',
+    job_id: 'job-3',
+    job_title: 'Data Analyst',
+    company_name: 'ABC Technology',
+    status: 'accepted',
+    created_at: '2026-07-01T00:00:00Z',
+    updated_at: '2026-07-01T00:00:00Z',
+  },
 ]
 
 function renderPage() {
@@ -54,9 +65,16 @@ function renderPage() {
   )
 }
 
+async function renderWithData() {
+  mockedGetMyApplications.mockResolvedValue(mockApplications)
+  renderPage()
+  await screen.findByText('Backend Developer')
+}
+
 describe('CandidateApplicationsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockedGetTimeline.mockResolvedValue([])
   })
 
   it('calls getMyApplications on mount', async () => {
@@ -103,13 +121,7 @@ describe('CandidateApplicationsPage', () => {
   })
 
   it('links each application to /candidate/jobs/:id', async () => {
-    mockedGetMyApplications.mockResolvedValue(mockApplications)
-
-    renderPage()
-
-    await waitFor(() => {
-      expect(screen.getByText('Backend Developer')).toBeInTheDocument()
-    })
+    await renderWithData()
 
     const links = screen.getAllByRole('link', { name: /Xem việc làm/i })
     expect(links[0]).toHaveAttribute('href', '/candidate/jobs/job-1')
@@ -153,8 +165,79 @@ describe('CandidateApplicationsPage', () => {
     })
   })
 
-  it('updates the status badge to withdrawn after withdrawing', async () => {
-    mockedGetMyApplications.mockResolvedValue(mockApplications)
+  it('filters applications by status', async () => {
+    await renderWithData()
+
+    expect(screen.getByText('Data Analyst')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Đang xử lý/i }))
+
+    expect(screen.getByText('Backend Developer')).toBeInTheDocument()
+    expect(screen.getByText('Frontend Engineer')).toBeInTheDocument()
+    expect(screen.queryByText('Data Analyst')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Đã kết thúc/i }))
+
+    expect(screen.getByText('Data Analyst')).toBeInTheDocument()
+    expect(screen.queryByText('Backend Developer')).not.toBeInTheDocument()
+  })
+
+  it('searches by job title and company name', async () => {
+    await renderWithData()
+
+    fireEvent.change(
+      screen.getByRole('searchbox', {
+        name: /Tìm kiếm đơn ứng tuyển/i,
+      }),
+      { target: { value: 'xyz' } },
+    )
+
+    expect(screen.getByText('Frontend Engineer')).toBeInTheDocument()
+    expect(screen.queryByText('Backend Developer')).not.toBeInTheDocument()
+
+    fireEvent.change(
+      screen.getByRole('searchbox', {
+        name: /Tìm kiếm đơn ứng tuyển/i,
+      }),
+      { target: { value: 'abc technology' } },
+    )
+
+    expect(screen.getByText('Backend Developer')).toBeInTheDocument()
+    expect(screen.getByText('Data Analyst')).toBeInTheDocument()
+    expect(screen.queryByText('Frontend Engineer')).not.toBeInTheDocument()
+  })
+
+  it('distinguishes a no-match state from a genuinely empty list', async () => {
+    await renderWithData()
+
+    fireEvent.change(
+      screen.getByRole('searchbox', {
+        name: /Tìm kiếm đơn ứng tuyển/i,
+      }),
+      { target: { value: 'no-such-role' } },
+    )
+
+    expect(
+      screen.getByText('Không tìm thấy đơn ứng tuyển phù hợp'),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText('Bạn chưa có đơn ứng tuyển'),
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Xóa bộ lọc/i }))
+
+    expect(screen.getByText('Backend Developer')).toBeInTheDocument()
+    expect(screen.getByText('Data Analyst')).toBeInTheDocument()
+  })
+
+  it('refreshes and shows the withdrawn status after withdrawing', async () => {
+    mockedGetMyApplications
+      .mockResolvedValueOnce(mockApplications)
+      .mockResolvedValueOnce([
+        { ...mockApplications[0], status: 'withdrawn' },
+        mockApplications[1],
+        mockApplications[2],
+      ])
     mockedWithdrawApplication.mockResolvedValue({
       id: 'app-1',
       candidate_id: 'candidate-1',
@@ -172,14 +255,12 @@ describe('CandidateApplicationsPage', () => {
     })
 
     fireEvent.click(screen.getAllByRole('button', { name: /Rút đơn/i })[0])
+    fireEvent.click(screen.getByRole('button', { name: /Xác nhận rút đơn/i }))
 
     await waitFor(() => {
       expect(mockedWithdrawApplication).toHaveBeenCalledWith('app-1')
+      expect(mockedGetMyApplications).toHaveBeenCalledTimes(2)
       expect(screen.getByText('Đã rút')).toBeInTheDocument()
     })
-    const remainingWithdrawButtons = screen.getAllByRole('button', {
-      name: /Rút đơn/i,
-    })
-    expect(remainingWithdrawButtons).toHaveLength(1)
   })
 })

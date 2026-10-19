@@ -198,6 +198,36 @@ export interface ApplicationActivity {
   created_at: string
 }
 
+export interface CandidateActivity {
+  id: string
+  action_type: string
+  from_status: string | null
+  to_status: string | null
+  created_at: string
+}
+
+export type CandidateStage =
+  | 'applied'
+  | 'under_review'
+  | 'interviewing'
+  | 'offered'
+  | 'outcome'
+
+const CANDIDATE_STAGE_BY_STATUS: Record<ApplicationStatus, CandidateStage> = {
+  applied: 'applied',
+  under_review: 'under_review',
+  shortlisted: 'under_review',
+  interviewing: 'interviewing',
+  offered: 'offered',
+  accepted: 'outcome',
+  rejected: 'outcome',
+  withdrawn: 'outcome',
+}
+
+export function getCandidateStage(status: ApplicationStatus): CandidateStage {
+  return CANDIDATE_STAGE_BY_STATUS[status]
+}
+
 export interface PageParams {
   skip?: number
   limit?: number

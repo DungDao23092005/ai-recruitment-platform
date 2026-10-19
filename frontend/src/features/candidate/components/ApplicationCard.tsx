@@ -1,6 +1,15 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { CalendarDays, ExternalLink, MapPin, Undo2, CheckCircle2, XCircle } from 'lucide-react'
+import {
+  CalendarDays,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  MapPin,
+  Undo2,
+  XCircle,
+} from 'lucide-react'
 import {
   Card,
   CardContent,
@@ -10,7 +19,10 @@ import {
 } from '@/components/ui/card'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { ApplicationStatusBadge } from '@/components/common/ApplicationStatusBadge'
-import { withdrawApplication } from '@/api/applications'
+import { CandidateStatusTracker } from '@/features/candidate/components/CandidateStatusTracker'
+import { CandidateActivityTimeline } from '@/features/candidate/components/CandidateActivityTimeline'
+import { WithdrawConfirmModal } from '@/features/candidate/components/WithdrawConfirmModal'
+import { InterviewDeclineModal } from '@/features/candidate/components/InterviewDeclineModal'
 import { candidateActionInterview } from '@/api/interviews'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { cn } from '@/utils/cn'
@@ -21,6 +33,7 @@ export const WITHDRAWABLE_STATUSES: ApplicationStatus[] = [
   'under_review',
   'shortlisted',
   'interviewing',
+  'offered',
 ]
 
 export interface ApplicationCardProps {
@@ -60,6 +73,13 @@ function companyMonogram(companyName: string): string {
   )
 }
 
+function interviewTypeLabel(interviewType: string): string {
+  if (interviewType === 'technical') return 'Chuyên môn'
+  if (interviewType === 'behavioral') return 'Hành vi'
+  if (interviewType === 'hr') return 'Nhân sự'
+  return 'Case Study'
+}
+
 export function ApplicationCard({
   application,
   detailPath = '/candidate/jobs',
@@ -67,62 +87,50 @@ export function ApplicationCard({
   onUpdated,
 }: ApplicationCardProps) {
   const { id, job_title, company_name, status, created_at } = application
-  const [withdrawing, setWithdrawing] = useState(false)
-  const [withdrawError, setWithdrawError] = useState<string | null>(null)
-  
+  const [withdrawOpen, setWithdrawOpen] = useState(false)
+  const [declineInterviewId, setDeclineInterviewId] = useState<string | null>(
+    null,
+  )
+  const [timelineOpen, setTimelineOpen] = useState(false)
+
   // Interview action states - track by interview ID
   const [interviewLoading, setInterviewLoading] = useState<string | null>(null)
-  const [interviewError, setInterviewError] = useState<Record<string, string | null>>({})
+  const [interviewError, setInterviewError] = useState<
+    Record<string, string | null>
+  >({})
 
   const canWithdraw = WITHDRAWABLE_STATUSES.includes(status)
   const appliedDate = formatAppliedDate(created_at)
   const rawCompanyName = company_name ?? 'Công ty'
   const companyLabel = company_name ? `Công ty ${company_name}` : rawCompanyName
 
-  const handleWithdraw = async () => {
-    setWithdrawing(true)
-    setWithdrawError(null)
-    try {
-      await withdrawApplication(id)
-      onWithdrawn?.(id)
-    } catch (err) {
-      setWithdrawError(getFriendlyErrorMessage(err))
-    } finally {
-      setWithdrawing(false)
-    }
+  const declinedInterview =
+    declineInterviewId != null
+      ? application.interviews?.find(
+          (interview) => interview.id === declineInterviewId,
+        ) ?? null
+      : null
+
+  const handleWithdrawSuccess = (applicationId: string) => {
+    setWithdrawOpen(false)
+    onWithdrawn?.(applicationId)
+    onUpdated?.()
   }
 
-  const handleInterviewAction = async (interviewId: string, action: 'confirm' | 'decline', candidateNotes?: string) => {
+  const handleConfirm = async (interviewId: string) => {
     setInterviewLoading(interviewId)
-    setInterviewError(prev => ({ ...prev, [interviewId]: null }))
+    setInterviewError((prev) => ({ ...prev, [interviewId]: null }))
     try {
-      await candidateActionInterview(
-        application.id,
-        interviewId,
-        action,
-        candidateNotes
-      )
+      await candidateActionInterview(application.id, interviewId, 'confirm')
       onUpdated?.()
     } catch (err) {
-      setInterviewError(prev => ({ ...prev, [interviewId]: getFriendlyErrorMessage(err) }))
+      setInterviewError((prev) => ({
+        ...prev,
+        [interviewId]: getFriendlyErrorMessage(err),
+      }))
     } finally {
       setInterviewLoading(null)
     }
-  }
-
-  const handleConfirm = (interviewId: string) => {
-    handleInterviewAction(interviewId, 'confirm')
-  }
-
-  const handleDecline = (interviewId: string) => {
-    const reason = prompt('Vui lòng nhập lý do từ chối:')
-    if (reason === null) {
-      return
-    }
-    if (!reason.trim()) {
-      return
-    }
-    handleInterviewAction(interviewId, 'decline', reason.trim())
   }
 
   return (
@@ -155,124 +163,235 @@ export function ApplicationCard({
             Ứng tuyển: {appliedDate}
           </p>
         ) : null}
+
+        <CandidateStatusTracker status={status} className="pt-1" />
+
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="w-fit px-0 text-primary hover:bg-transparent"
+          onClick={() => setTimelineOpen((prev) => !prev)}
+          aria-expanded={timelineOpen}
+        >
+          {timelineOpen ? (
+            <>
+              <ChevronUp className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+              Ẩn lịch sử hoạt động
+            </>
+          ) : (
+            <>
+              <ChevronDown className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+              Xem lịch sử hoạt động
+            </>
+          )}
+        </Button>
+
+        {timelineOpen ? (
+          <div className="rounded-xl border border-border/70 bg-background/50 p-3">
+            <CandidateActivityTimeline applicationId={id} />
+          </div>
+        ) : null}
+
         {application.interviews && application.interviews.length > 0 ? (
           <>
             {/* Scheduled interviews with action buttons */}
-            {application.interviews.filter(i => i.status === 'scheduled').length > 0 && (
+            {application.interviews.filter((i) => i.status === 'scheduled')
+              .length > 0 && (
               <div className="mt-2 rounded-md border border-primary/20 bg-primary/5 p-3">
-                <p className="mb-1 font-semibold text-primary">Lịch phỏng vấn sắp tới</p>
-                {application.interviews.filter(i => i.status === 'scheduled').map(interview => (
-                  <div key={interview.id} className="text-sm text-muted-foreground">
-                    <p><strong>Thời gian:</strong> {new Date(interview.scheduled_at).toLocaleString('vi-VN')}</p>
-                    <p><strong>Hình thức:</strong> {
-                      interview.interview_type === 'technical' ? 'Chuyên môn' :
-                      interview.interview_type === 'behavioral' ? 'Hành vi' :
-                      interview.interview_type === 'hr' ? 'Nhân sự' :
-                      'Case Study'
-                    }</p>
-                    {(interview.meeting_url || interview.location) && (
-                      <p className="mt-1">
-                        {interview.meeting_url ? (
-                          <a href={interview.meeting_url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Tham gia Meeting</a>
-                        ) : (
-                          <span><strong>Địa điểm:</strong> {interview.location}</span>
+                <p className="mb-1 font-semibold text-primary">
+                  Lịch phỏng vấn sắp tới
+                </p>
+                {application.interviews
+                  .filter((i) => i.status === 'scheduled')
+                  .map((interview) => (
+                    <div
+                      key={interview.id}
+                      className="text-sm text-muted-foreground"
+                    >
+                      <p>
+                        <strong>Thời gian:</strong>{' '}
+                        {new Date(interview.scheduled_at).toLocaleString(
+                          'vi-VN',
                         )}
                       </p>
-                    )}
-                    <div className="mt-2 flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="flex-1"
-                        onClick={() => handleConfirm(interview.id)}
-                        disabled={interviewLoading === interview.id}
-                        isLoading={interviewLoading === interview.id}
-                      >
-                        <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-                        Xác nhận tham gia
-                      </Button>
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        className="flex-1"
-                        onClick={() => handleDecline(interview.id)}
-                        disabled={interviewLoading === interview.id}
-                        isLoading={interviewLoading === interview.id}
-                      >
-                        <XCircle className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-                        Từ chối
-                      </Button>
-                    </div>
-                    {interviewError[interview.id] && (
-                      <p className="mt-2 text-sm text-destructive" role="alert">
-                        {interviewError[interview.id]}
+                      <p>
+                        <strong>Hình thức:</strong>{' '}
+                        {interviewTypeLabel(interview.interview_type)}
                       </p>
-                    )}
-                  </div>
-                ))}
+                      {(interview.meeting_url || interview.location) && (
+                        <p className="mt-1">
+                          {interview.meeting_url ? (
+                            <a
+                              href={interview.meeting_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary hover:underline"
+                            >
+                              Tham gia Meeting
+                            </a>
+                          ) : (
+                            <span>
+                              <strong>Địa điểm:</strong> {interview.location}
+                            </span>
+                          )}
+                        </p>
+                      )}
+                      <div className="mt-2 flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1"
+                          onClick={() => handleConfirm(interview.id)}
+                          disabled={interviewLoading === interview.id}
+                          isLoading={interviewLoading === interview.id}
+                        >
+                          <CheckCircle2
+                            className="mr-1.5 h-3.5 w-3.5"
+                            aria-hidden="true"
+                          />
+                          Xác nhận tham gia
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="flex-1"
+                          onClick={() => setDeclineInterviewId(interview.id)}
+                          disabled={interviewLoading === interview.id}
+                        >
+                          <XCircle
+                            className="mr-1.5 h-3.5 w-3.5"
+                            aria-hidden="true"
+                          />
+                          Từ chối
+                        </Button>
+                      </div>
+                      {interviewError[interview.id] && (
+                        <p className="mt-2 text-sm text-destructive" role="alert">
+                          {interviewError[interview.id]}
+                        </p>
+                      )}
+                    </div>
+                  ))}
               </div>
             )}
             {/* Confirmed interviews */}
-            {application.interviews.filter(i => i.status === 'candidate_confirmed').length > 0 && (
+            {application.interviews.filter(
+              (i) => i.status === 'candidate_confirmed',
+            ).length > 0 && (
               <div className="mt-2 space-y-2">
-                {application.interviews.filter(i => i.status === 'candidate_confirmed').map(interview => (
-                  <div key={interview.id} className="rounded-lg border border-success/20 bg-success/5 p-3 text-sm">
-                    <div className="flex justify-between items-start mb-2">
-                      <p className="font-semibold text-success">Phỏng vấn {
-                        interview.interview_type === 'technical' ? 'Chuyên môn' :
-                        interview.interview_type === 'behavioral' ? 'Hành vi' :
-                        interview.interview_type === 'hr' ? 'Nhân sự' :
-                        'Case Study'
-                      }</p>
-                      <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-success/10 text-success">
-                        Đã xác nhận
-                      </span>
+                {application.interviews
+                  .filter((i) => i.status === 'candidate_confirmed')
+                  .map((interview) => (
+                    <div
+                      key={interview.id}
+                      className="rounded-lg border border-success/20 bg-success/5 p-3 text-sm"
+                    >
+                      <div className="flex justify-between items-start mb-2">
+                        <p className="font-semibold text-success">
+                          Phỏng vấn{' '}
+                          {interviewTypeLabel(interview.interview_type)}
+                        </p>
+                        <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-success/10 text-success">
+                          Đã xác nhận
+                        </span>
+                      </div>
+                      <div className="space-y-1 text-muted-foreground">
+                        <p className="flex items-center gap-2">
+                          <CalendarDays className="h-3.5 w-3.5" />{' '}
+                          {new Date(interview.scheduled_at).toLocaleString(
+                            'vi-VN',
+                          )}{' '}
+                          ({interview.duration_minutes} phút)
+                        </p>
+                        {interview.meeting_url && (
+                          <p className="flex items-center gap-2">
+                            <ExternalLink className="h-3.5 w-3.5" />{' '}
+                            <a
+                              href={interview.meeting_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="hover:underline"
+                            >
+                              {interview.meeting_url}
+                            </a>
+                          </p>
+                        )}
+                        {interview.location && (
+                          <p className="flex items-center gap-2">
+                            <MapPin className="h-3.5 w-3.5" />{' '}
+                            {interview.location}
+                          </p>
+                        )}
+                        {interview.candidate_notes && (
+                          <p className="mt-2 text-xs italic bg-success/5 border border-success/20 p-2 rounded text-success">
+                            Phản hồi: {interview.candidate_notes}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                    <div className="space-y-1 text-muted-foreground">
-                      <p className="flex items-center gap-2"><CalendarDays className="h-3.5 w-3.5" /> {new Date(interview.scheduled_at).toLocaleString('vi-VN')} ({interview.duration_minutes} phút)</p>
-                      {interview.meeting_url && <p className="flex items-center gap-2"><ExternalLink className="h-3.5 w-3.5" /> <a href={interview.meeting_url} target="_blank" rel="noopener noreferrer" className="hover:underline">{interview.meeting_url}</a></p>}
-                      {interview.location && <p className="flex items-center gap-2"><MapPin className="h-3.5 w-3.5" /> {interview.location}</p>}
-                      {interview.candidate_notes && <p className="mt-2 text-xs italic bg-success/5 border border-success/20 p-2 rounded text-success">Phản hồi: {interview.candidate_notes}</p>}
-                    </div>
-                  </div>
-                ))}
+                  ))}
               </div>
             )}
             {/* Declined interviews */}
-            {application.interviews.filter(i => i.status === 'candidate_declined').length > 0 && (
+            {application.interviews.filter(
+              (i) => i.status === 'candidate_declined',
+            ).length > 0 && (
               <div className="mt-2 space-y-2">
-                {application.interviews.filter(i => i.status === 'candidate_declined').map(interview => (
-                  <div key={interview.id} className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm">
-                    <div className="flex justify-between items-start mb-2">
-                      <p className="font-semibold text-destructive">Phỏng vấn {
-                        interview.interview_type === 'technical' ? 'Chuyên môn' :
-                        interview.interview_type === 'behavioral' ? 'Hành vi' :
-                        interview.interview_type === 'hr' ? 'Nhân sự' :
-                        'Case Study'
-                      }</p>
-                      <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-destructive/10 text-destructive">
-                        Đã từ chối
-                      </span>
+                {application.interviews
+                  .filter((i) => i.status === 'candidate_declined')
+                  .map((interview) => (
+                    <div
+                      key={interview.id}
+                      className="rounded-lg border border-destructive/20 bg-destructive/5 p-3 text-sm"
+                    >
+                      <div className="flex justify-between items-start mb-2">
+                        <p className="font-semibold text-destructive">
+                          Phỏng vấn{' '}
+                          {interviewTypeLabel(interview.interview_type)}
+                        </p>
+                        <span className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-destructive/10 text-destructive">
+                          Đã từ chối
+                        </span>
+                      </div>
+                      <div className="space-y-1 text-muted-foreground">
+                        <p className="flex items-center gap-2">
+                          <CalendarDays className="h-3.5 w-3.5" />{' '}
+                          {new Date(interview.scheduled_at).toLocaleString(
+                            'vi-VN',
+                          )}{' '}
+                          ({interview.duration_minutes} phút)
+                        </p>
+                        {interview.meeting_url && (
+                          <p className="flex items-center gap-2">
+                            <ExternalLink className="h-3.5 w-3.5" />{' '}
+                            <a
+                              href={interview.meeting_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="hover:underline"
+                            >
+                              {interview.meeting_url}
+                            </a>
+                          </p>
+                        )}
+                        {interview.location && (
+                          <p className="flex items-center gap-2">
+                            <MapPin className="h-3.5 w-3.5" />{' '}
+                            {interview.location}
+                          </p>
+                        )}
+                        {interview.candidate_notes && (
+                          <p className="mt-2 text-xs italic bg-destructive/5 border border-destructive/20 p-2 rounded text-destructive">
+                            Lý do: {interview.candidate_notes}
+                          </p>
+                        )}
+                      </div>
                     </div>
-                    <div className="space-y-1 text-muted-foreground">
-                      <p className="flex items-center gap-2"><CalendarDays className="h-3.5 w-3.5" /> {new Date(interview.scheduled_at).toLocaleString('vi-VN')} ({interview.duration_minutes} phút)</p>
-                      {interview.meeting_url && <p className="flex items-center gap-2"><ExternalLink className="h-3.5 w-3.5" /> <a href={interview.meeting_url} target="_blank" rel="noopener noreferrer" className="hover:underline">{interview.meeting_url}</a></p>}
-                      {interview.location && <p className="flex items-center gap-2"><MapPin className="h-3.5 w-3.5" /> {interview.location}</p>}
-                      {interview.candidate_notes && <p className="mt-2 text-xs italic bg-destructive/5 border border-destructive/20 p-2 rounded text-destructive">Lý do: {interview.candidate_notes}</p>}
-                    </div>
-                  </div>
-                ))}
+                  ))}
               </div>
             )}
           </>
-        ) : null}
-        {withdrawError ? (
-          <p
-            role="alert"
-            className="rounded-md bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive"
-          >
-            {withdrawError}
-          </p>
         ) : null}
       </CardContent>
       <CardFooter className="flex flex-wrap items-center gap-2">
@@ -292,15 +411,35 @@ export function ApplicationCard({
             variant="outline"
             size="sm"
             className="flex-1"
-            onClick={handleWithdraw}
-            isLoading={withdrawing}
-            disabled={withdrawing}
+            onClick={() => setWithdrawOpen(true)}
           >
             <Undo2 className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
             Rút đơn
           </Button>
         ) : null}
       </CardFooter>
+
+      {withdrawOpen ? (
+        <WithdrawConfirmModal
+          application={application}
+          onClose={() => setWithdrawOpen(false)}
+          onSuccess={() => handleWithdrawSuccess(application.id)}
+          onRefresh={onUpdated}
+        />
+      ) : null}
+
+      {declinedInterview ? (
+        <InterviewDeclineModal
+          applicationId={application.id}
+          interview={declinedInterview}
+          onClose={() => setDeclineInterviewId(null)}
+          onDeclined={() => {
+            setDeclineInterviewId(null)
+            onUpdated?.()
+          }}
+          onRefresh={onUpdated}
+        />
+      ) : null}
     </Card>
   )
 }
