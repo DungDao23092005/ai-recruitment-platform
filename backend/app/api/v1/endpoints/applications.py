@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.embeddings.embedding_service import (
@@ -16,6 +16,7 @@ from app.core.exceptions import (
     AIError,
     ConflictException,
     EntityNotFoundException,
+    ForbiddenException,
     InvalidTransitionException,
 )
 from app.models import Application, User
@@ -29,6 +30,15 @@ from app.schemas.application import (
     ApplicationWithJobRead,
     CandidateProfileReadMinimal,
 )
+from app.schemas.application_activity import (
+    ApplicationActivityRead,
+    CandidateApplicationActivityRead,
+)
+from app.schemas.application_note import (
+    ApplicationNoteCreate,
+    ApplicationNoteRead,
+    ApplicationNoteUpdate,
+)
 from app.schemas.interview import (
     CandidateInterviewRead,
     InterviewActionRequest,
@@ -36,9 +46,17 @@ from app.schemas.interview import (
     InterviewRead,
     InterviewUpdate,
 )
+from app.schemas.interview_evaluation import (
+    InterviewEvaluationCreate,
+    InterviewEvaluationRead,
+    InterviewEvaluationUpdate,
+)
 from app.schemas.resume import ResumeRead
 from app.services.ai_matching_service import AIMatchingService
+from app.services.application_activity_service import ApplicationActivityService
+from app.services.application_note_service import ApplicationNoteService
 from app.services.application_service import ApplicationService
+from app.services.interview_evaluation_service import InterviewEvaluationService
 from app.services.interview_service import InterviewService
 from app.services.job_service import JobService
 from app.services.user_service import UserService
@@ -339,6 +357,11 @@ async def withdraw_application(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except ConflictException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
     return ApplicationRead.model_validate(application)
 
@@ -517,5 +540,311 @@ async def candidate_action_interview(
     except InvalidTransitionException as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+# --------------------------------------------------------------------------
+# Notes (recruiter-only internal notes on an application)
+# --------------------------------------------------------------------------
+
+_PAGE_MAX = 100
+_SKIP_QUERY = Query(0, ge=0)
+_LIMIT_QUERY = Query(50, ge=1, le=_PAGE_MAX)
+
+
+@router.post(
+    "/{application_id}/notes",
+    response_model=ApplicationNoteRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_application_note(
+    application_id: uuid.UUID,
+    data: ApplicationNoteCreate,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> ApplicationNoteRead:
+    """Create an internal note on an application. Recruiter/admin only."""
+    try:
+        return await ApplicationNoteService(db).create_note(
+            current_user=current_user,
+            application_id=application_id,
+            data=data,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/{application_id}/notes",
+    response_model=list[ApplicationNoteRead],
+)
+async def list_application_notes(
+    application_id: uuid.UUID,
+    skip: int = _SKIP_QUERY,
+    limit: int = _LIMIT_QUERY,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> list[ApplicationNoteRead]:
+    """List an application's internal notes. Recruiter/admin only."""
+    try:
+        return await ApplicationNoteService(db).list_notes(
+            current_user=current_user,
+            application_id=application_id,
+            skip=skip,
+            limit=limit,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.patch(
+    "/{application_id}/notes/{note_id}",
+    response_model=ApplicationNoteRead,
+)
+async def update_application_note(
+    application_id: uuid.UUID,
+    note_id: uuid.UUID,
+    data: ApplicationNoteUpdate,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> ApplicationNoteRead:
+    """Edit an internal note. Only the author or an admin may do this."""
+    try:
+        return await ApplicationNoteService(db).update_note(
+            current_user=current_user,
+            application_id=application_id,
+            note_id=note_id,
+            content=data.content,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+
+
+@router.delete(
+    "/{application_id}/notes/{note_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_application_note(
+    application_id: uuid.UUID,
+    note_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Soft-delete an internal note. Only the author or an admin may do this."""
+    try:
+        await ApplicationNoteService(db).delete_note(
+            current_user=current_user,
+            application_id=application_id,
+            note_id=note_id,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+
+
+# --------------------------------------------------------------------------
+# Interview evaluations (private recruiter scorecards)
+# --------------------------------------------------------------------------
+
+
+def _evaluation_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, EntityNotFoundException):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if isinstance(exc, ConflictException):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, ForbiddenException):
+        return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Unexpected error"
+    )
+
+
+@router.post(
+    "/{application_id}/interviews/{interview_id}/evaluations",
+    response_model=InterviewEvaluationRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_interview_evaluation(
+    application_id: uuid.UUID,
+    interview_id: uuid.UUID,
+    data: InterviewEvaluationCreate,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> InterviewEvaluationRead:
+    """Submit the caller's scorecard for an interview. Recruiter/admin only."""
+    try:
+        return await InterviewEvaluationService(db).create_evaluation(
+            current_user=current_user,
+            application_id=application_id,
+            interview_id=interview_id,
+            data=data,
+        )
+    except (EntityNotFoundException, ConflictException, ForbiddenException) as exc:
+        raise _evaluation_http_error(exc) from exc
+
+
+@router.get(
+    "/{application_id}/interviews/{interview_id}/evaluations",
+    response_model=list[InterviewEvaluationRead],
+)
+async def list_interview_evaluations(
+    application_id: uuid.UUID,
+    interview_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> list[InterviewEvaluationRead]:
+    """List an interview's evaluations. Recruiter/admin only."""
+    try:
+        return await InterviewEvaluationService(db).list_by_interview(
+            current_user=current_user,
+            application_id=application_id,
+            interview_id=interview_id,
+        )
+    except (EntityNotFoundException, ConflictException, ForbiddenException) as exc:
+        raise _evaluation_http_error(exc) from exc
+
+
+@router.get(
+    "/{application_id}/evaluations",
+    response_model=list[InterviewEvaluationRead],
+)
+async def list_application_evaluations(
+    application_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> list[InterviewEvaluationRead]:
+    """List all evaluations for an application. Recruiter/admin only."""
+    try:
+        return await InterviewEvaluationService(db).list_by_application(
+            current_user=current_user,
+            application_id=application_id,
+        )
+    except (EntityNotFoundException, ConflictException, ForbiddenException) as exc:
+        raise _evaluation_http_error(exc) from exc
+
+
+@router.patch(
+    "/{application_id}/evaluations/{evaluation_id}",
+    response_model=InterviewEvaluationRead,
+)
+async def update_interview_evaluation(
+    application_id: uuid.UUID,
+    evaluation_id: uuid.UUID,
+    data: InterviewEvaluationUpdate,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> InterviewEvaluationRead:
+    """Update a scorecard. Only the evaluator or an admin may do this."""
+    try:
+        return await InterviewEvaluationService(db).update_evaluation(
+            current_user=current_user,
+            application_id=application_id,
+            evaluation_id=evaluation_id,
+            data=data,
+        )
+    except (EntityNotFoundException, ConflictException, ForbiddenException) as exc:
+        raise _evaluation_http_error(exc) from exc
+
+
+@router.delete(
+    "/{application_id}/evaluations/{evaluation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_interview_evaluation(
+    application_id: uuid.UUID,
+    evaluation_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Soft-delete a scorecard. Only the evaluator or an admin may do this."""
+    try:
+        await InterviewEvaluationService(db).delete_evaluation(
+            current_user=current_user,
+            application_id=application_id,
+            evaluation_id=evaluation_id,
+        )
+    except (EntityNotFoundException, ConflictException, ForbiddenException) as exc:
+        raise _evaluation_http_error(exc) from exc
+
+
+# --------------------------------------------------------------------------
+# Activity history
+# --------------------------------------------------------------------------
+
+
+@router.get(
+    "/{application_id}/activities",
+    response_model=list[ApplicationActivityRead],
+)
+async def list_application_activities(
+    application_id: uuid.UUID,
+    skip: int = _SKIP_QUERY,
+    limit: int = _LIMIT_QUERY,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> list[ApplicationActivityRead]:
+    """List an application's full history (newest first). Recruiter/admin only."""
+    try:
+        return await ApplicationActivityService(db).list_activities(
+            current_user=current_user,
+            application_id=application_id,
+            skip=skip,
+            limit=limit,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get(
+    "/mine/{application_id}/timeline",
+    response_model=list[CandidateApplicationActivityRead],
+)
+async def list_my_application_timeline(
+    application_id: uuid.UUID,
+    skip: int = _SKIP_QUERY,
+    limit: int = _LIMIT_QUERY,
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+) -> list[CandidateApplicationActivityRead]:
+    """List the candidate-visible timeline for one of the caller's applications.
+
+    Only candidate-relevant events are returned (never internal notes, private
+    evaluations, actor identities or free-form metadata).
+    """
+    try:
+        return await ApplicationActivityService(db).list_candidate_timeline(
+            current_user=current_user,
+            application_id=application_id,
+            skip=skip,
+            limit=limit,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc

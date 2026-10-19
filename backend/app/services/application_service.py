@@ -11,6 +11,7 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidTransitionException,
 )
+from app.domain import hiring
 from app.domain.enums import ApplicationStatus
 from app.domain.models import Application as DomainApplication
 from app.domain.models.base import DomainException
@@ -24,8 +25,10 @@ from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.ai_matching_service import AIMatchingService
+from app.services.application_activity_service import record_activity
 from app.services.job_service import JobService
 from app.services.notification_service import NotificationService
+from app.services.pipeline_email_service import schedule_application_status_email
 from app.services.user_service import UserService
 
 RECRUITER_MANAGED_STATUSES = frozenset(
@@ -39,14 +42,18 @@ RECRUITER_MANAGED_STATUSES = frozenset(
     }
 )
 
-# Transitions that the public recruiter status endpoint is allowed to publish
-# today. The domain now models a richer pipeline (for example
-# ``INTERVIEWING -> UNDER_REVIEW``, ``INTERVIEWING -> OFFERED`` and
-# ``OFFERED -> ACCEPTED/REJECTED``), but those new transitions must stay
-# unreachable from the API until the follow-on phase records an atomic
-# ``ApplicationActivity`` alongside each change. Until then this allow-list
-# preserves the exact externally observable behaviour that existed before the
-# pipeline model was introduced.
+# Transitions the public recruiter status endpoint is allowed to publish.
+#
+# The pipeline model (see ``app.domain.models.application``) now records an
+# atomic ``ApplicationActivity`` alongside every status change, so the full
+# canonical pipeline is exposed deliberately. Every entry here is also a
+# domain-valid transition (enforced by ``DomainApplication.transition_to``),
+# and each is covered by tests. The list stays a strict allow-list - not simply
+# "whatever the domain allows" - so a future domain change cannot silently
+# widen the public API. In particular the "bypass" transitions
+# (``UNDER_REVIEW -> OFFERED``, ``SHORTLISTED -> OFFERED``,
+# ``UNDER_REVIEW -> INTERVIEWING``) and ``OFFERED -> INTERVIEWING`` are
+# intentionally absent: they skip canonical stages and must not be reachable.
 _PUBLISHED_RECRUITER_TRANSITIONS = frozenset(
     {
         (ApplicationStatus.APPLIED, ApplicationStatus.UNDER_REVIEW),
@@ -55,8 +62,12 @@ _PUBLISHED_RECRUITER_TRANSITIONS = frozenset(
         (ApplicationStatus.UNDER_REVIEW, ApplicationStatus.REJECTED),
         (ApplicationStatus.SHORTLISTED, ApplicationStatus.INTERVIEWING),
         (ApplicationStatus.SHORTLISTED, ApplicationStatus.REJECTED),
+        (ApplicationStatus.INTERVIEWING, ApplicationStatus.UNDER_REVIEW),
+        (ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFERED),
         (ApplicationStatus.INTERVIEWING, ApplicationStatus.ACCEPTED),
         (ApplicationStatus.INTERVIEWING, ApplicationStatus.REJECTED),
+        (ApplicationStatus.OFFERED, ApplicationStatus.ACCEPTED),
+        (ApplicationStatus.OFFERED, ApplicationStatus.REJECTED),
     }
 )
 
@@ -122,7 +133,9 @@ class ApplicationService:
         application_id: uuid.UUID,
         new_status: ApplicationStatus,
     ) -> Application:
-        application = await self.applications.get_by_id_with_candidate(application_id)
+        application = await self.applications.get_by_id_with_candidate_user_and_job(
+            application_id
+        )
         if application is None:
             raise EntityNotFoundException(
                 f"Application {application_id} not found"
@@ -182,17 +195,47 @@ class ApplicationService:
                 f"Please refresh and try again."
             )
 
-        # Update local object and send notification
+        # Update local object and record the change + notifications atomically.
+        # Everything below runs in the same transaction as the conditional
+        # UPDATE: if the activity insert or the outbox enqueue fails, the status
+        # change is rolled back with it.
         application.status = new_status
+        job_title = application.job.title if application.job else "N/A"
+        candidate = application.candidate
+        candidate_user_id = candidate.user_id if candidate else None
+        candidate_email = (
+            candidate.user.email if candidate and candidate.user else None
+        )
         try:
+            await record_activity(
+                self.session,
+                application_id=application_id,
+                actor_id=current_user.id,
+                action_type=hiring.STATUS_CHANGED,
+                from_status=old_status.value,
+                to_status=new_status.value,
+            )
+
+            # Durably enqueue a candidate email for outcome statuses (offer /
+            # accepted / rejected); other statuses are silent. Never contacts
+            # the provider here - the outbox worker delivers after commit.
+            await schedule_application_status_email(
+                self.session,
+                to_email=candidate_email,
+                job_title=job_title,
+                new_status=new_status,
+                idempotency_key=(
+                    f"application-status:{application_id}:{new_status.value}"
+                ),
+            )
+
             # Notify candidate about status change BEFORE commit
             notification_service = NotificationService(self.session)
-            candidate_user_id = application.candidate.user_id if application.candidate else None
             if candidate_user_id:
                 await notification_service.create_notification(
                     user_id=candidate_user_id,
                     title="Cập nhật trạng thái đơn ứng tuyển",
-                    content=f"Đơn ứng tuyển của bạn cho vị trí {application.job.title if application.job else 'N/A'} đã thay đổi từ {old_status.value} sang {new_status.value}",
+                    content=f"Đơn ứng tuyển của bạn cho vị trí {job_title} đã thay đổi từ {old_status.value} sang {new_status.value}",
                     notification_type="application_status_changed",
                     entity_type="application",
                     entity_id=application.id,
@@ -237,6 +280,7 @@ class ApplicationService:
                 f"Application {application_id} not found"
             )
 
+        old_status = application.status
         domain = DomainApplication(
             candidate_id=application.candidate_id,
             job_id=application.job_id,
@@ -247,8 +291,31 @@ class ApplicationService:
         except DomainException as exc:
             raise InvalidTransitionException(str(exc)) from exc
 
-        application.status = domain.status
+        # Atomic conditional update: only withdraw while the application is
+        # still in the status we validated, so a concurrent recruiter status
+        # change cannot be silently overwritten (lost update).
+        updated = await self.applications.try_update_status(
+            application_id=application_id,
+            expected_status=old_status,
+            new_status=ApplicationStatus.WITHDRAWN,
+        )
+        if not updated:
+            raise ConflictException(
+                f"Application {application_id} was modified concurrently. "
+                f"Please refresh and try again."
+            )
+
+        application.status = ApplicationStatus.WITHDRAWN
         try:
+            await record_activity(
+                self.session,
+                application_id=application_id,
+                actor_id=current_user.id,
+                action_type=hiring.CANDIDATE_WITHDREW,
+                from_status=old_status.value,
+                to_status=ApplicationStatus.WITHDRAWN.value,
+            )
+
             # Notify recruiter(s) about application withdrawal BEFORE commit
             notification_service = NotificationService(self.session)
             if application.job and application.job.company and application.job.company.recruiters:

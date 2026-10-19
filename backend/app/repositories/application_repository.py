@@ -6,7 +6,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
 from app.domain.enums import ApplicationStatus
-from app.models import Application, Company, Job
+from app.models import Application, CandidateProfile, Company, Job
 from app.repositories.base import BaseRepository
 
 
@@ -91,6 +91,27 @@ class ApplicationRepository(BaseRepository[Application]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_id_with_candidate_user_and_job(self, application_id: Any) -> Application | None:
+        """Load an application with its candidate's user and job (for status flips).
+
+        Resolving ``candidate.user`` lets the status-change flow address the
+        candidate's email without a second round trip, while the job carries the
+        title used in notifications/emails.
+        """
+        stmt = (
+            select(Application)
+            .options(
+                selectinload(Application.candidate).selectinload(CandidateProfile.user),
+                selectinload(Application.job),
+            )
+            .where(
+                Application.id == application_id,
+                Application.is_deleted == False,  # noqa: E712
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_by_id_with_job_company_and_recruiters(self, application_id: Any) -> Application | None:
         stmt = (
             select(Application)
@@ -109,7 +130,7 @@ class ApplicationRepository(BaseRepository[Application]):
         stmt = (
             select(Application)
             .options(
-                selectinload(Application.candidate),
+                selectinload(Application.candidate).selectinload(CandidateProfile.user),
                 selectinload(Application.job).selectinload(Job.company).selectinload(Company.recruiters)
             )
             .where(

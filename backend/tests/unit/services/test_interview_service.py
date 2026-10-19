@@ -98,6 +98,18 @@ def make_job() -> Job:
 class TestScheduleInterviewFlush:
     """Test that flush() is called before using interview.id for notifications."""
 
+    @pytest.fixture(autouse=True)
+    def _patch_pipeline_side_effects(self, monkeypatch):
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "app.services.interview_service.record_activity", _noop
+        )
+        monkeypatch.setattr(
+            "app.services.interview_service.schedule_interview_email", _noop
+        )
+
     @pytest.mark.asyncio
     async def test_flush_called_before_notification(self):
         """Verify flush is called before notification uses interview.id."""
@@ -127,7 +139,7 @@ class TestScheduleInterviewFlush:
             id=uuid.uuid4(),
             candidate_id=uuid.uuid4(),
             job_id=uuid.uuid4(),
-            status="applied",
+            status=ApplicationStatus.APPLIED,
         )
 
         # Mock NotificationService.create_notification to track when it's called
@@ -204,7 +216,7 @@ class TestScheduleInterviewFlush:
             id=uuid.uuid4(),
             candidate_id=uuid.uuid4(),
             job_id=uuid.uuid4(),
-            status="applied",
+            status=ApplicationStatus.APPLIED,
         )
 
         # Track notification calls with arguments

@@ -1,6 +1,13 @@
+from app.repositories.application_activity_repository import (
+    ApplicationActivityRepository,
+)
+from app.repositories.application_note_repository import ApplicationNoteRepository
 from app.repositories.application_repository import ApplicationRepository
 from app.repositories.base import BaseRepository
 from app.repositories.company_repository import CompanyRepository
+from app.repositories.interview_evaluation_repository import (
+    InterviewEvaluationRepository,
+)
 from app.repositories.interview_repository import InterviewRepository
 from app.repositories.interfaces.base_interface import BaseRepositoryInterface
 from app.repositories.job_repository import JobRepository
@@ -19,8 +26,11 @@ __all__ = [
     "CompanyRepository",
     "JobRepository",
     "ApplicationRepository",
+    "ApplicationNoteRepository",
+    "ApplicationActivityRepository",
     "ResumeRepository",
     "InterviewRepository",
+    "InterviewEvaluationRepository",
     "NotificationRepository",
     "RecruitmentPlanRepository",
     "SubscriptionRepository",

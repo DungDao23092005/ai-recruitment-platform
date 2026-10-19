@@ -335,12 +335,25 @@ class TestListApplicationsByJob:
 
 
 class TestUpdateApplicationStatus:
+    @pytest.fixture(autouse=True)
+    def _patch_pipeline_side_effects(self, monkeypatch):
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "app.services.application_service.record_activity", _noop
+        )
+        monkeypatch.setattr(
+            "app.services.application_service.schedule_application_status_email",
+            _noop,
+        )
+
     @patch("app.services.application_service.NotificationService")
     def test_valid_transition(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
         job = make_job()
 
         mock_notification_service.return_value.create_notification = AsyncMock()
@@ -370,7 +383,7 @@ class TestUpdateApplicationStatus:
     def test_application_not_found_raises(self, mock_notification_service):
         session = make_session()
         service = make_service(session)
-        service.applications.get_by_id_with_candidate.return_value = None
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = None
 
         mock_notification_service.return_value.create_notification = AsyncMock()
 
@@ -394,7 +407,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.UNDER_REVIEW)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
 
         mock_notification_service.return_value.create_notification = AsyncMock()
 
@@ -421,7 +434,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
 
         mock_notification_service.return_value.create_notification = AsyncMock()
 
@@ -449,7 +462,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
         job = make_job()
 
         mock_notification_service.return_value.create_notification = AsyncMock()
@@ -486,7 +499,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.UNDER_REVIEW)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
         job = make_job()
 
         mock_notification_service.return_value.create_notification = AsyncMock()
@@ -522,7 +535,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.SHORTLISTED)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
         job = make_job()
 
         mock_notification_service.return_value.create_notification = AsyncMock()
@@ -558,7 +571,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.INTERVIEWING)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
         job = make_job()
 
         mock_notification_service.return_value.create_notification = AsyncMock()
@@ -594,7 +607,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.UNDER_REVIEW)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
         job = make_job()
 
         mock_notification_service.return_value.create_notification = AsyncMock()
@@ -626,7 +639,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
         session.commit.side_effect = RuntimeError("db down")
 
         mock_notification_service.return_value.create_notification = AsyncMock()
@@ -652,7 +665,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
 
         with patch(
             "app.services.application_service.JobService"
@@ -676,7 +689,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.UNDER_REVIEW)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
 
         with patch(
             "app.services.application_service.JobService"
@@ -700,7 +713,7 @@ class TestUpdateApplicationStatus:
         session = make_session()
         service = make_service(session)
         application = make_application(status=ApplicationStatus.UNDER_REVIEW)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
 
         with patch(
             "app.services.application_service.JobService"
@@ -722,11 +735,25 @@ class TestUpdateApplicationStatus:
 
 
 class TestPublishedTransitionGuard:
-    """New pipeline transitions stay unreachable from the public endpoint.
+    """Phase 2 publishes the full canonical pipeline behind atomic activities.
 
-    The domain accepts these transitions, but they must not be published until
-    the follow-on phase records atomic activities alongside status changes.
+    The transitions that were deliberately withheld in Phase 1 (and the
+    "bypass" transitions that skip canonical stages) are asserted here: the
+    canonical ones are now reachable, the bypass ones stay domain-rejected.
     """
+
+    @pytest.fixture(autouse=True)
+    def _patch_pipeline_side_effects(self, monkeypatch):
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "app.services.application_service.record_activity", _noop
+        )
+        monkeypatch.setattr(
+            "app.services.application_service.schedule_application_status_email",
+            _noop,
+        )
 
     @pytest.mark.parametrize(
         "initial,new_status",
@@ -737,11 +764,54 @@ class TestPublishedTransitionGuard:
             (ApplicationStatus.OFFERED, ApplicationStatus.REJECTED),
         ],
     )
-    def test_new_transitions_are_rejected(self, initial, new_status):
+    @patch("app.services.application_service.NotificationService")
+    def test_new_transitions_are_now_published(
+        self, mock_notification_service, initial, new_status
+    ):
+        mock_notification_service.return_value.create_notification = AsyncMock()
         session = make_session()
         service = make_service(session)
         application = make_application(status=initial)
-        service.applications.get_by_id_with_candidate.return_value = application
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
+        service.applications.try_update_status = AsyncMock(return_value=True)
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=make_job()
+            )
+            result = asyncio.run(
+                service.update_application_status(
+                    current_user=make_user(),
+                    application_id=application.id,
+                    new_status=new_status,
+                )
+            )
+
+        assert result is application
+        assert application.status == new_status
+        service.applications.try_update_status.assert_awaited_once_with(
+            application_id=application.id,
+            expected_status=initial,
+            new_status=new_status,
+        )
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "initial,new_status",
+        [
+            (ApplicationStatus.UNDER_REVIEW, ApplicationStatus.OFFERED),
+            (ApplicationStatus.SHORTLISTED, ApplicationStatus.OFFERED),
+            (ApplicationStatus.UNDER_REVIEW, ApplicationStatus.INTERVIEWING),
+            (ApplicationStatus.OFFERED, ApplicationStatus.INTERVIEWING),
+        ],
+    )
+    def test_bypass_transitions_remain_rejected(self, initial, new_status):
+        session = make_session()
+        service = make_service(session)
+        application = make_application(status=initial)
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
 
         with patch(
             "app.services.application_service.JobService"
@@ -772,8 +842,8 @@ class TestPublishedTransitionGuard:
         ],
     )
     def test_domain_still_accepts_them(self, initial, new_status):
-        # Documents that the block is a deliberate publication guard, not a
-        # missing domain rule.
+        # Documents that publishing is a deliberate API-surface decision on top
+        # of the domain rule.
         from app.domain.models import Application as DomainApplication
 
         domain = DomainApplication(
@@ -797,6 +867,15 @@ def make_candidate_user(candidate_id: uuid.UUID) -> SimpleNamespace:
 
 
 class TestWithdrawApplication:
+    @pytest.fixture(autouse=True)
+    def _patch_pipeline_side_effects(self, monkeypatch):
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "app.services.application_service.record_activity", _noop
+        )
+
     @staticmethod
     def patch_user_service(user):
         patch_user = patch("app.services.application_service.UserService")
@@ -810,6 +889,7 @@ class TestWithdrawApplication:
         service = make_service(session)
         application = make_application(status=ApplicationStatus.APPLIED)
         service.applications.get_by_id_with_job_company_and_recruiters.return_value = application
+        service.applications.try_update_status = AsyncMock(return_value=True)
         user = make_candidate_user(application.candidate_id)
 
         mock_notification_service.return_value.create_notification = AsyncMock()

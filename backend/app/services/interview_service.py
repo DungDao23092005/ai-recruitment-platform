@@ -9,6 +9,7 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidTransitionException,
 )
+from app.domain import hiring
 from app.domain.enums import ApplicationStatus, InterviewStatus, InterviewType
 from app.domain.models import Application as DomainApplication
 from app.domain.models.base import DomainException
@@ -21,8 +22,10 @@ from app.schemas.interview import (
     InterviewRead,
     InterviewUpdate,
 )
+from app.services.application_activity_service import record_activity
 from app.services.job_service import JobService
 from app.services.notification_service import NotificationService
+from app.services.pipeline_email_service import schedule_interview_email
 from app.services.user_service import UserService
 
 
@@ -31,6 +34,20 @@ class InterviewService:
         self.session = session
         self.interviews = InterviewRepository(session, Interview)
         self.applications = ApplicationRepository(session, Application)
+
+    @staticmethod
+    def _candidate_email(application: Application) -> str | None:
+        """Return the candidate's email from the eagerly-loaded relationship.
+
+        ``application`` is loaded via
+        ``get_by_id_with_candidate_job_company_and_recruiters``, which eager-loads
+        ``candidate.user``, so this never triggers a lazy load (and never a
+        ``MissingGreenlet``) in async code.
+        """
+        candidate = application.candidate
+        if candidate is None or candidate.user is None:
+            return None
+        return candidate.user.email
 
     async def schedule_interview(
         self,
@@ -79,6 +96,8 @@ class InterviewService:
         self.session.add(interview)
         await self.session.flush()
 
+        previous_app_status = application.status
+
         # Transition application to INTERVIEWING if not already
         if application.status != ApplicationStatus.INTERVIEWING:
             domain = DomainApplication(
@@ -97,7 +116,35 @@ class InterviewService:
                 raise InvalidTransitionException(str(exc)) from exc
             application.status = domain.status
 
+        job_title = application.job.title if application.job else "N/A"
+
         try:
+            if application.status != previous_app_status:
+                await record_activity(
+                    self.session,
+                    application_id=application_id,
+                    actor_id=current_user.id,
+                    action_type=hiring.STATUS_CHANGED,
+                    from_status=previous_app_status.value,
+                    to_status=application.status.value,
+                )
+            await record_activity(
+                self.session,
+                application_id=application_id,
+                actor_id=current_user.id,
+                action_type=hiring.INTERVIEW_SCHEDULED,
+                metadata={"interview_id": str(interview.id)},
+            )
+
+            await schedule_interview_email(
+                self.session,
+                to_email=self._candidate_email(application),
+                job_title=job_title,
+                scheduled_at=interview.scheduled_at,
+                event="scheduled",
+                idempotency_key=f"interview:{interview.id}:scheduled",
+            )
+
             # Notify candidate about scheduled interview BEFORE commit
             notification_service = NotificationService(self.session)
             candidate_user_id = application.candidate.user_id if application.candidate else None
@@ -105,7 +152,7 @@ class InterviewService:
                 await notification_service.create_notification(
                     user_id=candidate_user_id,
                     title="Lịch phỏng vấn mới",
-                    content=f"Bạn đã được mời phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'} vào lúc {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}",
+                    content=f"Bạn đã được mời phỏng vấn cho vị trí {job_title} vào lúc {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}",
                     notification_type="interview_scheduled",
                     entity_type="interview",
                     entity_id=interview.id,
@@ -160,6 +207,8 @@ class InterviewService:
                 "Không thể lên lịch phỏng vấn trong quá khứ. Vui lòng chọn thời gian trong tương lai."
             )
 
+        original_scheduled_at = interview.scheduled_at
+
         # Update fields
         if data.scheduled_at is not None:
             interview.scheduled_at = data.scheduled_at
@@ -174,7 +223,30 @@ class InterviewService:
         if data.notes is not None:
             interview.notes = data.notes
 
+        rescheduled = interview.scheduled_at != original_scheduled_at
+        job_title = application.job.title if application.job else "N/A"
+
         try:
+            if rescheduled:
+                await record_activity(
+                    self.session,
+                    application_id=interview.application_id,
+                    actor_id=current_user.id,
+                    action_type=hiring.INTERVIEW_RESCHEDULED,
+                    metadata={"interview_id": str(interview.id)},
+                )
+                await schedule_interview_email(
+                    self.session,
+                    to_email=self._candidate_email(application),
+                    job_title=job_title,
+                    scheduled_at=interview.scheduled_at,
+                    event="rescheduled",
+                    idempotency_key=(
+                        f"interview:{interview.id}:rescheduled:"
+                        f"{interview.scheduled_at.isoformat()}"
+                    ),
+                )
+
             # Notify candidate about interview update BEFORE commit
             notification_service = NotificationService(self.session)
             candidate_user_id = application.candidate.user_id if application.candidate else None
@@ -182,7 +254,7 @@ class InterviewService:
                 await notification_service.create_notification(
                     user_id=candidate_user_id,
                     title="Cập nhật lịch phỏng vấn",
-                    content=f"Lịch phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'} đã được cập nhật. Thời gian mới: {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}",
+                    content=f"Lịch phỏng vấn cho vị trí {job_title} đã được cập nhật. Thời gian mới: {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}",
                     notification_type="interview_updated",
                     entity_type="interview",
                     entity_id=interview.id,
@@ -231,7 +303,25 @@ class InterviewService:
         interview.status = InterviewStatus.CANCELLED
         await self.interviews.soft_delete(interview)
 
+        job_title = application.job.title if application.job else "N/A"
+
         try:
+            await record_activity(
+                self.session,
+                application_id=interview.application_id,
+                actor_id=current_user.id,
+                action_type=hiring.INTERVIEW_CANCELLED,
+                metadata={"interview_id": str(interview.id)},
+            )
+            await schedule_interview_email(
+                self.session,
+                to_email=self._candidate_email(application),
+                job_title=job_title,
+                scheduled_at=interview.scheduled_at,
+                event="cancelled",
+                idempotency_key=f"interview:{interview.id}:cancelled",
+            )
+
             # Notify candidate about interview cancellation BEFORE commit
             notification_service = NotificationService(self.session)
             candidate_user_id = application.candidate.user_id if application.candidate else None
@@ -239,7 +329,7 @@ class InterviewService:
                 await notification_service.create_notification(
                     user_id=candidate_user_id,
                     title="Phỏng vấn bị hủy",
-                    content=f"Phỏng vấn cho vị trí {application.job.title if application.job else 'N/A'} đã bị hủy",
+                    content=f"Phỏng vấn cho vị trí {job_title} đã bị hủy",
                     notification_type="interview_cancelled",
                     entity_type="interview",
                     entity_id=interview.id,
@@ -317,6 +407,18 @@ class InterviewService:
             raise InvalidTransitionException(f"Invalid action: {action}. Must be 'confirm' or 'decline'")
 
         try:
+            await record_activity(
+                self.session,
+                application_id=application_id,
+                actor_id=current_user.id,
+                action_type=(
+                    hiring.INTERVIEW_CONFIRMED
+                    if action == "confirm"
+                    else hiring.INTERVIEW_DECLINED
+                ),
+                metadata={"interview_id": str(interview.id)},
+            )
+
             # Notify recruiter(s) about candidate confirm/decline BEFORE commit
             notification_service = NotificationService(self.session)
             if application.job and application.job.company and application.job.company.recruiters:

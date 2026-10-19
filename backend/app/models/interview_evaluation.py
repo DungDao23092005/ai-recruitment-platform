@@ -10,6 +10,7 @@ from sqlalchemy import (
     Integer,
     String,
     Uuid,
+    text,
 )
 from sqlalchemy.dialects.mssql import NVARCHAR
 from sqlalchemy.orm import Mapped, mapped_column
@@ -93,4 +94,16 @@ class InterviewEvaluation(Base, TimestampMixin, SoftDeleteMixin):
         ),
         Index("ix_interview_evaluations_interview_id", "interview_id"),
         Index("ix_interview_evaluations_application_id", "application_id"),
+        # At most one *active* evaluation per interviewer per interview. The
+        # index is filtered on ``is_deleted = 0`` so a soft-deleted scorecard
+        # does not block a fresh one, while concurrent inserts of a duplicate
+        # scorecard are rejected by the database (defence in depth on top of
+        # the service-level check).
+        Index(
+            "uq_interview_evaluations_interview_evaluator_active",
+            "interview_id",
+            "evaluator_id",
+            unique=True,
+            mssql_where=text("is_deleted = 0"),
+        ),
     )

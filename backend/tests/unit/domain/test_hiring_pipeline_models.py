@@ -108,12 +108,15 @@ class TestInterviewEvaluationModel:
             assert _mssql_ddl(col) == f"NVARCHAR({length})"
 
     def test_evaluator_foreign_key(self):
+        # ``application_id`` also participates in the composite interview FK, so
+        # build the set of (column, target) pairs rather than a dict keyed by
+        # column name - set iteration order is not deterministic.
         fks = {
-            fk.parent.name: tuple(fk.target_fullname.split("."))
+            (fk.parent.name, fk.target_fullname)
             for fk in InterviewEvaluation.__table__.foreign_keys
         }
-        assert fks["evaluator_id"] == ("users", "id")
-        assert fks["application_id"] == ("applications", "id")
+        assert ("evaluator_id", "users.id") in fks
+        assert ("application_id", "applications.id") in fks
 
     def test_composite_foreign_key_prevents_mismatched_pair(self):
         composite = [
@@ -142,7 +145,26 @@ class TestInterviewEvaluationModel:
         assert {
             "ix_interview_evaluations_interview_id",
             "ix_interview_evaluations_application_id",
+            "uq_interview_evaluations_interview_evaluator_active",
         } <= _index_names(InterviewEvaluation)
+
+    def test_one_active_evaluation_per_interview_per_evaluator(self):
+        """A filtered unique index enforces one active scorecard per interviewer."""
+        index = next(
+            idx
+            for idx in InterviewEvaluation.__table__.indexes
+            if idx.name == "uq_interview_evaluations_interview_evaluator_active"
+        )
+        assert index.unique is True
+        assert {col.name for col in index.columns} == {
+            "interview_id",
+            "evaluator_id",
+        }
+        # Filtered on active rows so a soft-deleted scorecard does not block a
+        # fresh submission.
+        assert "is_deleted = 0" in str(
+            index.dialect_options["mssql"]["where"]
+        )
 
 
 class TestApplicationActivityModel:
