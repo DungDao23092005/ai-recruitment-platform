@@ -107,12 +107,14 @@ class TestRateLimiterUnit:
         assert rate_limiter._normalize_email("USER@DOMAIN.ORG") == "user@domain.org"
 
     def test_build_key(self, rate_limiter):
-        """Test key format."""
+        """Keys are namespaced by endpoint and hide the raw identifier."""
         key = rate_limiter._build_key("auth:login", "192.168.1.1")
-        assert key == "ratelimit:auth:login:192.168.1.1"
+        assert key.startswith("ratelimit:auth:login:")
+        assert "192.168.1.1" not in key
 
         key = rate_limiter._build_key("ai:chat", "user:123")
-        assert key == "ratelimit:ai:chat:user:123"
+        assert key.startswith("ratelimit:ai:chat:")
+        assert "user:123" not in key
 
 
 class TestRateLimiterIPExtraction:
@@ -214,30 +216,116 @@ class TestRateLimiterFailOpen:
 
 
 class TestRateLimitKeyFormat:
-    """Test rate limit key format and collision avoidance."""
+    """Test that rate limit keys are anonymized and collision-resistant."""
 
     def test_endpoint_identifier_separation(self):
-        """Test that endpoint and identifier don't collide."""
+        """Different endpoints with the same identifier do not collide."""
         from app.core.rate_limit import RateLimiter
         from unittest.mock import MagicMock
 
         limiter = RateLimiter(MagicMock())
 
-        # Different endpoints with same identifier
         key1 = limiter._build_key("auth:login", "192.168.1.1")
         key2 = limiter._build_key("auth:register", "192.168.1.1")
         assert key1 != key2
-        assert key1 == "ratelimit:auth:login:192.168.1.1"
-        assert key2 == "ratelimit:auth:register:192.168.1.1"
+        assert key1.startswith("ratelimit:auth:login:")
+        assert key2.startswith("ratelimit:auth:register:")
 
-    def test_identifier_with_colon(self):
-        """Test identifier containing colon."""
+    def test_identifier_with_colon_anonymized(self):
+        """Identifiers containing colons are still hashed, not embedded."""
         from app.core.rate_limit import RateLimiter
         from unittest.mock import MagicMock
 
         limiter = RateLimiter(MagicMock())
         key = limiter._build_key("ai:chat", "user:123")
-        assert key == "ratelimit:ai:chat:user:123"
+        assert key.startswith("ratelimit:ai:chat:")
+        assert "user:123" not in key
+
+    def test_raw_email_never_in_key(self):
+        """A raw email address must never appear in a rate limit key."""
+        from app.core.rate_limit import RateLimiter
+        from unittest.mock import MagicMock
+
+        limiter = RateLimiter(MagicMock())
+        key = limiter._build_key("auth:login:account", "Victim@Example.COM")
+        assert "Victim@Example.COM" not in key
+        assert "victim@example.com" not in key
+        assert "example.com" not in key
+        assert "victim" not in key
+
+    def test_key_is_stable_within_config(self):
+        """The same endpoint+identifier yields the same digest (stable bucket)."""
+        from app.core.rate_limit import RateLimiter
+        from unittest.mock import MagicMock
+
+        limiter = RateLimiter(MagicMock())
+        assert limiter._build_key("auth:login:account", "a@b.com") == \
+            limiter._build_key("auth:login:account", "a@b.com")
+
+    def test_distinct_identifiers_differ(self):
+        """Different identifiers map to different buckets."""
+        from app.core.rate_limit import RateLimiter
+        from unittest.mock import MagicMock
+
+        limiter = RateLimiter(MagicMock())
+        assert limiter._build_key("auth:login:account", "a@b.com") != \
+            limiter._build_key("auth:login:account", "c@d.com")
+
+    def test_uses_hmac_not_plain_sha256(self):
+        """Keys use keyed HMAC-SHA256, not a plain (unkeyed) SHA-256 digest."""
+        import hashlib
+        from app.core.rate_limit import anonymize_identifier
+
+        digest = anonymize_identifier("auth:login", "a@b.com")
+        assert len(digest) == 64
+        int(digest, 16)  # valid hex
+        assert digest != hashlib.sha256(b"a@b.com").hexdigest()
+
+
+class TestRateLimiterFailClosed:
+    """Authentication limiters must fail closed (503) on Redis outage."""
+
+    @pytest.mark.asyncio
+    async def test_redis_error_raises_503_when_fail_closed(self):
+        from app.core.rate_limit import RateLimiter
+        from fastapi import HTTPException
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_redis = AsyncMock()
+        mock_script = AsyncMock()
+        mock_redis.register_script = MagicMock(return_value=mock_script)
+        mock_script.side_effect = ConnectionError("Redis unavailable")
+
+        limiter = RateLimiter(mock_redis)
+        with pytest.raises(HTTPException) as excinfo:
+            await limiter.check_limit(
+                "auth:login:ip", "1.2.3.4", 20, 60, fail_closed=True
+            )
+        assert excinfo.value.status_code == 503
+        assert "Retry-After" in excinfo.value.headers
+
+
+class TestUniformRateLimitMessage:
+    """All auth rejections share one message that reveals no bucket details."""
+
+    def test_rate_limited_exception_shape(self):
+        from app.core.rate_limit import (
+            RATE_LIMIT_EXCEEDED_MESSAGE,
+            rate_limited_exception,
+        )
+
+        exc = rate_limited_exception(7)
+        assert exc.status_code == 429
+        assert exc.headers["Retry-After"] == "7"
+        assert exc.detail == RATE_LIMIT_EXCEEDED_MESSAGE.format(seconds=7)
+
+    def test_rate_limit_unavailable_exception_shape(self):
+        from app.core.rate_limit import rate_limit_unavailable_exception
+
+        exc = rate_limit_unavailable_exception()
+        assert exc.status_code == 503
+        assert exc.headers["Retry-After"] == "5"
+
 
 
 class TestRateLimitEndpoints:

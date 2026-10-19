@@ -5,12 +5,14 @@ from typing import Any, Optional
 
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import ConflictException, ForbiddenException, LockedAccountException
 from app.core.password_reset import (
+    dummy_otp_hash,
+    dummy_otp_verify,
     generate_otp,
     generate_reset_token,
     hash_otp,
@@ -64,6 +66,15 @@ class AuthService:
         email: str,
         password: str,
     ) -> User | None:
+        """Validate credentials and return the user, or ``None`` on failure.
+
+        Unknown emails and wrong passwords return the same ``None`` so the
+        outward status/message is identical and cannot be used for enumeration.
+        Residual timing note: an unknown email skips the bcrypt verification
+        step, so a careful attacker could still distinguish the two by timing.
+        This is accepted and bounded by the per-IP login rate limit; the
+        password-recovery paths perform equivalent dummy work instead.
+        """
         user = await self.users.get_by_email(email)
         if user is None:
             return None
@@ -83,8 +94,11 @@ class AuthService:
         user = await self.users.get_by_email(email)
         
         # Always return generic response to prevent account enumeration
-        # but only proceed with OTP generation if user exists
+        # but only proceed with OTP generation if user exists.
         if user is None:
+            # Equivalent bcrypt work so the response time does not reveal
+            # whether the account exists.
+            dummy_otp_hash()
             return
         
         # Check for existing active OTP with cooldown
@@ -93,6 +107,7 @@ class AuthService:
             time_since_created = datetime.now(timezone.utc) - existing_otp.created_at
             if time_since_created < timedelta(seconds=60):
                 # Cooldown active - still return generic response
+                dummy_otp_hash()
                 return
         
         # Invalidate previous active OTPs for this user
@@ -121,53 +136,117 @@ class AuthService:
 
     async def verify_reset_otp(self, email: str, otp: str) -> str | None:
         """Verify the OTP and return a reset token if valid.
-        
-        Returns the plaintext reset token if successful, None otherwise.
+
+        Attempt accounting uses atomic conditional UPDATEs so that concurrent
+        verification attempts cannot lose increments (bypassing max_attempts)
+        and a single-use OTP cannot yield two reset tokens. Expensive bcrypt
+        work runs after the read transaction is released, so it is never done
+        while holding a row lock.
         """
         user = await self.users.get_by_email(email)
         if user is None:
+            dummy_otp_verify()
             return None
-        
+
         otp_record = await self._get_active_otp(user.id)
         if otp_record is None:
+            dummy_otp_verify()
             return None
-        
-        if otp_record.is_used:
+
+        otp_id = otp_record.id
+        otp_hash = otp_record.otp_hash
+        attempts = otp_record.attempts
+        max_attempts = otp_record.max_attempts
+        expires_at = otp_record.expires_at
+
+        # Release the read transaction/locks before the slow bcrypt step so a
+        # concurrent request is not blocked (or deadlocked) on our read.
+        await self.session.rollback()
+
+        now = datetime.now(timezone.utc)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        if now > expires_at or attempts >= max_attempts:
+            # No usable OTP left; run equivalent work to avoid a timing oracle.
+            dummy_otp_verify()
             return None
-        
-        if datetime.now(timezone.utc) > otp_record.expires_at:
+
+        if not verify_otp(otp, otp_hash):
+            # Record the failed attempt atomically, bounded by max_attempts.
+            await self._increment_otp_attempts(otp_id)
             return None
-        
-        if otp_record.attempts >= otp_record.max_attempts:
-            # Mark as used to prevent further attempts
-            otp_record.is_used = True
-            otp_record.used_at = datetime.now(timezone.utc)
-            await self.session.commit()
-            return None
-        
-        # Increment attempts
-        otp_record.attempts += 1
-        
-        # Verify OTP
-        if not verify_otp(otp, otp_record.otp_hash):
-            await self.session.commit()
-            return None
-        
-        # OTP is valid - mark as used and generate reset token
-        otp_record.is_used = True
-        otp_record.used_at = datetime.now(timezone.utc)
-        
+
+        # OTP matches - atomically claim it (single-use) and mint a reset token.
         reset_token = generate_reset_token()
         reset_token_hash = hash_reset_token(reset_token)
-        otp_record.reset_token_hash = reset_token_hash
-        otp_record.expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
-        
+        claimed = await self._claim_otp(
+            otp_id=otp_id,
+            reset_token_hash=reset_token_hash,
+            now=now,
+        )
+        if not claimed:
+            return None
+        return reset_token
+
+    async def _increment_otp_attempts(self, otp_id: Any) -> None:
+        """Atomically increment a password-reset OTP's attempt counter.
+
+        The WHERE clause makes the increment safe under concurrency: it only
+        applies while the OTP is unused and still below max_attempts, so lost
+        updates and post-lockout increments are impossible.
+        """
+        stmt = (
+            update(PasswordResetOTP)
+            .where(
+                PasswordResetOTP.id == otp_id,
+                PasswordResetOTP.is_used == False,
+                PasswordResetOTP.attempts < PasswordResetOTP.max_attempts,
+            )
+            .values(attempts=PasswordResetOTP.attempts + 1)
+            .execution_options(synchronize_session=False)
+        )
         try:
+            await self.session.execute(stmt)
             await self.session.commit()
-            return reset_token
         except Exception:
             await self.session.rollback()
             raise
+
+    async def _claim_otp(
+        self,
+        otp_id: Any,
+        reset_token_hash: str,
+        now: datetime,
+    ) -> bool:
+        """Atomically mark an OTP used and attach its reset token.
+
+        Returns True only for the single request that won the claim; concurrent
+        requests that observe an already-used OTP get False and no token.
+        """
+        stmt = (
+            update(PasswordResetOTP)
+            .where(
+                PasswordResetOTP.id == otp_id,
+                PasswordResetOTP.is_used == False,
+                PasswordResetOTP.attempts < PasswordResetOTP.max_attempts,
+                PasswordResetOTP.expires_at > now,
+            )
+            .values(
+                is_used=True,
+                used_at=now,
+                reset_token_hash=reset_token_hash,
+                expires_at=now + timedelta(minutes=15),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        try:
+            result = await self.session.execute(stmt)
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+        return result.rowcount == 1
 
     async def reset_password(self, email: str, reset_token: str, new_password: str) -> bool:
         """Reset the user's password using the reset token.

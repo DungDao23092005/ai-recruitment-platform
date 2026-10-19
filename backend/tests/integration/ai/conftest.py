@@ -55,6 +55,24 @@ SKIP_REASON_QDRANT = "BLOCKED BY ENVIRONMENT — Qdrant is not reachable"
 SKIP_REASON_SQL = "BLOCKED BY ENVIRONMENT — SQL Server is not reachable"
 
 
+@pytest.fixture(autouse=True)
+def _disable_rate_limiting():
+    """Disable rate limiting for AI pipeline integration tests.
+
+    These tests authenticate via the real auth endpoints but do not start the
+    application lifespan, so no Redis-backed rate limiter is initialized. Since
+    authentication rate limits are fail-closed when Redis is absent, they are
+    disabled here (rate limiting is covered by its own integration suite).
+
+    Function scoped so the setting is restored before tests in other
+    integration directories (e.g. the rate-limit suite) run.
+    """
+    original = settings.RATE_LIMIT_ENABLED
+    settings.RATE_LIMIT_ENABLED = False
+    yield
+    settings.RATE_LIMIT_ENABLED = original
+
+
 @pytest.fixture
 def session():
     """Provide a database session for the test. Created lazily in the test's event loop."""

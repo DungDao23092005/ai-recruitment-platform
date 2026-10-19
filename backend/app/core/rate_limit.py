@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 from fastapi import Request, HTTPException, status, Depends
 from redis.asyncio import Redis
@@ -14,6 +16,87 @@ from app.models import User
 from app.api.deps import get_current_active_user
 
 logger = logging.getLogger(__name__)
+
+
+# Uniform, localized client-facing messages. Every authentication rate-limit
+# rejection returns the SAME body regardless of which bucket (IP vs account)
+# triggered it, so the response cannot be used to discover which limit — or
+# whether an account exists — was hit.
+RATE_LIMIT_EXCEEDED_MESSAGE = "Quá nhiều yêu cầu. Vui lòng thử lại sau {seconds} giây."
+RATE_LIMIT_UNAVAILABLE_MESSAGE = (
+    "Dịch vụ tạm thời không khả dụng. Vui lòng thử lại sau."
+)
+RATE_LIMIT_KEY_PREFIX = "ratelimit"
+
+
+def normalize_identifier(identifier: str) -> str:
+    """Normalize an account identifier (e.g. email) before anonymity hashing."""
+    return identifier.strip().lower()
+
+
+def get_client_ip(request: Request) -> str:
+    """Resolve the client IP, honoring ``X-Forwarded-For`` only for configured proxies.
+
+    By default the immediate ASGI peer address is used. A forwarded header is
+    only consulted when the connecting peer is listed in ``settings.TRUSTED_PROXIES``,
+    so a client cannot rotate its rate-limit bucket by spoofing headers.
+    """
+    client_host = request.client.host if request.client else "unknown"
+
+    trusted_proxies = settings.TRUSTED_PROXIES
+    if trusted_proxies and client_host in trusted_proxies:
+        forwarded_for = request.headers.get("X-Forwarded-For")
+        if forwarded_for:
+            # Take the first (left-most) address — the original client.
+            return forwarded_for.split(",")[0].strip()
+
+    return client_host
+
+
+def anonymize_identifier(endpoint: str, identifier: str) -> str:
+    """Return a stable, non-reversible digest for a rate-limit identifier.
+
+    Uses HMAC-SHA256 with the server secret so that raw identifiers (emails,
+    usernames, user ids) never appear in Redis keys. The endpoint is mixed into
+    the HMAC input for domain separation between buckets.
+
+    Note: rotating ``SECRET_KEY`` changes all digests, so in-flight rate-limit
+    buckets become unreachable and their counters effectively reset for the
+    remainder of the current window. This is an accepted, documented trade-off.
+    """
+    secret = settings.SECRET_KEY.encode("utf-8")
+    message = f"{endpoint}:{identifier}".encode("utf-8")
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+def _allowed_result(limit: int, window_seconds: int = 60) -> "RateLimitResult":
+    return RateLimitResult(
+        allowed=True,
+        current_count=0,
+        ttl_remaining=window_seconds,
+        reset_time=time.time() + window_seconds,
+        limit=limit,
+        remaining=limit,
+    )
+
+
+def rate_limited_exception(ttl_remaining: int) -> HTTPException:
+    """Build the single, uniform 429 response used by every auth limiter."""
+    seconds = max(1, int(ttl_remaining))
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=RATE_LIMIT_EXCEEDED_MESSAGE.format(seconds=seconds),
+        headers={"Retry-After": str(seconds)},
+    )
+
+
+def rate_limit_unavailable_exception() -> HTTPException:
+    """Build the uniform 503 returned when a required limit cannot be evaluated."""
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=RATE_LIMIT_UNAVAILABLE_MESSAGE,
+        headers={"Retry-After": "5"},
+    )
 
 
 # Lua script for atomic fixed-window rate limiting
@@ -86,34 +169,20 @@ class RateLimiter:
 
     def _normalize_email(self, email: str) -> str:
         """Normalize email for consistent rate limiting keys."""
-        return email.strip().lower()
+        return normalize_identifier(email)
 
     def _get_client_ip(self, request: Request) -> str:
-        """
-        Extract client IP with proxy support.
-
-        Only trust X-Forwarded-For when the immediate connecting peer
-        is a configured trusted proxy. Otherwise use the immediate
-        socket/remote address.
-        """
-        # Check if we should trust X-Forwarded-For
-        client_host = request.client.host if request.client else "unknown"
-
-        # Check if client is a trusted proxy
-        trusted_proxies = settings.TRUSTED_PROXIES
-        if trusted_proxies and client_host in trusted_proxies:
-            # Trusted proxy - use X-Forwarded-For
-            forwarded_for = request.headers.get("X-Forwarded-For")
-            if forwarded_for:
-                # Take the first IP in the chain (original client)
-                return forwarded_for.split(",")[0].strip()
-
-        # Not a trusted proxy or no header - use direct client IP
-        return client_host
+        """Extract client IP with safe, opt-in proxy support."""
+        return get_client_ip(request)
 
     def _build_key(self, endpoint: str, identifier: str) -> str:
-        """Build rate limit key with consistent format."""
-        return f"ratelimit:{endpoint}:{identifier}"
+        """Build an anonymized rate limit key.
+
+        The identifier is HMAC-SHA256 hashed with the server secret, so raw
+        emails/usernames/user ids are never persisted in Redis.
+        """
+        digest = anonymize_identifier(endpoint, identifier)
+        return f"{RATE_LIMIT_KEY_PREFIX}:{endpoint}:{digest}"
 
     async def check_limit(
         self,
@@ -121,6 +190,7 @@ class RateLimiter:
         identifier: str,
         limit: int,
         window_seconds: int = 60,
+        fail_closed: bool = False,
     ) -> RateLimitResult:
         """
         Check and consume a rate limit slot.
@@ -130,19 +200,15 @@ class RateLimiter:
             identifier: Unique identifier (IP, email, user_id)
             limit: Maximum requests allowed in window
             window_seconds: Time window in seconds
+            fail_closed: When True, a Redis failure raises HTTP 503 instead of
+                allowing the request. Used by authentication endpoints where an
+                unenforceable limit must not silently fail open.
 
         Returns:
             RateLimitResult with allow/deny decision and metadata
         """
         if not settings.RATE_LIMIT_ENABLED:
-            return RateLimitResult(
-                allowed=True,
-                current_count=0,
-                ttl_remaining=window_seconds,
-                reset_time=time.time() + window_seconds,
-                limit=limit,
-                remaining=limit,
-            )
+            return _allowed_result(limit, window_seconds)
 
         key = self._build_key(endpoint, identifier)
         script = await self._get_script()
@@ -168,15 +234,27 @@ class RateLimiter:
                 remaining=remaining,
             )
         except RedisError as e:
-            logger.warning(f"Rate limiter Redis error (fail-open): {e}")
-            # Fail-open: allow request on Redis failure
-            return RateLimitResult(
-                allowed=True,
-                current_count=0,
-                ttl_remaining=window_seconds,
-                reset_time=time.time() + window_seconds,
-                limit=limit,
-                remaining=limit,
+            # Never log the raw identifier/digest or the exception message
+            # (which may include connection details).
+            if fail_closed:
+                logger.warning(
+                    "Rate limiter Redis error (fail-closed 503): %s",
+                    type(e).__name__,
+                )
+                raise rate_limit_unavailable_exception() from None
+            logger.warning(
+                "Rate limiter Redis error (fail-open): %s", type(e).__name__
+            )
+            return _allowed_result(limit, window_seconds)
+
+    async def reset(self, endpoint: str, identifier: str) -> None:
+        """Best-effort removal of a rate limit bucket (e.g. after a login success)."""
+        key = self._build_key(endpoint, identifier)
+        try:
+            await self.redis.delete(key)
+        except RedisError as e:
+            logger.warning(
+                "Rate limiter reset failed: %s", type(e).__name__
             )
 
 
@@ -236,171 +314,159 @@ async def rate_limit_dependency(
     )
 
     if not result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded. Try again in {result.ttl_remaining} seconds.",
-            headers={"Retry-After": str(result.ttl_remaining)},
-        )
+        raise rate_limited_exception(result.ttl_remaining)
 
     return result
 
 
-# Convenience functions for common rate limit patterns
+# Convenience functions for authentication rate limits
 
-def login_ip_rate_limit() -> callable:
-    """Rate limit for login by IP."""
-    async def dependency(request: Request):
-        limiter = get_rate_limiter()
-        if limiter is None or not settings.RATE_LIMIT_ENABLED:
-            return
-        ip = get_rate_limiter()._get_client_ip(Request) if get_rate_limiter() else "unknown"
-        # We'll implement this properly below
-        pass
-    return dependency
+# Account-scoped bucket for failed login credential checks. Kept separate from
+# the pre-auth IP bucket so that exhausting it can never block a valid login.
+LOGIN_FAILURE_ENDPOINT = "auth:login:account"
+
+
+async def _safe_json_body(request: Request) -> Optional[dict]:
+    """Parse a JSON body defensively; return None on any failure."""
+    content_type = request.headers.get("content-type", "")
+    if "application/json" not in content_type:
+        return None
+    try:
+        body = await request.json()
+    except Exception:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+async def _enforce_auth_limit(
+    endpoint: str,
+    identifier: str,
+    limit: int,
+    window_seconds: int = 60,
+) -> RateLimitResult:
+    """Consume an authentication rate-limit slot, failing closed on outage.
+
+    When rate limiting is enabled but Redis (or the limiter) is unavailable the
+    request is rejected with a uniform 503 rather than silently failing open.
+    """
+    limiter = get_rate_limiter()
+    if limiter is None:
+        if settings.RATE_LIMIT_ENABLED:
+            logger.warning(
+                "Rate limiter unavailable; rejecting %s (fail-closed)", endpoint
+            )
+            raise rate_limit_unavailable_exception()
+        return _allowed_result(limit, window_seconds)
+
+    result = await limiter.check_limit(
+        endpoint=endpoint,
+        identifier=identifier,
+        limit=limit,
+        window_seconds=window_seconds,
+        fail_closed=True,
+    )
+
+    if not result.allowed:
+        raise rate_limited_exception(result.ttl_remaining)
+
+    return result
 
 
 async def login_rate_limit(request: Request) -> RateLimitResult:
-    """Combined IP + email rate limit for login endpoint (form and JSON)."""
-    limiter = get_rate_limiter()
-    if limiter is None or not settings.RATE_LIMIT_ENABLED:
-        return RateLimitResult(
-            allowed=True, current_count=0, ttl_remaining=60,
-            reset_time=time.time() + 60, limit=20, remaining=20
-        )
+    """Volumetric pre-auth IP limit for the login endpoints (form and JSON).
 
-    # Get IP
-    ip = limiter._get_client_ip(request)
-
-    # Check IP limit
-    ip_result = await limiter.check_limit(
+    Only the source IP is limited here. Per-account throttling is applied
+    *after* credential verification (see ``record_login_failure``) so that a
+    correct password can never be locked out by an attacker exhausting an
+    account bucket.
+    """
+    ip = get_client_ip(request)
+    return await _enforce_auth_limit(
         endpoint="auth:login:ip",
         identifier=ip,
         limit=settings.RATE_LIMIT_LOGIN_IP_PER_MINUTE,
-        window_seconds=60,
     )
 
-    if not ip_result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded. Try again in {ip_result.ttl_remaining} seconds.",
-            headers={"Retry-After": str(ip_result.ttl_remaining)},
-        )
 
-    # Get email from form data (for /login) or JSON body (for /login/json)
-    email = None
-    content_type = request.headers.get("content-type", "")
-    try:
-        if "application/json" in content_type:
-            body = await request.json()
-            email = body.get("email")
-        else:
-            form = await request.form()
-            email = form.get("username")  # OAuth2PasswordRequestForm uses "username" for email
-    except Exception:
-        pass
+async def record_login_failure(email: str) -> None:
+    """Record one failed credential verification for the account identifier.
 
-    # Check email limit if email provided
-    if email:
-        normalized_email = limiter._normalize_email(email)
-        email_result = await limiter.check_limit(
-            endpoint="auth:login:email",
-            identifier=normalized_email,
-            limit=settings.RATE_LIMIT_LOGIN_EMAIL_PER_MINUTE,
-            window_seconds=60,
-        )
+    Must only be called after ``authenticate_user`` determined the credentials
+    are invalid, which guarantees the account throttle can never reject a valid
+    password. Raises a uniform 429 once the bounded failure threshold is hit.
+    """
+    limiter = get_rate_limiter()
+    if limiter is None:
+        if settings.RATE_LIMIT_ENABLED:
+            raise rate_limit_unavailable_exception()
+        return
 
-        if not email_result.allowed:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Rate limit exceeded for this email. Try again in {email_result.ttl_remaining} seconds.",
-                headers={"Retry-After": str(email_result.ttl_remaining)},
-            )
+    normalized = limiter._normalize_email(email)
+    result = await limiter.check_limit(
+        endpoint=LOGIN_FAILURE_ENDPOINT,
+        identifier=normalized,
+        limit=settings.RATE_LIMIT_LOGIN_EMAIL_PER_MINUTE,
+        window_seconds=60,
+        fail_closed=True,
+    )
+    if not result.allowed:
+        raise rate_limited_exception(result.ttl_remaining)
 
-        # Return the more restrictive result
-        if email_result.remaining < ip_result.remaining:
-            return email_result
 
-    return ip_result
+async def clear_login_failures(email: str) -> None:
+    """Clear the account failure counter after a successful authentication.
+
+    The IP bucket is intentionally left untouched (success clears the account
+    counter only).
+    """
+    limiter = get_rate_limiter()
+    if limiter is None or not settings.RATE_LIMIT_ENABLED:
+        return
+    await limiter.reset(LOGIN_FAILURE_ENDPOINT, limiter._normalize_email(email))
 
 
 async def register_rate_limit(request: Request) -> RateLimitResult:
-    """Rate limit for register endpoint (IP-based)."""
+    """Rate limit for register endpoint (IP-based, fail-open on outage)."""
     limiter = get_rate_limiter()
     if limiter is None or not settings.RATE_LIMIT_ENABLED:
-        return RateLimitResult(
-            allowed=True, current_count=0, ttl_remaining=60,
-            reset_time=time.time() + 60, limit=10, remaining=10
-        )
+        return _allowed_result(settings.RATE_LIMIT_REGISTER_IP_PER_MINUTE)
 
-    ip = limiter._get_client_ip(request)
-
+    ip = get_client_ip(request)
     result = await limiter.check_limit(
         endpoint="auth:register",
         identifier=ip,
         limit=settings.RATE_LIMIT_REGISTER_IP_PER_MINUTE,
         window_seconds=60,
     )
-
     if not result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded. Try again in {result.ttl_remaining} seconds.",
-            headers={"Retry-After": str(result.ttl_remaining)},
-        )
-
+        raise rate_limited_exception(result.ttl_remaining)
     return result
 
 
 async def forgot_password_rate_limit(request: Request) -> RateLimitResult:
-    """Rate limit for forgot password (IP + email)."""
-    limiter = get_rate_limiter()
-    if limiter is None or not settings.RATE_LIMIT_ENABLED:
-        return RateLimitResult(
-            allowed=True, current_count=0, ttl_remaining=60,
-            reset_time=time.time() + 60, limit=5, remaining=5
-        )
+    """Rate limit for forgot-password / OTP resend (IP + account identifier).
 
-    ip = limiter._get_client_ip(request)
-
-    # Check IP limit
-    ip_result = await limiter.check_limit(
+    The account bucket is keyed on the normalized identifier regardless of
+    whether the account exists, so it cannot be used for enumeration. Rejection
+    happens before the endpoint runs, so a throttled resend never invalidates
+    or replaces an existing OTP.
+    """
+    ip = get_client_ip(request)
+    ip_result = await _enforce_auth_limit(
         endpoint="auth:forgot_password:ip",
         identifier=ip,
         limit=settings.RATE_LIMIT_FORGOT_PASSWORD_IP_PER_MINUTE,
-        window_seconds=60,
     )
 
-    if not ip_result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded. Try again in {ip_result.ttl_remaining} seconds.",
-            headers={"Retry-After": str(ip_result.ttl_remaining)},
-        )
-
-    # Check email limit
-    email = None
-    try:
-        body = await request.json()
-        email = body.get("email")
-    except Exception:
-        pass
-
+    body = await _safe_json_body(request)
+    email = body.get("email") if body else None
     if email:
-        normalized_email = limiter._normalize_email(email)
-        email_result = await limiter.check_limit(
+        normalized_email = normalize_identifier(email)
+        email_result = await _enforce_auth_limit(
             endpoint="auth:forgot_password:email",
             identifier=normalized_email,
             limit=settings.RATE_LIMIT_FORGOT_PASSWORD_EMAIL_PER_MINUTE,
-            window_seconds=60,
         )
-
-        if not email_result.allowed:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Rate limit exceeded for this email. Try again in {email_result.ttl_remaining} seconds.",
-                headers={"Retry-After": str(email_result.ttl_remaining)},
-            )
-
         if email_result.remaining < ip_result.remaining:
             return email_result
 
@@ -408,31 +474,31 @@ async def forgot_password_rate_limit(request: Request) -> RateLimitResult:
 
 
 async def verify_otp_rate_limit(request: Request) -> RateLimitResult:
-    """Rate limit for verify OTP (IP-based)."""
-    limiter = get_rate_limiter()
-    if limiter is None or not settings.RATE_LIMIT_ENABLED:
-        return RateLimitResult(
-            allowed=True, current_count=0, ttl_remaining=60,
-            reset_time=time.time() + 60, limit=10, remaining=10
-        )
+    """Rate limit for OTP verification (IP + account identifier).
 
-    ip = limiter._get_client_ip(request)
-
-    result = await limiter.check_limit(
-        endpoint="auth:verify_otp",
+    Adds an account-scoped bucket alongside the IP bucket so that a distributed
+    brute force cannot bypass the limit by rotating source IPs.
+    """
+    ip = get_client_ip(request)
+    ip_result = await _enforce_auth_limit(
+        endpoint="auth:verify_otp:ip",
         identifier=ip,
         limit=settings.RATE_LIMIT_VERIFY_OTP_IP_PER_MINUTE,
-        window_seconds=60,
     )
 
-    if not result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded. Try again in {result.ttl_remaining} seconds.",
-            headers={"Retry-After": str(result.ttl_remaining)},
+    body = await _safe_json_body(request)
+    email = body.get("email") if body else None
+    if email:
+        normalized_email = normalize_identifier(email)
+        email_result = await _enforce_auth_limit(
+            endpoint="auth:verify_otp:email",
+            identifier=normalized_email,
+            limit=settings.RATE_LIMIT_VERIFY_OTP_EMAIL_PER_MINUTE,
         )
+        if email_result.remaining < ip_result.remaining:
+            return email_result
 
-    return result
+    return ip_result
 
 
 async def ai_chat_rate_limit(
@@ -456,11 +522,7 @@ async def ai_chat_rate_limit(
     )
 
     if not result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded. Try again in {result.ttl_remaining} seconds.",
-            headers={"Retry-After": str(result.ttl_remaining)},
-        )
+        raise rate_limited_exception(result.ttl_remaining)
 
     return result
 
@@ -486,11 +548,7 @@ async def parse_resume_rate_limit(
     )
 
     if not result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded. Try again in {result.ttl_remaining} seconds.",
-            headers={"Retry-After": str(result.ttl_remaining)},
-        )
+        raise rate_limited_exception(result.ttl_remaining)
 
     return result
 
@@ -516,11 +574,7 @@ async def parse_jd_rate_limit(
     )
 
     if not result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded. Try again in {result.ttl_remaining} seconds.",
-            headers={"Retry-After": str(result.ttl_remaining)},
-        )
+        raise rate_limited_exception(result.ttl_remaining)
 
     return result
 
@@ -546,11 +600,7 @@ async def match_rate_limit(
     )
 
     if not result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded. Try again in {result.ttl_remaining} seconds.",
-            headers={"Retry-After": str(result.ttl_remaining)},
-        )
+        raise rate_limited_exception(result.ttl_remaining)
 
     return result
 
@@ -576,10 +626,6 @@ async def recommendations_rate_limit(
     )
 
     if not result.allowed:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Rate limit exceeded. Try again in {result.ttl_remaining} seconds.",
-            headers={"Retry-After": str(result.ttl_remaining)},
-        )
+        raise rate_limited_exception(result.ttl_remaining)
 
     return result

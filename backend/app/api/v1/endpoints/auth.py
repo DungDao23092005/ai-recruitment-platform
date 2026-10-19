@@ -7,7 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_active_user, get_db, oauth2_scheme
 from app.core.exceptions import ConflictException, ForbiddenException, LockedAccountException
-from app.core.rate_limit import login_rate_limit, register_rate_limit, forgot_password_rate_limit, verify_otp_rate_limit
+from app.core.rate_limit import (
+    login_rate_limit,
+    register_rate_limit,
+    forgot_password_rate_limit,
+    verify_otp_rate_limit,
+    record_login_failure,
+    clear_login_failures,
+)
 from app.core.security import create_access_token, decode_access_token
 from app.models import User
 from app.schemas.password_reset import (
@@ -66,11 +73,13 @@ async def login_form(
             detail=str(exc),
         ) from exc
     if user is None:
+        await record_login_failure(form_data.username)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    await clear_login_failures(form_data.username)
     access_token = create_access_token(subject=str(user.id))
     return Token(access_token=access_token, token_type="bearer")
 
@@ -91,10 +100,12 @@ async def login_json(
             detail=str(exc),
         ) from exc
     if user is None:
+        await record_login_failure(data.email)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
         )
+    await clear_login_failures(data.email)
     access_token = create_access_token(subject=str(user.id))
     return Token(access_token=access_token, token_type="bearer")
 

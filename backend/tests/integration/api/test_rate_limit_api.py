@@ -4,8 +4,8 @@ These tests exercise the actual FastAPI dependency graph via real HTTP requests.
 They validate the runtime wiring of authentication -> rate limiting -> endpoint logic.
 """
 
-import time
 import uuid
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -13,7 +13,12 @@ import pytest
 from tests.integration.conftest import run
 from tests.integration.api.conftest import API_V1, PASSWORD
 from app.core.config import settings
-from app.core.rate_limit import RateLimiter, set_rate_limiter, get_rate_limiter
+from app.core.rate_limit import (
+    RATE_LIMIT_EXCEEDED_MESSAGE,
+    RateLimiter,
+    set_rate_limiter,
+    get_rate_limiter,
+)
 from app.main import app
 from app.schemas.ai_chat import ChatResponse
 from redis.asyncio import Redis, ConnectionPool
@@ -262,30 +267,29 @@ class TestAuthenticatedUserIsolation:
         )
 
 
-class TestRedisFailOpen:
-    """Test 3: Redis fail-open behavior."""
+class TestRedisFailurePolicy:
+    """Test 3: Redis failure policy.
 
-    def test_redis_fail_open(self, client, fake_rag_chat_service):
-        """Redis failure triggers fail-open, request succeeds with bounded latency.
+    Authentication endpoints (login, forgot-password, OTP verification) must
+    fail CLOSED (uniform 503) because their limits are security-critical.
+    Non-credential volumetric limits (register) and AI quotas keep the existing
+    fail-open behaviour so unrelated features are unaffected by a Redis blip.
+    """
 
-        - Mocks the limiter's Redis script to raise ConnectionError
-        - Uses fake RAG service to avoid real Gemini network calls
-        - Verifies fail-open path completes in < 200ms
-        """
-        from unittest.mock import MagicMock
-
+    def test_auth_endpoints_fail_closed_on_redis_failure(self, client):
+        """Login / forgot-password / verify-otp return 503 when Redis is down."""
         limiter = get_rate_limiter()
         assert limiter is not None, "Rate limiter should be initialized"
 
-        # Patch the limiter's Redis script to raise ConnectionError
         original_script = limiter._script
         mock_script = MagicMock()
         mock_script.side_effect = ConnectionError("Simulated Redis failure")
         limiter._script = mock_script
 
         try:
-            email = f"failopen-{uuid.uuid4()}@test.com"
+            email = f"failclosed-{uuid.uuid4()}@test.com"
 
+            # Register is a non-credential volumetric limit -> still fail-open.
             register_resp = run(
                 client.post(
                     f"{settings.API_V1_STR}/auth/register",
@@ -294,41 +298,64 @@ class TestRedisFailOpen:
             )
             assert register_resp.status_code == 201, register_resp.text
 
-            login_resp = run(
-                client.post(
-                    f"{settings.API_V1_STR}/auth/login",
-                    data={"username": email, "password": PASSWORD},
-                )
-            )
-            assert login_resp.status_code == 200, login_resp.text
-            token = login_resp.json()["access_token"]
-
-            authed_client = httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://testserver",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-
-            try:
-                start = time.time()
-                # Make a request - should succeed due to fail-open
+            attempts = [
+                ("/auth/login/json", {"email": email, "password": PASSWORD}),
+                ("/auth/forgot-password", {"email": email}),
+                ("/auth/verify-reset-otp", {"email": email, "otp": "123456"}),
+            ]
+            for path, payload in attempts:
                 resp = run(
-                    authed_client.post(
-                        f"{settings.API_V1_STR}/ai/chat",
-                        json={"message": "Fail open test", "history": []},
-                    )
+                    client.post(f"{settings.API_V1_STR}{path}", json=payload)
                 )
-                elapsed = time.time() - start
-
-                # Should succeed (200 or other success, NOT 429 or 500 from limiter)
-                assert resp.status_code != 429, f"Fail-open should allow request, got 429: {resp.text}"
-                assert resp.status_code != 500, f"Should not 500 on Redis failure: {resp.text}"
-                # Latency should be bounded (< 200ms for limiter failure path)
-                assert elapsed < 0.2, f"Fail-open path took too long: {elapsed:.3f}s"
-            finally:
-                run(authed_client.aclose())
+                assert resp.status_code == 503, (
+                    f"{path}: expected 503 (fail-closed), got "
+                    f"{resp.status_code}: {resp.text}"
+                )
+                assert "Retry-After" in resp.headers
         finally:
-            # Restore original script
+            limiter._script = original_script
+
+    def test_ai_chat_fails_open_on_redis_failure(self, client):
+        """Non-auth AI quota requests still fail open on a Redis blip."""
+        from app.core.security import create_access_token, get_password_hash
+        from app.database.session import async_session_factory
+        from app.domain.enums import UserRole
+        from app.models import User
+
+        async def _create_user():
+            async with async_session_factory() as session:
+                user = User(
+                    email=f"aifailopen-{uuid.uuid4()}@test.com",
+                    password_hash=get_password_hash(PASSWORD),
+                    role=UserRole.CANDIDATE,
+                    is_active=True,
+                )
+                session.add(user)
+                await session.commit()
+                await session.refresh(user)
+                return user.id
+
+        user_id = run(_create_user())
+        token = create_access_token(subject=str(user_id))
+
+        limiter = get_rate_limiter()
+        original_script = limiter._script
+        mock_script = MagicMock()
+        mock_script.side_effect = ConnectionError("Simulated Redis failure")
+        limiter._script = mock_script
+
+        try:
+            resp = run(
+                client.post(
+                    f"{settings.API_V1_STR}/ai/chat",
+                    json={"message": "Fail open test", "history": []},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            )
+            assert resp.status_code != 503, f"AI chat should fail open: {resp.text}"
+            assert resp.status_code != 429, f"AI chat should fail open: {resp.text}"
+            assert resp.status_code == 200, resp.text
+        finally:
             limiter._script = original_script
 
 
@@ -605,6 +632,211 @@ class TestXForwardedForSpoofing:
 
         finally:
             settings.TRUSTED_PROXIES = original_proxies
+
+
+class TestLoginAccountFailureThrottle:
+    """Login account throttling is failure-only and cannot lock out valid logins."""
+
+    def test_only_failures_consume_account_bucket(self, client):
+        """Repeated SUCCESSFUL logins never consume the account failure bucket."""
+        email = f"success-{uuid.uuid4()}@test.com"
+        register_resp = run(
+            client.post(
+                f"{settings.API_V1_STR}/auth/register",
+                json={"email": email, "password": PASSWORD, "role": "candidate"},
+            )
+        )
+        assert register_resp.status_code == 201, register_resp.text
+
+        limit = settings.RATE_LIMIT_LOGIN_EMAIL_PER_MINUTE
+        for _ in range(limit + 2):
+            resp = run(
+                client.post(
+                    f"{settings.API_V1_STR}/auth/login/json",
+                    json={"email": email, "password": PASSWORD},
+                )
+            )
+            assert resp.status_code == 200, resp.text
+
+    def test_valid_password_allowed_after_bucket_exhausted(self, client):
+        """A correct password still authenticates after the failure bucket fills.
+
+        This is the no-account-DoS invariant: an attacker exhausting the
+        account failure bucket from many IPs must not disable the victim's
+        valid login.
+        """
+        email = f"no-dos-{uuid.uuid4()}@test.com"
+        register_resp = run(
+            client.post(
+                f"{settings.API_V1_STR}/auth/register",
+                json={"email": email, "password": PASSWORD, "role": "candidate"},
+            )
+        )
+        assert register_resp.status_code == 201, register_resp.text
+
+        limit = settings.RATE_LIMIT_LOGIN_EMAIL_PER_MINUTE
+        for i in range(limit):
+            resp = run(
+                client.post(
+                    f"{settings.API_V1_STR}/auth/login/json",
+                    json={"email": email, "password": "wrongpassword"},
+                )
+            )
+            assert resp.status_code == 401, f"attempt {i+1}: {resp.status_code}: {resp.text}"
+
+        blocked = run(
+            client.post(
+                f"{settings.API_V1_STR}/auth/login/json",
+                json={"email": email, "password": "wrongpassword"},
+            )
+        )
+        assert blocked.status_code == 429, blocked.text
+
+        # Correct password must still succeed.
+        ok = run(
+            client.post(
+                f"{settings.API_V1_STR}/auth/login/json",
+                json={"email": email, "password": PASSWORD},
+            )
+        )
+        assert ok.status_code == 200, f"valid password blocked: {ok.text}"
+
+    def test_success_clears_account_failure_counter(self, client):
+        """A successful login resets the account failure counter."""
+        email = f"clear-{uuid.uuid4()}@test.com"
+        register_resp = run(
+            client.post(
+                f"{settings.API_V1_STR}/auth/register",
+                json={"email": email, "password": PASSWORD, "role": "candidate"},
+            )
+        )
+        assert register_resp.status_code == 201, register_resp.text
+
+        limit = settings.RATE_LIMIT_LOGIN_EMAIL_PER_MINUTE
+        for _ in range(limit - 1):
+            resp = run(
+                client.post(
+                    f"{settings.API_V1_STR}/auth/login/json",
+                    json={"email": email, "password": "wrongpassword"},
+                )
+            )
+            assert resp.status_code == 401, resp.text
+
+        ok = run(
+            client.post(
+                f"{settings.API_V1_STR}/auth/login/json",
+                json={"email": email, "password": PASSWORD},
+            )
+        )
+        assert ok.status_code == 200, ok.text
+
+        # If the counter was cleared, a full run of failures is allowed again.
+        for i in range(limit):
+            resp = run(
+                client.post(
+                    f"{settings.API_V1_STR}/auth/login/json",
+                    json={"email": email, "password": "wrongpassword"},
+                )
+            )
+            assert resp.status_code == 401, f"attempt {i+1}: {resp.status_code}: {resp.text}"
+
+
+class TestRateLimitKeyAnonymization:
+    """Raw account identifiers must never be persisted in Redis keys."""
+
+    def test_no_raw_email_in_redis_keys(self, client):
+        email = f"privacy-{uuid.uuid4()}@example.com"
+        register_resp = run(
+            client.post(
+                f"{settings.API_V1_STR}/auth/register",
+                json={"email": email, "password": PASSWORD, "role": "candidate"},
+            )
+        )
+        assert register_resp.status_code == 201, register_resp.text
+
+        run(
+            client.post(
+                f"{settings.API_V1_STR}/auth/login/json",
+                json={"email": email, "password": "wrongpassword"},
+            )
+        )
+
+        limiter = get_rate_limiter()
+        keys = run(limiter.redis.keys("ratelimit:*"))
+        assert keys, "expected at least one rate limit key to exist"
+        lowered = email.lower()
+        for key in keys:
+            assert lowered not in key.lower()
+            assert "example.com" not in key.lower()
+            assert "privacy-" not in key.lower()
+
+
+class TestVerifyOtpAccountLimit:
+    """OTP verification enforces an account-scoped limit in addition to IP."""
+
+    def test_verify_otp_account_bucket_enforced(self, client):
+        original_email_limit = settings.RATE_LIMIT_VERIFY_OTP_EMAIL_PER_MINUTE
+        settings.RATE_LIMIT_VERIFY_OTP_EMAIL_PER_MINUTE = 2
+        try:
+            email = f"otp-acct-{uuid.uuid4()}@test.com"
+            payload = {"email": email, "otp": "123456"}
+
+            for i in range(2):
+                resp = run(
+                    client.post(
+                        f"{settings.API_V1_STR}/auth/verify-reset-otp",
+                        json=payload,
+                    )
+                )
+                assert resp.status_code == 400, f"attempt {i+1}: {resp.status_code}: {resp.text}"
+
+            # Same IP but the per-account bucket is now exhausted.
+            resp = run(
+                client.post(
+                    f"{settings.API_V1_STR}/auth/verify-reset-otp",
+                    json=payload,
+                )
+            )
+            assert resp.status_code == 429, resp.text
+            assert "Retry-After" in resp.headers
+        finally:
+            settings.RATE_LIMIT_VERIFY_OTP_EMAIL_PER_MINUTE = original_email_limit
+
+
+class TestUniformRateLimitResponse:
+    """Every auth-rate-limit rejection uses the same, non-revealing message."""
+
+    def test_account_throttle_message_is_uniform(self, client):
+        email = f"uniform-{uuid.uuid4()}@test.com"
+        register_resp = run(
+            client.post(
+                f"{settings.API_V1_STR}/auth/register",
+                json={"email": email, "password": PASSWORD, "role": "candidate"},
+            )
+        )
+        assert register_resp.status_code == 201, register_resp.text
+
+        limit = settings.RATE_LIMIT_LOGIN_EMAIL_PER_MINUTE
+        for _ in range(limit):
+            run(
+                client.post(
+                    f"{settings.API_V1_STR}/auth/login/json",
+                    json={"email": email, "password": "wrongpassword"},
+                )
+            )
+
+        resp = run(
+            client.post(
+                f"{settings.API_V1_STR}/auth/login/json",
+                json={"email": email, "password": "wrongpassword"},
+            )
+        )
+        assert resp.status_code == 429, resp.text
+        detail = resp.json()["detail"]
+        retry_after = int(resp.headers["Retry-After"])
+        assert detail == RATE_LIMIT_EXCEEDED_MESSAGE.format(seconds=retry_after)
+        assert email.lower() not in detail.lower()
+        assert "email" not in detail.lower()
 
 
 # ============================================================
