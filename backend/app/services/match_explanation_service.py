@@ -40,6 +40,73 @@ from app.schemas.ai_resume import ParsedResumeSchema
 
 _YEAR_RE = re.compile(r"(\d{4})")
 
+# Deterministic narrative-consistency checks. These are intentionally narrow:
+# they only recognise explicit match-score claims (``82/100``,
+# ``82 out of 100``, ``score 82%``, ``95% match``), never arbitrary numbers or
+# keywords. They are not semantic fact verification.
+_SCORE_TOLERANCE = 0.5
+_SCORE_CLAIM_PATTERNS = (
+    re.compile(
+        r"(?P<value>\d{1,3}(?:[.,]\d+)?)\s*(?:/\s*100|out\s+of\s+100)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:score|điểm)[^\d\n]{0,20}(?P<value>\d{1,3}(?:[.,]\d+)?)\s*%",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<value>\d{1,3}(?:[.,]\d+)?)\s*%\s*(?:match|khớp)",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _parse_claimed_score(raw: str) -> float | None:
+    try:
+        return float(raw.replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _summary_score_claims(summary: str) -> list[float]:
+    claims: list[float] = []
+    for pattern in _SCORE_CLAIM_PATTERNS:
+        for match in pattern.finditer(summary):
+            value = _parse_claimed_score(match.group("value"))
+            if value is not None:
+                claims.append(value)
+    return claims
+
+
+def _narrative_contradicts_score(
+    response: object,
+    summary: str,
+    overall_score: object,
+) -> bool:
+    """Return ``True`` only for an explicit, reliable score contradiction.
+
+    Checks the structured ``match_score`` field (when present) and explicit
+    numeric score claims in the prose. A tolerance of 0.5 absorbs harmless
+    display rounding while still rejecting a clearly different score.
+    """
+    try:
+        authoritative = float(overall_score)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+
+    claimed_match_score = getattr(response, "match_score", None)
+    if (
+        isinstance(claimed_match_score, (int, float))
+        and not isinstance(claimed_match_score, bool)
+        and abs(float(claimed_match_score) - authoritative) > _SCORE_TOLERANCE
+    ):
+        return True
+
+    return any(
+        abs(claimed - authoritative) > _SCORE_TOLERANCE
+        for claimed in _summary_score_claims(summary)
+    )
+
 
 def _as_item_list(values: object) -> list:
     """Return a list from a possibly malformed collection value."""
@@ -267,6 +334,11 @@ class MatchExplanationService:
         ``summary_source`` distinguishes LLM-generated prose from the local
         deterministic fallback. Only the evidence excerpts and evaluations are
         deterministically verified; AI narrative is not quote-verified.
+
+        Narrative output is accepted only when it is a non-empty string and,
+        where reliably checkable, does not contradict the authoritative score.
+        Empty, malformed, contradictory, or failed narratives fall back to the
+        deterministic summary.
         """
         if self.narrative_service is not None:
             try:
@@ -275,8 +347,26 @@ class MatchExplanationService:
                     candidate=parsed_resume,
                     job=parsed_job,
                 )
-                summary = (response.summary or "").strip()
-                if summary:
+                raw_summary = getattr(response, "summary", None)
+                summary = (
+                    raw_summary.strip()
+                    if isinstance(raw_summary, str)
+                    else ""
+                )
+                if not summary:
+                    data_limitations.append(
+                        "The AI narrative was empty or malformed; a "
+                        "deterministic summary was used instead."
+                    )
+                elif _narrative_contradicts_score(
+                    response, summary, getattr(match_result, "overall_score", None)
+                ):
+                    data_limitations.append(
+                        "The AI narrative was rejected because it contained a "
+                        "match-score claim that conflicts with the deterministic "
+                        "score; a deterministic summary was used instead."
+                    )
+                else:
                     provider = getattr(self.narrative_service, "llm_provider", None)
                     raw_model = getattr(provider, "model_name", None)
                     model_version = (
@@ -291,10 +381,6 @@ class MatchExplanationService:
                         "the parsed CV."
                     )
                     return summary, model_version, "ai_generated"
-                data_limitations.append(
-                    "The narrative explanation was empty; a deterministic "
-                    "summary was used instead."
-                )
             except AIError:
                 data_limitations.append(
                     "The AI narrative explanation was unavailable; a "
