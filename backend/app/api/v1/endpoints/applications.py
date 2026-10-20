@@ -20,6 +20,7 @@ from app.core.exceptions import (
     InvalidTransitionException,
 )
 from app.models import Application, User
+from app.schemas.ai_explanation import ApplicationMatchExplanationResponse
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.application import (
@@ -56,9 +57,11 @@ from app.services.ai_matching_service import AIMatchingService
 from app.services.application_activity_service import ApplicationActivityService
 from app.services.application_note_service import ApplicationNoteService
 from app.services.application_service import ApplicationService
+from app.services.explainable_ai_service import ExplainableAIService
 from app.services.interview_evaluation_service import InterviewEvaluationService
 from app.services.interview_service import InterviewService
 from app.services.job_service import JobService
+from app.services.match_explanation_service import MatchExplanationService
 from app.services.user_service import UserService
 
 router = APIRouter()
@@ -75,6 +78,15 @@ def _get_ai_matching_service(
             SentenceTransformerEmbeddingProvider()
         ),
     )
+
+
+def _get_match_explanation_service() -> MatchExplanationService:
+    """Build the explanation service, reusing the existing AI explanation hook.
+
+    The deterministic, evidence-verified part of the explanation never depends
+    on the LLM; the narrative layer is best-effort and degrades gracefully.
+    """
+    return MatchExplanationService(narrative_service=ExplainableAIService())
 
 
 def to_application_with_job_read(
@@ -285,6 +297,47 @@ async def get_application_match(
             current_user=current_user,
             application_id=application_id,
             matching_service=service,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except AIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI Match unavailable. Please try again later.",
+        ) from exc
+
+
+@router.get(
+    "/{application_id}/match-explanation",
+    response_model=ApplicationMatchExplanationResponse,
+)
+async def get_application_match_explanation(
+    application_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+    matching_service: AIMatchingService = Depends(_get_ai_matching_service),
+    explanation_service: MatchExplanationService = Depends(
+        _get_match_explanation_service
+    ),
+) -> ApplicationMatchExplanationResponse:
+    """Return an evidence-grounded explanation of an application's match.
+
+    Recruiter/admin only. The candidate resume and job are resolved
+    server-side from the application (client-supplied data is never trusted)
+    and ownership is enforced exactly like the match/detail endpoints. The
+    overall score is copied from the existing matching engine, never
+    recalculated. Missing/foreign applications surface as 404 without leaking
+    existence.
+    """
+    try:
+        return await ApplicationService(db).get_application_match_explanation(
+            current_user=current_user,
+            application_id=application_id,
+            matching_service=matching_service,
+            explanation_service=explanation_service,
         )
     except EntityNotFoundException as exc:
         raise HTTPException(

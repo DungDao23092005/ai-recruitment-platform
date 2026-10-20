@@ -33,7 +33,7 @@ from app.domain.enums import UserRole
 from app.core.rate_limit import RateLimitResult, ai_chat_rate_limit, parse_resume_rate_limit, parse_jd_rate_limit, match_rate_limit, recommendations_rate_limit
 from app.models import User
 from app.schemas.ai_chat import ChatRequest, ChatResponse
-from app.schemas.ai_explanation import ExplainMatchRequest, ExplainMatchResponse
+from app.schemas.ai_explanation import ExplainMatchRequest
 from app.schemas.ai_interview import (
     GenerateInterviewQuestionsRequest,
     GenerateInterviewQuestionsResponse,
@@ -278,62 +278,58 @@ async def match_candidate_and_job(
 
 @router.post(
     "/explain-match",
-    response_model=ExplainMatchResponse,
-    status_code=status.HTTP_200_OK,
+    status_code=status.HTTP_410_GONE,
+    response_model=None,
+    deprecated=True,
+    summary="Retired: explain a match (fail-closed)",
+    responses={
+        status.HTTP_410_GONE: {
+            "description": (
+                "The endpoint is permanently retired. It fails closed for "
+                "every authenticated caller and never calls an AI provider, "
+                "the quota system, or vector search."
+            ),
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": (
+                            "POST /api/v1/ai/explain-match has been retired "
+                            "for security reasons. Use "
+                            "GET /api/v1/applications/{application_id}/"
+                            "match-explanation."
+                        )
+                    }
+                }
+            },
+        }
+    },
 )
 async def explain_match(
     data: ExplainMatchRequest,
-    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db),
-    service: ExplainableAIService = Depends(_get_explainable_ai_service),
-) -> ExplainMatchResponse:
-    # Only recruiters need quota for explain-match; candidates and admins bypass
-    is_recruiter = current_user.role == UserRole.RECRUITER
-    quota_service = QuotaEnforcementService(db)
-    reservation = None
-    try:
-        # Reserve quota for AI feature (only for recruiters)
-        if is_recruiter:
-            reservation = await quota_service.reserve_ai_quota(
-                user_id=current_user.id,
-                idempotency_key=idempotency_key,
-                is_admin=False,  # recruiters are not admins here
-            )
+) -> None:
+    """Deprecated: retired for security reasons (fail-closed).
 
-        result = await service.explain_match(
-            match_result=data.match_result,
-            candidate=data.candidate,
-            job=data.job,
-        )
+    The original implementation explained a caller-supplied
+    ``match_result`` / ``candidate`` / ``job`` payload. None of that data is
+    tied to a trusted server-side resource, so the endpoint could not verify
+    ownership and would happily run the LLM on arbitrary, attacker-controlled
+    content (prompt injection, quota abuse, cross-tenant data shaped by the
+    caller).
 
-        # Finalize reservation on success (only if reservation was created)
-        if reservation:
-            await quota_service.finalize_reservation(reservation.usage_id, success=True)
-        return result
-
-    except EmptyDocumentError as exc:
-        # Release reservation on validation error
-        if reservation:
-            await quota_service.release_reservation(reservation.usage_id)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
-    except InvalidDocumentError as exc:
-        if reservation:
-            await quota_service.release_reservation(reservation.usage_id)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
-    except ForbiddenException as exc:
-        if reservation:
-            await quota_service.release_reservation(reservation.usage_id)
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(exc),
-        ) from exc
+    It is replaced by the application-scoped, ownership-enforced
+    ``GET /api/v1/applications/{application_id}/match-explanation``. This
+    route now fails closed for every authenticated caller and never contacts
+    an AI provider.
+    """
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "POST /api/v1/ai/explain-match has been retired for security "
+            "reasons. Use "
+            "GET /api/v1/applications/{application_id}/match-explanation."
+        ),
+    )
 
 
 @router.post(

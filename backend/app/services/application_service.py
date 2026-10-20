@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,12 +22,14 @@ from app.repositories import (
     JobRepository,
     ResumeRepository,
 )
+from app.schemas.ai_explanation import ApplicationMatchExplanationResponse
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.ai_matching_service import AIMatchingService
 from app.services.application_activity_service import record_activity
 from app.services.job_service import JobService
+from app.services.match_explanation_service import MatchExplanationService
 from app.services.notification_service import NotificationService
 from app.services.pipeline_email_service import schedule_application_status_email
 from app.services.user_service import UserService
@@ -70,6 +73,19 @@ _PUBLISHED_RECRUITER_TRANSITIONS = frozenset(
         (ApplicationStatus.OFFERED, ApplicationStatus.REJECTED),
     }
 )
+
+
+@dataclass
+class _ApplicationMatchInputs:
+    """Server-resolved inputs shared by the match and explanation endpoints."""
+
+    application: Application
+    job: Job
+    resume: Resume | None
+    parsed_resume: ParsedResumeSchema | None
+    parsed_job: ParsedJobSchema
+    resume_vector: list[float] | None
+    job_vector: list[float] | None
 
 
 class ApplicationService:
@@ -383,21 +399,20 @@ class ApplicationService:
         )
         return application, resume
 
-    async def get_application_match(
+    async def _resolve_match_inputs(
         self,
         current_user: User,
         application_id: uuid.UUID,
         matching_service: AIMatchingService,
-    ) -> MatchResultSchema:
-        """Compute the deterministic AI match score for an application.
+    ) -> _ApplicationMatchInputs:
+        """Resolve every input the matching/explanation flow needs.
 
         Recruiter/admin only, with ownership enforced exactly like
         ``get_application_detail`` (foreign/missing applications surface as
         404). The candidate resume and job are resolved server-side from the
         application; vectors come from the vector repository and fall back to
-        on-demand embedding when a point is missing. Scoring is delegated to
-        the existing ``MatchingEngine`` (no duplicated logic here). Missing
-        or unparseable resume data degrades gracefully instead of crashing.
+        on-demand embedding when a point is missing. Missing or unparseable
+        resume data degrades gracefully instead of crashing.
         """
         application = await self.applications.get_by_id_with_candidate(
             application_id
@@ -459,11 +474,67 @@ class ApplicationService:
                 parsed_job
             )
 
-        return matching_service.matching_engine.match_resume_to_job(
-            resume=parsed_resume,
-            job=parsed_job,
+        return _ApplicationMatchInputs(
+            application=application,
+            job=job,
+            resume=resume,
+            parsed_resume=parsed_resume,
+            parsed_job=parsed_job,
             resume_vector=resume_vector,
             job_vector=job_vector,
+        )
+
+    async def get_application_match(
+        self,
+        current_user: User,
+        application_id: uuid.UUID,
+        matching_service: AIMatchingService,
+    ) -> MatchResultSchema:
+        """Compute the deterministic AI match score for an application.
+
+        Scoring is delegated to the existing ``MatchingEngine`` (no duplicated
+        logic here); ownership and data resolution happen in
+        ``_resolve_match_inputs``.
+        """
+        inputs = await self._resolve_match_inputs(
+            current_user, application_id, matching_service
+        )
+        return matching_service.matching_engine.match_resume_to_job(
+            resume=inputs.parsed_resume,
+            job=inputs.parsed_job,
+            resume_vector=inputs.resume_vector,
+            job_vector=inputs.job_vector,
+        )
+
+    async def get_application_match_explanation(
+        self,
+        current_user: User,
+        application_id: uuid.UUID,
+        matching_service: AIMatchingService,
+        explanation_service: MatchExplanationService | None = None,
+    ) -> ApplicationMatchExplanationResponse:
+        """Build an evidence-grounded explanation for an application match.
+
+        Recruiter/admin only, with the same ownership guarantees as
+        ``get_application_match``. The overall score is computed by the
+        existing ``MatchingEngine`` and copied verbatim into the explanation;
+        it is never recalculated by the explanation layer.
+        """
+        inputs = await self._resolve_match_inputs(
+            current_user, application_id, matching_service
+        )
+        match_result = matching_service.matching_engine.match_resume_to_job(
+            resume=inputs.parsed_resume,
+            job=inputs.parsed_job,
+            resume_vector=inputs.resume_vector,
+            job_vector=inputs.job_vector,
+        )
+        service = explanation_service or MatchExplanationService()
+        return await service.build_explanation(
+            application_id=inputs.application.id,
+            match_result=match_result,
+            parsed_resume=inputs.parsed_resume,
+            parsed_job=inputs.parsed_job,
         )
 
     @staticmethod

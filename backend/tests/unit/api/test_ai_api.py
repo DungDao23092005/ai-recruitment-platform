@@ -602,11 +602,17 @@ def _explain_response_payload():
 
 
 class TestExplainMatch:
-    def test_explain_match_success(self, active_client, mock_explain_service):
-        mock_explain_service.explain_match.return_value = (
-            _explain_response_payload()
-        )
+    """The legacy POST endpoint is retired: fail-closed for every caller.
 
+    It used to explain a caller-supplied match_result/candidate/job payload,
+    which could not be tied to a trusted resource. See
+    ``tests/unit/api/test_ai_explain_match_deprecated.py`` for the dedicated
+    security suite; these tests keep the endpoint-level contract covered here.
+    """
+
+    def test_explain_match_authenticated_returns_410(
+        self, active_client, mock_explain_service
+    ):
         resp = active_client.post(
             "/api/v1/ai/explain-match",
             json={
@@ -616,27 +622,9 @@ class TestExplainMatch:
             },
         )
 
-        assert resp.status_code == 200
-        assert resp.json()["summary"] == "The candidate matches the role well."
-        assert resp.json()["strengths"] == [
-            "Strong overlap in React and TypeScript"
-        ]
-        mock_explain_service.explain_match.assert_called_once()
-
-    def test_explain_match_accepts_candidate_and_job_null(
-        self, active_client, mock_explain_service
-    ):
-        mock_explain_service.explain_match.return_value = (
-            _explain_response_payload()
-        )
-
-        resp = active_client.post(
-            "/api/v1/ai/explain-match",
-            json={"match_result": _match_result_payload()},
-        )
-
-        assert resp.status_code == 200
-        mock_explain_service.explain_match.assert_called_once()
+        assert resp.status_code == status.HTTP_410_GONE
+        assert "match-explanation" in resp.json()["detail"]
+        mock_explain_service.explain_match.assert_not_called()
 
     def test_explain_match_requires_match_result(
         self, active_client, mock_explain_service
@@ -657,7 +645,7 @@ class TestExplainMatch:
 
         assert resp.status_code == status.HTTP_401_UNAUTHORIZED
 
-    def test_explain_match_empty_document_maps_to_400(
+    def test_explain_match_never_calls_provider_even_with_provider_errors(
         self, active_client, mock_explain_service
     ):
         mock_explain_service.explain_match.side_effect = EmptyDocumentError(
@@ -669,65 +657,41 @@ class TestExplainMatch:
             json={"match_result": _match_result_payload()},
         )
 
-        assert resp.status_code == status.HTTP_400_BAD_REQUEST
-        assert "overall_score" in resp.json()["detail"]
+        assert resp.status_code == status.HTTP_410_GONE
+        mock_explain_service.explain_match.assert_not_called()
 
-    def test_explain_match_invalid_document_maps_to_422(
+    def test_explain_match_retired_for_admin_role(
         self, active_client, mock_explain_service
     ):
-        mock_explain_service.explain_match.side_effect = InvalidDocumentError(
-            "AI explanation returned an empty summary"
-        )
-
         resp = active_client.post(
             "/api/v1/ai/explain-match",
             json={"match_result": _match_result_payload()},
         )
 
-        assert resp.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
-        assert "empty summary" in resp.json()["detail"]
+        assert resp.status_code == status.HTTP_410_GONE
+        mock_explain_service.explain_match.assert_not_called()
 
-    def test_explain_match_accepts_admin_role(
-        self, active_client, mock_explain_service
-    ):
-        mock_explain_service.explain_match.return_value = (
-            _explain_response_payload()
-        )
-
-        resp = active_client.post(
-            "/api/v1/ai/explain-match",
-            json={"match_result": _match_result_payload()},
-        )
-
-        assert resp.status_code == 200
-
-    def test_explain_match_accepts_candidate_role(
+    def test_explain_match_retired_for_candidate_role(
         self, candidate_client, mock_explain_service
     ):
-        mock_explain_service.explain_match.return_value = (
-            _explain_response_payload()
-        )
-
         resp = candidate_client.post(
             "/api/v1/ai/explain-match",
             json={"match_result": _match_result_payload()},
         )
 
-        assert resp.status_code == 200
+        assert resp.status_code == status.HTTP_410_GONE
+        mock_explain_service.explain_match.assert_not_called()
 
-    def test_explain_match_accepts_recruiter_role(
+    def test_explain_match_retired_for_recruiter_role(
         self, recruiter_client, mock_explain_service
     ):
-        mock_explain_service.explain_match.return_value = (
-            _explain_response_payload()
-        )
-
         resp = recruiter_client.post(
             "/api/v1/ai/explain-match",
             json={"match_result": _match_result_payload()},
         )
 
-        assert resp.status_code == 200
+        assert resp.status_code == status.HTTP_410_GONE
+        mock_explain_service.explain_match.assert_not_called()
 
 
 def _search_result_payload():

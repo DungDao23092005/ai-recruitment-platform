@@ -10,7 +10,10 @@ from app.core.exceptions import AIError, EntityNotFoundException
 from app.domain.enums import ApplicationStatus, UserRole
 from app.models import Application, Job, Resume, Skill
 from app.repositories import ApplicationRepository, JobRepository, ResumeRepository
+from app.schemas.ai_explanation import ApplicationMatchExplanationResponse
+from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
+from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.application_service import ApplicationService
 
 
@@ -440,3 +443,107 @@ class TestGetApplicationMatch:
         assert application.status == ApplicationStatus.APPLIED
         session.commit.assert_not_awaited()
         session.add.assert_not_called()
+
+
+class TestGetApplicationMatchExplanation:
+    def _run(self, service, application, job, resume, matching_service):
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service, patch(
+            "app.services.application_service.ResumeRepository"
+        ) as mock_resume_repo:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=job
+            )
+            mock_resume_repo.return_value.get_primary_by_candidate = AsyncMock(
+                return_value=resume
+            )
+            return asyncio.run(
+                service.get_application_match_explanation(
+                    current_user=make_user(),
+                    application_id=application.id,
+                    matching_service=matching_service,
+                )
+            )
+
+    def test_returns_grounded_explanation_with_copied_score(self):
+        session = make_session()
+        service = make_service(session)
+        application = make_application()
+        job = make_job()
+        resume = make_resume(application.candidate_id)
+        service.applications.get_by_id_with_candidate.return_value = application
+        matching_service = make_matching_service()
+
+        result = self._run(
+            service, application, job, resume, matching_service
+        )
+
+        assert isinstance(result, ApplicationMatchExplanationResponse)
+        assert result.application_id == application.id
+        # Overall score is the engine's value; never recalculated here.
+        engine_result = matching_service.matching_engine.match_resume_to_job(
+            resume=ParsedResumeSchema.model_validate(resume.parsed_data),
+            job=ParsedJobSchema(
+                title=job.title,
+                summary=job.description,
+                required_skills=[s.name for s in job.required_skills],
+            ),
+            resume_vector=[1.0, 0.0],
+            job_vector=[1.0, 0.0],
+        )
+        assert result.overall_score == engine_result.overall_score
+
+    def test_explanation_does_not_mutate_status_or_session(self):
+        session = make_session()
+        service = make_service(session)
+        application = make_application()
+        job = make_job()
+        resume = make_resume(application.candidate_id)
+        service.applications.get_by_id_with_candidate.return_value = application
+        matching_service = make_matching_service()
+
+        self._run(service, application, job, resume, matching_service)
+
+        assert application.status == ApplicationStatus.APPLIED
+        session.commit.assert_not_awaited()
+        session.add.assert_not_called()
+
+    def test_missing_application_raises(self):
+        session = make_session()
+        service = make_service(session)
+        service.applications.get_by_id_with_candidate.return_value = None
+        matching_service = make_matching_service()
+
+        with pytest.raises(EntityNotFoundException):
+            asyncio.run(
+                service.get_application_match_explanation(
+                    current_user=make_user(),
+                    application_id=uuid.uuid4(),
+                    matching_service=matching_service,
+                )
+            )
+
+    def test_unowned_application_raises_not_found(self):
+        session = make_session()
+        service = make_service(session)
+        application = make_application()
+        service.applications.get_by_id_with_candidate.return_value = application
+        matching_service = make_matching_service()
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                side_effect=EntityNotFoundException("Application not found")
+            )
+            with pytest.raises(EntityNotFoundException):
+                asyncio.run(
+                    service.get_application_match_explanation(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        matching_service=matching_service,
+                    )
+                )
+
+        matching_service.vector_repository.retrieve_vector.assert_not_awaited()

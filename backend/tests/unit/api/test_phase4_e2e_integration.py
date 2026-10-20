@@ -661,6 +661,8 @@ ACCESS_MATRIX = [
         401,
     ),
     (
+        # Legacy endpoint retired (fail-closed) in Feature 5; see
+        # test_ai_explain_match_deprecated.py. Anonymous still gets 401.
         "post",
         "/api/v1/ai/explain-match",
         {
@@ -670,9 +672,9 @@ ACCESS_MATRIX = [
                 "job": _job_payload(),
             }
         },
-        200,
-        200,
-        200,
+        410,
+        410,
+        410,
         401,
     ),
     ("post", "/api/v1/ai/chat", {"json": {"message": "Xin chào"}}, 200, 200, 200, 401),
@@ -777,7 +779,7 @@ class TestCandidateFlow:
         assert 0.0 <= body["overall_score"] <= 100.0
         assert "Python" in body["matching_skills"]
 
-    def test_candidate_explain_match(self, candidate_client):
+    def test_candidate_explain_match_retired(self, candidate_client):
         resp = candidate_client.post(
             "/api/v1/ai/explain-match",
             json={
@@ -787,8 +789,8 @@ class TestCandidateFlow:
             },
         )
 
-        assert resp.status_code == 200
-        assert resp.json()["recommendation"] == "Proceed."
+        assert resp.status_code == 410
+        assert "match-explanation" in resp.json()["detail"]
 
     def test_candidate_chat(self, candidate_client):
         resp = candidate_client.post(
