@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from contextlib import suppress
 from dataclasses import dataclass
 
 from pydantic import ValidationError
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
@@ -19,8 +21,12 @@ from app.core.exceptions import (
 from app.domain import hiring
 from app.domain.enums import ApplicationStatus, UserRole
 from app.domain.models import Application as DomainApplication
-from app.domain.models.base import DomainException
+from app.domain.models.base import DomainException, utc_now
 from app.models import Application, Job, Resume, User
+from app.models.ai_match_explanation import (
+    AIMatchExplanationApplicationLease,
+    AIMatchExplanationIdempotency,
+)
 from app.repositories import (
     ApplicationRepository,
     JobRepository,
@@ -34,6 +40,13 @@ from app.services.ai_matching_service import AIMatchingService
 from app.services.application_activity_service import record_activity
 from app.services.job_service import JobService
 from app.services.match_explanation_cache import MatchExplanationCache
+from app.services.match_explanation_coordinator import (
+    STATUS_COMPLETED,
+    STATUS_FAILED,
+    STATUS_IN_PROGRESS,
+    MatchExplanationCoordinator,
+    hash_idempotency_key,
+)
 from app.services.match_explanation_service import MatchExplanationService
 from app.services.notification_service import NotificationService
 from app.services.pipeline_email_service import schedule_application_status_email
@@ -410,6 +423,35 @@ class ApplicationService:
         )
         return application, resume
 
+    async def verify_application_access(
+        self,
+        current_user: User,
+        application_id: uuid.UUID,
+    ) -> Application:
+        """Verify recruiter/admin ownership before any refresh side effect.
+
+        Missing and foreign applications deliberately collapse to the same
+        404. This method performs no Redis, idempotency-registry or quota
+        operation, so an unauthorized request cannot touch coordination state.
+        """
+        application = await self.applications.get_by_id_with_candidate(
+            application_id
+        )
+        if application is None:
+            raise EntityNotFoundException(
+                f"Application {application_id} not found"
+            )
+        try:
+            await JobService(self.session).get_recruiter_job_by_id(
+                current_user,
+                application.job_id,
+            )
+        except EntityNotFoundException:
+            raise EntityNotFoundException(
+                f"Application {application_id} not found"
+            ) from None
+        return application
+
     async def _resolve_match_inputs(
         self,
         current_user: User,
@@ -613,13 +655,14 @@ class ApplicationService:
         explanation_service: MatchExplanationService,
         cache_service: MatchExplanationCache,
         quota_service: QuotaEnforcementService | None = None,
+        coordinator: MatchExplanationCoordinator | None = None,
     ) -> ApplicationMatchExplanationResponse:
-        """Run the internal, quota-controlled AI refresh for one application.
+        """Run the quota-controlled AI refresh for one application.
 
-        This is deliberately **not** a public route and does not implement
-        whole-request idempotency. ``idempotency_key`` is passed to the
-        existing quota ledger so retries share a reservation; full request
-        replay/deduplication belongs to Subphase 2C-2.
+        Without ``coordinator`` this preserves the internal 2C-1 behavior used
+        by service-level callers. Supplying a coordinator enables the full 2C-2
+        durable idempotency, SQL application lease, Redis lock, heartbeat,
+        pre-quota/pre-provider fences and fenced cache publication contract.
 
         Ownership, trusted application/CV/job data and the content-addressed
         cache key are resolved server-side before any quota or provider work.
@@ -635,6 +678,18 @@ class ApplicationService:
         if len(idempotency_key) > 255:
             raise MatchExplanationRefreshInputError(
                 "The idempotency key is too long for an AI match refresh."
+            )
+
+        if coordinator is not None:
+            return await self._refresh_application_match_explanation_2c2(
+                current_user=current_user,
+                application_id=application_id,
+                idempotency_key=idempotency_key.strip(),
+                matching_service=matching_service,
+                explanation_service=explanation_service,
+                cache_service=cache_service,
+                quota_service=quota_service,
+                coordinator=coordinator,
             )
 
         inputs = await self._resolve_match_inputs(
@@ -749,6 +804,405 @@ class ApplicationService:
         if stored:
             return response.model_copy(update={"cache_state": "cached"})
         return response
+
+    async def _refresh_application_match_explanation_2c2(
+        self,
+        *,
+        current_user: User,
+        application_id: uuid.UUID,
+        idempotency_key: str,
+        matching_service: AIMatchingService,
+        explanation_service: MatchExplanationService,
+        cache_service: MatchExplanationCache,
+        quota_service: QuotaEnforcementService | None,
+        coordinator: MatchExplanationCoordinator,
+    ) -> ApplicationMatchExplanationResponse:
+        inputs = await self._resolve_match_inputs(
+            current_user,
+            application_id,
+            matching_service,
+            resolve_vectors=False,
+        )
+        if inputs.parsed_resume is None:
+            if inputs.resume is None or not inputs.resume.parsed_data:
+                raise MatchExplanationRefreshInputError(
+                    "A parsed CV is required to refresh the match explanation."
+                )
+            raise MatchExplanationRefreshInputError(
+                "The candidate CV could not be parsed for an AI match refresh."
+            )
+
+        try:
+            cache_key = cache_service.build_key(
+                inputs.application.id,
+                inputs.parsed_resume,
+                inputs.parsed_job,
+            )
+        except Exception as exc:  # noqa: BLE001 - defensive cache boundary
+            raise MatchExplanationRefreshInputError(
+                "The trusted CV and job data cannot be cached safely."
+            ) from exc
+        if cache_key is None:
+            raise MatchExplanationRefreshInputError(
+                "The trusted CV and job data cannot be cached safely."
+            )
+
+        key_hash = hash_idempotency_key(current_user.id, idempotency_key)
+
+        await coordinator.ensure_redis_available()
+        cached = await coordinator.read_idempotency_cache(
+            current_user.id,
+            key_hash,
+            inputs.application.id,
+        )
+        if cached is not None:
+            return cached
+
+        current_task = asyncio.current_task()
+        active_task = coordinator.get_active_task(inputs.application.id)
+        if (
+            active_task is not None
+            and active_task is not current_task
+            and not active_task.done()
+        ):
+            raise MatchExplanationRefreshError(
+                "application_refresh_in_progress",
+                http_status=409,
+                retry_after=5,
+            )
+
+        owner_token = str(uuid.uuid4())
+        await coordinator.acquire_lock(inputs.application.id, owner_token)
+
+        quota = quota_service or QuotaEnforcementService(self.session)
+        reservation: ReservationResult | None = None
+        record_id: uuid.UUID | None = None
+        heartbeat_task: asyncio.Task[None] | None = None
+        finalized = False
+
+        try:
+            record_id, replay = await coordinator.register_refresh(
+                self.session,
+                user_id=current_user.id,
+                key_hash=key_hash,
+                application_id=inputs.application.id,
+                owner_token=owner_token,
+            )
+            if replay is not None:
+                await self._rollback_refresh()
+                return replay
+            await self._commit_refresh()
+
+            await self._assert_active_ownership(
+                record_id=record_id,
+                application_id=inputs.application.id,
+                owner_token=owner_token,
+            )
+
+            await self._resolve_match_vectors(inputs, matching_service)
+            match_result = (
+                matching_service.matching_engine.match_resume_to_job(
+                    resume=inputs.parsed_resume,
+                    job=inputs.parsed_job,
+                    resume_vector=inputs.resume_vector,
+                    job_vector=inputs.job_vector,
+                )
+            )
+
+            reservation = await quota.reserve_ai_quota(
+                user_id=current_user.id,
+                idempotency_key=idempotency_key,
+                reference_id=inputs.application.id,
+                is_admin=current_user.role == UserRole.ADMIN,
+            )
+            await self._commit_refresh()
+
+            await self._assert_active_ownership(
+                record_id=record_id,
+                application_id=inputs.application.id,
+                owner_token=owner_token,
+            )
+
+            if current_task is not None:
+                heartbeat_task = coordinator.start_heartbeat(
+                    worker_task=current_task,
+                    record_id=record_id,
+                    application_id=inputs.application.id,
+                    user_id=current_user.id,
+                    key_hash=key_hash,
+                    owner_token=owner_token,
+                )
+
+            response = await explanation_service.build_refresh_explanation(
+                application_id=inputs.application.id,
+                match_result=match_result,
+                parsed_resume=inputs.parsed_resume,
+                parsed_job=inputs.parsed_job,
+            )
+            if (
+                response.summary_source != "ai_generated"
+                or not response.summary.strip()
+            ):
+                raise MatchExplanationRefreshError("narrative_rejected")
+
+            await self._stop_heartbeat(heartbeat_task)
+            heartbeat_task = None
+
+            await self._finalize_refresh(
+                record_id=record_id,
+                application_id=inputs.application.id,
+                owner_token=owner_token,
+                reservation=reservation,
+                quota=quota,
+                response=response,
+                cache_service=cache_service,
+            )
+            finalized = True
+
+            await coordinator.publish_fenced_cache(
+                application_id=inputs.application.id,
+                content_key=cache_key,
+                user_id=current_user.id,
+                key_hash=key_hash,
+                owner_token=owner_token,
+                response=response,
+            )
+            # This request generated the response; only replay paths report a
+            # cached state. Cache publication is opportunistic and never turns
+            # a fresh generation into a cache hit.
+            return response
+        except asyncio.CancelledError:
+            if record_id is not None and not finalized:
+                try:
+                    await self._fenced_release_reservation(
+                        record_id=record_id,
+                        application_id=inputs.application.id,
+                        owner_token=owner_token,
+                        reservation=reservation,
+                        quota=quota,
+                    )
+                except Exception:  # noqa: BLE001 - preserve cancellation
+                    logger.error(
+                        "match_explanation_refresh_cancel_cleanup_failed "
+                        "application_id=%s",
+                        inputs.application.id,
+                    )
+            elif record_id is None:
+                await self._rollback_refresh()
+            raise
+        except BaseException:
+            if record_id is not None and not finalized:
+                await self._fenced_release_reservation(
+                    record_id=record_id,
+                    application_id=inputs.application.id,
+                    owner_token=owner_token,
+                    reservation=reservation,
+                    quota=quota,
+                )
+            elif record_id is None:
+                await self._rollback_refresh()
+            raise
+        finally:
+            await self._stop_heartbeat(heartbeat_task)
+            await coordinator.release_lock(
+                inputs.application.id, owner_token
+            )
+
+    async def _assert_active_ownership(
+        self,
+        *,
+        record_id: uuid.UUID,
+        application_id: uuid.UUID,
+        owner_token: str,
+    ) -> None:
+        now = utc_now()
+        idempotency_id = await self.session.scalar(
+            select(AIMatchExplanationIdempotency.id)
+            .where(
+                AIMatchExplanationIdempotency.id == record_id,
+                AIMatchExplanationIdempotency.application_id
+                == application_id,
+                AIMatchExplanationIdempotency.owner_token == owner_token,
+                AIMatchExplanationIdempotency.status == STATUS_IN_PROGRESS,
+                AIMatchExplanationIdempotency.lease_expires_at > now,
+            )
+            .limit(1)
+        )
+        if idempotency_id is None:
+            raise MatchExplanationRefreshError(
+                "refresh_ownership_lost",
+                http_status=409,
+                retry_after=5,
+            )
+        lease_application_id = await self.session.scalar(
+            select(AIMatchExplanationApplicationLease.application_id)
+            .where(
+                AIMatchExplanationApplicationLease.application_id
+                == application_id,
+                AIMatchExplanationApplicationLease.owner_token
+                == owner_token,
+                AIMatchExplanationApplicationLease.lease_expires_at > now,
+            )
+            .limit(1)
+        )
+        if lease_application_id is None:
+            raise MatchExplanationRefreshError(
+                "refresh_ownership_lost",
+                http_status=409,
+                retry_after=5,
+            )
+
+    async def _fenced_release_reservation(
+        self,
+        *,
+        record_id: uuid.UUID,
+        application_id: uuid.UUID,
+        owner_token: str,
+        reservation: ReservationResult | None,
+        quota: QuotaEnforcementService,
+    ) -> bool:
+        await self._rollback_refresh()
+        try:
+            result = await self.session.execute(
+                update(AIMatchExplanationIdempotency)
+                .where(
+                    AIMatchExplanationIdempotency.id == record_id,
+                    AIMatchExplanationIdempotency.owner_token == owner_token,
+                    AIMatchExplanationIdempotency.status
+                    == STATUS_IN_PROGRESS,
+                )
+                .values(
+                    status=STATUS_FAILED,
+                    response_payload=None,
+                    completed_at=None,
+                    updated_at=utc_now(),
+                )
+            )
+            if result.rowcount != 1:
+                await self._rollback_refresh()
+                logger.warning(
+                    "match_explanation_refresh_fenced_out application_id=%s",
+                    application_id,
+                )
+                return False
+
+            if reservation is not None:
+                await quota.release_reservation(reservation.usage_id)
+
+            await self.session.execute(
+                delete(AIMatchExplanationApplicationLease).where(
+                    AIMatchExplanationApplicationLease.application_id
+                    == application_id,
+                    AIMatchExplanationApplicationLease.owner_token
+                    == owner_token,
+                )
+            )
+            await self._commit_refresh()
+            return True
+        except asyncio.CancelledError:
+            await self._rollback_refresh()
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface controlled cleanup
+            await self._rollback_refresh()
+            logger.error(
+                "match_explanation_refresh_cleanup_failed application_id=%s "
+                "error=%s",
+                application_id,
+                type(exc).__name__,
+            )
+            raise MatchExplanationRefreshError(
+                "refresh_cleanup_failed", http_status=503
+            ) from exc
+
+    async def _finalize_refresh(
+        self,
+        *,
+        record_id: uuid.UUID,
+        application_id: uuid.UUID,
+        owner_token: str,
+        reservation: ReservationResult,
+        quota: QuotaEnforcementService,
+        response: ApplicationMatchExplanationResponse,
+        cache_service: MatchExplanationCache,
+    ) -> None:
+        now = utc_now()
+        try:
+            payload = cache_service.serialize_response(response)
+        except Exception as exc:  # noqa: BLE001 - never finalize unserializable
+            raise MatchExplanationRefreshError(
+                "refresh_response_serialization_failed", http_status=500
+            ) from exc
+
+        try:
+            result = await self.session.execute(
+                update(AIMatchExplanationIdempotency)
+                .where(
+                    AIMatchExplanationIdempotency.id == record_id,
+                    AIMatchExplanationIdempotency.owner_token == owner_token,
+                    AIMatchExplanationIdempotency.status
+                    == STATUS_IN_PROGRESS,
+                    AIMatchExplanationIdempotency.lease_expires_at > now,
+                )
+                .values(
+                    status=STATUS_COMPLETED,
+                    response_payload=payload,
+                    completed_at=now,
+                    updated_at=now,
+                )
+            )
+            if result.rowcount != 1:
+                await self._rollback_refresh()
+                raise MatchExplanationRefreshError(
+                    "refresh_ownership_lost",
+                    http_status=409,
+                    retry_after=5,
+                )
+
+            await quota.finalize_reservation(
+                reservation.usage_id, success=True
+            )
+            lease_result = await self.session.execute(
+                delete(AIMatchExplanationApplicationLease).where(
+                    AIMatchExplanationApplicationLease.application_id
+                    == application_id,
+                    AIMatchExplanationApplicationLease.owner_token
+                    == owner_token,
+                )
+            )
+            if lease_result.rowcount != 1:
+                await self._rollback_refresh()
+                raise MatchExplanationRefreshError(
+                    "refresh_ownership_lost",
+                    http_status=409,
+                    retry_after=5,
+                )
+            await self._commit_refresh()
+        except asyncio.CancelledError:
+            await self._rollback_refresh()
+            raise
+        except MatchExplanationRefreshError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface controlled failure
+            await self._rollback_refresh()
+            logger.error(
+                "match_explanation_refresh_finalize_failed application_id=%s "
+                "error=%s",
+                application_id,
+                type(exc).__name__,
+            )
+            raise MatchExplanationRefreshError(
+                "refresh_finalize_failed", http_status=503
+            ) from exc
+
+    @staticmethod
+    async def _stop_heartbeat(
+        heartbeat_task: asyncio.Task[None] | None,
+    ) -> None:
+        if heartbeat_task is None or heartbeat_task.done():
+            return
+        heartbeat_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat_task
 
     async def _commit_refresh(self) -> None:
         try:

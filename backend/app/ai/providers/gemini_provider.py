@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -88,7 +87,10 @@ class GeminiLLMProvider(BaseLLMProvider):
         client = genai.Client(
             api_key=self.api_key,
             http_options=types.HttpOptions(
-                retry_options=types.HttpRetryOptions(**_GEMINI_HTTP_RETRY_OPTIONS)
+                timeout=20_000,
+                retry_options=types.HttpRetryOptions(
+                    **_GEMINI_HTTP_RETRY_OPTIONS
+                ),
             ),
         )
 
@@ -102,9 +104,7 @@ class GeminiLLMProvider(BaseLLMProvider):
         config = types.GenerateContentConfig(**config_args)
 
         try:
-            # Offload synchronous blocking network I/O to thread pool to avoid blocking FastAPI event loop
-            response = await asyncio.to_thread(
-                client.models.generate_content,
+            response = await client.aio.models.generate_content(
                 model=self.model_name,
                 contents=prompt,
                 config=config,
@@ -134,6 +134,13 @@ class GeminiLLMProvider(BaseLLMProvider):
                 exc,
             )
             raise InvalidDocumentError(GEMINI_REQUEST_FAILED_MESSAGE) from exc
+        finally:
+            try:
+                await client.aio.aclose()
+            except Exception as close_exc:  # noqa: BLE001 - preserve outcome
+                logger.warning(
+                    "Gemini async client close failed: %s", close_exc
+                )
 
         raw_text = getattr(response, "text", None)
         if not raw_text:

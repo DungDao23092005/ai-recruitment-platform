@@ -136,6 +136,13 @@ class MatchExplanationCache:
     def available(self) -> bool:
         return self.enabled and self.redis is not None
 
+    def serialize_response(
+        self, response: ApplicationMatchExplanationResponse
+    ) -> str:
+        """Serialize a validated response for durable/SQL replay storage."""
+        payload = _as_json_payload(response)
+        return canonical_json_bytes(payload).decode("utf-8")
+
     def build_key(
         self,
         application_id: uuid.UUID | str,

@@ -297,11 +297,14 @@ class ApplicationMatchExplanationResponse(BaseModel):
     generated_at: datetime = Field(
         ..., description="UTC timestamp the explanation was generated."
     )
-    cache_state: Literal["not_cached", "cached"] = Field(
+    cache_state: Literal["not_cached", "cached", "db_replay"] = Field(
         default="not_cached",
         description=(
             "Honest cache indicator. 'not_cached' means the response was built "
-            "for this request (including after a cache miss or Redis bypass); "
-            "'cached' means a previously stored, validated response was served."
+            "for this request (including after a cache miss, Redis bypass or a "
+            "failed post-commit cache publication); 'cached' means a previously "
+            "stored, validated Redis response was served; 'db_replay' means a "
+            "completed idempotency tombstone was replayed from SQL after Redis "
+            "had no usable entry."
         ),
     )

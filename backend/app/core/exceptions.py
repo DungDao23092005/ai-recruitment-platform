@@ -59,6 +59,14 @@ class MatchExplanationRefreshInputError(ServiceException):
     http_status = 400
 
 
+class MatchExplanationIdempotencyConflictError(
+    MatchExplanationRefreshInputError
+):
+    """The same user-scoped idempotency key targets another application."""
+
+    http_status = 422
+
+
 class MatchExplanationRefreshError(AIError):
     """Controlled failure for the quota-controlled match-explanation refresh.
 

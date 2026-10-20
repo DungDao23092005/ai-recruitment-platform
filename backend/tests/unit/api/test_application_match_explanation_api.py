@@ -10,9 +10,17 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_current_user
 from app.api.v1.endpoints.applications import (
     _get_ai_matching_service,
+    _get_match_explanation_cache,
+    _get_match_explanation_coordinator,
     _get_match_explanation_service,
+    _get_refresh_explanation_service,
 )
-from app.core.exceptions import AIError, EntityNotFoundException
+from app.core.exceptions import (
+    AIError,
+    EntityNotFoundException,
+    MatchExplanationIdempotencyConflictError,
+    MatchExplanationRefreshError,
+)
 from app.domain.enums import UserRole
 from app.main import app
 
@@ -85,14 +93,31 @@ def _override_user(role: UserRole):
 def mock_service():
     service = MagicMock()
     service.get_application_match_explanation = AsyncMock()
+    service.refresh_application_match_explanation = AsyncMock()
+    service.verify_application_access = AsyncMock()
     return service
 
 
 @pytest.fixture
-def client(mock_service):
+def mock_coordinator():
+    coordinator = MagicMock()
+    coordinator.get_active_task.return_value = None
+    coordinator.watch_disconnect = AsyncMock()
+    return coordinator
+
+
+@pytest.fixture
+def client(mock_service, mock_coordinator):
     app.dependency_overrides[get_current_user] = _override_user(UserRole.RECRUITER)
     app.dependency_overrides[_get_ai_matching_service] = lambda: MagicMock()
     app.dependency_overrides[_get_match_explanation_service] = lambda: MagicMock()
+    app.dependency_overrides[_get_match_explanation_cache] = lambda: MagicMock()
+    app.dependency_overrides[_get_refresh_explanation_service] = (
+        lambda: MagicMock()
+    )
+    app.dependency_overrides[_get_match_explanation_coordinator] = (
+        lambda: mock_coordinator
+    )
     with patch(
         "app.api.v1.endpoints.applications.ApplicationService",
         return_value=mock_service,
@@ -228,7 +253,7 @@ def test_cached_state_is_returned(recruiter_client, mock_service):
     assert resp.json()["cache_state"] == "cached"
 
 
-def test_openapi_exposes_both_cache_states():
+def test_openapi_exposes_cache_states():
     schema = app.openapi()["components"]["schemas"][
         "ApplicationMatchExplanationResponse"
     ]
@@ -236,4 +261,126 @@ def test_openapi_exposes_both_cache_states():
     assert schema["properties"]["cache_state"]["enum"] == [
         "not_cached",
         "cached",
+        "db_replay",
     ]
+
+
+class TestRefreshEndpoint:
+    def _url(self, application_id):
+        return (
+            f"/api/v1/applications/{application_id}"
+            "/match-explanation/refresh"
+        )
+
+    def test_success_passes_key_and_coordinator(
+        self, recruiter_client, mock_service, mock_coordinator
+    ):
+        application_id = uuid.uuid4()
+        mock_service.refresh_application_match_explanation.return_value = (
+            _explanation_payload(application_id)
+        )
+
+        resp = recruiter_client.post(
+            self._url(application_id),
+            headers={"Idempotency-Key": "client-key-1"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["cache_state"] == "not_cached"
+        call = mock_service.refresh_application_match_explanation
+        call.assert_awaited_once()
+        assert call.await_args.kwargs["idempotency_key"] == "client-key-1"
+        assert call.await_args.kwargs["coordinator"] is mock_coordinator
+        mock_service.verify_application_access.assert_awaited_once()
+        mock_coordinator.register_active_task.assert_called_once()
+        mock_coordinator.unregister_active_task.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "headers",
+        [{}, {"Idempotency-Key": "   "}, {"Idempotency-Key": "x" * 256}],
+    )
+    def test_invalid_key_is_400_without_side_effects(
+        self, recruiter_client, mock_service, mock_coordinator, headers
+    ):
+        resp = recruiter_client.post(
+            self._url(uuid.uuid4()), headers=headers
+        )
+
+        assert resp.status_code == 400
+        mock_service.verify_application_access.assert_not_awaited()
+        mock_service.refresh_application_match_explanation.assert_not_awaited()
+        mock_coordinator.get_active_task.assert_not_called()
+        mock_coordinator.register_active_task.assert_not_called()
+
+    def test_openapi_marks_idempotency_key_required(self):
+        path = app.openapi()["paths"][
+            "/api/v1/applications/{application_id}"
+            "/match-explanation/refresh"
+        ]["post"]
+        params = {
+            p["name"]: p for p in path.get("parameters", [])
+        }
+
+        assert params["Idempotency-Key"]["in"] == "header"
+        assert params["Idempotency-Key"]["required"] is True
+
+    def test_candidate_is_forbidden_before_service_call(
+        self, candidate_client, mock_service, mock_coordinator
+    ):
+        resp = candidate_client.post(
+            self._url(uuid.uuid4()),
+            headers={"Idempotency-Key": "key"},
+        )
+
+        assert resp.status_code == 403
+        mock_service.verify_application_access.assert_not_awaited()
+        mock_coordinator.get_active_task.assert_not_called()
+
+    def test_foreign_application_is_404_before_redis(
+        self, recruiter_client, mock_service, mock_coordinator
+    ):
+        mock_service.verify_application_access.side_effect = (
+            EntityNotFoundException("Application not found")
+        )
+
+        resp = recruiter_client.post(
+            self._url(uuid.uuid4()),
+            headers={"Idempotency-Key": "key"},
+        )
+
+        assert resp.status_code == 404
+        mock_service.refresh_application_match_explanation.assert_not_awaited()
+        mock_coordinator.get_active_task.assert_not_called()
+
+    def test_refresh_409_includes_retry_after(
+        self, recruiter_client, mock_service
+    ):
+        mock_service.refresh_application_match_explanation.side_effect = (
+            MatchExplanationRefreshError(
+                "refresh_in_progress", http_status=409, retry_after=7
+            )
+        )
+
+        resp = recruiter_client.post(
+            self._url(uuid.uuid4()),
+            headers={"Idempotency-Key": "key"},
+        )
+
+        assert resp.status_code == 409
+        assert resp.headers["Retry-After"] == "7"
+
+    def test_cross_application_key_conflict_is_422(
+        self, recruiter_client, mock_service
+    ):
+        mock_service.refresh_application_match_explanation.side_effect = (
+            MatchExplanationIdempotencyConflictError(
+                "idempotency_key_conflict"
+            )
+        )
+
+        resp = recruiter_client.post(
+            self._url(uuid.uuid4()),
+            headers={"Idempotency-Key": "key"},
+        )
+
+        assert resp.status_code == 422

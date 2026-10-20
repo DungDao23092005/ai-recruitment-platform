@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
+from contextlib import suppress
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.embeddings.embedding_service import (
@@ -18,7 +27,10 @@ from app.core.exceptions import (
     EntityNotFoundException,
     ForbiddenException,
     InvalidTransitionException,
+    MatchExplanationRefreshError,
+    MatchExplanationRefreshInputError,
 )
+from app.database.session import async_session_factory
 from app.models import Application, User
 from app.schemas.ai_explanation import ApplicationMatchExplanationResponse
 from app.schemas.ai_job import ParsedJobSchema
@@ -57,10 +69,14 @@ from app.services.ai_matching_service import AIMatchingService
 from app.services.application_activity_service import ApplicationActivityService
 from app.services.application_note_service import ApplicationNoteService
 from app.services.application_service import ApplicationService
+from app.services.explainable_ai_service import ExplainableAIService
 from app.services.interview_evaluation_service import InterviewEvaluationService
 from app.services.interview_service import InterviewService
 from app.services.job_service import JobService
 from app.services.match_explanation_cache import MatchExplanationCache
+from app.services.match_explanation_coordinator import (
+    MatchExplanationCoordinator,
+)
 from app.services.match_explanation_service import MatchExplanationService
 from app.services.user_service import UserService
 
@@ -93,6 +109,25 @@ def _get_match_explanation_cache(request: Request) -> MatchExplanationCache:
     """Reuse the shared Redis client, or bypass the cache when unavailable."""
     return MatchExplanationCache(
         redis_client=getattr(request.app.state, "redis", None)
+    )
+
+
+def _get_refresh_explanation_service() -> MatchExplanationService:
+    """Build the AI-narrative service used only by the explicit refresh route."""
+    return MatchExplanationService(
+        narrative_service=ExplainableAIService()
+    )
+
+
+def _get_match_explanation_coordinator(
+    cache_service: MatchExplanationCache = Depends(
+        _get_match_explanation_cache
+    ),
+) -> MatchExplanationCoordinator:
+    return MatchExplanationCoordinator(
+        redis_client=cache_service.redis,
+        session_factory=async_session_factory,
+        cache_service=cache_service,
     )
 
 
@@ -354,6 +389,145 @@ async def get_application_match_explanation(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
+        ) from exc
+    except AIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI Match unavailable. Please try again later.",
+        ) from exc
+
+
+@router.post(
+    "/{application_id}/match-explanation/refresh",
+    response_model=ApplicationMatchExplanationResponse,
+    openapi_extra={
+        "parameters": [
+            {
+                "name": "Idempotency-Key",
+                "in": "header",
+                "required": True,
+                "schema": {"type": "string", "maxLength": 255},
+                "description": (
+                    "Client-generated key used to replay a completed refresh "
+                    "without another quota deduction or AI call."
+                ),
+            }
+        ]
+    },
+)
+async def refresh_application_match_explanation(
+    application_id: uuid.UUID,
+    request: Request,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+    matching_service: AIMatchingService = Depends(_get_ai_matching_service),
+    explanation_service: MatchExplanationService = Depends(
+        _get_refresh_explanation_service
+    ),
+    cache_service: MatchExplanationCache = Depends(
+        _get_match_explanation_cache
+    ),
+    coordinator: MatchExplanationCoordinator = Depends(
+        _get_match_explanation_coordinator
+    ),
+) -> ApplicationMatchExplanationResponse:
+    """Run an explicit, quota-controlled AI match-explanation refresh.
+
+    The endpoint is recruiter/admin-only and ownership is verified before any
+    Redis, idempotency-registry or quota side effect. ``Idempotency-Key`` is
+    required and user-scoped; replaying a completed request returns the stored
+    response without another AI call or quota deduction.
+    """
+    idempotency_key = request.headers.get("Idempotency-Key")
+    if idempotency_key is None or not idempotency_key.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Idempotency-Key header is required",
+        )
+    if len(idempotency_key) > 255:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Idempotency-Key header is too long",
+        )
+
+    service = ApplicationService(db)
+    try:
+        await service.verify_application_access(
+            current_user, application_id
+        )
+        # End the read-only transaction before any Redis/provider wait.
+        await db.rollback()
+
+        worker_task = asyncio.current_task()
+        if worker_task is None:
+            raise MatchExplanationRefreshError(
+                "refresh_worker_unavailable", http_status=503
+            )
+        active_task = coordinator.get_active_task(application_id)
+        if (
+            active_task is not None
+            and active_task is not worker_task
+            and not active_task.done()
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An AI match explanation refresh is already in progress.",
+                headers={"Retry-After": "5"},
+            )
+
+        coordinator.register_active_task(application_id, worker_task)
+        watcher_task = asyncio.create_task(
+            coordinator.watch_disconnect(request, worker_task)
+        )
+        try:
+            return await service.refresh_application_match_explanation(
+                current_user=current_user,
+                application_id=application_id,
+                idempotency_key=idempotency_key,
+                matching_service=matching_service,
+                explanation_service=explanation_service,
+                cache_service=cache_service,
+                coordinator=coordinator,
+            )
+        finally:
+            watcher_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await watcher_task
+            coordinator.unregister_active_task(
+                application_id, worker_task
+            )
+    except MatchExplanationRefreshInputError as exc:
+        raise HTTPException(
+            status_code=getattr(
+                exc, "http_status", status.HTTP_400_BAD_REQUEST
+            ),
+            detail=str(exc),
+        ) from exc
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except ConflictException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except MatchExplanationRefreshError as exc:
+        headers = (
+            {"Retry-After": str(exc.retry_after)}
+            if exc.retry_after is not None
+            else None
+        )
+        raise HTTPException(
+            status_code=exc.http_status,
+            detail=str(exc),
+            headers=headers,
         ) from exc
     except AIError as exc:
         raise HTTPException(

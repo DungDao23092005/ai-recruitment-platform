@@ -1,3 +1,7 @@
+from app.models.ai_match_explanation import (
+    AIMatchExplanationApplicationLease,
+    AIMatchExplanationIdempotency,
+)
 from app.models.application import Application
 from app.models.application_activity import ApplicationActivity
 from app.models.application_note import ApplicationNote
@@ -23,6 +27,8 @@ from app.models.subscription_usage import SubscriptionUsage
 from app.models.user import User
 
 __all__ = [
+    "AIMatchExplanationApplicationLease",
+    "AIMatchExplanationIdempotency",
     "Application",
     "ApplicationActivity",
     "ApplicationNote",

@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     MATCH_EXPLANATION_CACHE_TTL_SECONDS: int = 604800
     MATCH_EXPLANATION_CACHE_VERSION: str = "v1"
 
+    # Quota-controlled refresh coordination
+    MATCH_EXPLANATION_LOCK_TTL_SECONDS: int = 120
+    MATCH_EXPLANATION_IDEMPOTENCY_TTL_SECONDS: int = 86400
+    MATCH_EXPLANATION_IN_PROGRESS_TTL_SECONDS: int = 120
+    MATCH_EXPLANATION_IDEMPOTENCY_SCHEMA_VERSION: str = "v1"
+
     # Rate Limiting Configuration
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_LOGIN_IP_PER_MINUTE: int = 20
@@ -233,6 +239,31 @@ class Settings(BaseSettings):
             raise ValueError(
                 "MATCH_EXPLANATION_CACHE_VERSION must be 1-64 characters of "
                 "letters, digits, '.', '_' or '-'"
+            )
+        return value
+
+    @field_validator(
+        "MATCH_EXPLANATION_LOCK_TTL_SECONDS",
+        "MATCH_EXPLANATION_IDEMPOTENCY_TTL_SECONDS",
+        "MATCH_EXPLANATION_IN_PROGRESS_TTL_SECONDS",
+    )
+    @classmethod
+    def validate_match_explanation_refresh_ttls(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError(
+                "Match explanation refresh TTL settings must be greater than 0"
+            )
+        return value
+
+    @field_validator("MATCH_EXPLANATION_IDEMPOTENCY_SCHEMA_VERSION")
+    @classmethod
+    def validate_match_explanation_idempotency_schema_version(
+        cls, value: str
+    ) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,20}", value or ""):
+            raise ValueError(
+                "MATCH_EXPLANATION_IDEMPOTENCY_SCHEMA_VERSION must be 1-20 "
+                "characters of letters, digits, '.', '_' or '-'"
             )
         return value
 
