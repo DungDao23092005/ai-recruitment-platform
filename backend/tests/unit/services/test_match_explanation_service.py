@@ -493,3 +493,26 @@ class TestNarrativeValidation:
         by_name = {e.skill_name: e for e in result.skill_evaluations}
         assert by_name["Docker"].status == "not_evidenced_in_cv"
         assert by_name["Docker"].evidence == []
+
+
+class TestDeterministicPath:
+    async def test_deterministic_path_ignores_narrative_service(self):
+        narrative = SimpleNamespace(
+            explain_match=AsyncMock(
+                return_value=SimpleNamespace(summary="AI narrative")
+            ),
+            llm_provider=SimpleNamespace(model_name="gemini-test-model"),
+        )
+        service = MatchExplanationService(narrative_service=narrative)
+
+        result = await service.build_deterministic_explanation(
+            application_id=uuid.uuid4(),
+            match_result=make_match_result(),
+            parsed_resume=make_resume(),
+            parsed_job=make_job(),
+        )
+
+        narrative.explain_match.assert_not_awaited()
+        assert result.summary_source == "deterministic"
+        assert result.cache_state == "not_cached"
+        assert result.model_version is None

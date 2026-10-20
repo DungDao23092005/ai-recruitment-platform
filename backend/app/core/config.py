@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Annotated, Optional
 from urllib.parse import quote_plus, urlparse
 
@@ -48,6 +49,11 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_PASSWORD: Optional[str] = None
+
+    # Explainable AI match-explanation cache
+    MATCH_EXPLANATION_CACHE_ENABLED: bool = True
+    MATCH_EXPLANATION_CACHE_TTL_SECONDS: int = 604800
+    MATCH_EXPLANATION_CACHE_VERSION: str = "v1"
 
     # Rate Limiting Configuration
     RATE_LIMIT_ENABLED: bool = True
@@ -206,6 +212,28 @@ class Settings(BaseSettings):
         if env == "production":
             if not value or not value.strip():
                 raise ValueError("GEMINI_API_KEY is required in production")
+        return value
+
+    @field_validator("MATCH_EXPLANATION_CACHE_TTL_SECONDS")
+    @classmethod
+    def validate_match_explanation_cache_ttl(cls, value: int) -> int:
+        # Redis treats a non-positive TTL as invalid/indefinite depending on the
+        # command. Reject it at startup so a bad config cannot create keys that
+        # never expire.
+        if value <= 0:
+            raise ValueError(
+                "MATCH_EXPLANATION_CACHE_TTL_SECONDS must be greater than 0"
+            )
+        return value
+
+    @field_validator("MATCH_EXPLANATION_CACHE_VERSION")
+    @classmethod
+    def validate_match_explanation_cache_version(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", value or ""):
+            raise ValueError(
+                "MATCH_EXPLANATION_CACHE_VERSION must be 1-64 characters of "
+                "letters, digits, '.', '_' or '-'"
+            )
         return value
 
     @property

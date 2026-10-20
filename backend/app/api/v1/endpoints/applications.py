@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.embeddings.embedding_service import (
@@ -57,10 +57,10 @@ from app.services.ai_matching_service import AIMatchingService
 from app.services.application_activity_service import ApplicationActivityService
 from app.services.application_note_service import ApplicationNoteService
 from app.services.application_service import ApplicationService
-from app.services.explainable_ai_service import ExplainableAIService
 from app.services.interview_evaluation_service import InterviewEvaluationService
 from app.services.interview_service import InterviewService
 from app.services.job_service import JobService
+from app.services.match_explanation_cache import MatchExplanationCache
 from app.services.match_explanation_service import MatchExplanationService
 from app.services.user_service import UserService
 
@@ -81,12 +81,19 @@ def _get_ai_matching_service(
 
 
 def _get_match_explanation_service() -> MatchExplanationService:
-    """Build the explanation service, reusing the existing AI explanation hook.
+    """Build the deterministic GET explanation service.
 
-    The deterministic, evidence-verified part of the explanation never depends
-    on the LLM; the narrative layer is best-effort and degrades gracefully.
+    The regular GET path never calls an AI provider. AI narrative is only
+    produced by the explicit quota-controlled refresh path introduced later.
     """
-    return MatchExplanationService(narrative_service=ExplainableAIService())
+    return MatchExplanationService()
+
+
+def _get_match_explanation_cache(request: Request) -> MatchExplanationCache:
+    """Reuse the shared Redis client, or bypass the cache when unavailable."""
+    return MatchExplanationCache(
+        redis_client=getattr(request.app.state, "redis", None)
+    )
 
 
 def to_application_with_job_read(
@@ -322,6 +329,9 @@ async def get_application_match_explanation(
     explanation_service: MatchExplanationService = Depends(
         _get_match_explanation_service
     ),
+    cache_service: MatchExplanationCache = Depends(
+        _get_match_explanation_cache
+    ),
 ) -> ApplicationMatchExplanationResponse:
     """Return an evidence-grounded explanation of an application's match.
 
@@ -338,6 +348,7 @@ async def get_application_match_explanation(
             application_id=application_id,
             matching_service=matching_service,
             explanation_service=explanation_service,
+            cache_service=cache_service,
         )
     except EntityNotFoundException as exc:
         raise HTTPException(

@@ -321,11 +321,12 @@ class MatchExplanationService:
         parsed_resume: ParsedResumeSchema | None,
         parsed_job: ParsedJobSchema | None,
         data_limitations: list[str],
+        narrative_service=None,
     ) -> tuple[str, str | None, str]:
         """Return ``(summary, model_version, summary_source)``.
 
-        Uses the existing ``ExplainableAIService`` when available; otherwise (or
-        on provider failure) returns a deterministic, grounded summary.
+        Uses the provided narrative service when available; otherwise (or on
+        provider failure) returns a deterministic, grounded summary.
 
         ``model_version`` is the provider's real configured model identifier
         when it reliably exposes one (e.g. ``GeminiLLMProvider.model_name``);
@@ -340,9 +341,9 @@ class MatchExplanationService:
         Empty, malformed, contradictory, or failed narratives fall back to the
         deterministic summary.
         """
-        if self.narrative_service is not None:
+        if narrative_service is not None:
             try:
-                response = await self.narrative_service.explain_match(
+                response = await narrative_service.explain_match(
                     match_result=match_result,
                     candidate=parsed_resume,
                     job=parsed_job,
@@ -367,7 +368,7 @@ class MatchExplanationService:
                         "score; a deterministic summary was used instead."
                     )
                 else:
-                    provider = getattr(self.narrative_service, "llm_provider", None)
+                    provider = getattr(narrative_service, "llm_provider", None)
                     raw_model = getattr(provider, "model_name", None)
                     model_version = (
                         raw_model.strip()
@@ -406,6 +407,44 @@ class MatchExplanationService:
         match_result: MatchResultSchema,
         parsed_resume: ParsedResumeSchema | None,
         parsed_job: ParsedJobSchema | None,
+    ) -> ApplicationMatchExplanationResponse:
+        """Build an explanation using the configured narrative service."""
+        return await self._build_explanation(
+            application_id=application_id,
+            match_result=match_result,
+            parsed_resume=parsed_resume,
+            parsed_job=parsed_job,
+            narrative_service=self.narrative_service,
+        )
+
+    async def build_deterministic_explanation(
+        self,
+        application_id: uuid.UUID,
+        match_result: MatchResultSchema,
+        parsed_resume: ParsedResumeSchema | None,
+        parsed_job: ParsedJobSchema | None,
+    ) -> ApplicationMatchExplanationResponse:
+        """Build an explanation without any external AI/narrative provider.
+
+        The regular GET endpoint uses this explicit path so a cache miss can
+        never trigger a provider call, even if the service was constructed
+        with a narrative service.
+        """
+        return await self._build_explanation(
+            application_id=application_id,
+            match_result=match_result,
+            parsed_resume=parsed_resume,
+            parsed_job=parsed_job,
+            narrative_service=None,
+        )
+
+    async def _build_explanation(
+        self,
+        application_id: uuid.UUID,
+        match_result: MatchResultSchema,
+        parsed_resume: ParsedResumeSchema | None,
+        parsed_job: ParsedJobSchema | None,
+        narrative_service=None,
     ) -> ApplicationMatchExplanationResponse:
         required_skills = _clean_skills(
             parsed_job.required_skills if parsed_job else None
@@ -499,7 +538,11 @@ class MatchExplanationService:
                     evidence.append(excerpt)
 
         summary, model_version, summary_source = await self._build_summary(
-            match_result, parsed_resume, parsed_job, data_limitations
+            match_result,
+            parsed_resume,
+            parsed_job,
+            data_limitations,
+            narrative_service,
         )
 
         return ApplicationMatchExplanationResponse(

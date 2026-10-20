@@ -29,6 +29,7 @@ from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.ai_matching_service import AIMatchingService
 from app.services.application_activity_service import record_activity
 from app.services.job_service import JobService
+from app.services.match_explanation_cache import MatchExplanationCache
 from app.services.match_explanation_service import MatchExplanationService
 from app.services.notification_service import NotificationService
 from app.services.pipeline_email_service import schedule_application_status_email
@@ -404,15 +405,18 @@ class ApplicationService:
         current_user: User,
         application_id: uuid.UUID,
         matching_service: AIMatchingService,
+        *,
+        resolve_vectors: bool = True,
     ) -> _ApplicationMatchInputs:
         """Resolve every input the matching/explanation flow needs.
 
         Recruiter/admin only, with ownership enforced exactly like
         ``get_application_detail`` (foreign/missing applications surface as
         404). The candidate resume and job are resolved server-side from the
-        application; vectors come from the vector repository and fall back to
-        on-demand embedding when a point is missing. Missing or unparseable
-        resume data degrades gracefully instead of crashing.
+        application. Vectors are resolved from the vector repository (falling
+        back to on-demand embedding) only when ``resolve_vectors`` is true, so
+        a cache lookup can happen before any embedding work. Missing or
+        unparseable resume data degrades gracefully instead of crashing.
         """
         application = await self.applications.get_by_id_with_candidate(
             application_id
@@ -437,7 +441,6 @@ class ApplicationService:
         )
 
         parsed_resume = None
-        resume_vector = None
         if resume is not None and resume.parsed_data:
             try:
                 parsed_resume = ParsedResumeSchema.model_validate(
@@ -445,14 +448,6 @@ class ApplicationService:
                 )
             except ValidationError:
                 parsed_resume = None
-            if parsed_resume is not None:
-                resume_vector = await self._resolve_vector(
-                    matching_service, "resumes", application.candidate_id
-                )
-                if resume_vector is None:
-                    resume_vector = await matching_service.embedding_service.embed_resume(
-                        parsed_resume
-                    )
 
         parsed_job = ParsedJobSchema(
             title=job.title,
@@ -466,23 +461,50 @@ class ApplicationService:
             location=job.location,
             city=job.location,
         )
-        job_vector = await self._resolve_vector(
-            matching_service, "jobs", application.job_id
-        )
-        if job_vector is None:
-            job_vector = await matching_service.embedding_service.embed_job(
-                parsed_job
-            )
 
-        return _ApplicationMatchInputs(
+        inputs = _ApplicationMatchInputs(
             application=application,
             job=job,
             resume=resume,
             parsed_resume=parsed_resume,
             parsed_job=parsed_job,
-            resume_vector=resume_vector,
-            job_vector=job_vector,
+            resume_vector=None,
+            job_vector=None,
         )
+        if resolve_vectors:
+            await self._resolve_match_vectors(inputs, matching_service)
+        return inputs
+
+    async def _resolve_match_vectors(
+        self,
+        inputs: _ApplicationMatchInputs,
+        matching_service: AIMatchingService,
+    ) -> None:
+        """Populate missing resume/job vectors on the resolved inputs."""
+        if inputs.parsed_resume is not None and inputs.resume_vector is None:
+            inputs.resume_vector = await self._resolve_vector(
+                matching_service,
+                "resumes",
+                inputs.application.candidate_id,
+            )
+            if inputs.resume_vector is None:
+                inputs.resume_vector = (
+                    await matching_service.embedding_service.embed_resume(
+                        inputs.parsed_resume
+                    )
+                )
+        if inputs.job_vector is None:
+            inputs.job_vector = await self._resolve_vector(
+                matching_service,
+                "jobs",
+                inputs.application.job_id,
+            )
+            if inputs.job_vector is None:
+                inputs.job_vector = (
+                    await matching_service.embedding_service.embed_job(
+                        inputs.parsed_job
+                    )
+                )
 
     async def get_application_match(
         self,
@@ -512,30 +534,64 @@ class ApplicationService:
         application_id: uuid.UUID,
         matching_service: AIMatchingService,
         explanation_service: MatchExplanationService | None = None,
+        cache_service: MatchExplanationCache | None = None,
     ) -> ApplicationMatchExplanationResponse:
         """Build an evidence-grounded explanation for an application match.
 
         Recruiter/admin only, with the same ownership guarantees as
-        ``get_application_match``. The overall score is computed by the
-        existing ``MatchingEngine`` and copied verbatim into the explanation;
-        it is never recalculated by the explanation layer.
+        ``get_application_match``. Ownership and trusted data are resolved
+        before any cache lookup. The regular GET path always uses the explicit
+        deterministic-only build path: a cache miss or Redis failure can never
+        invoke an external AI provider.
+
+        The overall score is computed by the existing ``MatchingEngine`` and
+        copied verbatim into the explanation; it is never recalculated by the
+        explanation layer.
         """
         inputs = await self._resolve_match_inputs(
-            current_user, application_id, matching_service
+            current_user,
+            application_id,
+            matching_service,
+            resolve_vectors=False,
         )
+        service = explanation_service or MatchExplanationService()
+
+        cache_key = None
+        if cache_service is not None:
+            cache_key = cache_service.build_key(
+                inputs.application.id,
+                inputs.parsed_resume,
+                inputs.parsed_job,
+            )
+            if cache_key is not None:
+                cached = await cache_service.get(
+                    cache_key, application_id=inputs.application.id
+                )
+                if (
+                    cached is not None
+                    and cached.application_id == inputs.application.id
+                ):
+                    return cached
+
+        await self._resolve_match_vectors(inputs, matching_service)
         match_result = matching_service.matching_engine.match_resume_to_job(
             resume=inputs.parsed_resume,
             job=inputs.parsed_job,
             resume_vector=inputs.resume_vector,
             job_vector=inputs.job_vector,
         )
-        service = explanation_service or MatchExplanationService()
-        return await service.build_explanation(
+        response = await service.build_deterministic_explanation(
             application_id=inputs.application.id,
             match_result=match_result,
             parsed_resume=inputs.parsed_resume,
             parsed_job=inputs.parsed_job,
         )
+
+        if cache_service is not None and cache_key is not None:
+            await cache_service.store(
+                cache_key, response, application_id=inputs.application.id
+            )
+        return response
 
     @staticmethod
     async def _resolve_vector(

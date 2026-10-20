@@ -212,3 +212,28 @@ def test_ai_error_returns_502_without_leaking_details(
     assert resp.status_code == 502
     assert "AI Match unavailable" in resp.json()["detail"]
     assert "Qdrant" not in resp.json()["detail"]
+
+
+def test_cached_state_is_returned(recruiter_client, mock_service):
+    application_id = uuid.uuid4()
+    payload = _explanation_payload(application_id)
+    payload["cache_state"] = "cached"
+    mock_service.get_application_match_explanation.return_value = payload
+
+    resp = recruiter_client.get(
+        f"/api/v1/applications/{application_id}/match-explanation"
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["cache_state"] == "cached"
+
+
+def test_openapi_exposes_both_cache_states():
+    schema = app.openapi()["components"]["schemas"][
+        "ApplicationMatchExplanationResponse"
+    ]
+
+    assert schema["properties"]["cache_state"]["enum"] == [
+        "not_cached",
+        "cached",
+    ]

@@ -1,5 +1,7 @@
 import asyncio
+import json
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,11 +12,16 @@ from app.core.exceptions import AIError, EntityNotFoundException
 from app.domain.enums import ApplicationStatus, UserRole
 from app.models import Application, Job, Resume, Skill
 from app.repositories import ApplicationRepository, JobRepository, ResumeRepository
-from app.schemas.ai_explanation import ApplicationMatchExplanationResponse
+from app.schemas.ai_explanation import (
+    ApplicationMatchExplanationResponse,
+    ScoreBreakdown,
+)
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.application_service import ApplicationService
+from app.services.match_explanation_cache import MatchExplanationCache
+from app.services.match_explanation_service import MatchExplanationService
 
 
 def make_session() -> MagicMock:
@@ -547,3 +554,383 @@ class TestGetApplicationMatchExplanation:
                 )
 
         matching_service.vector_repository.retrieve_vector.assert_not_awaited()
+class _FakeCacheRedis:
+    def __init__(
+        self,
+        values: dict | None = None,
+        *,
+        get_error: Exception | None = None,
+        set_error: Exception | None = None,
+    ) -> None:
+        self.values = dict(values or {})
+        self.get_error = get_error
+        self.set_error = set_error
+        self.get_calls: list[str] = []
+        self.set_calls: list[tuple[str, str, int | None]] = []
+
+    async def get(self, key: str):
+        self.get_calls.append(key)
+        if self.get_error is not None:
+            raise self.get_error
+        return self.values.get(key)
+
+    async def set(self, key: str, value: str, ex: int | None = None):
+        self.set_calls.append((key, value, ex))
+        if self.set_error is not None:
+            raise self.set_error
+        self.values[key] = value
+        return True
+
+
+def _parsed_job_for(job) -> ParsedJobSchema:
+    return ParsedJobSchema(
+        title=job.title,
+        summary=job.description,
+        required_skills=(
+            [skill.name for skill in job.required_skills]
+            if job.required_skills
+            else []
+        ),
+        preferred_skills=(
+            [skill.name for skill in job.preferred_skills]
+            if job.preferred_skills
+            else []
+        ),
+        minimum_years_experience=job.minimum_years_experience,
+        education_level=job.education_level,
+        employment_type=(
+            job.job_type.value
+            if hasattr(job.job_type, "value")
+            else job.job_type
+        ),
+        workplace_type=(
+            job.workplace_type.value
+            if hasattr(job.workplace_type, "value")
+            else job.workplace_type
+        ),
+        location=job.location,
+        city=job.location,
+    )
+
+
+def _cached_explanation(
+    application_id: uuid.UUID,
+    overall_score: float,
+) -> ApplicationMatchExplanationResponse:
+    return ApplicationMatchExplanationResponse(
+        application_id=application_id,
+        overall_score=overall_score,
+        score_breakdown=ScoreBreakdown(
+            overall_score=overall_score,
+            cosine_similarity=0.5,
+            skill_coverage_score=0.5,
+            preferred_skill_coverage_score=0.0,
+            experience_match_score=0.5,
+            education_score=0.5,
+            project_score=0.5,
+        ),
+        summary="Cached deterministic result.",
+        summary_source="ai_generated",
+        model_version="gemini-cached",
+        generated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        cache_state="not_cached",
+    )
+
+
+class TestGetApplicationMatchExplanationCache:
+    def _run(
+        self,
+        service,
+        application,
+        job,
+        resume,
+        matching_service,
+        cache_service,
+        explanation_service=None,
+    ):
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service, patch(
+            "app.services.application_service.ResumeRepository"
+        ) as mock_resume_repo:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=job
+            )
+            mock_resume_repo.return_value.get_primary_by_candidate = AsyncMock(
+                return_value=resume
+            )
+            kwargs = {
+                "current_user": make_user(),
+                "application_id": application.id,
+                "matching_service": matching_service,
+                "cache_service": cache_service,
+            }
+            if explanation_service is not None:
+                kwargs["explanation_service"] = explanation_service
+            return asyncio.run(
+                service.get_application_match_explanation(**kwargs)
+            )
+
+    def _setup(self):
+        session = make_session()
+        service = make_service(session)
+        application = make_application()
+        job = make_job()
+        resume = make_resume(application.candidate_id)
+        service.applications.get_by_id_with_candidate.return_value = application
+        matching_service = make_matching_service()
+        return application, job, resume, matching_service, service
+
+    def _narrative_spy(self):
+        narrative = SimpleNamespace(
+            explain_match=AsyncMock(
+                return_value=SimpleNamespace(summary="AI narrative")
+            )
+        )
+        return narrative, MatchExplanationService(narrative_service=narrative)
+
+    def test_cache_miss_is_deterministic_and_stores(self):
+        application, job, resume, matching_service, service = self._setup()
+        redis = _FakeCacheRedis()
+        cache = MatchExplanationCache(
+            redis, enabled=True, ttl_seconds=604800, version="v1"
+        )
+        narrative, explanation_service = self._narrative_spy()
+
+        result = self._run(
+            service,
+            application,
+            job,
+            resume,
+            matching_service,
+            cache,
+            explanation_service,
+        )
+
+        narrative.explain_match.assert_not_awaited()
+        assert result.cache_state == "not_cached"
+        assert result.summary_source == "deterministic"
+        assert result.overall_score == matching_service.matching_engine.match_resume_to_job(
+            resume=ParsedResumeSchema.model_validate(resume.parsed_data),
+            job=_parsed_job_for(job),
+            resume_vector=[1.0, 0.0],
+            job_vector=[1.0, 0.0],
+        ).overall_score
+        by_name = {item.skill_name: item for item in result.skill_evaluations}
+        assert by_name["Python"].status == "matched_evidenced"
+        assert by_name["Docker"].status == "not_evidenced_in_cv"
+        assert by_name["Python"].evidence[0].quote == "Python"
+        assert len(redis.set_calls) == 1
+        assert redis.set_calls[0][2] == 604800
+
+    def test_second_request_is_served_from_cache_without_provider(self):
+        application, job, resume, matching_service, service = self._setup()
+        redis = _FakeCacheRedis()
+        cache = MatchExplanationCache(
+            redis, enabled=True, ttl_seconds=604800, version="v1"
+        )
+        narrative, explanation_service = self._narrative_spy()
+
+        first = self._run(
+            service,
+            application,
+            job,
+            resume,
+            matching_service,
+            cache,
+            explanation_service,
+        )
+        matching_service.vector_repository.retrieve_vector.reset_mock()
+        matching_service.embedding_service.embed_resume.reset_mock()
+        matching_service.embedding_service.embed_job.reset_mock()
+
+        second = self._run(
+            service,
+            application,
+            job,
+            resume,
+            matching_service,
+            cache,
+            explanation_service,
+        )
+
+        narrative.explain_match.assert_not_awaited()
+        matching_service.vector_repository.retrieve_vector.assert_not_awaited()
+        matching_service.embedding_service.embed_resume.assert_not_awaited()
+        matching_service.embedding_service.embed_job.assert_not_awaited()
+        assert first.cache_state == "not_cached"
+        assert second.cache_state == "cached"
+        assert second.generated_at == first.generated_at
+        assert second.summary_source == first.summary_source
+        assert second.model_version == first.model_version
+        assert second.overall_score == first.overall_score
+        assert second.evidence == first.evidence
+        assert len(redis.set_calls) == 1
+
+    def test_redis_outage_is_deterministic_and_never_calls_provider(self):
+        application, job, resume, matching_service, service = self._setup()
+        redis = _FakeCacheRedis(
+            get_error=ConnectionError("down"),
+            set_error=TimeoutError("timeout"),
+        )
+        cache = MatchExplanationCache(
+            redis, enabled=True, ttl_seconds=604800, version="v1"
+        )
+        narrative, explanation_service = self._narrative_spy()
+
+        result = self._run(
+            service,
+            application,
+            job,
+            resume,
+            matching_service,
+            cache,
+            explanation_service,
+        )
+
+        narrative.explain_match.assert_not_awaited()
+        assert result.cache_state == "not_cached"
+        assert result.summary_source == "deterministic"
+        assert len(redis.get_calls) == 1
+        assert len(redis.set_calls) == 1
+
+    def test_disabled_cache_bypasses_redis_and_provider(self):
+        application, job, resume, matching_service, service = self._setup()
+        redis = _FakeCacheRedis()
+        cache = MatchExplanationCache(
+            redis, enabled=False, ttl_seconds=604800, version="v1"
+        )
+        narrative, explanation_service = self._narrative_spy()
+
+        result = self._run(
+            service,
+            application,
+            job,
+            resume,
+            matching_service,
+            cache,
+            explanation_service,
+        )
+
+        narrative.explain_match.assert_not_awaited()
+        assert result.cache_state == "not_cached"
+        assert redis.get_calls == []
+        assert redis.set_calls == []
+
+    def test_missing_parsed_resume_bypasses_cache(self):
+        application, job, resume, matching_service, service = self._setup()
+        resume.parsed_data = None
+        redis = _FakeCacheRedis()
+        cache = MatchExplanationCache(
+            redis, enabled=True, ttl_seconds=604800, version="v1"
+        )
+        narrative, explanation_service = self._narrative_spy()
+
+        result = self._run(
+            service,
+            application,
+            job,
+            resume,
+            matching_service,
+            cache,
+            explanation_service,
+        )
+
+        narrative.explain_match.assert_not_awaited()
+        assert result.cache_state == "not_cached"
+        assert redis.get_calls == []
+        assert redis.set_calls == []
+        assert result.data_limitations
+
+    def test_ownership_is_verified_before_cache_and_provider(self):
+        session = make_session()
+        service = make_service(session)
+        application = make_application()
+        service.applications.get_by_id_with_candidate.return_value = application
+        matching_service = make_matching_service()
+        cache = SimpleNamespace(
+            build_key=MagicMock(return_value="key"),
+            get=AsyncMock(),
+            store=AsyncMock(),
+        )
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                side_effect=EntityNotFoundException("Application not found")
+            )
+            with pytest.raises(EntityNotFoundException):
+                asyncio.run(
+                    service.get_application_match_explanation(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        matching_service=matching_service,
+                        cache_service=cache,
+                    )
+                )
+
+        cache.build_key.assert_not_called()
+        cache.get.assert_not_awaited()
+        cache.store.assert_not_awaited()
+        matching_service.vector_repository.retrieve_vector.assert_not_awaited()
+
+    def test_cached_response_for_another_application_is_a_miss(self):
+        application, job, resume, matching_service, service = self._setup()
+        parsed_resume = ParsedResumeSchema.model_validate(resume.parsed_data)
+        parsed_job = _parsed_job_for(job)
+        cache = MatchExplanationCache(
+            _FakeCacheRedis(), enabled=True, ttl_seconds=604800, version="v1"
+        )
+        key = cache.build_key(application.id, parsed_resume, parsed_job)
+        assert key is not None
+        foreign = _cached_explanation(uuid.uuid4(), overall_score=1.0)
+        cache.redis.values[key] = json.dumps(foreign.model_dump(mode="json"))
+        narrative, explanation_service = self._narrative_spy()
+
+        result = self._run(
+            service,
+            application,
+            job,
+            resume,
+            matching_service,
+            cache,
+            explanation_service,
+        )
+
+        narrative.explain_match.assert_not_awaited()
+        assert result.application_id == application.id
+        assert result.cache_state == "not_cached"
+        assert len(cache.redis.set_calls) == 1
+    def test_preloaded_ai_explanation_is_served_from_cache(self):
+        application, job, resume, matching_service, service = self._setup()
+        parsed_resume = ParsedResumeSchema.model_validate(resume.parsed_data)
+        parsed_job = _parsed_job_for(job)
+        cache = MatchExplanationCache(
+            _FakeCacheRedis(), enabled=True, ttl_seconds=604800, version="v1"
+        )
+        key = cache.build_key(application.id, parsed_resume, parsed_job)
+        assert key is not None
+        ai_response = _cached_explanation(application.id, overall_score=77.5)
+        cache.redis.values[key] = json.dumps(
+            ai_response.model_dump(mode="json")
+        )
+        narrative, explanation_service = self._narrative_spy()
+
+        result = self._run(
+            service,
+            application,
+            job,
+            resume,
+            matching_service,
+            cache,
+            explanation_service,
+        )
+
+        narrative.explain_match.assert_not_awaited()
+        matching_service.vector_repository.retrieve_vector.assert_not_awaited()
+        assert result.cache_state == "cached"
+        assert result.summary_source == "ai_generated"
+        assert result.model_version == "gemini-cached"
+        assert result.generated_at == ai_response.generated_at
+        assert cache.redis.set_calls == []
