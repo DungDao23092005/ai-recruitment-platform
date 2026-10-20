@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 from dataclasses import dataclass
 
@@ -11,9 +13,11 @@ from app.core.exceptions import (
     ConflictException,
     EntityNotFoundException,
     InvalidTransitionException,
+    MatchExplanationRefreshError,
+    MatchExplanationRefreshInputError,
 )
 from app.domain import hiring
-from app.domain.enums import ApplicationStatus
+from app.domain.enums import ApplicationStatus, UserRole
 from app.domain.models import Application as DomainApplication
 from app.domain.models.base import DomainException
 from app.models import Application, Job, Resume, User
@@ -33,7 +37,13 @@ from app.services.match_explanation_cache import MatchExplanationCache
 from app.services.match_explanation_service import MatchExplanationService
 from app.services.notification_service import NotificationService
 from app.services.pipeline_email_service import schedule_application_status_email
+from app.services.quota_enforcement_service import (
+    QuotaEnforcementService,
+    ReservationResult,
+)
 from app.services.user_service import UserService
+
+logger = logging.getLogger(__name__)
 
 RECRUITER_MANAGED_STATUSES = frozenset(
     {
@@ -592,6 +602,206 @@ class ApplicationService:
                 cache_key, response, application_id=inputs.application.id
             )
         return response
+
+    async def refresh_application_match_explanation(
+        self,
+        current_user: User,
+        application_id: uuid.UUID,
+        *,
+        idempotency_key: str,
+        matching_service: AIMatchingService,
+        explanation_service: MatchExplanationService,
+        cache_service: MatchExplanationCache,
+        quota_service: QuotaEnforcementService | None = None,
+    ) -> ApplicationMatchExplanationResponse:
+        """Run the internal, quota-controlled AI refresh for one application.
+
+        This is deliberately **not** a public route and does not implement
+        whole-request idempotency. ``idempotency_key`` is passed to the
+        existing quota ledger so retries share a reservation; full request
+        replay/deduplication belongs to Subphase 2C-2.
+
+        Ownership, trusted application/CV/job data and the content-addressed
+        cache key are resolved server-side before any quota or provider work.
+        A valid, validated AI narrative consumes one quota unit; provider or
+        narrative failures release the reservation and raise a typed
+        ``MatchExplanationRefreshError``. Cache-write failures never turn a
+        successful AI generation into a quota refund.
+        """
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise MatchExplanationRefreshInputError(
+                "An idempotency key is required for an AI match refresh."
+            )
+        if len(idempotency_key) > 255:
+            raise MatchExplanationRefreshInputError(
+                "The idempotency key is too long for an AI match refresh."
+            )
+
+        inputs = await self._resolve_match_inputs(
+            current_user,
+            application_id,
+            matching_service,
+            resolve_vectors=False,
+        )
+        if inputs.parsed_resume is None:
+            if inputs.resume is None or not inputs.resume.parsed_data:
+                raise MatchExplanationRefreshInputError(
+                    "A parsed CV is required to refresh the match explanation."
+                )
+            raise MatchExplanationRefreshInputError(
+                "The candidate CV could not be parsed for an AI match refresh."
+            )
+
+        try:
+            cache_key = cache_service.build_key(
+                inputs.application.id,
+                inputs.parsed_resume,
+                inputs.parsed_job,
+            )
+        except Exception as exc:  # noqa: BLE001 - defensive cache boundary
+            raise MatchExplanationRefreshInputError(
+                "The trusted CV and job data cannot be cached safely."
+            ) from exc
+        if cache_key is None:
+            raise MatchExplanationRefreshInputError(
+                "The trusted CV and job data cannot be cached safely."
+            )
+
+        await self._resolve_match_vectors(inputs, matching_service)
+        match_result = matching_service.matching_engine.match_resume_to_job(
+            resume=inputs.parsed_resume,
+            job=inputs.parsed_job,
+            resume_vector=inputs.resume_vector,
+            job_vector=inputs.job_vector,
+        )
+
+        quota = quota_service or QuotaEnforcementService(self.session)
+        reservation = await quota.reserve_ai_quota(
+            user_id=current_user.id,
+            idempotency_key=idempotency_key,
+            reference_id=inputs.application.id,
+            is_admin=current_user.role == UserRole.ADMIN,
+        )
+        await self._commit_refresh()
+
+        try:
+            response = await explanation_service.build_refresh_explanation(
+                application_id=inputs.application.id,
+                match_result=match_result,
+                parsed_resume=inputs.parsed_resume,
+                parsed_job=inputs.parsed_job,
+            )
+            if (
+                response.summary_source != "ai_generated"
+                or not response.summary.strip()
+            ):
+                raise MatchExplanationRefreshError("narrative_rejected")
+        except asyncio.CancelledError:
+            await self._release_refresh_reservation_on_cancellation(
+                quota, reservation
+            )
+            raise
+        except MatchExplanationRefreshError:
+            await self._release_refresh_reservation(quota, reservation)
+            raise
+        except AIError as exc:
+            await self._release_refresh_reservation(quota, reservation)
+            raise MatchExplanationRefreshError("provider_error") from exc
+        except Exception as exc:
+            await self._release_refresh_reservation(quota, reservation)
+            raise MatchExplanationRefreshError("explanation_failed") from exc
+
+        try:
+            await quota.finalize_reservation(
+                reservation.usage_id, success=True
+            )
+            await self._commit_refresh()
+        except asyncio.CancelledError:
+            await self._release_refresh_reservation_on_cancellation(
+                quota, reservation
+            )
+            raise
+        except Exception as exc:
+            await self._rollback_refresh()
+            try:
+                await self._release_refresh_reservation(quota, reservation)
+            except MatchExplanationRefreshError as release_exc:
+                raise release_exc from exc
+            raise MatchExplanationRefreshError(
+                "quota_finalize_failed"
+            ) from exc
+
+        stored = False
+        try:
+            stored = await cache_service.store(
+                cache_key,
+                response,
+                application_id=inputs.application.id,
+            )
+        except Exception as exc:  # noqa: BLE001 - never fail a valid refresh
+            logger.warning(
+                "match_explanation_refresh_cache_set_failed "
+                "application_id=%s error=%s",
+                inputs.application.id,
+                type(exc).__name__,
+            )
+
+        if stored:
+            return response.model_copy(update={"cache_state": "cached"})
+        return response
+
+    async def _commit_refresh(self) -> None:
+        try:
+            await self.session.commit()
+        except BaseException:
+            await self._rollback_refresh()
+            raise
+
+    async def _rollback_refresh(self) -> None:
+        try:
+            await self.session.rollback()
+        except Exception:  # noqa: BLE001 - preserve the original failure
+            logger.error("match_explanation_refresh_rollback_failed")
+
+    async def _release_refresh_reservation(
+        self,
+        quota_service: QuotaEnforcementService,
+        reservation: ReservationResult,
+    ) -> None:
+        try:
+            await quota_service.release_reservation(reservation.usage_id)
+            await self.session.commit()
+        except asyncio.CancelledError:
+            await self._rollback_refresh()
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface a controlled error
+            await self._rollback_refresh()
+            logger.error(
+                "match_explanation_refresh_quota_release_failed "
+                "usage_id=%s error=%s",
+                reservation.usage_id,
+                type(exc).__name__,
+            )
+            raise MatchExplanationRefreshError(
+                "quota_release_failed", http_status=503
+            ) from exc
+
+    async def _release_refresh_reservation_on_cancellation(
+        self,
+        quota_service: QuotaEnforcementService,
+        reservation: ReservationResult,
+    ) -> None:
+        try:
+            await self._release_refresh_reservation(
+                quota_service, reservation
+            )
+        except BaseException as exc:  # noqa: BLE001 - preserve cancellation
+            logger.error(
+                "match_explanation_refresh_quota_release_failed_on_cancel "
+                "usage_id=%s error=%s",
+                reservation.usage_id,
+                type(exc).__name__,
+            )
 
     @staticmethod
     async def _resolve_vector(

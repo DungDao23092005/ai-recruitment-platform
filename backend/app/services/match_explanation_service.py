@@ -26,7 +26,14 @@ import uuid
 from datetime import datetime, timezone
 
 from app.ai.matching.evidence_verifier import EvidenceVerifier
-from app.core.exceptions import AIError
+from app.core.exceptions import (
+    AIError,
+    AIProviderQuotaExceededError,
+    AIProviderUnavailableError,
+    EmptyDocumentError,
+    InvalidDocumentError,
+    MatchExplanationRefreshError,
+)
 from app.schemas.ai_explanation import (
     ApplicationMatchExplanationResponse,
     EvidenceExcerpt,
@@ -322,6 +329,8 @@ class MatchExplanationService:
         parsed_job: ParsedJobSchema | None,
         data_limitations: list[str],
         narrative_service=None,
+        *,
+        raise_on_failure: bool = False,
     ) -> tuple[str, str | None, str]:
         """Return ``(summary, model_version, summary_source)``.
 
@@ -355,6 +364,8 @@ class MatchExplanationService:
                     else ""
                 )
                 if not summary:
+                    if raise_on_failure:
+                        raise MatchExplanationRefreshError("empty_narrative")
                     data_limitations.append(
                         "The AI narrative was empty or malformed; a "
                         "deterministic summary was used instead."
@@ -362,6 +373,10 @@ class MatchExplanationService:
                 elif _narrative_contradicts_score(
                     response, summary, getattr(match_result, "overall_score", None)
                 ):
+                    if raise_on_failure:
+                        raise MatchExplanationRefreshError(
+                            "score_contradiction"
+                        )
                     data_limitations.append(
                         "The AI narrative was rejected because it contained a "
                         "match-score claim that conflicts with the deterministic "
@@ -382,12 +397,47 @@ class MatchExplanationService:
                         "the parsed CV."
                     )
                     return summary, model_version, "ai_generated"
-            except AIError:
+            except MatchExplanationRefreshError:
+                raise
+            except AIProviderQuotaExceededError as exc:
+                if raise_on_failure:
+                    raise MatchExplanationRefreshError(
+                        "provider_quota_exceeded",
+                        http_status=429,
+                        retry_after=getattr(exc, "retry_after", None),
+                    ) from exc
                 data_limitations.append(
                     "The AI narrative explanation was unavailable; a "
                     "deterministic summary was used instead."
                 )
-            except Exception:  # noqa: BLE001 - never fail the explanation
+            except AIProviderUnavailableError as exc:
+                if raise_on_failure:
+                    raise MatchExplanationRefreshError(
+                        "provider_unavailable",
+                        http_status=503,
+                        retry_after=getattr(exc, "retry_after", None),
+                    ) from exc
+                data_limitations.append(
+                    "The AI narrative explanation was unavailable; a "
+                    "deterministic summary was used instead."
+                )
+            except AIError as exc:
+                if raise_on_failure:
+                    reason = (
+                        "invalid_narrative"
+                        if isinstance(
+                            exc, (EmptyDocumentError, InvalidDocumentError)
+                        )
+                        else "provider_error"
+                    )
+                    raise MatchExplanationRefreshError(reason) from exc
+                data_limitations.append(
+                    "The AI narrative explanation was unavailable; a "
+                    "deterministic summary was used instead."
+                )
+            except Exception as exc:  # noqa: BLE001 - never fail the explanation
+                if raise_on_failure:
+                    raise MatchExplanationRefreshError("provider_error") from exc
                 data_limitations.append(
                     "The AI narrative explanation failed unexpectedly; a "
                     "deterministic summary was used instead."
@@ -438,6 +488,35 @@ class MatchExplanationService:
             narrative_service=None,
         )
 
+    async def build_refresh_explanation(
+        self,
+        application_id: uuid.UUID,
+        match_result: MatchResultSchema,
+        parsed_resume: ParsedResumeSchema | None,
+        parsed_job: ParsedJobSchema | None,
+    ) -> ApplicationMatchExplanationResponse:
+        """Build via the configured narrative and require real AI output.
+
+        Unlike ``build_explanation`` (best-effort with a deterministic
+        fallback), this raises a typed error when no narrative service is
+        configured, the provider fails, returns an empty/malformed narrative,
+        or produces a score-contradicting narrative. The quota-controlled
+        refresh path uses this so a fallback is never mistaken for a
+        successful paid AI refresh.
+        """
+        if self.narrative_service is None:
+            raise MatchExplanationRefreshError(
+                "narrative_service_unavailable"
+            )
+        return await self._build_explanation(
+            application_id=application_id,
+            match_result=match_result,
+            parsed_resume=parsed_resume,
+            parsed_job=parsed_job,
+            narrative_service=self.narrative_service,
+            raise_narrative_failure=True,
+        )
+
     async def _build_explanation(
         self,
         application_id: uuid.UUID,
@@ -445,6 +524,8 @@ class MatchExplanationService:
         parsed_resume: ParsedResumeSchema | None,
         parsed_job: ParsedJobSchema | None,
         narrative_service=None,
+        *,
+        raise_narrative_failure: bool = False,
     ) -> ApplicationMatchExplanationResponse:
         required_skills = _clean_skills(
             parsed_job.required_skills if parsed_job else None
@@ -543,6 +624,7 @@ class MatchExplanationService:
             parsed_job,
             data_limitations,
             narrative_service,
+            raise_on_failure=raise_narrative_failure,
         )
 
         return ApplicationMatchExplanationResponse(

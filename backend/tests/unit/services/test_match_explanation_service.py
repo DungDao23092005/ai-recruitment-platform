@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.core.exceptions import AIError, InvalidDocumentError
+from app.core.exceptions import (
+    AIError,
+    AIProviderUnavailableError,
+    InvalidDocumentError,
+    MatchExplanationRefreshError,
+)
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_resume import (
@@ -516,3 +521,79 @@ class TestDeterministicPath:
         assert result.summary_source == "deterministic"
         assert result.cache_state == "not_cached"
         assert result.model_version is None
+
+
+class TestRefreshExplanationPath:
+    @staticmethod
+    def _narrative(summary="Refreshed AI narrative.", *, error=None):
+        explain = AsyncMock(return_value=SimpleNamespace(summary=summary))
+        if error is not None:
+            explain.side_effect = error
+        return SimpleNamespace(
+            explain_match=explain,
+            llm_provider=SimpleNamespace(model_name="gemini-test-model"),
+        )
+
+    async def test_requires_a_narrative_service(self):
+        service = MatchExplanationService()
+
+        with pytest.raises(MatchExplanationRefreshError) as exc_info:
+            await service.build_refresh_explanation(
+                application_id=uuid.uuid4(),
+                match_result=make_match_result(),
+                parsed_resume=make_resume(),
+                parsed_job=make_job(),
+            )
+
+        assert exc_info.value.reason == "narrative_service_unavailable"
+
+    async def test_valid_ai_narrative_is_returned(self):
+        narrative = self._narrative()
+        service = MatchExplanationService(narrative_service=narrative)
+
+        result = await service.build_refresh_explanation(
+            application_id=uuid.uuid4(),
+            match_result=make_match_result(),
+            parsed_resume=make_resume(),
+            parsed_job=make_job(),
+        )
+
+        assert result.summary_source == "ai_generated"
+        assert result.summary == "Refreshed AI narrative."
+        assert result.model_version == "gemini-test-model"
+
+    async def test_provider_unavailable_is_a_typed_503_failure(self):
+        narrative = self._narrative(
+            error=AIProviderUnavailableError("down", retry_after=30)
+        )
+        service = MatchExplanationService(narrative_service=narrative)
+
+        with pytest.raises(MatchExplanationRefreshError) as exc_info:
+            await service.build_refresh_explanation(
+                application_id=uuid.uuid4(),
+                match_result=make_match_result(),
+                parsed_resume=make_resume(),
+                parsed_job=make_job(),
+            )
+
+        assert exc_info.value.reason == "provider_unavailable"
+        assert exc_info.value.http_status == 503
+        assert exc_info.value.retry_after == 30
+
+    async def test_score_contradiction_is_a_typed_502_failure(self):
+        narrative = self._narrative()
+        narrative.explain_match.return_value = SimpleNamespace(
+            summary="Perfect match.", match_score=100.0
+        )
+        service = MatchExplanationService(narrative_service=narrative)
+
+        with pytest.raises(MatchExplanationRefreshError) as exc_info:
+            await service.build_refresh_explanation(
+                application_id=uuid.uuid4(),
+                match_result=make_match_result(),
+                parsed_resume=make_resume(),
+                parsed_job=make_job(),
+            )
+
+        assert exc_info.value.reason == "score_contradiction"
+        assert exc_info.value.http_status == 502
