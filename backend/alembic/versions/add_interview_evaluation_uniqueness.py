@@ -13,7 +13,7 @@ database. This is purely additive - no existing column, value or index is
 modified - and the downgrade simply drops the index (it constrains future
 duplicates, it does not hold data, so dropping it loses nothing).
 
-Revision ID: add_interview_evaluation_uniqueness
+Revision ID: add_interview_eval_uniqueness
 Revises: add_hiring_pipeline_tables
 Create Date: 2026-10-19 00:00:00.000000
 
@@ -25,7 +25,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'add_interview_evaluation_uniqueness'
+revision: str = 'add_interview_eval_uniqueness'
 down_revision: Union[str, None] = 'add_hiring_pipeline_tables'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

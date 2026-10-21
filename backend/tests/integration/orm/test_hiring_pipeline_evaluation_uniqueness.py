@@ -8,7 +8,7 @@ Two layers are proven here:
   same interview/evaluator while still allowing a fresh one once the previous is
   soft-deleted.
 
-The Alembic revision ``add_interview_evaluation_uniqueness`` is executed through
+The Alembic revision ``add_interview_eval_uniqueness`` is executed through
 an operations context so the shipped DDL is what gets validated.
 """
 
@@ -58,7 +58,7 @@ _MIGRATION_PATH = (
 
 def _load_migration():
     spec = importlib.util.spec_from_file_location(
-        "add_interview_evaluation_uniqueness", _MIGRATION_PATH
+        "add_interview_eval_uniqueness", _MIGRATION_PATH
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

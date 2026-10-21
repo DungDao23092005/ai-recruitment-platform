@@ -1,7 +1,7 @@
 """add AI match explanation idempotency registry and application leases
 
-Revision ID: add_match_explanation_idempotency
-Revises: add_interview_evaluation_uniqueness
+Revision ID: add_match_explain_idempotency
+Revises: add_interview_eval_uniqueness
 Create Date: 2026-10-20 00:00:00.000000
 
 """
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.mssql import NVARCHAR
 
 
-revision: str = "add_match_explanation_idempotency"
-down_revision: Union[str, None] = "add_interview_evaluation_uniqueness"
+revision: str = "add_match_explain_idempotency"
+down_revision: Union[str, None] = "add_interview_eval_uniqueness"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
