@@ -91,6 +91,18 @@ def _schedule_interview(client, run_async, application_id):
     return resp.json()
 
 
+def _confirm_interview(client, run_async, application_id, interview_id):
+    resp = run_async(
+        client.patch(
+            f"{API_V1}/applications/{application_id}/interviews/"
+            f"{interview_id}/action",
+            json={"action": "confirm"},
+        )
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
 async def _outbox_rows():
     async with async_session_factory() as session:
         return list(
@@ -250,13 +262,29 @@ class TestOutboxAtomicity:
         assert activities.json() == []
         assert run_async(_outbox_rows()) == []
 
-    def test_offered_enqueues_single_outbox_row(self, pipeline, recruiter_client, run_async):
+    def test_offered_enqueues_single_outbox_row(
+        self, pipeline, recruiter_client, candidate_client, run_async
+    ):
         app_id = pipeline["application"]["id"]
-        for value in ("under_review", "shortlisted", "interviewing", "offered"):
+        for value in ("under_review", "shortlisted", "interviewing"):
             resp = _set_status(recruiter_client, run_async, app_id, value)
             assert resp.status_code == 200, resp.text
 
-        rows = run_async(_outbox_rows())
+        interview = _schedule_interview(
+            recruiter_client, run_async, app_id
+        )
+        _confirm_interview(
+            candidate_client, run_async, app_id, interview["id"]
+        )
+
+        resp = _set_status(recruiter_client, run_async, app_id, "offered")
+        assert resp.status_code == 200, resp.text
+
+        rows = [
+            row
+            for row in run_async(_outbox_rows())
+            if row.event_type == EVENT_APPLICATION_STATUS
+        ]
         assert len(rows) == 1
         row = rows[0]
         assert row.event_type == EVENT_APPLICATION_STATUS

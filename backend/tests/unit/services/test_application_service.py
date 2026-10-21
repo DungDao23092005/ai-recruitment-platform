@@ -12,7 +12,7 @@ from app.core.exceptions import (
     InvalidTransitionException,
 )
 from app.domain.enums import ApplicationStatus, InterviewStatus, InterviewType, UserRole
-from app.models import Application, Job
+from app.models import Application, Interview, Job
 from app.repositories import ApplicationRepository, JobRepository
 from app.services.application_service import ApplicationService
 
@@ -81,7 +81,20 @@ def make_application(
     app.job.title = "Backend Engineer"
     app.job.company = MagicMock()
     app.job.company.recruiters = [MagicMock(user_id=uuid.uuid4())]
+    app.interviews = []
     return app
+
+
+def make_interview(
+    status: InterviewStatus = InterviewStatus.SCHEDULED,
+    application_id: uuid.UUID | None = None,
+) -> Interview:
+    return Interview(
+        id=uuid.uuid4(),
+        application_id=application_id or uuid.uuid4(),
+        scheduled_at=datetime.now(),
+        status=status,
+    )
 
 
 def make_job() -> Job:
@@ -735,11 +748,10 @@ class TestUpdateApplicationStatus:
 
 
 class TestPublishedTransitionGuard:
-    """Phase 2 publishes the full canonical pipeline behind atomic activities.
+    """The recruiter endpoint publishes only recruiter-owned transitions.
 
-    The transitions that were deliberately withheld in Phase 1 (and the
-    "bypass" transitions that skip canonical stages) are asserted here: the
-    canonical ones are now reachable, the bypass ones stay domain-rejected.
+    Canonical recruiter moves remain reachable, candidate-owned outcomes and
+    the "bypass" transitions that skip canonical stages stay unavailable.
     """
 
     @pytest.fixture(autouse=True)
@@ -760,8 +772,6 @@ class TestPublishedTransitionGuard:
         [
             (ApplicationStatus.INTERVIEWING, ApplicationStatus.UNDER_REVIEW),
             (ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFERED),
-            (ApplicationStatus.OFFERED, ApplicationStatus.ACCEPTED),
-            (ApplicationStatus.OFFERED, ApplicationStatus.REJECTED),
         ],
     )
     @patch("app.services.application_service.NotificationService")
@@ -772,6 +782,9 @@ class TestPublishedTransitionGuard:
         session = make_session()
         service = make_service(session)
         application = make_application(status=initial)
+        application.interviews = [
+            make_interview(InterviewStatus.CANDIDATE_CONFIRMED)
+        ]
         service.applications.get_by_id_with_candidate_user_and_job.return_value = application
         service.applications.try_update_status = AsyncMock(return_value=True)
 
@@ -797,6 +810,44 @@ class TestPublishedTransitionGuard:
             new_status=new_status,
         )
         session.commit.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "initial,new_status",
+        [
+            (ApplicationStatus.INTERVIEWING, ApplicationStatus.ACCEPTED),
+            (ApplicationStatus.OFFERED, ApplicationStatus.ACCEPTED),
+            (ApplicationStatus.OFFERED, ApplicationStatus.REJECTED),
+        ],
+    )
+    def test_candidate_owned_outcomes_are_not_recruiter_published(
+        self, initial, new_status
+    ):
+        session = make_session()
+        service = make_service(session)
+        application = make_application(status=initial)
+        application.interviews = [
+            make_interview(InterviewStatus.CANDIDATE_CONFIRMED)
+        ]
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=make_job()
+            )
+            with pytest.raises(InvalidTransitionException):
+                asyncio.run(
+                    service.update_application_status(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        new_status=new_status,
+                    )
+                )
+
+        assert application.status == initial
+        service.applications.try_update_status.assert_not_awaited()
+        session.commit.assert_not_awaited()
 
     @pytest.mark.parametrize(
         "initial,new_status",
@@ -855,6 +906,329 @@ class TestPublishedTransitionGuard:
 
         domain.transition_to(new_status)
         assert domain.status is new_status
+
+
+class TestOfferInterviewPrerequisites:
+    @pytest.fixture(autouse=True)
+    def _patch_pipeline_side_effects(self, monkeypatch):
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "app.services.application_service.record_activity", _noop
+        )
+        monkeypatch.setattr(
+            "app.services.application_service.schedule_application_status_email",
+            _noop,
+        )
+
+    @staticmethod
+    def _attempt_offer(application):
+        session = make_session()
+        service = make_service(session)
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = (
+            application
+        )
+        service.applications.try_update_status = AsyncMock(return_value=True)
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service, patch(
+            "app.services.application_service.NotificationService"
+        ) as mock_notification_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=make_job()
+            )
+            mock_notification_service.return_value.create_notification = AsyncMock()
+            result = asyncio.run(
+                service.update_application_status(
+                    current_user=make_user(),
+                    application_id=application.id,
+                    new_status=ApplicationStatus.OFFERED,
+                )
+            )
+        return result, service, session
+
+    def test_offer_without_interviews_is_rejected(self):
+        application = make_application(status=ApplicationStatus.INTERVIEWING)
+        application.interviews = []
+        session = make_session()
+        service = make_service(session)
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = (
+            application
+        )
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=make_job()
+            )
+            with pytest.raises(InvalidTransitionException, match="chưa có buổi"):
+                asyncio.run(
+                    service.update_application_status(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        new_status=ApplicationStatus.OFFERED,
+                    )
+                )
+
+        service.applications.try_update_status.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    def test_offer_with_only_scheduled_interview_is_rejected(self):
+        application = make_application(status=ApplicationStatus.INTERVIEWING)
+        application.interviews = [make_interview(InterviewStatus.SCHEDULED)]
+        session = make_session()
+        service = make_service(session)
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = (
+            application
+        )
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=make_job()
+            )
+            with pytest.raises(InvalidTransitionException, match="chờ xác nhận"):
+                asyncio.run(
+                    service.update_application_status(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        new_status=ApplicationStatus.OFFERED,
+                    )
+                )
+
+        service.applications.try_update_status.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "status", [InterviewStatus.CANDIDATE_DECLINED, InterviewStatus.CANCELLED]
+    )
+    def test_offer_without_confirmed_or_completed_interview_is_rejected(
+        self, status
+    ):
+        application = make_application(status=ApplicationStatus.INTERVIEWING)
+        application.interviews = [make_interview(status)]
+        session = make_session()
+        service = make_service(session)
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = (
+            application
+        )
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=make_job()
+            )
+            with pytest.raises(InvalidTransitionException, match="xác nhận hoặc"):
+                asyncio.run(
+                    service.update_application_status(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        new_status=ApplicationStatus.OFFERED,
+                    )
+                )
+
+        service.applications.try_update_status.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    def test_offer_with_confirmed_and_pending_interview_is_rejected(self):
+        application = make_application(status=ApplicationStatus.INTERVIEWING)
+        application.interviews = [
+            make_interview(InterviewStatus.CANDIDATE_CONFIRMED),
+            make_interview(InterviewStatus.SCHEDULED),
+        ]
+        session = make_session()
+        service = make_service(session)
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = (
+            application
+        )
+
+        with patch(
+            "app.services.application_service.JobService"
+        ) as mock_job_service:
+            mock_job_service.return_value.get_recruiter_job_by_id = AsyncMock(
+                return_value=make_job()
+            )
+            with pytest.raises(InvalidTransitionException, match="chờ xác nhận"):
+                asyncio.run(
+                    service.update_application_status(
+                        current_user=make_user(),
+                        application_id=application.id,
+                        new_status=ApplicationStatus.OFFERED,
+                    )
+                )
+
+        service.applications.try_update_status.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    def test_offer_with_completed_interview_succeeds(self):
+        application = make_application(status=ApplicationStatus.INTERVIEWING)
+        application.interviews = [make_interview(InterviewStatus.COMPLETED)]
+
+        result, service, session = self._attempt_offer(application)
+
+        assert result is application
+        assert application.status == ApplicationStatus.OFFERED
+        service.applications.try_update_status.assert_awaited_once()
+        session.commit.assert_awaited_once()
+
+
+class TestRespondToOffer:
+    @pytest.fixture(autouse=True)
+    def _patch_activity(self, monkeypatch):
+        async def _noop(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(
+            "app.services.application_service.record_activity", _noop
+        )
+
+    def test_candidate_accepts_offer(self):
+        application = make_application(status=ApplicationStatus.OFFERED)
+        session = make_session()
+        service = make_service(session)
+        service.applications.try_update_status = AsyncMock(return_value=True)
+
+        with patch(
+            "app.services.application_service.require_candidate_application",
+            new=AsyncMock(return_value=application),
+        ), patch(
+            "app.services.application_service.NotificationService"
+        ) as mock_notification_service:
+            mock_notification_service.return_value.create_notification = AsyncMock()
+            result = asyncio.run(
+                service.respond_to_offer(
+                    current_user=make_user(UserRole.CANDIDATE),
+                    application_id=application.id,
+                    action="accept",
+                )
+            )
+
+        assert result is application
+        assert application.status == ApplicationStatus.ACCEPTED
+        service.applications.try_update_status.assert_awaited_once_with(
+            application_id=application.id,
+            expected_status=ApplicationStatus.OFFERED,
+            new_status=ApplicationStatus.ACCEPTED,
+        )
+        mock_notification_service.return_value.create_notification.assert_awaited()
+        session.commit.assert_awaited_once()
+
+    def test_candidate_declines_offer_and_records_notes(self):
+        application = make_application(status=ApplicationStatus.OFFERED)
+        session = make_session()
+        service = make_service(session)
+        service.applications.try_update_status = AsyncMock(return_value=True)
+
+        with patch(
+            "app.services.application_service.require_candidate_application",
+            new=AsyncMock(return_value=application),
+        ), patch(
+            "app.services.application_service.NotificationService"
+        ) as mock_notification_service, patch(
+            "app.services.application_service.record_activity",
+            new=AsyncMock(),
+        ) as mock_record_activity:
+            mock_notification_service.return_value.create_notification = AsyncMock()
+            result = asyncio.run(
+                service.respond_to_offer(
+                    current_user=make_user(UserRole.CANDIDATE),
+                    application_id=application.id,
+                    action="decline",
+                    notes="Đã nhận được lời mời khác",
+                )
+            )
+
+        assert result is application
+        assert application.status == ApplicationStatus.REJECTED
+        assert (
+            mock_record_activity.await_args.kwargs["note"]
+            == "Đã nhận được lời mời khác"
+        )
+        session.commit.assert_awaited_once()
+
+    def test_non_offer_application_cannot_be_responded_to(self):
+        application = make_application(status=ApplicationStatus.INTERVIEWING)
+        session = make_session()
+        service = make_service(session)
+        service.applications.try_update_status = AsyncMock(return_value=True)
+
+        with patch(
+            "app.services.application_service.require_candidate_application",
+            new=AsyncMock(return_value=application),
+        ):
+            with pytest.raises(InvalidTransitionException, match="đang ở trạng thái"):
+                asyncio.run(
+                    service.respond_to_offer(
+                        current_user=make_user(UserRole.CANDIDATE),
+                        application_id=application.id,
+                        action="accept",
+                    )
+                )
+
+        service.applications.try_update_status.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    def test_foreign_application_raises_not_found(self):
+        session = make_session()
+        service = make_service(session)
+
+        with patch(
+            "app.services.application_service.require_candidate_application",
+            new=AsyncMock(
+                side_effect=EntityNotFoundException("Application not found")
+            ),
+        ):
+            with pytest.raises(EntityNotFoundException):
+                asyncio.run(
+                    service.respond_to_offer(
+                        current_user=make_user(UserRole.CANDIDATE),
+                        application_id=uuid.uuid4(),
+                        action="accept",
+                    )
+                )
+
+        session.commit.assert_not_awaited()
+
+    def test_concurrent_offer_response_raises_conflict(self):
+        application = make_application(status=ApplicationStatus.OFFERED)
+        session = make_session()
+        service = make_service(session)
+        service.applications.try_update_status = AsyncMock(return_value=False)
+
+        with patch(
+            "app.services.application_service.require_candidate_application",
+            new=AsyncMock(return_value=application),
+        ):
+            with pytest.raises(ConflictException):
+                asyncio.run(
+                    service.respond_to_offer(
+                        current_user=make_user(UserRole.CANDIDATE),
+                        application_id=application.id,
+                        action="accept",
+                    )
+                )
+
+        session.commit.assert_not_awaited()
+
+    def test_invalid_action_is_rejected(self):
+        session = make_session()
+        service = make_service(session)
+
+        with pytest.raises(InvalidTransitionException, match="Hành động"):
+            asyncio.run(
+                service.respond_to_offer(
+                    current_user=make_user(UserRole.CANDIDATE),
+                    application_id=uuid.uuid4(),
+                    action="withdraw",
+                )
+            )
+
+        session.commit.assert_not_awaited()
 
 
 def make_candidate_user(candidate_id: uuid.UUID) -> SimpleNamespace:

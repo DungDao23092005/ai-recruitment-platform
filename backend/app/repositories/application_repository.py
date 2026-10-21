@@ -103,6 +103,7 @@ class ApplicationRepository(BaseRepository[Application]):
             .options(
                 selectinload(Application.candidate).selectinload(CandidateProfile.user),
                 selectinload(Application.job),
+                selectinload(Application.interviews),
             )
             .where(
                 Application.id == application_id,

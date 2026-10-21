@@ -12,9 +12,14 @@ export const EMAIL_OUTBOX_UPDATED_EVENT = 'email.outbox.updated';
 // Server-sent named event emitted on the locked user's private channel when an
 // admin locks the account that is currently in use.
 export const ACCOUNT_LOCKED_EVENT = 'account.locked';
+// Server-sent invalidation events for recruiter and candidate pipeline views.
+export const PIPELINE_UPDATED_EVENT = 'pipeline.updated';
+export const CANDIDATE_PIPELINE_UPDATED_EVENT = 'candidate.pipeline.updated';
 // DOM events rebroadcast by this hook for interested UI components.
 export const ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT = 'admin:subscription:changed';
 export const ADMIN_EMAIL_OUTBOX_UPDATED_DOM_EVENT = 'admin:email_outbox:updated';
+export const PIPELINE_UPDATED_DOM_EVENT = 'pipeline:updated';
+export const CANDIDATE_PIPELINE_UPDATED_DOM_EVENT = 'candidate:pipeline:updated';
 export const STREAM_CONNECTED_DOM_EVENT = 'stream:connected';
 // DOM event rebroadcast when a subscription-related notification reaches the
 // current user (activation, plan change or revocation), so subscription views
@@ -54,6 +59,37 @@ export interface SubscriptionNotificationDetail {
   notification_type?: string;
   entity_type?: string | null;
   entity_id?: string | null;
+}
+
+export interface PipelineUpdatedDetail {
+  company_id?: string;
+  job_id?: string;
+  application_id?: string;
+  action?: string;
+  from_status?: string | null;
+  to_status?: string | null;
+  timestamp?: string;
+}
+
+export interface CandidatePipelineUpdatedDetail {
+  job_id?: string;
+  application_id?: string;
+  action?: string;
+  from_status?: string | null;
+  to_status?: string | null;
+  timestamp?: string;
+}
+
+function parsePipelineDetail<T>(raw: string): T | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as T;
+  } catch {
+    return null;
+  }
 }
 
 function isSubscriptionNotification(
@@ -287,6 +323,30 @@ export function useNotificationStream() {
         } catch (error) {
           console.warn('Failed to process admin email outbox event:', error);
         }
+      });
+
+      eventSource.addEventListener(PIPELINE_UPDATED_EVENT, (event) => {
+        const data = parsePipelineDetail<PipelineUpdatedDetail>(event.data);
+        if (!data) {
+          console.warn('Failed to process pipeline invalidation');
+          return;
+        }
+        window.dispatchEvent(
+          new CustomEvent(PIPELINE_UPDATED_DOM_EVENT, { detail: data })
+        );
+      });
+
+      eventSource.addEventListener(CANDIDATE_PIPELINE_UPDATED_EVENT, (event) => {
+        const data = parsePipelineDetail<CandidatePipelineUpdatedDetail>(
+          event.data
+        );
+        if (!data) {
+          console.warn('Failed to process candidate pipeline invalidation');
+          return;
+        }
+        window.dispatchEvent(
+          new CustomEvent(CANDIDATE_PIPELINE_UPDATED_DOM_EVENT, { detail: data })
+        );
       });
 
       eventSource.addEventListener(ACCOUNT_LOCKED_EVENT, (event) => {

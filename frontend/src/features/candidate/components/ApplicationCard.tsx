@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   CalendarDays,
@@ -23,10 +23,15 @@ import { CandidateStatusTracker } from '@/features/candidate/components/Candidat
 import { CandidateActivityTimeline } from '@/features/candidate/components/CandidateActivityTimeline'
 import { WithdrawConfirmModal } from '@/features/candidate/components/WithdrawConfirmModal'
 import { InterviewDeclineModal } from '@/features/candidate/components/InterviewDeclineModal'
+import { OfferResponseModal } from '@/features/candidate/components/OfferResponseModal'
 import { candidateActionInterview } from '@/api/interviews'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { cn } from '@/utils/cn'
-import type { ApplicationStatus, ApplicationWithJob } from '@/types/application'
+import type {
+  ApplicationStatus,
+  ApplicationWithJob,
+  OfferAction,
+} from '@/types/application'
 
 export const WITHDRAWABLE_STATUSES: ApplicationStatus[] = [
   'applied',
@@ -92,6 +97,14 @@ export function ApplicationCard({
     null,
   )
   const [timelineOpen, setTimelineOpen] = useState(false)
+  const [offerAction, setOfferAction] = useState<OfferAction | null>(null)
+  const [offerStatus, setOfferStatus] = useState<ApplicationStatus | null>(
+    null,
+  )
+
+  useEffect(() => {
+    setOfferStatus(null)
+  }, [application.id, application.status])
 
   // Interview action states - track by interview ID
   const [interviewLoading, setInterviewLoading] = useState<string | null>(null)
@@ -99,7 +112,8 @@ export function ApplicationCard({
     Record<string, string | null>
   >({})
 
-  const canWithdraw = WITHDRAWABLE_STATUSES.includes(status)
+  const displayedStatus = offerStatus ?? status
+  const canWithdraw = WITHDRAWABLE_STATUSES.includes(displayedStatus)
   const appliedDate = formatAppliedDate(created_at)
   const rawCompanyName = company_name ?? 'Công ty'
   const companyLabel = company_name ? `Công ty ${company_name}` : rawCompanyName
@@ -155,7 +169,7 @@ export function ApplicationCard({
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
-          <ApplicationStatusBadge status={status} />
+          <ApplicationStatusBadge status={displayedStatus} />
         </div>
         {appliedDate ? (
           <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
@@ -164,7 +178,45 @@ export function ApplicationCard({
           </p>
         ) : null}
 
-        <CandidateStatusTracker status={status} className="pt-1" />
+        <CandidateStatusTracker status={displayedStatus} className="pt-1" />
+
+        {displayedStatus === 'offered' ? (
+          <div className="rounded-lg border border-success/20 bg-success/5 p-3">
+            <p className="font-semibold text-success">
+              Bạn đã nhận được lời mời làm việc
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Hãy phản hồi lời mời để nhà tuyển dụng biết quyết định của bạn.
+            </p>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+              <Button
+                type="button"
+                size="sm"
+                className="flex-1"
+                onClick={() => setOfferAction('accept')}
+              >
+                <CheckCircle2
+                  className="mr-1.5 h-3.5 w-3.5"
+                  aria-hidden="true"
+                />
+                Chấp nhận lời mời
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="flex-1"
+                onClick={() => setOfferAction('decline')}
+              >
+                <XCircle
+                  className="mr-1.5 h-3.5 w-3.5"
+                  aria-hidden="true"
+                />
+                Từ chối lời mời
+              </Button>
+            </div>
+          </div>
+        ) : null}
 
         <Button
           type="button"
@@ -418,6 +470,20 @@ export function ApplicationCard({
           </Button>
         ) : null}
       </CardFooter>
+
+      {offerAction ? (
+        <OfferResponseModal
+          application={application}
+          action={offerAction}
+          onClose={() => setOfferAction(null)}
+          onSuccess={(updated) => {
+            setOfferStatus(updated.status)
+            setOfferAction(null)
+            onUpdated?.()
+          }}
+          onRefresh={onUpdated}
+        />
+      ) : null}
 
       {withdrawOpen ? (
         <WithdrawConfirmModal

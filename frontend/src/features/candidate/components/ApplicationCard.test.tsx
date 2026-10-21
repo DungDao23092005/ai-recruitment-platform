@@ -10,6 +10,7 @@ import type { ApplicationWithJob, Interview } from '@/types/application'
 vi.mock('@/api/applications', () => ({
   applyJob: vi.fn(),
   withdrawApplication: vi.fn(),
+  respondToOffer: vi.fn(),
   getApplicationsByJob: vi.fn(),
   getMyApplications: vi.fn(),
   getMyApplicationTimeline: vi.fn(),
@@ -24,6 +25,8 @@ const mockedWithdrawApplication = vi.mocked(
 )
 
 const mockedGetTimeline = vi.mocked(applicationsApi.getMyApplicationTimeline)
+
+const mockedRespondToOffer = vi.mocked(applicationsApi.respondToOffer)
 
 const mockedCandidateActionInterview = vi.mocked(
   interviewsApi.candidateActionInterview,
@@ -366,6 +369,174 @@ describe('ApplicationCard', () => {
 
       expect(screen.getByText(/Đã từ chối/)).toBeInTheDocument()
       expect(screen.getByText(/Lý do: Not interested/)).toBeInTheDocument()
+    })
+  })
+
+  describe('Candidate offer actions', () => {
+    it('shows offer actions only while the application is offered', () => {
+      renderCard({ status: 'offered' })
+
+      expect(
+        screen.getByRole('button', { name: 'Chấp nhận lời mời' }),
+      ).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'Từ chối lời mời' }),
+      ).toBeInTheDocument()
+    })
+
+    it.each(['interviewing', 'accepted', 'rejected', 'withdrawn'] as const)(
+      'hides offer actions when status is %s',
+      (status) => {
+        renderCard({ status })
+
+        expect(
+          screen.queryByRole('button', { name: 'Chấp nhận lời mời' }),
+        ).not.toBeInTheDocument()
+        expect(
+          screen.queryByRole('button', { name: 'Từ chối lời mời' }),
+        ).not.toBeInTheDocument()
+      },
+    )
+
+    it('accepts an offer after confirmation and refreshes', async () => {
+      mockedRespondToOffer.mockResolvedValue({
+        id: 'app-1',
+        candidate_id: 'candidate-1',
+        job_id: 'job-1',
+        status: 'accepted',
+        created_at: '2026-08-18T00:00:00Z',
+        updated_at: '2026-08-18T00:00:00Z',
+        candidate: null,
+      } as never)
+      const onUpdated = vi.fn()
+      render(
+        <MemoryRouter>
+          <ApplicationCard
+            application={{ ...mockApplication, status: 'offered' }}
+            onUpdated={onUpdated}
+          />
+        </MemoryRouter>,
+      )
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Chấp nhận lời mời' }),
+      )
+      expect(mockedRespondToOffer).not.toHaveBeenCalled()
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Xác nhận chấp nhận' }),
+      )
+
+      await waitFor(() => {
+        expect(mockedRespondToOffer).toHaveBeenCalledWith(
+          'app-1',
+          'accept',
+          undefined,
+        )
+        expect(onUpdated).toHaveBeenCalled()
+      })
+      expect(
+        screen.queryByRole('button', { name: 'Chấp nhận lời mời' }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('declines an offer with optional notes', async () => {
+      mockedRespondToOffer.mockResolvedValue({
+        id: 'app-1',
+        candidate_id: 'candidate-1',
+        job_id: 'job-1',
+        status: 'rejected',
+        created_at: '2026-08-18T00:00:00Z',
+        updated_at: '2026-08-18T00:00:00Z',
+        candidate: null,
+      } as never)
+      const onUpdated = vi.fn()
+      render(
+        <MemoryRouter>
+          <ApplicationCard
+            application={{ ...mockApplication, status: 'offered' }}
+            onUpdated={onUpdated}
+          />
+        </MemoryRouter>,
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: 'Từ chối lời mời' }))
+      fireEvent.change(screen.getByLabelText(/Lý do từ chối/), {
+        target: { value: 'Đã nhận lời mời khác' },
+      })
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Xác nhận từ chối' }),
+      )
+
+      await waitFor(() => {
+        expect(mockedRespondToOffer).toHaveBeenCalledWith(
+          'app-1',
+          'decline',
+          'Đã nhận lời mời khác',
+        )
+        expect(onUpdated).toHaveBeenCalled()
+      })
+    })
+
+    it('prevents duplicate submissions while a response is pending', async () => {
+      mockedRespondToOffer.mockReturnValue(new Promise(() => {}))
+      renderCard({ status: 'offered' })
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Chấp nhận lời mời' }),
+      )
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Xác nhận chấp nhận' }),
+      )
+      const pending = await screen.findByRole('button', {
+        name: /Đang gửi/,
+      })
+      fireEvent.click(pending)
+
+      expect(mockedRespondToOffer).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows an error and allows retrying a failed response', async () => {
+      mockedRespondToOffer
+        .mockRejectedValueOnce({
+          response: { status: 500, data: { detail: 'Server error' } },
+        })
+        .mockResolvedValueOnce({
+          id: 'app-1',
+          candidate_id: 'candidate-1',
+          job_id: 'job-1',
+          status: 'accepted',
+          created_at: '2026-08-18T00:00:00Z',
+          updated_at: '2026-08-18T00:00:00Z',
+          candidate: null,
+        } as never)
+      const onUpdated = vi.fn()
+      render(
+        <MemoryRouter>
+          <ApplicationCard
+            application={{ ...mockApplication, status: 'offered' }}
+            onUpdated={onUpdated}
+          />
+        </MemoryRouter>,
+      )
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Chấp nhận lời mời' }),
+      )
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Xác nhận chấp nhận' }),
+      )
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Server error')
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Xác nhận chấp nhận' }),
+      )
+
+      await waitFor(() => {
+        expect(mockedRespondToOffer).toHaveBeenCalledTimes(2)
+        expect(onUpdated).toHaveBeenCalled()
+      })
     })
   })
 })

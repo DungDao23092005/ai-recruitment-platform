@@ -9,7 +9,11 @@ import {
   ApplicationStatusBadge,
 } from '@/components/common/ApplicationStatusBadge'
 import { getFriendlyErrorMessage } from '@/utils/errors'
-import type { Application, ApplicationStatus } from '@/types/application'
+import type {
+  Application,
+  ApplicationStatus,
+  Interview,
+} from '@/types/application'
 
 export { APPLICATION_STATUS_LABELS }
 
@@ -23,25 +27,55 @@ export const RECRUITER_STATUS_TRANSITIONS: Record<
   applied: ['under_review', 'rejected'],
   under_review: ['shortlisted', 'rejected'],
   shortlisted: ['interviewing', 'rejected'],
-  interviewing: ['under_review', 'offered', 'accepted', 'rejected'],
-  offered: ['accepted', 'rejected'],
+  interviewing: ['under_review', 'offered', 'rejected'],
+  offered: [],
   accepted: [],
   rejected: [],
   withdrawn: [],
 }
 
+export function getOfferBlockReason(
+  interviews: Interview[] | undefined,
+): string | null {
+  if (!interviews || interviews.length === 0) {
+    return 'Chưa có buổi phỏng vấn nào. Cần ít nhất một buổi phỏng vấn đã được ứng viên xác nhận hoặc đã hoàn thành trước khi gửi lời mời làm việc.'
+  }
+  if (interviews.some((interview) => interview.status === 'scheduled')) {
+    return 'Vẫn còn buổi phỏng vấn đang chờ xác nhận. Hãy hoàn tất hoặc hủy lịch phỏng vấn đó trước khi gửi lời mời làm việc.'
+  }
+  if (
+    !interviews.some(
+      (interview) =>
+        interview.status === 'candidate_confirmed' ||
+        interview.status === 'completed',
+    )
+  ) {
+    return 'Cần ít nhất một buổi phỏng vấn đã được ứng viên xác nhận hoặc đã hoàn thành trước khi gửi lời mời làm việc.'
+  }
+  return null
+}
+
 export interface StatusUpdateModalProps {
   application: Application
+  interviews?: Interview[]
   onClose: () => void
   onSuccess?: (updated: Application) => void
 }
 
 export function StatusUpdateModal({
   application,
+  interviews,
   onClose,
   onSuccess,
 }: StatusUpdateModalProps) {
-  const statusOptions = RECRUITER_STATUS_TRANSITIONS[application.status]
+  const baseStatusOptions =
+    RECRUITER_STATUS_TRANSITIONS[application.status]
+  const offerBlockReason = baseStatusOptions.includes('offered')
+    ? getOfferBlockReason(interviews)
+    : null
+  const statusOptions = offerBlockReason
+    ? baseStatusOptions.filter((option) => option !== 'offered')
+    : baseStatusOptions
   const [status, setStatus] = useState<ApplicationStatus>(
     statusOptions[0] ?? application.status,
   )
@@ -121,11 +155,20 @@ export function StatusUpdateModal({
           </Select>
         ) : (
           <p className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
-            Đơn ứng tuyển ở trạng thái{' '}
-            {APPLICATION_STATUS_LABELS[application.status]}, không còn trạng
-            thái tuyển dụng nào để chuyển đến.
+            {application.status === 'offered'
+              ? 'Đơn ứng tuyển đang ở trạng thái Đề nghị nhận việc. Chỉ ứng viên có thể chấp nhận hoặc từ chối lời mời này.'
+              : `Đơn ứng tuyển ở trạng thái ${APPLICATION_STATUS_LABELS[application.status]}, không còn trạng thái tuyển dụng nào để chuyển đến.`}
           </p>
         )}
+
+        {offerBlockReason ? (
+          <p
+            role="status"
+            className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-foreground"
+          >
+            {offerBlockReason}
+          </p>
+        ) : null}
 
         {success ? (
           <p

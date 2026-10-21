@@ -17,6 +17,8 @@ vi.mock('@/api/client', () => ({
 vi.mock('@/api/applications', () => ({
   getApplicationDetail: vi.fn(),
   getApplicationMatch: vi.fn(),
+  getApplicationMatchExplanation: vi.fn(),
+  refreshApplicationMatchExplanation: vi.fn(),
 }))
 
 const mockedGetApplicationDetail = vi.mocked(

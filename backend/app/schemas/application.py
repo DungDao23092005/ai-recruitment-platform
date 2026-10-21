@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.domain.enums import ApplicationStatus
 from app.schemas.ai_job import ParsedJobSchema
@@ -52,6 +53,19 @@ class ApplicationDetailRead(BaseModel):
 
 class ApplicationStatusUpdate(BaseModel):
     status: ApplicationStatus
+
+
+class ApplicationOfferResponse(BaseModel):
+    action: Literal["accept", "decline"]
+    notes: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("notes")
+    @classmethod
+    def normalize_notes(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
 
 class ApplicationWithJobRead(BaseModel):

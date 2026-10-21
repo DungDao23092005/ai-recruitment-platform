@@ -11,21 +11,19 @@ import {
   Languages,
   Mail,
   Phone,
-  RefreshCw,
   Sparkles,
   User,
   Wrench,
 } from 'lucide-react'
-import { getApplicationDetail, getApplicationMatch } from '@/api/applications'
+import { getApplicationDetail } from '@/api/applications'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
 import { Spinner } from '@/components/ui/spinner'
 import { Badge } from '@/components/ui/badge'
 import { ApplicationStatusBadge } from '@/components/common/ApplicationStatusBadge'
-import { MatchScoreCard } from '@/features/ai/components/MatchScoreCard'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { StatusUpdateModal } from './StatusUpdateModal'
-import type { MatchResult } from '@/types/ai'
+import { ApplicationMatchExplanation } from './ApplicationMatchExplanation'
 import type { Application, ApplicationDetail } from '@/types/application'
 import { InterviewManager } from './InterviewManager'
 import { ApplicationNoteList } from './ApplicationNoteList'
@@ -291,24 +289,6 @@ export function ApplicationDetailModal({
   }>({ kind: 'loading' })
   const [showStatusUpdate, setShowStatusUpdate] = useState(false)
   const [activeTab, setActiveTab] = useState<DetailTab>('profile')
-  const [matchState, setMatchState] = useState<
-    | { kind: 'idle' }
-    | { kind: 'loading' }
-    | { kind: 'error'; message: string }
-    | { kind: 'success'; result: MatchResult }
-  >({ kind: 'idle' })
-
-  const runMatch = useCallback(() => {
-    setMatchState({ kind: 'loading' })
-    getApplicationMatch(application.id)
-      .then((result) => setMatchState({ kind: 'success', result }))
-      .catch((err) => {
-        setMatchState({
-          kind: 'error',
-          message: getFriendlyErrorMessage(err),
-        })
-      })
-  }, [application.id])
 
   const load = useCallback(() => {
     let active = true
@@ -331,7 +311,12 @@ export function ApplicationDetailModal({
     return load()
   }, [load])
 
-  const detail = state.detail
+  const loadedDetail = state.kind === 'success' ? state.detail : undefined
+  const detail =
+    loadedDetail?.id === application.id ? loadedDetail : undefined
+  const isLoading =
+    state.kind === 'loading' ||
+    (state.kind === 'success' && detail === undefined)
   const candidateName =
     detail?.candidate?.full_name ||
     application.candidate?.full_name ||
@@ -340,7 +325,7 @@ export function ApplicationDetailModal({
 
   const handleStatusUpdated = (updated: Application) => {
     setShowStatusUpdate(false)
-    if (state.kind === 'success' && state.detail) {
+    if (state.kind === 'success' && state.detail?.id === application.id) {
       setState({
         kind: 'success',
         detail: { ...state.detail, status: updated.status },
@@ -350,36 +335,36 @@ export function ApplicationDetailModal({
   }
 
   return (
-    <Modal
-      onClose={onClose}
-      size="lg"
-      ariaLabel="Chi tiết đơn ứng tuyển"
-      title={
-        <span className="flex items-center gap-2">
-          <User className="h-5 w-5 text-primary" aria-hidden="true" />
-          {candidateName}
-        </span>
-      }
-      description={candidateTitle}
-      footer={
-        <>
-          {state.kind === 'success' && detail ? (
-            <Button
-              variant="outline"
-              onClick={() => setShowStatusUpdate(true)}
-              disabled={!onStatusChange}
-            >
-              Cập nhật trạng thái
+    <>
+      <Modal
+        onClose={onClose}
+        size="lg"
+        ariaLabel="Chi tiết đơn ứng tuyển"
+        title={
+          <span className="flex items-center gap-2">
+            <User className="h-5 w-5 text-primary" aria-hidden="true" />
+            {candidateName}
+          </span>
+        }
+        description={candidateTitle}
+        footer={
+          <>
+            {state.kind === 'success' && detail ? (
+              <Button
+                variant="outline"
+                onClick={() => setShowStatusUpdate(true)}
+              >
+                Cập nhật trạng thái
+              </Button>
+            ) : null}
+            <Button variant="ghost" onClick={onClose}>
+              Đóng
             </Button>
-          ) : null}
-          <Button variant="ghost" onClick={onClose}>
-            Đóng
-          </Button>
-        </>
-      }
-    >
+          </>
+        }
+      >
       <div className="space-y-6">
-        {state.kind === 'loading' ? (
+        {isLoading ? (
           <div className="flex items-center justify-center gap-3 py-10 text-muted-foreground">
             <Spinner size="md" />
             <span>Đang tải chi tiết đơn ứng tuyển...</span>
@@ -462,7 +447,7 @@ export function ApplicationDetailModal({
 
                     <div className="space-y-3">
                       <SectionTitle icon={<Sparkles className="h-3.5 w-3.5" aria-hidden="true" />}>
-                        AI Match
+                        Đối sánh với công việc
                       </SectionTitle>
                       {!detail.resume?.parsed_data ? (
                         <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-muted/30 px-6 py-8 text-center">
@@ -471,47 +456,14 @@ export function ApplicationDetailModal({
                             Chưa có dữ liệu CV để phân tích
                           </p>
                           <p className="text-sm text-muted-foreground">
-                            Ứng viên chưa có CV được trích xuất, chưa thể tính điểm đối sánh.
+                            Ứng viên chưa có CV được trích xuất, chưa thể tạo phân tích đối sánh.
                           </p>
                         </div>
-                      ) : matchState.kind === 'idle' ? (
-                        <div className="rounded-xl border bg-muted/20 px-4 py-4">
-                          <p className="text-sm text-muted-foreground">
-                            Phân tích mức độ phù hợp của ứng viên với công việc bằng AI.
-                          </p>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="mt-3"
-                            onClick={runMatch}
-                          >
-                            <Sparkles className="h-4 w-4" aria-hidden="true" />
-                            Phân tích AI
-                          </Button>
-                        </div>
-                      ) : matchState.kind === 'loading' ? (
-                        <div className="flex items-center gap-3 rounded-xl border bg-muted/30 px-4 py-6 text-sm text-muted-foreground">
-                          <Spinner size="md" />
-                          <span>Đang phân tích mức độ phù hợp...</span>
-                        </div>
-                      ) : matchState.kind === 'error' ? (
-                        <div className="space-y-3 rounded-xl border border-destructive/30 bg-muted/20 px-4 py-4">
-                          <p role="alert" className="text-sm font-medium text-destructive">
-                            {matchState.message}
-                          </p>
-                          <Button variant="outline" size="sm" onClick={runMatch}>
-                            <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                            Thử lại
-                          </Button>
-                        </div>
-                      ) : matchState.kind === 'success' && matchState.result ? (
-                        <MatchScoreCard
-                          matchResult={matchState.result}
-                          candidate={detail.resume.parsed_data}
-                          job={detail.parsed_job}
+                      ) : (
+                        <ApplicationMatchExplanation
+                          applicationId={application.id}
                         />
-                      ) : null}
+                      )}
                     </div>
                   </>
                 ) : null}
@@ -553,13 +505,16 @@ export function ApplicationDetailModal({
         ) : null}
       </div>
 
+      </Modal>
+
       {showStatusUpdate && detail ? (
         <StatusUpdateModal
           application={detail}
+          interviews={detail.interviews}
           onClose={() => setShowStatusUpdate(false)}
           onSuccess={handleStatusUpdated}
         />
       ) : null}
-    </Modal>
+    </>
   )
 }

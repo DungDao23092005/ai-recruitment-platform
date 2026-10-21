@@ -928,6 +928,109 @@ describe('useNotificationStream', () => {
     });
   });
 
+  describe('Pipeline invalidation bridge', () => {
+    it('rebroadcasts pipeline.updated as pipeline:updated with parsed detail', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const listener = vi.fn();
+      window.addEventListener('pipeline:updated', listener);
+      const detail = {
+        company_id: 'company-1',
+        job_id: 'job-1',
+        application_id: 'app-1',
+        action: 'application_status_changed',
+        from_status: 'applied',
+        to_status: 'under_review',
+        timestamp: '2026-01-01T00:00:00Z',
+      };
+      act(() => { es.emitEvent('pipeline.updated', detail); });
+      await flushMicrotasks();
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual(detail);
+      window.removeEventListener('pipeline:updated', listener);
+    });
+
+    it('rebroadcasts candidate.pipeline.updated as candidate:pipeline:updated', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const listener = vi.fn();
+      window.addEventListener('candidate:pipeline:updated', listener);
+      const detail = {
+        job_id: 'job-1',
+        application_id: 'app-1',
+        action: 'interview_scheduled',
+        from_status: 'shortlisted',
+        to_status: 'interviewing',
+        timestamp: '2026-01-01T00:00:00Z',
+      };
+      act(() => { es.emitEvent('candidate.pipeline.updated', detail); });
+      await flushMicrotasks();
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect((listener.mock.calls[0][0] as CustomEvent).detail).toEqual(detail);
+      window.removeEventListener('candidate:pipeline:updated', listener);
+    });
+
+    it('ignores malformed pipeline payloads without breaking the stream', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const listener = vi.fn();
+      window.addEventListener('pipeline:updated', listener);
+      const malformed = new Event('pipeline.updated');
+      (malformed as unknown as { data: string }).data = '{not json';
+      act(() => {
+        es.eventListeners.get('pipeline.updated')?.forEach((handler) => handler(malformed));
+      });
+      await flushMicrotasks();
+
+      expect(listener).not.toHaveBeenCalled();
+      window.removeEventListener('pipeline:updated', listener);
+    });
+
+    it('does not resync the unread count for pipeline invalidations', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+      const callsBefore = mockGetUnreadNotificationCount.mock.calls.length;
+
+      act(() => {
+        es.emitEvent('pipeline.updated', {
+          company_id: 'company-1',
+          job_id: 'job-1',
+          application_id: 'app-1',
+          action: 'application_status_changed',
+        });
+      });
+      await advanceTimers(350);
+      await flushMicrotasks();
+
+      expect(mockGetUnreadNotificationCount).toHaveBeenCalledTimes(callsBefore);
+    });
+  });
+
   describe('Account lock (forced logout)', () => {
     it('stores a one-time notice and clears the session on account.locked', async () => {
       setupUnreadCountMock(1);

@@ -26,7 +26,26 @@ from app.services.application_activity_service import record_activity
 from app.services.job_service import JobService
 from app.services.notification_service import NotificationService
 from app.services.pipeline_email_service import schedule_interview_email
+from app.services.pipeline_realtime import (
+    ACTION_INTERVIEW_CANCELLED,
+    ACTION_INTERVIEW_CONFIRMED,
+    ACTION_INTERVIEW_DECLINED,
+    ACTION_INTERVIEW_SCHEDULED,
+    ACTION_INTERVIEW_UPDATED,
+    schedule_application_pipeline_event,
+)
 from app.services.user_service import UserService
+
+# An interview in any of these states still requires the application to remain
+# in the INTERVIEWING stage. Declined/cancelled outcomes are terminal, while
+# soft-deleted interviews are excluded by the repository query itself.
+ACTIVE_INTERVIEW_STATUSES = frozenset(
+    {
+        InterviewStatus.SCHEDULED,
+        InterviewStatus.CANDIDATE_CONFIRMED,
+        InterviewStatus.COMPLETED,
+    }
+)
 
 
 class InterviewService:
@@ -48,6 +67,54 @@ class InterviewService:
         if candidate is None or candidate.user is None:
             return None
         return candidate.user.email
+
+    async def _reconcile_application_interview_stage(
+        self,
+        application: Application,
+    ) -> bool:
+        """Return an application to screening when no active interviews remain.
+
+        The decline/cancellation mutation must already be flushed so the
+        repository query sees its terminal outcome. Soft-deleted interviews are
+        excluded by ``list_by_application``. The status update is conditional on
+        the application still being ``interviewing`` so a concurrent transition
+        is never overwritten.
+
+        Returns ``True`` only when this call performed the transition.
+        """
+        if application.status != ApplicationStatus.INTERVIEWING:
+            return False
+
+        remaining = await self.interviews.list_by_application(application.id)
+        if any(
+            interview.status in ACTIVE_INTERVIEW_STATUSES
+            for interview in remaining
+        ):
+            return False
+
+        domain = DomainApplication(
+            candidate_id=application.candidate_id,
+            job_id=application.job_id,
+            status=application.status,
+        )
+        try:
+            domain.transition_to(ApplicationStatus.UNDER_REVIEW)
+        except DomainException as exc:
+            raise InvalidTransitionException(str(exc)) from exc
+
+        updated = await self.applications.try_update_status(
+            application_id=application.id,
+            expected_status=ApplicationStatus.INTERVIEWING,
+            new_status=ApplicationStatus.UNDER_REVIEW,
+        )
+        if not updated:
+            # A concurrent request changed the stage first. Reload the
+            # authoritative value so callers publish the real final status.
+            await self.session.refresh(application, attribute_names=["status"])
+            return False
+
+        application.status = ApplicationStatus.UNDER_REVIEW
+        return True
 
     async def schedule_interview(
         self,
@@ -158,6 +225,15 @@ class InterviewService:
                     entity_id=interview.id,
                 )
 
+            await schedule_application_pipeline_event(
+                self.session,
+                application=application,
+                action=ACTION_INTERVIEW_SCHEDULED,
+                from_status=previous_app_status,
+                to_status=application.status,
+                candidate_user_id=candidate_user_id,
+            )
+
             await self.session.commit()
             await self.session.refresh(interview)
 
@@ -260,6 +336,15 @@ class InterviewService:
                     entity_id=interview.id,
                 )
 
+            await schedule_application_pipeline_event(
+                self.session,
+                application=application,
+                action=ACTION_INTERVIEW_UPDATED,
+                from_status=application.status,
+                to_status=application.status,
+                candidate_user_id=candidate_user_id,
+            )
+
             await self.session.commit()
             await self.session.refresh(interview)
 
@@ -299,6 +384,8 @@ class InterviewService:
                 f"Interview {interview_id} not found"
             ) from None
 
+        previous_app_status = application.status
+
         # Set status to CANCELLED and soft delete
         interview.status = InterviewStatus.CANCELLED
         await self.interviews.soft_delete(interview)
@@ -313,6 +400,24 @@ class InterviewService:
                 action_type=hiring.INTERVIEW_CANCELLED,
                 metadata={"interview_id": str(interview.id)},
             )
+
+            reconciled = await self._reconcile_application_interview_stage(
+                application
+            )
+            if reconciled:
+                await record_activity(
+                    self.session,
+                    application_id=interview.application_id,
+                    actor_id=current_user.id,
+                    action_type=hiring.STATUS_CHANGED,
+                    from_status=ApplicationStatus.INTERVIEWING.value,
+                    to_status=ApplicationStatus.UNDER_REVIEW.value,
+                    note=(
+                        "Tự động chuyển hồ sơ về Đang xem xét sau khi hủy "
+                        "phỏng vấn."
+                    ),
+                )
+
             await schedule_interview_email(
                 self.session,
                 to_email=self._candidate_email(application),
@@ -326,14 +431,30 @@ class InterviewService:
             notification_service = NotificationService(self.session)
             candidate_user_id = application.candidate.user_id if application.candidate else None
             if candidate_user_id:
+                content = f"Phỏng vấn cho vị trí {job_title} đã bị hủy"
+                if reconciled:
+                    content += (
+                        ". Hồ sơ của bạn đã được tự động chuyển về trạng thái "
+                        "Đang xem xét vì không còn buổi phỏng vấn nào đang "
+                        "hoạt động."
+                    )
                 await notification_service.create_notification(
                     user_id=candidate_user_id,
                     title="Phỏng vấn bị hủy",
-                    content=f"Phỏng vấn cho vị trí {job_title} đã bị hủy",
+                    content=content,
                     notification_type="interview_cancelled",
                     entity_type="interview",
                     entity_id=interview.id,
                 )
+
+            await schedule_application_pipeline_event(
+                self.session,
+                application=application,
+                action=ACTION_INTERVIEW_CANCELLED,
+                from_status=previous_app_status,
+                to_status=application.status,
+                candidate_user_id=candidate_user_id,
+            )
 
             await self.session.commit()
             await self.session.refresh(interview)
@@ -406,7 +527,18 @@ class InterviewService:
         else:
             raise InvalidTransitionException(f"Invalid action: {action}. Must be 'confirm' or 'decline'")
 
+        previous_app_status = application.status
+
         try:
+            # Make the terminal interview outcome visible to the reconciliation
+            # query; the session is configured with autoflush disabled.
+            await self.session.flush()
+
+            activity_metadata: dict[str, str] = {
+                "interview_id": str(interview.id)
+            }
+            if action == "decline" and interview.candidate_notes:
+                activity_metadata["candidate_notes"] = interview.candidate_notes
             await record_activity(
                 self.session,
                 application_id=application_id,
@@ -416,8 +548,34 @@ class InterviewService:
                     if action == "confirm"
                     else hiring.INTERVIEW_DECLINED
                 ),
-                metadata={"interview_id": str(interview.id)},
+                metadata=activity_metadata,
             )
+
+            reconciled = False
+            if action == "decline":
+                reconciled = (
+                    await self._reconcile_application_interview_stage(
+                        application
+                    )
+                )
+                if reconciled:
+                    await record_activity(
+                        self.session,
+                        application_id=application_id,
+                        actor_id=current_user.id,
+                        action_type=hiring.STATUS_CHANGED,
+                        from_status=ApplicationStatus.INTERVIEWING.value,
+                        to_status=ApplicationStatus.UNDER_REVIEW.value,
+                        note=(
+                            "Tự động chuyển hồ sơ về Đang xem xét sau khi "
+                            "ứng viên từ chối phỏng vấn."
+                        ),
+                    )
+                    notification_content += (
+                        " Hồ sơ đã được tự động chuyển về trạng thái Đang "
+                        "xem xét vì không còn buổi phỏng vấn nào đang hoạt "
+                        "động."
+                    )
 
             # Notify recruiter(s) about candidate confirm/decline BEFORE commit
             notification_service = NotificationService(self.session)
@@ -432,6 +590,19 @@ class InterviewService:
                             entity_type="application",
                             entity_id=application.id,
                         )
+
+            await schedule_application_pipeline_event(
+                self.session,
+                application=application,
+                action=(
+                    ACTION_INTERVIEW_CONFIRMED
+                    if action == "confirm"
+                    else ACTION_INTERVIEW_DECLINED
+                ),
+                from_status=previous_app_status,
+                to_status=application.status,
+                candidate_user_id=current_user.id,
+            )
 
             await self.session.commit()
             await self.session.refresh(interview)

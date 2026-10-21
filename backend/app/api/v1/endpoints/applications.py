@@ -38,6 +38,7 @@ from app.schemas.ai_match import MatchResultSchema
 from app.schemas.application import (
     ApplicationCreate,
     ApplicationDetailRead,
+    ApplicationOfferResponse,
     ApplicationRead,
     ApplicationStatusUpdate,
     ApplicationWithJobRead,
@@ -584,6 +585,42 @@ async def withdraw_application(
         application = await ApplicationService(db).withdraw_application(
             current_user=current_user,
             application_id=application_id,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except InvalidTransitionException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except ConflictException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    return ApplicationRead.model_validate(application)
+
+
+@router.patch(
+    "/mine/{application_id}/offer",
+    response_model=ApplicationRead,
+)
+async def respond_to_offer(
+    application_id: uuid.UUID,
+    data: ApplicationOfferResponse,
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+) -> ApplicationRead:
+    try:
+        application = await ApplicationService(db).respond_to_offer(
+            current_user=current_user,
+            application_id=application_id,
+            action=data.action,
+            notes=data.notes,
         )
     except EntityNotFoundException as exc:
         raise HTTPException(

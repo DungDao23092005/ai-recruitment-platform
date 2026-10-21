@@ -14,6 +14,7 @@ import type {
   InterviewEvaluation,
   InterviewEvaluationCreate,
   InterviewEvaluationUpdate,
+  OfferAction,
   PageParams,
 } from '@/types/application'
 
@@ -28,6 +29,17 @@ export async function withdrawApplication(
 ): Promise<Application> {
   return apiClient.patch<Application, Application>(
     `/applications/mine/${applicationId}/withdraw`,
+  )
+}
+
+export async function respondToOffer(
+  applicationId: string,
+  action: OfferAction,
+  notes?: string,
+): Promise<Application> {
+  return apiClient.patch<Application, Application>(
+    `/applications/mine/${applicationId}/offer`,
+    { action, ...(notes ? { notes } : {}) },
   )
 }
 

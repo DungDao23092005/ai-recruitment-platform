@@ -32,8 +32,9 @@ class Application(BaseDomainEntity):
         },
         ApplicationStatus.INTERVIEWING: {
             # A candidate can be moved back to screening after an interview
-            # (e.g. another round is required), advanced to an offer, or
-            # accepted/rejected directly (legacy behaviour).
+            # (e.g. another round is required) or advanced to an offer.
+            # ``ACCEPTED`` remains a valid domain edge for legacy/internal
+            # flows, but the public recruiter endpoint does not publish it.
             ApplicationStatus.UNDER_REVIEW,
             ApplicationStatus.OFFERED,
             ApplicationStatus.ACCEPTED,

@@ -9,6 +9,9 @@ interface ApiErrorDetail {
   detail?: string | Array<{ msg?: string; loc?: unknown[] }>
 }
 
+const SERVER_ERROR_MESSAGE =
+  'Hệ thống đang gặp sự cố khi xử lý yêu cầu. Vui lòng thử lại sau.'
+
 function isResponseError(error: unknown): error is HttpResponseError {
   return (
     typeof error === 'object' &&
@@ -41,9 +44,19 @@ export function getFriendlyErrorMessage(error: unknown): string {
 
   const status = error.response?.status
   const data = error.response?.data as ApiErrorDetail | undefined
+  const isServerError =
+    status !== undefined && status >= 500 && status < 600
 
   if (status === 401) {
     return 'Email hoặc mật khẩu không chính xác.'
+  }
+
+  if (
+    isServerError &&
+    typeof data?.detail === 'string' &&
+    data.detail.trim() === 'Internal Server Error'
+  ) {
+    return SERVER_ERROR_MESSAGE
   }
 
   if (data?.detail) {
@@ -64,6 +77,10 @@ export function getFriendlyErrorMessage(error: unknown): string {
 
   if (status === 422) {
     return 'Vui lòng kiểm tra lại các trường trong biểu mẫu.'
+  }
+
+  if (isServerError) {
+    return SERVER_ERROR_MESSAGE
   }
 
   return 'Đã xảy ra lỗi. Vui lòng thử lại.'

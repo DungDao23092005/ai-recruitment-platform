@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
@@ -218,6 +218,107 @@ it('shows 404 when job is not found', async () => {
       expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
       expect(screen.getByText('Bản nháp')).toBeInTheDocument()
     })
+  })
+
+  it('silently refreshes when a pipeline event targets the current job', async () => {
+    mockedGetMyJobById.mockResolvedValue(mockJob)
+    mockedGetApplicationsByJob.mockResolvedValue(mockApplications)
+
+    const { container } = renderJobApplicantsPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+    })
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('pipeline:updated', {
+          detail: { company_id: 'company-1', job_id: 'job-1' },
+        }),
+      )
+    })
+
+    expect(container.querySelector('.animate-pulse')).toBeNull()
+
+    await waitFor(() => {
+      expect(mockedGetApplicationsByJob).toHaveBeenCalledTimes(2)
+    })
+    expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+  })
+
+  it('ignores pipeline events for another job', async () => {
+    mockedGetMyJobById.mockResolvedValue(mockJob)
+    mockedGetApplicationsByJob.mockResolvedValue(mockApplications)
+
+    renderJobApplicantsPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+    })
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('pipeline:updated', {
+          detail: { company_id: 'company-1', job_id: 'another-job' },
+        }),
+      )
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 320))
+    expect(mockedGetApplicationsByJob).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes after stream reconnects and when the page becomes visible', async () => {
+    mockedGetMyJobById.mockResolvedValue(mockJob)
+    mockedGetApplicationsByJob.mockResolvedValue(mockApplications)
+
+    renderJobApplicantsPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+    })
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('stream:connected'))
+    })
+    await waitFor(() => {
+      expect(mockedGetApplicationsByJob).toHaveBeenCalledTimes(2)
+    })
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    })
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await waitFor(() => {
+      expect(mockedGetApplicationsByJob).toHaveBeenCalledTimes(3)
+    })
+  })
+
+  it('removes pipeline listeners on unmount', async () => {
+    mockedGetMyJobById.mockResolvedValue(mockJob)
+    mockedGetApplicationsByJob.mockResolvedValue(mockApplications)
+
+    const { unmount } = renderJobApplicantsPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+    })
+
+    unmount()
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('pipeline:updated', {
+          detail: { company_id: 'company-1', job_id: 'job-1' },
+        }),
+      )
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 320))
+    expect(mockedGetApplicationsByJob).toHaveBeenCalledTimes(1)
   })
 
   it('retries the request after a failure', async () => {

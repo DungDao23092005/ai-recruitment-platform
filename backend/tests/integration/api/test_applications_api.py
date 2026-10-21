@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -43,6 +44,65 @@ def create_candidate_profile(candidate_client, run_async):
             json={"full_name": "Jane Doe", "title": "Engineer"},
         )
     )
+
+
+def set_status(client, run_async, application_id, status):
+    return run_async(
+        client.patch(
+            f"{API_V1}/applications/{application_id}/status",
+            json={"status": status},
+        )
+    )
+
+
+def schedule_interview(recruiter_client, run_async, application_id):
+    scheduled_at = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    resp = run_async(
+        recruiter_client.post(
+            f"{API_V1}/applications/{application_id}/interviews",
+            json={
+                "scheduled_at": scheduled_at,
+                "duration_minutes": 60,
+                "interview_type": "technical",
+                "location": "Room 1",
+            },
+        )
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def candidate_action(
+    candidate_client, run_async, application_id, interview_id, action, notes=None
+):
+    payload = {"action": action}
+    if notes is not None:
+        payload["candidate_notes"] = notes
+    return run_async(
+        candidate_client.patch(
+            f"{API_V1}/applications/{application_id}/interviews/"
+            f"{interview_id}/action",
+            json=payload,
+        )
+    )
+
+
+def make_offer(recruiter_client, candidate_client, run_async, application_id):
+    for status_value in ("under_review", "shortlisted", "interviewing"):
+        resp = set_status(
+            recruiter_client, run_async, application_id, status_value
+        )
+        assert resp.status_code == 200, resp.text
+    interview = schedule_interview(recruiter_client, run_async, application_id)
+    confirm = candidate_action(
+        candidate_client, run_async, application_id, interview["id"], "confirm"
+    )
+    assert confirm.status_code == 200, confirm.text
+    offered = set_status(
+        recruiter_client, run_async, application_id, "offered"
+    )
+    assert offered.status_code == 200, offered.text
+    return interview
 
 
 class TestCandidateProfile:
@@ -292,7 +352,6 @@ class TestApplicationStatusUpdate:
             "under_review",
             "shortlisted",
             "interviewing",
-            "accepted",
         ]
         for target in chain:
             resp = run_async(
@@ -303,6 +362,27 @@ class TestApplicationStatusUpdate:
             )
             assert resp.status_code == 200, target
             assert resp.json()["status"] == target
+
+        interview = schedule_interview(
+            recruiter_client, run_async, application["id"]
+        )
+        confirm = candidate_action(
+            candidate_client,
+            run_async,
+            application["id"],
+            interview["id"],
+            "confirm",
+        )
+        assert confirm.status_code == 200, confirm.text
+
+        offered = run_async(
+            recruiter_client.patch(
+                f"{API_V1}/applications/{application['id']}/status",
+                json={"status": "offered"},
+            )
+        )
+        assert offered.status_code == 200
+        assert offered.json()["status"] == "offered"
 
 
 class TestAdminStatusAuthorization:
@@ -396,12 +476,6 @@ class TestCandidateWithdraw:
             "under_review": ["under_review"],
             "shortlisted": ["under_review", "shortlisted"],
             "interviewing": ["under_review", "shortlisted", "interviewing"],
-            "accepted": [
-                "under_review",
-                "shortlisted",
-                "interviewing",
-                "accepted",
-            ],
             "rejected": [
                 "under_review",
                 "shortlisted",
@@ -522,9 +596,19 @@ class TestCandidateWithdraw:
         application = self.create_application(
             recruiter_client, candidate_client, run_async
         )
-        self.advance_to(
-            recruiter_client, run_async, application["id"], "accepted"
+        make_offer(
+            recruiter_client,
+            candidate_client,
+            run_async,
+            application["id"],
         )
+        accepted = run_async(
+            candidate_client.patch(
+                f"{API_V1}/applications/mine/{application['id']}/offer",
+                json={"action": "accept"},
+            )
+        )
+        assert accepted.status_code == 200, accepted.text
 
         resp = run_async(
             candidate_client.patch(

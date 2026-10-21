@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ChevronLeft, LayoutGrid, RefreshCw, List, Users } from 'lucide-react'
 import { getMyJobById } from '@/api/jobs'
@@ -17,6 +17,10 @@ import { Badge } from '@/components/ui/badge'
 import { ApplicantList } from '@/features/recruiter/components/ApplicantList'
 import { HiringPipelineBoard } from '@/features/recruiter/components/HiringPipelineBoard'
 import { getFriendlyErrorMessage } from '@/utils/errors'
+import {
+  PIPELINE_UPDATED_DOM_EVENT,
+  STREAM_CONNECTED_DOM_EVENT,
+} from '@/hooks/useNotificationStream'
 import { JOB_STATUS_LABELS, JOB_TYPE_LABELS } from '@/types/job'
 import type { Job, JobStatus } from '@/types/job'
 import type { Application } from '@/types/application'
@@ -43,6 +47,7 @@ export function JobApplicantsPage({ backPath = '/recruiter/jobs' }: JobApplicant
   const { id } = useParams<{ id: string }>()
   const [state, setState] = useState<PageState>({ kind: 'loading' })
   const [view, setView] = useState<ApplicantView>('board')
+  const requestGenerationRef = useRef(0)
 
   const load = useCallback(() => {
     if (!id) {
@@ -54,15 +59,17 @@ export function JobApplicantsPage({ backPath = '/recruiter/jobs' }: JobApplicant
       return
     }
 
-    let active = true
+    const generation = ++requestGenerationRef.current
     setState({ kind: 'loading' })
 
     Promise.all([getMyJobById(id), getApplicationsByJob(id)])
       .then(([job, applications]) => {
-        if (active) setState({ kind: 'success', job, applications })
+        if (requestGenerationRef.current === generation) {
+          setState({ kind: 'success', job, applications })
+        }
       })
       .catch((err) => {
-        if (!active) return
+        if (requestGenerationRef.current !== generation) return
         const status = (err as Error & { response?: { status?: number } })
           .response?.status
         const notFound = status === 404
@@ -76,7 +83,9 @@ export function JobApplicantsPage({ backPath = '/recruiter/jobs' }: JobApplicant
       })
 
     return () => {
-      active = false
+      if (requestGenerationRef.current === generation) {
+        requestGenerationRef.current += 1
+      }
     }
   }, [id])
 
@@ -84,18 +93,75 @@ export function JobApplicantsPage({ backPath = '/recruiter/jobs' }: JobApplicant
     return load()
   }, [load])
 
-  // Recompute the pipeline from server state after a status change without
-  // dropping the board into a full-page skeleton.
+  useEffect(() => {
+    return () => {
+      requestGenerationRef.current += 1
+    }
+  }, [])
+
+  // Recompute the pipeline from server state after a status change or a
+  // real-time invalidation without dropping the board into a full skeleton.
   const refresh = useCallback(() => {
     if (!id) return
+    const generation = ++requestGenerationRef.current
     Promise.all([getMyJobById(id), getApplicationsByJob(id)])
       .then(([job, applications]) => {
-        setState({ kind: 'success', job, applications })
+        if (requestGenerationRef.current === generation) {
+          setState({ kind: 'success', job, applications })
+        }
       })
       .catch(() => {
         // Keep the last known good state; the user can retry manually.
       })
   }, [id])
+
+  useEffect(() => {
+    if (!id) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const scheduleRefresh = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = null
+        refresh()
+      }, 250)
+    }
+
+    const handlePipelineUpdated = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ job_id?: string } | undefined>
+      ).detail
+      if (!detail || typeof detail !== 'object' || detail.job_id !== id) {
+        return
+      }
+      scheduleRefresh()
+    }
+
+    const handleStreamConnected = () => scheduleRefresh()
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') scheduleRefresh()
+    }
+
+    window.addEventListener(PIPELINE_UPDATED_DOM_EVENT, handlePipelineUpdated)
+    window.addEventListener(STREAM_CONNECTED_DOM_EVENT, handleStreamConnected)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      if (timer) clearTimeout(timer)
+      window.removeEventListener(
+        PIPELINE_UPDATED_DOM_EVENT,
+        handlePipelineUpdated,
+      )
+      window.removeEventListener(
+        STREAM_CONNECTED_DOM_EVENT,
+        handleStreamConnected,
+      )
+      document.removeEventListener(
+        'visibilitychange',
+        handleVisibilityChange,
+      )
+    }
+  }, [id, refresh])
 
   if (state.kind === 'loading') {
     return (

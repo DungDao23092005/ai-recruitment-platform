@@ -19,7 +19,7 @@ from app.core.exceptions import (
     MatchExplanationRefreshInputError,
 )
 from app.domain import hiring
-from app.domain.enums import ApplicationStatus, UserRole
+from app.domain.enums import ApplicationStatus, InterviewStatus, UserRole
 from app.domain.models import Application as DomainApplication
 from app.domain.models.base import DomainException, utc_now
 from app.models import Application, Job, Resume, User
@@ -37,6 +37,7 @@ from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_match import MatchResultSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.ai_matching_service import AIMatchingService
+from app.services.application_access import require_candidate_application
 from app.services.application_activity_service import record_activity
 from app.services.job_service import JobService
 from app.services.match_explanation_cache import MatchExplanationCache
@@ -50,6 +51,14 @@ from app.services.match_explanation_coordinator import (
 from app.services.match_explanation_service import MatchExplanationService
 from app.services.notification_service import NotificationService
 from app.services.pipeline_email_service import schedule_application_status_email
+from app.services.pipeline_realtime import (
+    ACTION_APPLICATION_CREATED,
+    ACTION_APPLICATION_STATUS_CHANGED,
+    ACTION_APPLICATION_WITHDRAWN,
+    ACTION_OFFER_ACCEPTED,
+    ACTION_OFFER_DECLINED,
+    schedule_application_pipeline_event,
+)
 from app.services.quota_enforcement_service import (
     QuotaEnforcementService,
     ReservationResult,
@@ -64,23 +73,19 @@ RECRUITER_MANAGED_STATUSES = frozenset(
         ApplicationStatus.SHORTLISTED,
         ApplicationStatus.INTERVIEWING,
         ApplicationStatus.OFFERED,
-        ApplicationStatus.ACCEPTED,
         ApplicationStatus.REJECTED,
     }
 )
 
 # Transitions the public recruiter status endpoint is allowed to publish.
 #
-# The pipeline model (see ``app.domain.models.application``) now records an
-# atomic ``ApplicationActivity`` alongside every status change, so the full
-# canonical pipeline is exposed deliberately. Every entry here is also a
-# domain-valid transition (enforced by ``DomainApplication.transition_to``),
-# and each is covered by tests. The list stays a strict allow-list - not simply
-# "whatever the domain allows" - so a future domain change cannot silently
-# widen the public API. In particular the "bypass" transitions
-# (``UNDER_REVIEW -> OFFERED``, ``SHORTLISTED -> OFFERED``,
-# ``UNDER_REVIEW -> INTERVIEWING``) and ``OFFERED -> INTERVIEWING`` are
-# intentionally absent: they skip canonical stages and must not be reachable.
+# The list stays a strict allow-list - not simply "whatever the domain allows"
+# - so a future domain change cannot silently widen the public API. Candidate
+# outcomes are deliberately absent: recruiters may reject before an offer, but
+# only the owning candidate may accept an offer or reject an open offer. The
+# "bypass" transitions (``UNDER_REVIEW -> OFFERED``, ``SHORTLISTED -> OFFERED``,
+# ``UNDER_REVIEW -> INTERVIEWING``) and ``OFFERED -> INTERVIEWING`` are also
+# intentionally absent because they skip canonical stages.
 _PUBLISHED_RECRUITER_TRANSITIONS = frozenset(
     {
         (ApplicationStatus.APPLIED, ApplicationStatus.UNDER_REVIEW),
@@ -91,12 +96,40 @@ _PUBLISHED_RECRUITER_TRANSITIONS = frozenset(
         (ApplicationStatus.SHORTLISTED, ApplicationStatus.REJECTED),
         (ApplicationStatus.INTERVIEWING, ApplicationStatus.UNDER_REVIEW),
         (ApplicationStatus.INTERVIEWING, ApplicationStatus.OFFERED),
-        (ApplicationStatus.INTERVIEWING, ApplicationStatus.ACCEPTED),
         (ApplicationStatus.INTERVIEWING, ApplicationStatus.REJECTED),
-        (ApplicationStatus.OFFERED, ApplicationStatus.ACCEPTED),
-        (ApplicationStatus.OFFERED, ApplicationStatus.REJECTED),
     }
 )
+
+
+def _validate_offer_interview_prerequisites(application: Application) -> None:
+    """Require a completed/confirmed interview and no pending interview.
+
+    ``Application.interviews`` is filtered to non-deleted rows by the
+    relationship's primary join, so soft-deleted interviews can never satisfy
+    (or block) this rule.
+    """
+    interviews = list(application.interviews or [])
+    if not interviews:
+        raise InvalidTransitionException(
+            "Không thể gửi lời mời làm việc khi chưa có buổi phỏng vấn nào."
+        )
+    if any(
+        interview.status == InterviewStatus.SCHEDULED
+        for interview in interviews
+    ):
+        raise InvalidTransitionException(
+            "Không thể gửi lời mời làm việc khi vẫn còn buổi phỏng vấn "
+            "đang chờ xác nhận."
+        )
+    if not any(
+        interview.status
+        in {InterviewStatus.CANDIDATE_CONFIRMED, InterviewStatus.COMPLETED}
+        for interview in interviews
+    ):
+        raise InvalidTransitionException(
+            "Không thể gửi lời mời làm việc: cần ít nhất một buổi phỏng vấn "
+            "đã được ứng viên xác nhận hoặc đã hoàn thành."
+        )
 
 
 @dataclass
@@ -140,6 +173,7 @@ class ApplicationService:
             candidate_id=candidate_id,
             job_id=job_id,
         )
+        application.job = job
         self.session.add(application)
         await self.session.flush()
         try:
@@ -156,6 +190,14 @@ class ApplicationService:
                             entity_type="application",
                             entity_id=application.id,
                         )
+
+            await schedule_application_pipeline_event(
+                self.session,
+                application=application,
+                action=ACTION_APPLICATION_CREATED,
+                from_status=None,
+                to_status=ApplicationStatus.APPLIED,
+            )
 
             await self.session.commit()
             await self.session.refresh(
@@ -219,6 +261,9 @@ class ApplicationService:
                 f"transition is not available through this endpoint yet."
             )
 
+        if new_status == ApplicationStatus.OFFERED:
+            _validate_offer_interview_prerequisites(application)
+
         # Atomic conditional update to prevent lost updates
         # Only proceed if the status is still what we validated
         updated = await self.applications.try_update_status(
@@ -281,6 +326,15 @@ class ApplicationService:
                     entity_id=application.id,
                 )
 
+            await schedule_application_pipeline_event(
+                self.session,
+                application=application,
+                action=ACTION_APPLICATION_STATUS_CHANGED,
+                from_status=old_status,
+                to_status=new_status,
+                candidate_user_id=candidate_user_id,
+            )
+
             await self.session.commit()
             await self.session.refresh(
                 application, attribute_names=["candidate"]
@@ -289,6 +343,128 @@ class ApplicationService:
         except Exception:
             await self.session.rollback()
             raise
+        return application
+
+    async def respond_to_offer(
+        self,
+        current_user: User,
+        application_id: uuid.UUID,
+        action: str,
+        notes: str | None = None,
+    ) -> Application:
+        """Candidate accepts or declines an offer for their own application.
+
+        The application must currently be ``OFFERED``; only the owning
+        candidate can respond. The conditional status update makes the first
+        accept/decline win when two responses race.
+        """
+        if action not in {"accept", "decline"}:
+            raise InvalidTransitionException(
+                f"Hành động không hợp lệ: {action!r}. Chỉ hỗ trợ 'accept' "
+                "hoặc 'decline'."
+            )
+
+        application = await require_candidate_application(
+            self.session, current_user, application_id
+        )
+        old_status = application.status
+        if old_status != ApplicationStatus.OFFERED:
+            raise InvalidTransitionException(
+                "Chỉ có thể phản hồi lời mời làm việc khi đơn ứng tuyển đang "
+                "ở trạng thái được mời làm việc."
+            )
+
+        new_status = (
+            ApplicationStatus.ACCEPTED
+            if action == "accept"
+            else ApplicationStatus.REJECTED
+        )
+        domain = DomainApplication(
+            candidate_id=application.candidate_id,
+            job_id=application.job_id,
+            status=old_status,
+        )
+        try:
+            domain.transition_to(new_status)
+        except DomainException as exc:
+            raise InvalidTransitionException(str(exc)) from exc
+
+        updated = await self.applications.try_update_status(
+            application_id=application_id,
+            expected_status=old_status,
+            new_status=new_status,
+        )
+        if not updated:
+            raise ConflictException(
+                f"Application {application_id} was modified concurrently. "
+                f"Please refresh and try again."
+            )
+
+        application.status = new_status
+        job_title = application.job.title if application.job else "N/A"
+        if action == "accept":
+            notification_title = "Ứng viên chấp nhận lời mời làm việc"
+            notification_content = (
+                f"Ứng viên đã chấp nhận lời mời làm việc cho vị trí {job_title}."
+            )
+            notification_type = "offer_accepted"
+        else:
+            notification_title = "Ứng viên từ chối lời mời làm việc"
+            notification_content = (
+                f"Ứng viên đã từ chối lời mời làm việc cho vị trí {job_title}."
+            )
+            notification_type = "offer_declined"
+
+        try:
+            await record_activity(
+                self.session,
+                application_id=application_id,
+                actor_id=current_user.id,
+                action_type=hiring.STATUS_CHANGED,
+                from_status=old_status.value,
+                to_status=new_status.value,
+                note=notes,
+            )
+
+            notification_service = NotificationService(self.session)
+            if (
+                application.job
+                and application.job.company
+                and application.job.company.recruiters
+            ):
+                for recruiter in application.job.company.recruiters:
+                    if recruiter.user_id:
+                        await notification_service.create_notification(
+                            user_id=recruiter.user_id,
+                            title=notification_title,
+                            content=notification_content,
+                            notification_type=notification_type,
+                            entity_type="application",
+                            entity_id=application.id,
+                        )
+
+            await schedule_application_pipeline_event(
+                self.session,
+                application=application,
+                action=(
+                    ACTION_OFFER_ACCEPTED
+                    if action == "accept"
+                    else ACTION_OFFER_DECLINED
+                ),
+                from_status=old_status,
+                to_status=new_status,
+                candidate_user_id=current_user.id,
+            )
+
+            await self.session.commit()
+            await self.session.refresh(
+                application, attribute_names=["candidate"]
+            )
+
+        except Exception:
+            await self.session.rollback()
+            raise
+
         return application
 
     async def withdraw_application(
@@ -369,6 +545,15 @@ class ApplicationService:
                             entity_type="application",
                             entity_id=application.id,
                         )
+
+            await schedule_application_pipeline_event(
+                self.session,
+                application=application,
+                action=ACTION_APPLICATION_WITHDRAWN,
+                from_status=old_status,
+                to_status=ApplicationStatus.WITHDRAWN,
+                candidate_user_id=current_user.id,
+            )
 
             await self.session.commit()
             await self.session.refresh(

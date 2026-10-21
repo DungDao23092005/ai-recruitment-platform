@@ -27,6 +27,15 @@ from app.services.subscription_realtime import (
     ADMIN_SUBSCRIPTIONS_CHANNEL,
     ADMIN_SUBSCRIPTION_CHANGED_EVENT,
 )
+from app.services.pipeline_realtime import (
+    CANDIDATE_PIPELINE_UPDATED_EVENT,
+    PIPELINE_UPDATED_EVENT,
+    company_pipeline_channel,
+    is_candidate_pipeline_message,
+    is_company_pipeline_message,
+    parse_pipeline_payload,
+)
+from app.services.user_service import UserService
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -45,23 +54,16 @@ NOTIFICATION_CREATED_EVENT = "notification.created"
 def _personal_event_name(raw_data: object) -> str:
     """Classify a personal-channel payload into its SSE event name.
 
-    Only the account-locked signal is promoted to a named event; ordinary
-    notification payloads - and anything malformed or unrecognised - keep the
-    default ``notification.created`` event so existing consumers are unaffected.
+    Account locks and candidate pipeline invalidations are promoted only when
+    their trusted payload shape validates. Ordinary notification payloads - and
+    anything malformed or unrecognised - keep the default
+    ``notification.created`` event so existing consumers are unaffected.
     """
-    if isinstance(raw_data, (bytes, bytearray)):
-        try:
-            raw_data = raw_data.decode("utf-8")
-        except UnicodeDecodeError:
-            return NOTIFICATION_CREATED_EVENT
-    if not isinstance(raw_data, str):
-        return NOTIFICATION_CREATED_EVENT
-    try:
-        payload = json.loads(raw_data)
-    except (TypeError, ValueError):
-        return NOTIFICATION_CREATED_EVENT
-    if isinstance(payload, dict) and payload.get("type") == ACCOUNT_LOCKED_EVENT:
+    payload = parse_pipeline_payload(raw_data)
+    if payload is not None and payload.get("type") == ACCOUNT_LOCKED_EVENT:
         return ACCOUNT_LOCKED_EVENT
+    if is_candidate_pipeline_message(raw_data):
+        return CANDIDATE_PIPELINE_UPDATED_EVENT
     return NOTIFICATION_CREATED_EVENT
 
 
@@ -138,21 +140,34 @@ async def mark_all_notifications_read(
 )
 async def create_stream_ticket(
     current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
     pubsub: PubSubManager = Depends(get_pubsub_manager),
 ) -> dict:
     """Create a short-lived ticket for SSE stream authentication.
 
-    The ticket stores the server-derived role so the stream can authorize the
-    admin channel without trusting any client-supplied flag.
+    The ticket stores server-derived authorization data so the stream can
+    subscribe to the admin and recruiter-company channels without trusting any
+    client-supplied flag or company identifier.
     """
+    is_admin = current_user.role == UserRole.ADMIN
+    company_id = None
+    if current_user.role == UserRole.RECRUITER:
+        try:
+            user = await UserService(db).get_user_with_profile(current_user.id)
+            profile = user.recruiter_profile if user is not None else None
+            company_id = profile.company_id if profile is not None else None
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            logger.warning("Failed to resolve recruiter company for SSE: %s", exc)
+
     ticket = secrets.token_urlsafe(32)
     ticket_key = f"notification:stream_ticket:{ticket}"
-    payload = json.dumps(
-        {
-            "user_id": str(current_user.id),
-            "is_admin": current_user.role == UserRole.ADMIN,
-        }
-    )
+    ticket_payload: dict[str, object] = {
+        "user_id": str(current_user.id),
+        "is_admin": is_admin,
+    }
+    if company_id is not None:
+        ticket_payload["company_id"] = str(company_id)
+    payload = json.dumps(ticket_payload)
     await pubsub._redis.setex(ticket_key, TICKET_TTL_SECONDS, payload)
     return {"ticket": ticket}
 
@@ -182,6 +197,10 @@ async def notification_stream(
         ticket_data = json.loads(raw_ticket)
         user_id = uuid.UUID(str(ticket_data["user_id"]))
         is_admin = bool(ticket_data.get("is_admin", False))
+        raw_company_id = ticket_data.get("company_id")
+        company_id = (
+            uuid.UUID(str(raw_company_id)) if raw_company_id else None
+        )
     except (ValueError, TypeError, KeyError, json.JSONDecodeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -190,10 +209,14 @@ async def notification_stream(
 
     user_id_str = str(user_id)
     personal_channel = f"notifications:user:{user_id_str}"
+    company_channel = None
     channels = [personal_channel]
     if is_admin:
         channels.append(ADMIN_SUBSCRIPTIONS_CHANNEL)
         channels.append(ADMIN_EMAILS_CHANNEL)
+    elif company_id is not None:
+        company_channel = company_pipeline_channel(company_id)
+        channels.append(company_channel)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         pubsub_client = pubsub._redis.pubsub()
@@ -222,13 +245,28 @@ async def notification_stream(
                         try:
                             data = message["data"]
                             channel = message.get("channel")
+                            event_name: str | None
                             if channel == ADMIN_SUBSCRIPTIONS_CHANNEL:
                                 event_name = ADMIN_SUBSCRIPTION_CHANGED_EVENT
                             elif channel == ADMIN_EMAILS_CHANNEL:
                                 event_name = EMAIL_OUTBOX_UPDATED_EVENT
+                            elif (
+                                company_channel is not None
+                                and channel == company_channel
+                            ):
+                                if is_company_pipeline_message(
+                                    data, company_id=company_id
+                                ):
+                                    event_name = PIPELINE_UPDATED_EVENT
+                                else:
+                                    event_name = None
+                                    logger.warning(
+                                        "Ignoring malformed company pipeline event"
+                                    )
                             else:
                                 event_name = _personal_event_name(data)
-                            yield f"event: {event_name}\ndata: {data}\n\n"
+                            if event_name is not None:
+                                yield f"event: {event_name}\ndata: {data}\n\n"
                         except Exception as e:
                             logger.warning("Failed to process SSE message: %s", e)
 

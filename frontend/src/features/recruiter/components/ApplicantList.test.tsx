@@ -6,6 +6,7 @@ import { ApplicantList } from './ApplicantList'
 import * as applicationsApi from '@/api/applications'
 import apiClient from '@/api/client'
 import type { Application, ApplicationDetail } from '@/types/application'
+import type { ApplicationMatchExplanationResponse } from '@/types/ai'
 
 const mockApplications: Application[] = [
   {
@@ -39,11 +40,16 @@ vi.mock('@/api/client', () => ({
 vi.mock('@/api/applications', () => ({
   getApplicationDetail: vi.fn(),
   getApplicationMatch: vi.fn(),
+  getApplicationMatchExplanation: vi.fn(),
+  refreshApplicationMatchExplanation: vi.fn(),
 }))
 
 const mockedPatch = vi.mocked(apiClient.patch)
 const mockedGetApplicationDetail = vi.mocked(
   applicationsApi.getApplicationDetail,
+)
+const mockedGetMatchExplanation = vi.mocked(
+  applicationsApi.getApplicationMatchExplanation,
 )
 
 const mockDetail: ApplicationDetail = {
@@ -110,8 +116,35 @@ const mockDetail: ApplicationDetail = {
   interviews: [],
 }
 
+const mockExplanation: ApplicationMatchExplanationResponse = {
+  application_id: 'app-1',
+  overall_score: 78,
+  score_breakdown: {
+    overall_score: 78,
+    cosine_similarity: 0.82,
+    skill_coverage_score: 0.75,
+    preferred_skill_coverage_score: 0.5,
+    experience_match_score: 0.9,
+    education_score: 1,
+    project_score: 0.4,
+  },
+  summary: 'Tóm tắt đối sánh cho ứng viên.',
+  summary_source: 'deterministic',
+  skill_evaluations: [],
+  experience_evaluations: [],
+  key_strengths: [],
+  areas_for_inquiry: [],
+  evidence: [],
+  data_limitations: [],
+  confidence: null,
+  model_version: null,
+  generated_at: '2026-01-20T00:00:00Z',
+  cache_state: 'not_cached',
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  mockedGetMatchExplanation.mockResolvedValue(mockExplanation)
 })
 
 function renderApplicantList(props: { applications: Application[]; onStatusChange?: (updated: Application) => void }) {

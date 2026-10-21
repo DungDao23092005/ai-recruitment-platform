@@ -10,6 +10,8 @@ export type ApplicationStatus =
   | 'rejected'
   | 'withdrawn'
 
+export type OfferAction = 'accept' | 'decline'
+
 export interface CandidateProfileMinimal {
   id: string
   full_name: string | null
