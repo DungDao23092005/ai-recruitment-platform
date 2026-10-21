@@ -1034,7 +1034,6 @@ class ApplicationService:
 
         key_hash = hash_idempotency_key(current_user.id, idempotency_key)
 
-        await coordinator.ensure_redis_available()
         cached = await coordinator.read_idempotency_cache(
             current_user.id,
             key_hash,

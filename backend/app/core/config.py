@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # AI & Vector Database Configuration
     GEMINI_API_KEY: str = ""
     GEMINI_GENERATION_MODEL: str = "gemini-3.5-flash-lite"
+    GEMINI_PRICING_TIER: str = "paid_standard"
     QDRANT_HOST: str = "localhost"
     QDRANT_PORT: int = 6333
     QDRANT_URL: str | None = None
@@ -75,6 +76,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_PARSE_JD_PER_MINUTE: int = 5
     RATE_LIMIT_MATCH_PER_MINUTE: int = 10
     RATE_LIMIT_RECOMMENDATIONS_PER_MINUTE: int = 10
+    RATE_LIMIT_EXPLANATION_REFRESH_PER_MINUTE: int = 30
 
     # Trusted Proxies for safe client IP extraction
     TRUSTED_PROXIES: Annotated[list[str], NoDecode] = []
@@ -218,6 +220,30 @@ class Settings(BaseSettings):
         if env == "production":
             if not value or not value.strip():
                 raise ValueError("GEMINI_API_KEY is required in production")
+        return value
+
+    @field_validator("GEMINI_PRICING_TIER")
+    @classmethod
+    def validate_gemini_pricing_tier(cls, value: str) -> str:
+        if value not in {
+            "free_tier",
+            "paid_standard",
+            "paid_context_cache",
+        }:
+            raise ValueError(
+                "GEMINI_PRICING_TIER must be one of free_tier, "
+                "paid_standard or paid_context_cache"
+            )
+        return value
+
+    @field_validator("RATE_LIMIT_EXPLANATION_REFRESH_PER_MINUTE")
+    @classmethod
+    def validate_explanation_refresh_rate_limit(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError(
+                "RATE_LIMIT_EXPLANATION_REFRESH_PER_MINUTE must be greater "
+                "than 0"
+            )
         return value
 
     @field_validator("MATCH_EXPLANATION_CACHE_TTL_SECONDS")

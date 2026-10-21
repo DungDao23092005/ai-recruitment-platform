@@ -21,6 +21,10 @@ from app.core.exceptions import (
     MatchExplanationIdempotencyConflictError,
     MatchExplanationRefreshError,
 )
+from app.core.rate_limit import (
+    RateLimitResult,
+    explanation_refresh_rate_limit,
+)
 from app.domain.enums import UserRole
 from app.main import app
 
@@ -109,6 +113,16 @@ def mock_coordinator():
 @pytest.fixture
 def client(mock_service, mock_coordinator):
     app.dependency_overrides[get_current_user] = _override_user(UserRole.RECRUITER)
+    app.dependency_overrides[explanation_refresh_rate_limit] = (
+        lambda: RateLimitResult(
+            allowed=True,
+            current_count=0,
+            ttl_remaining=60,
+            reset_time=0.0,
+            limit=30,
+            remaining=30,
+        )
+    )
     app.dependency_overrides[_get_ai_matching_service] = lambda: MagicMock()
     app.dependency_overrides[_get_match_explanation_service] = lambda: MagicMock()
     app.dependency_overrides[_get_match_explanation_cache] = lambda: MagicMock()

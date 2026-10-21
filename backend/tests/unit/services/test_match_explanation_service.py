@@ -597,3 +597,126 @@ class TestRefreshExplanationPath:
 
         assert exc_info.value.reason == "score_contradiction"
         assert exc_info.value.http_status == 502
+
+class TestTelemetryIntegration:
+    @staticmethod
+    def _narrative(summary="Narrative summary text.", *, model="gemini-3.5-flash-lite", usage=None):
+        explain = AsyncMock(return_value=SimpleNamespace(summary=summary, _token_usage=usage))
+        return SimpleNamespace(
+            explain_match=explain,
+            llm_provider=SimpleNamespace(model_name=model),
+        )
+
+    async def test_successful_ai_call_emits_validated_cost_telemetry(self, monkeypatch):
+        from app.core.config import settings
+        from app.core.telemetry.explainability_telemetry import PricingStatus, TelemetryOutcome
+
+        monkeypatch.setattr(settings, "GEMINI_PRICING_TIER", "paid_standard")
+        events = []
+        narrative = self._narrative(
+            usage={"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}
+        )
+        service = MatchExplanationService(
+            narrative_service=narrative, telemetry_sink=events.append
+        )
+
+        await service.build_explanation(
+            application_id=uuid.uuid4(),
+            match_result=make_match_result(),
+            parsed_resume=make_resume(),
+            parsed_job=make_job(),
+        )
+
+        assert len(events) == 1
+        event = events[0]
+        assert event.outcome is TelemetryOutcome.SUCCESS
+        assert event.summary_source == "ai_generated"
+        assert event.pricing_status is PricingStatus.ESTIMATED
+        assert event.estimated_cost_usd == pytest.approx(2.80)
+        assert "Jane Doe" not in event.model_dump_json()
+
+    async def test_timeout_fallback_emits_error_code_without_raw_exception_text(self):
+        from app.core.telemetry.explainability_telemetry import TelemetryErrorCode, TelemetryOutcome
+
+        events = []
+        narrative = self._narrative()
+        narrative.explain_match.side_effect = TimeoutError("secret upstream detail")
+        service = MatchExplanationService(
+            narrative_service=narrative, telemetry_sink=events.append
+        )
+
+        result = await service.build_explanation(
+            application_id=uuid.uuid4(),
+            match_result=make_match_result(),
+            parsed_resume=make_resume(),
+            parsed_job=make_job(),
+        )
+
+        assert result.summary_source == "deterministic"
+        assert events[0].outcome is TelemetryOutcome.FALLBACK
+        assert events[0].error_code is TelemetryErrorCode.PROVIDER_TIMEOUT
+        assert "secret upstream detail" not in events[0].model_dump_json()
+
+    async def test_refresh_failure_emits_error_before_raising(self):
+        from app.core.telemetry.explainability_telemetry import TelemetryErrorCode, TelemetryOutcome
+
+        events = []
+        narrative = self._narrative()
+        narrative.explain_match.side_effect = AIProviderUnavailableError(
+            "down", retry_after=30
+        )
+        service = MatchExplanationService(
+            narrative_service=narrative, telemetry_sink=events.append
+        )
+
+        with pytest.raises(MatchExplanationRefreshError):
+            await service.build_refresh_explanation(
+                application_id=uuid.uuid4(),
+                match_result=make_match_result(),
+                parsed_resume=make_resume(),
+                parsed_job=make_job(),
+            )
+
+        assert len(events) == 1
+        assert events[0].outcome is TelemetryOutcome.ERROR
+        assert events[0].error_code is TelemetryErrorCode.PROVIDER_UNAVAILABLE
+
+    async def test_unknown_model_emits_unpriced_model(self):
+        from app.core.telemetry.explainability_telemetry import TelemetryErrorCode
+
+        events = []
+        narrative = self._narrative(
+            model="gemini-future-unknown",
+            usage={"prompt_tokens": 10, "completion_tokens": 5},
+        )
+        service = MatchExplanationService(
+            narrative_service=narrative, telemetry_sink=events.append
+        )
+
+        await service.build_explanation(
+            application_id=uuid.uuid4(),
+            match_result=make_match_result(),
+            parsed_resume=make_resume(),
+            parsed_job=make_job(),
+        )
+
+        assert events[0].error_code is TelemetryErrorCode.UNPRICED_MODEL
+        assert events[0].estimated_cost_usd is None
+
+    async def test_telemetry_sink_failure_does_not_break_explanation(self):
+        def failing_sink(_event):
+            raise RuntimeError("telemetry down")
+
+        narrative = self._narrative()
+        service = MatchExplanationService(
+            narrative_service=narrative, telemetry_sink=failing_sink
+        )
+
+        result = await service.build_explanation(
+            application_id=uuid.uuid4(),
+            match_result=make_match_result(),
+            parsed_resume=make_resume(),
+            parsed_job=make_job(),
+        )
+
+        assert result.summary_source == "ai_generated"

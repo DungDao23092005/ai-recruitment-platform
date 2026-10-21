@@ -60,7 +60,6 @@ class _Coordinator:
         self.active = active
         self.publish_result = publish_result
         self.record_id = record_id or uuid.uuid4()
-        self.ensure_redis_available = AsyncMock()
         self.read_idempotency_cache = AsyncMock(return_value=replay)
         self.acquire_lock = AsyncMock()
         self.register_refresh = AsyncMock(

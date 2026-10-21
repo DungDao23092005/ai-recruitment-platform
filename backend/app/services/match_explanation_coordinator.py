@@ -2,9 +2,11 @@
 
 SQL Server is the authoritative idempotency, lease and billing store. Redis is
 used for distributed mutual exclusion and as an optional replay/cache layer.
-The two systems are deliberately *not* coupled with a fake two-phase commit:
-the SQL transaction commits first, then cache publication is fenced by the
-current Redis lock owner.
+When Redis is unavailable the SQL leases still serialize refreshes: locking and
+cache publication are skipped, while quota accounting and idempotency remain
+authoritative. The two systems are deliberately *not* coupled with a fake
+two-phase commit: the SQL transaction commits first, then cache publication is
+fenced by the current Redis lock owner when Redis is available.
 """
 
 from __future__ import annotations
@@ -249,35 +251,24 @@ class MatchExplanationCoordinator:
             _active_application_tasks.pop(application_id, None)
 
     # ------------------------------------------------------------------
-    # Redis health / distributed lock
+    # Distributed lock
     # ------------------------------------------------------------------
-    async def ensure_redis_available(self) -> None:
-        if self.redis is None:
-            raise MatchExplanationRefreshError(
-                "redis_unavailable", http_status=503, retry_after=60
-            )
-        try:
-            pong = await self.redis.ping()
-        except Exception as exc:  # noqa: BLE001 - fail closed
-            logger.error(
-                "match_explanation_refresh_redis_unavailable error=%s",
-                type(exc).__name__,
-            )
-            raise MatchExplanationRefreshError(
-                "redis_unavailable", http_status=503, retry_after=60
-            ) from exc
-        if pong is False:
-            raise MatchExplanationRefreshError(
-                "redis_unavailable", http_status=503, retry_after=60
-            )
-
     async def acquire_lock(
         self, application_id: uuid.UUID, owner_token: str
-    ) -> None:
+    ) -> bool:
+        """Acquire the optional Redis lock, degrading to SQL on outage.
+
+        Returns ``True`` when the Redis lock is held. A missing client or a
+        Redis error returns ``False`` so the caller can continue with the SQL
+        application lease. An actual conflicting lock owner still raises 409.
+        """
         if self.redis is None:
-            raise MatchExplanationRefreshError(
-                "redis_unavailable", http_status=503, retry_after=60
+            logger.warning(
+                "match_explanation_refresh_lock_skipped application_id=%s "
+                "reason=redis_unavailable",
+                application_id,
             )
+            return False
         try:
             acquired = await self.redis.set(
                 build_lock_key(application_id),
@@ -285,22 +276,21 @@ class MatchExplanationCoordinator:
                 nx=True,
                 ex=self.lock_ttl_seconds,
             )
-        except Exception as exc:  # noqa: BLE001 - fail closed
-            logger.error(
-                "match_explanation_refresh_lock_error application_id=%s "
+        except Exception as exc:  # noqa: BLE001 - SQL lease takes over
+            logger.warning(
+                "match_explanation_refresh_lock_skipped application_id=%s "
                 "error=%s",
                 application_id,
                 type(exc).__name__,
             )
-            raise MatchExplanationRefreshError(
-                "redis_unavailable", http_status=503, retry_after=60
-            ) from exc
+            return False
         if not acquired:
             raise MatchExplanationRefreshError(
                 "application_refresh_in_progress",
                 http_status=409,
                 retry_after=5,
             )
+        return True
 
     async def renew_lock(
         self,
@@ -743,13 +733,11 @@ class MatchExplanationCoordinator:
                     user_id=user_id,
                     key_hash=key_hash,
                 ):
-                    logger.error(
+                    logger.warning(
                         "match_explanation_heartbeat_redis_renewal_failed "
-                        "application_id=%s",
+                        "application_id=%s sql_lease_remains_authoritative",
                         application_id,
                     )
-                    worker_task.cancel()
-                    return
         except asyncio.CancelledError:
             return
         except Exception:  # noqa: BLE001 - never leave an unobserved task

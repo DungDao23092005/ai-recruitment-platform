@@ -24,9 +24,8 @@ vi.mock('@/api/auth', () => ({
   createRecruiterProfile: vi.fn(),
 }))
 
-vi.mock('@/api/notifications', () => ({
-  getUnreadNotificationCount: vi.fn().mockResolvedValue({ count: 0 }),
-  getNotifications: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+vi.mock('@/components/common/NotificationBell', () => ({
+  NotificationBell: () => null,
 }))
 
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)

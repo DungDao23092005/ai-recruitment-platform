@@ -110,6 +110,29 @@ class TestNativeAsyncLifecycle:
         assert kwargs["contents"] == "Parse this resume"
         client.aio.aclose.assert_awaited_once()
 
+    def test_cached_input_tokens_are_propagated_when_present(self, monkeypatch):
+        monkeypatch.setattr(
+            settings, "GEMINI_GENERATION_MODEL", "gemini-3.5-flash"
+        )
+        provider = GeminiLLMProvider(api_key="test-key")
+        response = _success_response()
+        response.usage_metadata.cached_content_token_count = 4
+        client = _make_client(response=response)
+
+        with patch("google.genai.Client", return_value=client):
+            result = _run(
+                provider.generate_structured_output(
+                    prompt="Parse this resume",
+                    response_schema=_DummySchema,
+                )
+            )
+
+        assert result._token_usage == {
+            "prompt_tokens": 12,
+            "completion_tokens": 7,
+            "cached_input_tokens": 4,
+        }
+
     def test_http_options_use_20_second_timeout_and_bounded_retries(self):
         provider = GeminiLLMProvider(api_key="test-key")
         client = _make_client(response=_success_response())

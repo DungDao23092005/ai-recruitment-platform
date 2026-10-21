@@ -30,6 +30,7 @@ from app.core.exceptions import (
     MatchExplanationRefreshError,
     MatchExplanationRefreshInputError,
 )
+from app.core.rate_limit import explanation_refresh_rate_limit
 from app.database.session import async_session_factory
 from app.models import Application, User
 from app.schemas.ai_explanation import ApplicationMatchExplanationResponse
@@ -401,6 +402,7 @@ async def get_application_match_explanation(
 @router.post(
     "/{application_id}/match-explanation/refresh",
     response_model=ApplicationMatchExplanationResponse,
+    dependencies=[Depends(explanation_refresh_rate_limit)],
     openapi_extra={
         "parameters": [
             {

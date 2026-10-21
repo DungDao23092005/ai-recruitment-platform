@@ -22,8 +22,11 @@ model name when available and stays ``None`` otherwise.
 from __future__ import annotations
 
 import re
+import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Callable
 
 from app.ai.matching.evidence_verifier import EvidenceVerifier
 from app.core.exceptions import (
@@ -33,6 +36,14 @@ from app.core.exceptions import (
     EmptyDocumentError,
     InvalidDocumentError,
     MatchExplanationRefreshError,
+)
+from app.core.telemetry.explainability_telemetry import (
+    ExplainabilityTelemetryEvent,
+    TelemetryErrorCode,
+    TelemetryOutcome,
+    build_explainability_event,
+    emit_explainability_event,
+    normalize_token_usage,
 )
 from app.schemas.ai_explanation import (
     ApplicationMatchExplanationResponse,
@@ -146,6 +157,19 @@ def _derive_duration(
     return f"{start_year} - {end_match.group(1)}"
 
 
+@dataclass(frozen=True)
+class _NarrativeOutcome:
+    summary: str
+    model_version: str | None
+    summary_source: str
+    error_code: TelemetryErrorCode
+    token_usage: dict[str, int | None] | None
+    fallback_used: bool
+    ai_attempted: bool
+    telemetry_model_id: str | None = None
+    refresh_error: MatchExplanationRefreshError | None = None
+
+
 class MatchExplanationService:
     """Build an explainable, verifiable match explanation."""
 
@@ -153,9 +177,13 @@ class MatchExplanationService:
         self,
         narrative_service=None,
         verifier: EvidenceVerifier | None = None,
+        *,
+        telemetry_sink: Callable[[ExplainabilityTelemetryEvent], None]
+        | None = None,
     ) -> None:
         self.narrative_service = narrative_service
         self.verifier = verifier or EvidenceVerifier()
+        self.telemetry_sink = telemetry_sink
 
     # -- skill evaluation -------------------------------------------------
 
@@ -331,31 +359,56 @@ class MatchExplanationService:
         narrative_service=None,
         *,
         raise_on_failure: bool = False,
-    ) -> tuple[str, str | None, str]:
-        """Return ``(summary, model_version, summary_source)``.
+    ) -> _NarrativeOutcome:
+        """Build the narrative outcome plus bounded telemetry metadata.
 
-        Uses the provided narrative service when available; otherwise (or on
-        provider failure) returns a deterministic, grounded summary.
-
-        ``model_version`` is the provider's real configured model identifier
-        when it reliably exposes one (e.g. ``GeminiLLMProvider.model_name``);
-        otherwise it is ``None`` rather than a guessed class name.
-
-        ``summary_source`` distinguishes LLM-generated prose from the local
-        deterministic fallback. Only the evidence excerpts and evaluations are
-        deterministically verified; AI narrative is not quote-verified.
-
-        Narrative output is accepted only when it is a non-empty string and,
-        where reliably checkable, does not contradict the authoritative score.
-        Empty, malformed, contradictory, or failed narratives fall back to the
-        deterministic summary.
+        ``raise_on_failure`` does not raise directly: it records the typed
+        refresh error on the outcome so the caller can emit telemetry before
+        re-raising. This keeps the public refresh semantics unchanged while
+        ensuring provider failures are observable.
         """
+        fallback_summary = (
+            f"Deterministic match score {match_result.overall_score:.2f}/100 "
+            "(scores are produced by the matching engine and copied verbatim)."
+        )
+        configured_model: str | None = None
+        ai_attempted = narrative_service is not None
+        if narrative_service is not None:
+            provider = getattr(narrative_service, "llm_provider", None)
+            raw_model = getattr(provider, "model_name", None)
+            configured_model = (
+                raw_model.strip()
+                if isinstance(raw_model, str) and raw_model.strip()
+                else None
+            )
+
+        def fallback(
+            error_code: TelemetryErrorCode,
+            *,
+            token_usage: dict[str, int | None] | None = None,
+            refresh_error: MatchExplanationRefreshError | None = None,
+        ) -> _NarrativeOutcome:
+            return _NarrativeOutcome(
+                summary=fallback_summary,
+                model_version=None,
+                summary_source="deterministic",
+                error_code=error_code,
+                token_usage=token_usage,
+                fallback_used=ai_attempted,
+                ai_attempted=ai_attempted,
+                telemetry_model_id=configured_model,
+                refresh_error=refresh_error,
+            )
+
         if narrative_service is not None:
             try:
                 response = await narrative_service.explain_match(
                     match_result=match_result,
                     candidate=parsed_resume,
                     job=parsed_job,
+                )
+                token_usage = normalize_token_usage(
+                    getattr(response, "_token_usage", None)
                 )
                 raw_summary = getattr(response, "summary", None)
                 summary = (
@@ -364,90 +417,151 @@ class MatchExplanationService:
                     else ""
                 )
                 if not summary:
-                    if raise_on_failure:
-                        raise MatchExplanationRefreshError("empty_narrative")
-                    data_limitations.append(
-                        "The AI narrative was empty or malformed; a "
-                        "deterministic summary was used instead."
-                    )
-                elif _narrative_contradicts_score(
-                    response, summary, getattr(match_result, "overall_score", None)
-                ):
-                    if raise_on_failure:
-                        raise MatchExplanationRefreshError(
-                            "score_contradiction"
-                        )
-                    data_limitations.append(
-                        "The AI narrative was rejected because it contained a "
-                        "match-score claim that conflicts with the deterministic "
-                        "score; a deterministic summary was used instead."
-                    )
-                else:
-                    provider = getattr(narrative_service, "llm_provider", None)
-                    raw_model = getattr(provider, "model_name", None)
-                    model_version = (
-                        raw_model.strip()
-                        if isinstance(raw_model, str) and raw_model.strip()
+                    refresh_error = (
+                        MatchExplanationRefreshError("empty_narrative")
+                        if raise_on_failure
                         else None
                     )
-                    data_limitations.append(
-                        "The summary is AI-generated narrative and is not "
-                        "quote-verified. Only the evidence excerpts and "
-                        "evaluations are deterministically verified against "
-                        "the parsed CV."
+                    if not raise_on_failure:
+                        data_limitations.append(
+                            "The AI narrative was empty or malformed; a "
+                            "deterministic summary was used instead."
+                        )
+                    return fallback(
+                        TelemetryErrorCode.INVALID_NARRATIVE,
+                        token_usage=token_usage,
+                        refresh_error=refresh_error,
                     )
-                    return summary, model_version, "ai_generated"
-            except MatchExplanationRefreshError:
-                raise
+                if _narrative_contradicts_score(
+                    response, summary, getattr(match_result, "overall_score", None)
+                ):
+                    refresh_error = (
+                        MatchExplanationRefreshError("score_contradiction")
+                        if raise_on_failure
+                        else None
+                    )
+                    if not raise_on_failure:
+                        data_limitations.append(
+                            "The AI narrative was rejected because it contained "
+                            "a match-score claim that conflicts with the "
+                            "deterministic score; a deterministic summary was "
+                            "used instead."
+                        )
+                    return fallback(
+                        TelemetryErrorCode.SCORE_CONTRADICTION,
+                        token_usage=token_usage,
+                        refresh_error=refresh_error,
+                    )
+
+                data_limitations.append(
+                    "The summary is AI-generated narrative and is not "
+                    "quote-verified. Only the evidence excerpts and "
+                    "evaluations are deterministically verified against "
+                    "the parsed CV."
+                )
+                return _NarrativeOutcome(
+                    summary=summary,
+                    model_version=configured_model,
+                    summary_source="ai_generated",
+                    error_code=TelemetryErrorCode.NONE,
+                    token_usage=token_usage,
+                    fallback_used=False,
+                    ai_attempted=True,
+                    telemetry_model_id=configured_model,
+                )
             except AIProviderQuotaExceededError as exc:
-                if raise_on_failure:
-                    raise MatchExplanationRefreshError(
+                refresh_error = (
+                    MatchExplanationRefreshError(
                         "provider_quota_exceeded",
                         http_status=429,
                         retry_after=getattr(exc, "retry_after", None),
-                    ) from exc
-                data_limitations.append(
-                    "The AI narrative explanation was unavailable; a "
-                    "deterministic summary was used instead."
+                    )
+                    if raise_on_failure
+                    else None
+                )
+                if not raise_on_failure:
+                    data_limitations.append(
+                        "The AI narrative explanation was unavailable; a "
+                        "deterministic summary was used instead."
+                    )
+                return fallback(
+                    TelemetryErrorCode.PROVIDER_QUOTA_EXCEEDED,
+                    refresh_error=refresh_error,
                 )
             except AIProviderUnavailableError as exc:
-                if raise_on_failure:
-                    raise MatchExplanationRefreshError(
+                refresh_error = (
+                    MatchExplanationRefreshError(
                         "provider_unavailable",
                         http_status=503,
                         retry_after=getattr(exc, "retry_after", None),
-                    ) from exc
-                data_limitations.append(
-                    "The AI narrative explanation was unavailable; a "
-                    "deterministic summary was used instead."
+                    )
+                    if raise_on_failure
+                    else None
+                )
+                if not raise_on_failure:
+                    data_limitations.append(
+                        "The AI narrative explanation was unavailable; a "
+                        "deterministic summary was used instead."
+                    )
+                return fallback(
+                    TelemetryErrorCode.PROVIDER_UNAVAILABLE,
+                    refresh_error=refresh_error,
                 )
             except AIError as exc:
-                if raise_on_failure:
-                    reason = (
+                error_code = (
+                    TelemetryErrorCode.INVALID_NARRATIVE
+                    if isinstance(exc, (EmptyDocumentError, InvalidDocumentError))
+                    else TelemetryErrorCode.PROVIDER_ERROR
+                )
+                refresh_error = (
+                    MatchExplanationRefreshError(
                         "invalid_narrative"
-                        if isinstance(
-                            exc, (EmptyDocumentError, InvalidDocumentError)
-                        )
+                        if error_code is TelemetryErrorCode.INVALID_NARRATIVE
                         else "provider_error"
                     )
-                    raise MatchExplanationRefreshError(reason) from exc
-                data_limitations.append(
-                    "The AI narrative explanation was unavailable; a "
-                    "deterministic summary was used instead."
+                    if raise_on_failure
+                    else None
                 )
-            except Exception as exc:  # noqa: BLE001 - never fail the explanation
-                if raise_on_failure:
-                    raise MatchExplanationRefreshError("provider_error") from exc
-                data_limitations.append(
-                    "The AI narrative explanation failed unexpectedly; a "
-                    "deterministic summary was used instead."
+                if not raise_on_failure:
+                    data_limitations.append(
+                        "The AI narrative explanation was unavailable; a "
+                        "deterministic summary was used instead."
+                    )
+                return fallback(
+                    error_code, refresh_error=refresh_error
+                )
+            except TimeoutError:
+                refresh_error = (
+                    MatchExplanationRefreshError("provider_error")
+                    if raise_on_failure
+                    else None
+                )
+                if not raise_on_failure:
+                    data_limitations.append(
+                        "The AI narrative explanation failed unexpectedly; a "
+                        "deterministic summary was used instead."
+                    )
+                return fallback(
+                    TelemetryErrorCode.PROVIDER_TIMEOUT,
+                    refresh_error=refresh_error,
+                )
+            except Exception:  # noqa: BLE001 - never fail the explanation
+                refresh_error = (
+                    MatchExplanationRefreshError("provider_error")
+                    if raise_on_failure
+                    else None
+                )
+                if not raise_on_failure:
+                    data_limitations.append(
+                        "The AI narrative explanation failed unexpectedly; a "
+                        "deterministic summary was used instead."
+                    )
+                return fallback(
+                    TelemetryErrorCode.PROVIDER_ERROR,
+                    refresh_error=refresh_error,
                 )
 
-        summary = (
-            f"Deterministic match score {match_result.overall_score:.2f}/100 "
-            "(scores are produced by the matching engine and copied verbatim)."
-        )
-        return summary, None, "deterministic"
+        return fallback(TelemetryErrorCode.NONE)
 
     # -- public API -------------------------------------------------------
 
@@ -527,6 +641,7 @@ class MatchExplanationService:
         *,
         raise_narrative_failure: bool = False,
     ) -> ApplicationMatchExplanationResponse:
+        started_at = time.perf_counter()
         required_skills = _clean_skills(
             parsed_job.required_skills if parsed_job else None
         )
@@ -618,7 +733,7 @@ class MatchExplanationService:
                     seen.add(key)
                     evidence.append(excerpt)
 
-        summary, model_version, summary_source = await self._build_summary(
+        narrative = await self._build_summary(
             match_result,
             parsed_resume,
             parsed_job,
@@ -626,6 +741,33 @@ class MatchExplanationService:
             narrative_service,
             raise_on_failure=raise_narrative_failure,
         )
+
+        if narrative.refresh_error is not None:
+            telemetry_outcome = TelemetryOutcome.ERROR
+        elif narrative.fallback_used:
+            telemetry_outcome = TelemetryOutcome.FALLBACK
+        else:
+            telemetry_outcome = TelemetryOutcome.SUCCESS
+        emit_explainability_event(
+            build_explainability_event(
+                application_id=application_id,
+                outcome=telemetry_outcome,
+                fallback_used=narrative.fallback_used,
+                error_code=narrative.error_code,
+                model_id=narrative.telemetry_model_id,
+                token_usage=narrative.token_usage,
+                latency_ms=int(
+                    (time.perf_counter() - started_at) * 1000
+                ),
+                cache_state="not_cached",
+                summary_source=narrative.summary_source,
+                ai_attempted=narrative.ai_attempted,
+            ),
+            sink=self.telemetry_sink,
+        )
+
+        if narrative.refresh_error is not None:
+            raise narrative.refresh_error
 
         return ApplicationMatchExplanationResponse(
             application_id=application_id,
@@ -641,8 +783,8 @@ class MatchExplanationService:
                 education_score=match_result.education_score,
                 project_score=match_result.project_score,
             ),
-            summary=summary,
-            summary_source=summary_source,
+            summary=narrative.summary,
+            summary_source=narrative.summary_source,
             skill_evaluations=skill_evaluations,
             experience_evaluations=experience_evaluations,
             key_strengths=key_strengths,
@@ -650,7 +792,7 @@ class MatchExplanationService:
             evidence=evidence,
             data_limitations=data_limitations,
             confidence=None,
-            model_version=model_version,
+            model_version=narrative.model_version,
             generated_at=datetime.now(timezone.utc),
             cache_state="not_cached",
         )

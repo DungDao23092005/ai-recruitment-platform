@@ -43,15 +43,24 @@ except ImportError as exc:  # pragma: no cover - environment dependent
 
 @dataclass
 class TokenUsage:
-    """Token usage metadata from LLM provider."""
+    """Token usage metadata from LLM provider.
+
+    ``cached_input_tokens`` is reported separately by Gemini when context
+    caching is active. It is intentionally omitted when the provider does not
+    return it, so callers can distinguish "zero cached tokens" from "unknown".
+    """
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    cached_input_tokens: int | None = None
 
     def to_dict(self) -> dict[str, int | None]:
-        return {
+        payload: dict[str, int | None] = {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
         }
+        if self.cached_input_tokens is not None:
+            payload["cached_input_tokens"] = self.cached_input_tokens
+        return payload
 
 
 class GeminiLLMProvider(BaseLLMProvider):
@@ -152,10 +161,18 @@ class GeminiLLMProvider(BaseLLMProvider):
         if usage_metadata is not None:
             prompt_tokens = getattr(usage_metadata, "prompt_token_count", None)
             completion_tokens = getattr(usage_metadata, "candidates_token_count", None)
-            if prompt_tokens is not None or completion_tokens is not None:
+            cached_input_tokens = getattr(
+                usage_metadata, "cached_content_token_count", None
+            )
+            if (
+                prompt_tokens is not None
+                or completion_tokens is not None
+                or cached_input_tokens is not None
+            ):
                 token_usage = TokenUsage(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
+                    cached_input_tokens=cached_input_tokens,
                 )
 
         try:

@@ -10,10 +10,12 @@ from typing import Optional
 from fastapi import Request, HTTPException, status, Depends
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models import User
-from app.api.deps import get_current_active_user
+from app.models import RecruiterProfile, User
+from app.api.deps import get_current_active_user, get_db, require_recruiter
 
 logger = logging.getLogger(__name__)
 
@@ -499,6 +501,57 @@ async def verify_otp_rate_limit(request: Request) -> RateLimitResult:
             return email_result
 
     return ip_result
+
+
+EXPLANATION_REFRESH_ENDPOINT = "match_explanation_refresh"
+
+
+async def explanation_refresh_rate_limit(
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> RateLimitResult:
+    """Limit AI match-explanation refreshes per tenant.
+
+    Recruiters are bucketed by their company so every recruiter in the same
+    company shares one budget. Admins or accounts without a company fall back
+    to their user ID. Redis is a best-effort cost guard here: if it is
+    unavailable the refresh proceeds and SQL leases plus quota enforcement
+    remain authoritative, matching the refresh degraded-mode contract.
+    """
+    limit = settings.RATE_LIMIT_EXPLANATION_REFRESH_PER_MINUTE
+    limiter = get_rate_limiter()
+    if not settings.RATE_LIMIT_ENABLED:
+        return _allowed_result(limit)
+
+    if limiter is None:
+        logger.warning(
+            "Rate limiter unavailable; allowing %s (fail-open, SQL lease "
+            "remains authoritative)",
+            EXPLANATION_REFRESH_ENDPOINT,
+        )
+        return _allowed_result(limit)
+
+    company_id = await db.scalar(
+        select(RecruiterProfile.company_id).where(
+            RecruiterProfile.user_id == current_user.id,
+            RecruiterProfile.is_deleted == False,  # noqa: E712
+        )
+    )
+    tenant_key = (
+        f"company:{company_id}"
+        if company_id
+        else f"user:{current_user.id}"
+    )
+    result = await limiter.check_limit(
+        endpoint=EXPLANATION_REFRESH_ENDPOINT,
+        identifier=tenant_key,
+        limit=limit,
+        window_seconds=60,
+        fail_closed=False,
+    )
+    if not result.allowed:
+        raise rate_limited_exception(result.ttl_remaining)
+    return result
 
 
 async def ai_chat_rate_limit(

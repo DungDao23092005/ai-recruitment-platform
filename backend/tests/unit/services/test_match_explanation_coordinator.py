@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from contextlib import suppress
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -58,12 +59,15 @@ class _FakeRedis:
         self.eval_calls = []
         self.eval_result = 1
         self.get_error = None
+        self.set_error = None
 
     async def ping(self):
         return self.ping_result
 
     async def set(self, key, value, nx=False, ex=None):
         self.set_calls.append((key, value, nx, ex))
+        if self.set_error is not None:
+            raise self.set_error
         if nx and key in self.values:
             return None
         self.values[key] = value
@@ -322,6 +326,64 @@ class TestFencedPublication:
 
         assert exc.value.http_status == 409
         assert exc.value.retry_after == 5
+
+
+class TestRedisDegradation:
+    def test_missing_redis_skips_lock_for_sql_lease(self):
+        coordinator = MatchExplanationCoordinator(None)
+
+        acquired = asyncio.run(
+            coordinator.acquire_lock(uuid.uuid4(), "owner")
+        )
+
+        assert acquired is False
+
+    def test_redis_error_skips_lock_for_sql_lease(self):
+        redis = _FakeRedis()
+        redis.set_error = ConnectionError("redis unavailable")
+        coordinator = MatchExplanationCoordinator(redis)
+
+        acquired = asyncio.run(
+            coordinator.acquire_lock(uuid.uuid4(), "owner")
+        )
+
+        assert acquired is False
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_keeps_worker_when_redis_renewal_fails(self):
+        def factory():
+            return _SessionContext(
+                _Session([_Result(rowcount=1), _Result(rowcount=1)])
+            )
+
+        coordinator = MatchExplanationCoordinator(
+            None,
+            session_factory=factory,
+            heartbeat_interval_seconds=0.01,
+        )
+        worker = asyncio.create_task(asyncio.sleep(60))
+        heartbeat = asyncio.create_task(
+            coordinator._heartbeat_loop(
+                worker_task=worker,
+                record_id=uuid.uuid4(),
+                application_id=uuid.uuid4(),
+                user_id=uuid.uuid4(),
+                key_hash="hash",
+                owner_token="owner",
+            )
+        )
+
+        try:
+            await asyncio.sleep(0.1)
+            assert not worker.done()
+            assert not worker.cancelled()
+        finally:
+            heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
 
 
 class TestRegistration:
