@@ -66,6 +66,71 @@ export interface MatchResult {
   has_education_requirement: boolean
 }
 
+export type SkillMatchStatus =
+  | 'matched_evidenced'
+  | 'partially_matched'
+  | 'not_evidenced_in_cv'
+  | 'insufficient_data'
+
+export type RequirementType = 'required' | 'preferred'
+
+export type SummarySource = 'deterministic' | 'ai_generated'
+
+export type CacheState = 'not_cached' | 'cached' | 'db_replay'
+
+export interface EvidenceExcerpt {
+  section: string
+  field_name: string | null
+  item_index: number | null
+  item_title: string | null
+  quote: string
+}
+
+export interface SkillEvaluation {
+  skill_name: string
+  requirement_type: RequirementType
+  status: SkillMatchStatus
+  explanation: string
+  evidence: EvidenceExcerpt[]
+}
+
+export interface ExperienceEvaluation {
+  role_title: string | null
+  company: string | null
+  duration: string | null
+  relevance: string
+  explanation: string
+  evidence: EvidenceExcerpt[]
+}
+
+export interface ScoreBreakdown {
+  overall_score: number
+  cosine_similarity: number
+  skill_coverage_score: number
+  preferred_skill_coverage_score: number
+  experience_match_score: number
+  education_score: number
+  project_score: number
+}
+
+export interface ApplicationMatchExplanationResponse {
+  application_id: string
+  overall_score: number
+  score_breakdown: ScoreBreakdown
+  summary: string
+  summary_source: SummarySource
+  skill_evaluations: SkillEvaluation[]
+  experience_evaluations: ExperienceEvaluation[]
+  key_strengths: string[]
+  areas_for_inquiry: string[]
+  evidence: EvidenceExcerpt[]
+  data_limitations: string[]
+  confidence: number | null
+  model_version: string | null
+  generated_at: string
+  cache_state: CacheState
+}
+
 export interface JobMatchRecommendation {
   job_id: string
   parsed_job: ParsedJob | null

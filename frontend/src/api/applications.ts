@@ -1,5 +1,8 @@
 import apiClient from '@/api/client'
-import type { MatchResult } from '@/types/ai'
+import type {
+  ApplicationMatchExplanationResponse,
+  MatchResult,
+} from '@/types/ai'
 import type {
   Application,
   ApplicationActivity,
@@ -49,6 +52,34 @@ export async function getApplicationMatch(
 ): Promise<MatchResult> {
   return apiClient.get<MatchResult, MatchResult>(
     `/applications/${applicationId}/match`,
+  )
+}
+
+export async function getApplicationMatchExplanation(
+  applicationId: string,
+): Promise<ApplicationMatchExplanationResponse> {
+  return apiClient.get<
+    ApplicationMatchExplanationResponse,
+    ApplicationMatchExplanationResponse
+  >(`/applications/${applicationId}/match-explanation`)
+}
+
+export async function refreshApplicationMatchExplanation(
+  applicationId: string,
+  idempotencyKey?: string,
+): Promise<ApplicationMatchExplanationResponse> {
+  const key = idempotencyKey || crypto.randomUUID()
+  return apiClient.post<
+    ApplicationMatchExplanationResponse,
+    ApplicationMatchExplanationResponse
+  >(
+    `/applications/${applicationId}/match-explanation/refresh`,
+    {},
+    {
+      headers: {
+        'Idempotency-Key': key,
+      },
+    },
   )
 }
 
