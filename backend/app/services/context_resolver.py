@@ -100,6 +100,7 @@ class ContextResolver:
         if include_primary_only:
             filters.append(Resume.is_primary == True)  # noqa: E712
 
+        filters.append(Resume.is_confirmed == True)  # noqa: E712
         filters.append(Resume.is_deleted == False)  # noqa: E712
 
         stmt = select(Resume).where(*filters)

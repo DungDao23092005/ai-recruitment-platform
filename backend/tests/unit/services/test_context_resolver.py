@@ -314,6 +314,25 @@ class TestContextResolverResolveResumes:
         assert str(user_id).replace("-", "") not in sql_str
 
     @pytest.mark.asyncio
+    async def test_resume_query_requires_confirmed_rows(self):
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+        candidate_id = uuid.uuid4()
+        session.execute.return_value = make_mock_result_async(
+            [make_resume(candidate_id)]
+        )
+
+        await resolver.resolve_resumes(
+            [candidate_id], make_user(UserRole.ADMIN)
+        )
+
+        executed_stmt = session.execute.call_args[0][0]
+        sql_str = str(
+            executed_stmt.compile(compile_kwargs={"literal_binds": True})
+        ).lower()
+        assert "resumes.is_confirmed" in sql_str
+
+    @pytest.mark.asyncio
     async def test_candidate_cannot_access_other_candidate_resume(self):
         session = make_mock_session()
         resolver = ContextResolver(session)

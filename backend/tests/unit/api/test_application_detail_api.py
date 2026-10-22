@@ -51,6 +51,8 @@ def _fake_resume(candidate_id: uuid.UUID) -> SimpleNamespace:
         id=uuid.uuid4(),
         candidate_id=candidate_id,
         title="cv.pdf",
+        is_confirmed=True,
+        confirmed_at=_now(),
         is_primary=True,
         parsed_data={"full_name": "Jane Doe", "skills": ["Python"]},
         created_at=_now(),

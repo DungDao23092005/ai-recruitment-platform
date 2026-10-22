@@ -4,21 +4,33 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 
 import { ResumeUploadPage } from './ResumeUploadPage'
 import { getCandidateProfile } from '@/api/auth'
-import { getMyResume, parseResume } from '@/api/ai'
-import type { ResumeRead } from '@/types/ai'
+import {
+  confirmMyResume,
+  getMyResume,
+  getMyResumeDraft,
+  parseResume,
+  updateMyResumeDraft,
+} from '@/api/ai'
+import type { ParsedResume, ResumeConfirmation, ResumeRead } from '@/types/ai'
 
 vi.mock('@/api/auth', () => ({
   getCandidateProfile: vi.fn(),
 }))
 
 vi.mock('@/api/ai', () => ({
+  confirmMyResume: vi.fn(),
   getMyResume: vi.fn(),
+  getMyResumeDraft: vi.fn(),
   parseResume: vi.fn(),
+  updateMyResumeDraft: vi.fn(),
 }))
 
 const mockedGet = vi.mocked(getCandidateProfile)
 const mockedGetResume = vi.mocked(getMyResume)
+const mockedGetDraft = vi.mocked(getMyResumeDraft)
 const mockedParseResume = vi.mocked(parseResume)
+const mockedUpdateDraft = vi.mocked(updateMyResumeDraft)
+const mockedConfirmResume = vi.mocked(confirmMyResume)
 
 const existingProfile = {
   id: 'profile-1',
@@ -28,26 +40,47 @@ const existingProfile = {
   title: 'Senior Frontend Engineer',
 }
 
+const parsedResume: ParsedResume = {
+  full_name: 'Nguyễn Văn An',
+  email: 'an@example.com',
+  phone: null,
+  title: 'Senior Frontend Engineer',
+  summary: 'Dự án React lớn',
+  total_years_experience: 5,
+  skills: ['React', 'TypeScript'],
+  experiences: [],
+  education: [],
+  certifications: [],
+  languages: [],
+}
+
 const savedResume: ResumeRead = {
   id: 'resume-1',
   candidate_id: 'profile-1',
   title: 'cv.pdf',
   is_primary: true,
-  parsed_data: {
-    full_name: 'Nguyễn Văn An',
-    email: 'an@example.com',
-    phone: null,
-    title: 'Senior Frontend Engineer',
-    summary: 'Dự án React lớn',
-    total_years_experience: 5,
-    skills: ['React', 'TypeScript'],
-    experiences: [],
-    education: [],
-    certifications: [],
-    languages: [],
-  },
+  is_confirmed: true,
+  confirmed_at: '2026-08-15T00:00:00Z',
+  parsed_data: parsedResume,
   created_at: '2026-08-15T00:00:00Z',
   updated_at: '2026-08-15T00:00:00Z',
+}
+
+const draftResume: ResumeRead = {
+  id: 'resume-draft',
+  candidate_id: 'profile-1',
+  title: 'new-cv.pdf',
+  is_primary: false,
+  is_confirmed: false,
+  confirmed_at: null,
+  parsed_data: {
+    ...parsedResume,
+    full_name: 'Trần Thị Bích',
+    title: 'Frontend Engineer',
+    skills: ['Vue', 'Node.js'],
+  },
+  created_at: '2026-08-16T00:00:00Z',
+  updated_at: '2026-08-16T00:00:00Z',
 }
 
 function notFoundError(): Error {
@@ -65,6 +98,7 @@ function serverError(): Error {
 beforeEach(() => {
   vi.clearAllMocks()
   mockedGetResume.mockRejectedValue(notFoundError())
+  mockedGetDraft.mockRejectedValue(notFoundError())
 })
 
 afterEach(() => {
@@ -101,6 +135,7 @@ describe('ResumeUploadPage', () => {
       ).toBeInTheDocument()
     })
     expect(mockedGetResume).toHaveBeenCalledTimes(1)
+    expect(mockedGetDraft).toHaveBeenCalledTimes(1)
   })
 
   it('disables upload while the profile is loading', async () => {
@@ -145,7 +180,7 @@ describe('ResumeUploadPage', () => {
 
     resolveResume(savedResume)
     await waitFor(() => {
-      expect(screen.getByText('CV đã được tải lên')).toBeInTheDocument()
+      expect(screen.getByText('CV đang được sử dụng')).toBeInTheDocument()
     })
   })
 
@@ -166,6 +201,7 @@ describe('ResumeUploadPage', () => {
       screen.queryByRole('button', { name: 'Tải lên CV PDF' }),
     ).not.toBeInTheDocument()
     expect(mockedGetResume).not.toHaveBeenCalled()
+    expect(mockedGetDraft).not.toHaveBeenCalled()
   })
 
   it('navigates to the candidate profile page via CTA', async () => {
@@ -204,14 +240,14 @@ describe('ResumeUploadPage', () => {
     })
   })
 
-  it('hydrates the parsed resume when a saved CV exists', async () => {
+  it('shows the confirmed resume with its parsed data', async () => {
     mockedGet.mockResolvedValue(existingProfile as never)
     mockedGetResume.mockResolvedValue(savedResume as never)
 
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByText('CV đã được tải lên')).toBeInTheDocument()
+      expect(screen.getByText('CV đang được sử dụng')).toBeInTheDocument()
     })
     expect(screen.getByText('cv.pdf')).toBeInTheDocument()
     expect(screen.getByText('Nguyễn Văn An')).toBeInTheDocument()
@@ -221,7 +257,7 @@ describe('ResumeUploadPage', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('shows a friendly resume error and retries', async () => {
+  it('shows a friendly resume error and retries both reads', async () => {
     mockedGet.mockResolvedValue(existingProfile as never)
     mockedGetResume
       .mockRejectedValueOnce(serverError())
@@ -239,8 +275,47 @@ describe('ResumeUploadPage', () => {
 
     await waitFor(() => {
       expect(mockedGetResume).toHaveBeenCalledTimes(2)
-      expect(screen.getByText('CV đã được tải lên')).toBeInTheDocument()
+      expect(screen.getByText('CV đang được sử dụng')).toBeInTheDocument()
     })
+  })
+
+  it('shows the review editor when an unconfirmed draft exists', async () => {
+    mockedGet.mockResolvedValue(existingProfile as never)
+    mockedGetDraft.mockResolvedValue(draftResume as never)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Xem lại và xác nhận CV')).toBeInTheDocument()
+    })
+    expect(screen.getByText('Chưa xác nhận')).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'CV này chưa được dùng để ghép nối hoặc tìm kiếm cho đến khi bạn xác nhận.',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByDisplayValue('Trần Thị Bích')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Tải lên CV PDF' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('keeps the active resume while showing a replacement draft', async () => {
+    mockedGet.mockResolvedValue(existingProfile as never)
+    mockedGetResume.mockResolvedValue(savedResume as never)
+    mockedGetDraft.mockResolvedValue(draftResume as never)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('CV đang được sử dụng')).toBeInTheDocument()
+      expect(screen.getByText('Xem lại và xác nhận CV')).toBeInTheDocument()
+    })
+    expect(
+      screen.getByText(
+        'CV hiện tại vẫn được dùng để ghép nối và tìm kiếm cho đến khi bạn xác nhận CV mới.',
+      ),
+    ).toBeInTheDocument()
   })
 
   it('allows re-uploading a new CV via "Cập nhật CV"', async () => {
@@ -250,7 +325,7 @@ describe('ResumeUploadPage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByText('CV đã được tải lên')).toBeInTheDocument()
+      expect(screen.getByText('CV đang được sử dụng')).toBeInTheDocument()
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Cập nhật CV' }))
@@ -260,23 +335,17 @@ describe('ResumeUploadPage', () => {
     ).toBeInTheDocument()
   })
 
-  it('updates the UI immediately after a successful re-upload', async () => {
+  it('shows the parsed draft after a successful upload', async () => {
     mockedGet.mockResolvedValue(existingProfile as never)
-    mockedGetResume.mockResolvedValue(savedResume as never)
-    const newParsed = {
-      ...(savedResume.parsed_data as object),
-      full_name: 'Trần Thị Bích',
-      skills: ['Vue', 'Node.js'],
-    }
-    mockedParseResume.mockResolvedValue(newParsed as never)
+    mockedParseResume.mockResolvedValue(draftResume as never)
 
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByText('CV đã được tải lên')).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'Tải lên CV PDF' }),
+      ).toBeInTheDocument()
     })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Cập nhật CV' }))
 
     const input = document.querySelector(
       'input[type="file"]',
@@ -286,8 +355,117 @@ describe('ResumeUploadPage', () => {
 
     await waitFor(() => {
       expect(mockedParseResume).toHaveBeenCalledTimes(1)
-      expect(screen.getByText('Trần Thị Bích')).toBeInTheDocument()
-      expect(screen.getByText('Vue')).toBeInTheDocument()
+      expect(screen.getByText('Xem lại và xác nhận CV')).toBeInTheDocument()
+    })
+    expect(screen.getByDisplayValue('Trần Thị Bích')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('Vue, Node.js')).toBeInTheDocument()
+    expect(mockedConfirmResume).not.toHaveBeenCalled()
+  })
+
+  it('saves draft edits without confirming', async () => {
+    mockedGet.mockResolvedValue(existingProfile as never)
+    mockedGetDraft.mockResolvedValue(draftResume as never)
+    mockedUpdateDraft.mockResolvedValue({
+      ...draftResume,
+      updated_at: '2026-08-16T01:00:00Z',
+    } as never)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Xem lại và xác nhận CV')).toBeInTheDocument()
+    })
+
+    fireEvent.change(screen.getByDisplayValue('Trần Thị Bích'), {
+      target: { value: 'Trần Thị Bích Updated' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu nháp' }))
+
+    await waitFor(() => {
+      expect(mockedUpdateDraft).toHaveBeenCalledTimes(1)
+    })
+    expect(mockedUpdateDraft.mock.calls[0][0]).toBe('resume-draft')
+    expect(mockedUpdateDraft.mock.calls[0][1].full_name).toBe(
+      'Trần Thị Bích Updated',
+    )
+    expect(mockedConfirmResume).not.toHaveBeenCalled()
+  })
+
+  it('confirms edited draft and replaces the active resume', async () => {
+    mockedGet.mockResolvedValue(existingProfile as never)
+    mockedGetDraft.mockResolvedValue(draftResume as never)
+    mockedUpdateDraft.mockResolvedValue(draftResume as never)
+    const confirmation: ResumeConfirmation = {
+      resume: {
+        ...draftResume,
+        is_primary: true,
+        is_confirmed: true,
+        confirmed_at: '2026-08-16T02:00:00Z',
+      },
+      indexing_status: 'indexed',
+      message: 'Đã xác nhận CV.',
+    }
+    mockedConfirmResume.mockResolvedValue(confirmation as never)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Xem lại và xác nhận CV')).toBeInTheDocument()
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Xác nhận và sử dụng CV' }),
+    )
+
+    await waitFor(() => {
+      expect(mockedUpdateDraft).toHaveBeenCalledTimes(1)
+      expect(mockedConfirmResume).toHaveBeenCalledWith('resume-draft')
+    })
+    await waitFor(() => {
+      expect(screen.getByText('CV đang được sử dụng')).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByText('Xem lại và xác nhận CV'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows an indexing warning and retries confirmation', async () => {
+    mockedGet.mockResolvedValue(existingProfile as never)
+    mockedGetResume.mockResolvedValue(savedResume as never)
+    mockedGetDraft.mockResolvedValue(draftResume as never)
+    mockedUpdateDraft.mockResolvedValue(draftResume as never)
+    mockedConfirmResume.mockResolvedValue({
+      resume: {
+        ...draftResume,
+        is_primary: true,
+        is_confirmed: true,
+      },
+      indexing_status: 'failed',
+      message: 'CV đã được xác nhận nhưng chưa thể lập chỉ mục.',
+    } as ResumeConfirmation as never)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('Xem lại và xác nhận CV')).toBeInTheDocument()
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /Xác nhận và sử dụng CV/i }),
+    )
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('CV đã được xác nhận nhưng chưa thể lập chỉ mục.'),
+      ).toBeInTheDocument()
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Thử lập chỉ mục lại' }),
+    )
+
+    await waitFor(() => {
+      expect(mockedConfirmResume).toHaveBeenCalledTimes(2)
     })
   })
 
@@ -299,7 +477,7 @@ describe('ResumeUploadPage', () => {
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByText('CV đã được tải lên')).toBeInTheDocument()
+      expect(screen.getByText('CV đang được sử dụng')).toBeInTheDocument()
     })
     expect(setItemSpy).not.toHaveBeenCalled()
   })

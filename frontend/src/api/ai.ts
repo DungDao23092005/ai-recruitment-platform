@@ -12,6 +12,7 @@ import type {
   MatchRequest,
   MatchResult,
   ParsedResume,
+  ResumeConfirmation,
   ResumeRead,
   SemanticSearchParams,
   SemanticSearchResult,
@@ -22,11 +23,11 @@ export interface JobRecommendationsResult {
   hasCV: boolean
 }
 
-export async function parseResume(file: File): Promise<ParsedResume> {
+export async function parseResume(file: File): Promise<ResumeRead> {
   const formData = new FormData()
   formData.append('file', file)
 
-  return apiClient.post<ParsedResume, ParsedResume>(
+  return apiClient.post<ResumeRead, ResumeRead>(
     '/ai/parse-resume',
     formData
   )
@@ -34,6 +35,28 @@ export async function parseResume(file: File): Promise<ParsedResume> {
 
 export async function getMyResume(): Promise<ResumeRead> {
   return apiClient.get<ResumeRead, ResumeRead>('/users/me/resume')
+}
+
+export async function getMyResumeDraft(): Promise<ResumeRead> {
+  return apiClient.get<ResumeRead, ResumeRead>('/users/me/resume/draft')
+}
+
+export async function updateMyResumeDraft(
+  resumeId: string,
+  parsedData: ParsedResume,
+): Promise<ResumeRead> {
+  return apiClient.put<ResumeRead, ResumeRead>(
+    `/users/me/resume/${resumeId}`,
+    { parsed_data: parsedData },
+  )
+}
+
+export async function confirmMyResume(
+  resumeId: string,
+): Promise<ResumeConfirmation> {
+  return apiClient.post<ResumeConfirmation, ResumeConfirmation>(
+    `/users/me/resume/${resumeId}/confirm`,
+  )
 }
 
 export async function getJobRecommendations(

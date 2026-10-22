@@ -189,7 +189,14 @@ class TestLazySelfHealing:
         # Track _reindex_resume calls and verify vector is passed
         reindex_called_with_vector = False
 
-        async def tracking_reindex(candidate_id, parsed_resume, is_deleted=False, vector=None):
+        async def tracking_reindex(
+            candidate_id,
+            parsed_resume,
+            is_deleted=False,
+            vector=None,
+            resume_id=None,
+            confirmed_at=None,
+        ):
             nonlocal reindex_called_with_vector
             if vector is not None:
                 reindex_called_with_vector = True

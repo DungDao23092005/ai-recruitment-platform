@@ -96,6 +96,7 @@ async def run_reconcile(
                 User, CandidateProfile.user_id == User.id
             ).where(
                 Resume.is_primary == True,  # noqa: E712
+                Resume.is_confirmed == True,  # noqa: E712
                 Resume.is_deleted == False,  # noqa: E712
                 CandidateProfile.is_deleted == False,  # noqa: E712
                 User.is_active == True,  # noqa: E712
@@ -156,8 +157,27 @@ async def run_reconcile(
                     failed_points.append(str(point_id))
                     continue
 
+                # Legacy vectors without explicit confirmation are stale.
+                if payload.get("is_confirmed") is not True:
+                    stale_count += 1
+                    logger.info(
+                        f"Unconfirmed vector found: {candidate_id} "
+                        f"(point_id={point_id})"
+                    )
+
+                    if not dry_run:
+                        try:
+                            await repo.delete_vector(collection_name, point_id)
+                            deleted_count += 1
+                        except Exception as e:
+                            failed_count += 1
+                            failed_points.append(str(point_id))
+                            logger.error(
+                                f"Failed to delete unconfirmed vector "
+                                f"{point_id}: {e}"
+                            )
                 # Check if candidate is active in SQL Server
-                if candidate_id in sql_active_candidate_ids:
+                elif candidate_id in sql_active_candidate_ids:
                     valid_count += 1
                 else:
                     stale_count += 1

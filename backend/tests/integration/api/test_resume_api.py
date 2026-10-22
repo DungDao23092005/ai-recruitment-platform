@@ -1,12 +1,15 @@
 import socket
 import uuid
-from unittest.mock import patch
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import func, select
 
 from app.database.session import async_session_factory
 from app.models import Resume
+from app.repositories import ResumeRepository
 from app.schemas.ai_resume import ParsedResumeSchema
 from tests.integration.api.conftest import API_V1
 
@@ -27,18 +30,59 @@ async def _seed_resume(
     title: str = "cv.pdf",
     is_primary: bool = True,
     parsed_data: dict | None = None,
+    is_confirmed: bool = True,
 ) -> Resume:
     async with async_session_factory() as session:
         resume = Resume(
             candidate_id=candidate_profile_id,
             title=title,
             is_primary=is_primary,
+            is_confirmed=is_confirmed,
+            confirmed_at=(
+                datetime.now(timezone.utc) if is_confirmed else None
+            ),
             parsed_data=parsed_data or _resume_payload(),
         )
         session.add(resume)
         await session.commit()
         await session.refresh(resume)
         return resume
+
+
+def _draft_response() -> SimpleNamespace:
+    now = datetime.now(timezone.utc)
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        candidate_id=uuid.uuid4(),
+        title="resume.pdf",
+        is_primary=False,
+        is_confirmed=False,
+        confirmed_at=None,
+        parsed_data=_resume_payload(),
+        created_at=now,
+        updated_at=now,
+    )
+
+
+async def _parse_draft_side_effect(
+    candidate_id,
+    pdf_source,
+    session,
+    source_name,
+):
+    parsed = ParsedResumeSchema(
+        full_name="Jane Doe",
+        skills=["Python", "FastAPI"],
+    )
+    repository = ResumeRepository(session, Resume)
+    draft = await repository.upsert_draft(
+        candidate_id=candidate_id,
+        title=source_name or "resume.pdf",
+        parsed_data=parsed.model_dump(mode="json"),
+    )
+    await session.commit()
+    await session.refresh(draft)
+    return draft
 
 
 async def _count_resumes_for_candidate(candidate_profile_id: str) -> int:
@@ -57,6 +101,18 @@ async def _get_resumes_for_candidate(candidate_profile_id: str) -> list[Resume]:
             select(Resume).where(Resume.candidate_id == candidate_profile_id)
         )
         return list(result.scalars().all())
+
+
+async def _get_resume(resume_id: str) -> Resume | None:
+    async with async_session_factory() as session:
+        return await session.get(Resume, resume_id)
+
+
+async def _get_candidate_profile(candidate_profile_id: str):
+    from app.models import CandidateProfile
+
+    async with async_session_factory() as session:
+        return await session.get(CandidateProfile, candidate_profile_id)
 
 
 def _create_profile(candidate_client, run_async) -> str:
@@ -125,9 +181,28 @@ class TestGetMyResume:
         assert body["candidate_id"] == profile_id
         assert body["title"] == "cv.pdf"
         assert body["is_primary"] is True
+        assert body["is_confirmed"] is True
+        assert body["confirmed_at"] is not None
         assert body["parsed_data"]["full_name"] == "Jane Doe"
         assert body["parsed_data"]["skills"] == ["Python", "FastAPI"]
         assert "file_path" not in body
+
+    def test_candidate_with_only_unconfirmed_resume_returns_404(
+        self, candidate_client, run_async
+    ):
+        profile_id = _create_profile(candidate_client, run_async)
+        run_async(
+            _seed_resume(
+                profile_id,
+                title="draft.pdf",
+                is_primary=False,
+                is_confirmed=False,
+            )
+        )
+
+        resp = run_async(candidate_client.get(f"{API_V1}/users/me/resume"))
+
+        assert resp.status_code == 404
 
     def test_response_does_not_expose_file_path(
         self, candidate_client, run_async
@@ -170,30 +245,14 @@ class TestGetMyResume:
 
 @_SKIP_NO_QDRANT
 class TestParseResumePersistence:
-    @patch("app.services.ai_matching_service.AIMatchingService.process_and_index_resume")
-    def test_upload_creates_resume_row(self, mock_process, candidate_client, run_async):
-        # Mock the AI processing but still persist to database
-        async def mock_process_and_index(candidate_id, pdf_source, session, source_name):
-            # Create resume row in database (simulating real persistence)
-            from app.models import Resume
-            from app.schemas.ai_resume import ParsedResumeSchema
-            parsed = ParsedResumeSchema(
-                full_name="Jane Doe",
-                skills=["Python", "FastAPI"],
-            )
-            resume = Resume(
-                candidate_id=candidate_id,
-                title=source_name or "resume.pdf",
-                is_primary=True,
-                parsed_data=parsed.model_dump(mode="json"),
-            )
-            session.add(resume)
-            await session.flush()
-            await session.commit()
-            await session.refresh(resume)
-            return parsed
-        
-        mock_process.side_effect = mock_process_and_index
+    @patch(
+        "app.services.ai_matching_service.AIMatchingService.parse_and_save_resume_draft",
+        new_callable=AsyncMock,
+    )
+    def test_upload_creates_unconfirmed_draft(
+        self, mock_parse, candidate_client, run_async
+    ):
+        mock_parse.side_effect = _parse_draft_side_effect
         profile_id = _create_profile(candidate_client, run_async)
 
         resp = run_async(
@@ -210,47 +269,25 @@ class TestParseResumePersistence:
         )
 
         assert resp.status_code == 200
+        body = resp.json()
+        assert body["is_confirmed"] is False
+        assert body["is_primary"] is False
+        assert body["confirmed_at"] is None
         rows = run_async(_get_resumes_for_candidate(profile_id))
         assert len(rows) == 1
-        assert rows[0].is_primary is True
+        assert rows[0].is_primary is False
+        assert rows[0].is_confirmed is False
         assert rows[0].parsed_data is not None
         assert "full_name" in rows[0].parsed_data
 
-    @patch("app.services.ai_matching_service.AIMatchingService.process_and_index_resume")
-    def test_second_upload_updates_primary(self, mock_process, candidate_client, run_async):
-        # Mock the AI processing but still persist to database
-        async def mock_process_and_index(candidate_id, pdf_source, session, source_name):
-            from app.models import Resume
-            from app.schemas.ai_resume import ParsedResumeSchema
-            parsed = ParsedResumeSchema(
-                full_name="Jane Doe",
-                skills=["Python", "FastAPI"],
-            )
-            # Find existing primary resume and update it
-            from sqlalchemy import select
-            stmt = select(Resume).where(
-                Resume.candidate_id == candidate_id,
-                Resume.is_primary == True,
-                Resume.is_deleted == False,
-            )
-            result = await session.execute(stmt)
-            existing = result.scalar_one_or_none()
-            if existing:
-                existing.title = source_name or "resume.pdf"
-                existing.parsed_data = parsed.model_dump(mode="json")
-            else:
-                resume = Resume(
-                    candidate_id=candidate_id,
-                    title=source_name or "resume.pdf",
-                    is_primary=True,
-                    parsed_data=parsed.model_dump(mode="json"),
-                )
-                session.add(resume)
-            await session.flush()
-            await session.commit()
-            return parsed
-        
-        mock_process.side_effect = mock_process_and_index
+    @patch(
+        "app.services.ai_matching_service.AIMatchingService.parse_and_save_resume_draft",
+        new_callable=AsyncMock,
+    )
+    def test_second_upload_updates_existing_draft(
+        self, mock_parse, candidate_client, run_async
+    ):
+        mock_parse.side_effect = _parse_draft_side_effect
         profile_id = _create_profile(candidate_client, run_async)
 
         for _ in range(2):
@@ -270,8 +307,287 @@ class TestParseResumePersistence:
 
         assert run_async(_count_resumes_for_candidate(profile_id)) == 1
         rows = run_async(_get_resumes_for_candidate(profile_id))
-        assert rows[0].is_primary is True
+        assert rows[0].is_primary is False
+        assert rows[0].is_confirmed is False
         assert rows[0].title == "resume.pdf"
+
+    @patch(
+        "app.services.ai_matching_service.AIMatchingService.index_confirmed_resume",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "app.services.ai_matching_service.AIMatchingService.parse_and_save_resume_draft",
+        new_callable=AsyncMock,
+    )
+    def test_parse_does_not_index_unconfirmed_draft(
+        self, mock_parse, mock_index, candidate_client, run_async
+    ):
+        mock_parse.side_effect = _parse_draft_side_effect
+        _create_profile(candidate_client, run_async)
+
+        resp = run_async(
+            candidate_client.post(
+                f"{API_V1}/ai/parse-resume",
+                files={
+                    "file": (
+                        "resume.pdf",
+                        b"%PDF-1.4 Valid PDF content",
+                        "application/pdf",
+                    )
+                },
+            )
+        )
+
+        assert resp.status_code == 200
+        mock_index.assert_not_awaited()
+
+
+class TestResumeDraftLifecycle:
+    def test_get_draft_returns_unconfirmed_resume(
+        self, candidate_client, run_async
+    ):
+        profile_id = _create_profile(candidate_client, run_async)
+        run_async(
+            _seed_resume(profile_id, title="active.pdf", is_primary=True)
+        )
+        draft = run_async(
+            _seed_resume(
+                profile_id,
+                title="draft.pdf",
+                is_primary=False,
+                is_confirmed=False,
+            )
+        )
+
+        resp = run_async(
+            candidate_client.get(f"{API_V1}/users/me/resume/draft")
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == str(draft.id)
+        assert body["is_confirmed"] is False
+        assert body["is_primary"] is False
+
+    def test_update_draft_persists_edits(self, candidate_client, run_async):
+        profile_id = _create_profile(candidate_client, run_async)
+        draft = run_async(
+            _seed_resume(
+                profile_id,
+                title="draft.pdf",
+                is_primary=False,
+                is_confirmed=False,
+            )
+        )
+        parsed = ParsedResumeSchema(
+            full_name="Jane Updated",
+            phone="0999999999",
+            title="Staff Engineer",
+            skills=["Python", "FastAPI", "SQL Server"],
+        ).model_dump(mode="json")
+
+        resp = run_async(
+            candidate_client.put(
+                f"{API_V1}/users/me/resume/{draft.id}",
+                json={"title": "edited.pdf", "parsed_data": parsed},
+            )
+        )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["title"] == "edited.pdf"
+        assert body["is_confirmed"] is False
+        stored = run_async(_get_resume(str(draft.id)))
+        assert stored.title == "edited.pdf"
+        assert stored.parsed_data["full_name"] == "Jane Updated"
+        assert stored.parsed_data["skills"] == [
+            "Python",
+            "FastAPI",
+            "SQL Server",
+        ]
+
+    def test_cannot_update_confirmed_resume(
+        self, candidate_client, run_async
+    ):
+        profile_id = _create_profile(candidate_client, run_async)
+        confirmed = run_async(
+            _seed_resume(profile_id, title="active.pdf", is_primary=True)
+        )
+
+        resp = run_async(
+            candidate_client.put(
+                f"{API_V1}/users/me/resume/{confirmed.id}",
+                json={"parsed_data": _resume_payload()},
+            )
+        )
+
+        assert resp.status_code == 409
+
+    def test_cannot_update_another_candidates_draft(
+        self, candidate_client, candidate_b_client, run_async
+    ):
+        _create_profile(candidate_client, run_async)
+        profile_b = _create_profile(candidate_b_client, run_async)
+        draft_b = run_async(
+            _seed_resume(
+                profile_b,
+                title="draft-b.pdf",
+                is_primary=False,
+                is_confirmed=False,
+            )
+        )
+
+        resp = run_async(
+            candidate_client.put(
+                f"{API_V1}/users/me/resume/{draft_b.id}",
+                json={"parsed_data": _resume_payload()},
+            )
+        )
+
+        assert resp.status_code == 404
+
+
+class TestResumeConfirmation:
+    @patch(
+        "app.services.ai_matching_service.AIMatchingService.index_confirmed_resume",
+        new_callable=AsyncMock,
+    )
+    def test_confirm_activates_resume_and_syncs_profile(
+        self, mock_index, candidate_client, run_async
+    ):
+        profile_id = _create_profile(candidate_client, run_async)
+        run_async(
+            _seed_resume(
+                profile_id,
+                title="old.pdf",
+                is_primary=True,
+                parsed_data={"full_name": "Old Name", "skills": ["Python"]},
+            )
+        )
+        draft = run_async(
+            _seed_resume(
+                profile_id,
+                title="draft.pdf",
+                is_primary=False,
+                is_confirmed=False,
+                parsed_data={
+                    "full_name": "New Name",
+                    "phone": "0999999999",
+                    "title": "Staff Engineer",
+                    "skills": ["Python", "FastAPI"],
+                },
+            )
+        )
+
+        resp = run_async(
+            candidate_client.post(
+                f"{API_V1}/users/me/resume/{draft.id}/confirm"
+            )
+        )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["indexing_status"] == "indexed"
+        assert body["resume"]["is_confirmed"] is True
+        assert body["resume"]["is_primary"] is True
+        assert body["resume"]["confirmed_at"] is not None
+        mock_index.assert_awaited_once()
+        stored = run_async(_get_resume(str(draft.id)))
+        assert stored.is_confirmed is True
+        assert stored.is_primary is True
+        profile = run_async(_get_candidate_profile(profile_id))
+        assert profile.full_name == "New Name"
+        assert profile.phone == "0999999999"
+        assert profile.title == "Staff Engineer"
+
+    @patch(
+        "app.services.ai_matching_service.AIMatchingService.index_confirmed_resume",
+        new_callable=AsyncMock,
+    )
+    def test_confirm_is_idempotent(
+        self, mock_index, candidate_client, run_async
+    ):
+        profile_id = _create_profile(candidate_client, run_async)
+        draft = run_async(
+            _seed_resume(
+                profile_id,
+                title="draft.pdf",
+                is_primary=False,
+                is_confirmed=False,
+            )
+        )
+
+        first = run_async(
+            candidate_client.post(
+                f"{API_V1}/users/me/resume/{draft.id}/confirm"
+            )
+        )
+        second = run_async(
+            candidate_client.post(
+                f"{API_V1}/users/me/resume/{draft.id}/confirm"
+            )
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert (
+            first.json()["resume"]["confirmed_at"]
+            == second.json()["resume"]["confirmed_at"]
+        )
+
+    @patch(
+        "app.services.ai_matching_service.AIMatchingService.index_confirmed_resume",
+        new_callable=AsyncMock,
+    )
+    def test_index_failure_keeps_sql_confirmation(
+        self, mock_index, candidate_client, run_async
+    ):
+        mock_index.side_effect = RuntimeError("qdrant unavailable")
+        profile_id = _create_profile(candidate_client, run_async)
+        draft = run_async(
+            _seed_resume(
+                profile_id,
+                title="draft.pdf",
+                is_primary=False,
+                is_confirmed=False,
+            )
+        )
+
+        resp = run_async(
+            candidate_client.post(
+                f"{API_V1}/users/me/resume/{draft.id}/confirm"
+            )
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["indexing_status"] == "failed"
+        assert body["resume"]["is_confirmed"] is True
+        stored = run_async(_get_resume(str(draft.id)))
+        assert stored.is_confirmed is True
+        assert stored.is_primary is True
+
+    def test_cannot_confirm_another_candidates_draft(
+        self, candidate_client, candidate_b_client, run_async
+    ):
+        _create_profile(candidate_client, run_async)
+        profile_b = _create_profile(candidate_b_client, run_async)
+        draft_b = run_async(
+            _seed_resume(
+                profile_b,
+                title="draft-b.pdf",
+                is_primary=False,
+                is_confirmed=False,
+            )
+        )
+
+        resp = run_async(
+            candidate_client.post(
+                f"{API_V1}/users/me/resume/{draft_b.id}/confirm"
+            )
+        )
+
+        assert resp.status_code == 404
 
 
 @_SKIP_NO_QDRANT
@@ -310,11 +626,11 @@ class TestParseResumeFileValidation:
         
         profile_id = _create_profile(candidate_client, run_async)
         
-        with patch("app.services.ai_matching_service.AIMatchingService.process_and_index_resume") as mock_process:
-            mock_process.return_value = ParsedResumeSchema(
-                full_name="Jane Doe",
-                skills=["Python", "FastAPI"],
-            )
+        with patch(
+            "app.services.ai_matching_service.AIMatchingService.parse_and_save_resume_draft",
+            new_callable=AsyncMock,
+        ) as mock_parse:
+            mock_parse.return_value = _draft_response()
             
             resp = run_async(
                 candidate_client.post(
@@ -337,11 +653,11 @@ class TestParseResumeFileValidation:
         
         profile_id = _create_profile(candidate_client, run_async)
         
-        with patch("app.services.ai_matching_service.AIMatchingService.process_and_index_resume") as mock_process:
-            mock_process.return_value = ParsedResumeSchema(
-                full_name="Jane Doe",
-                skills=["Python", "FastAPI"],
-            )
+        with patch(
+            "app.services.ai_matching_service.AIMatchingService.parse_and_save_resume_draft",
+            new_callable=AsyncMock,
+        ) as mock_parse:
+            mock_parse.return_value = _draft_response()
             
             resp = run_async(
                 candidate_client.post(
@@ -450,11 +766,11 @@ class TestParseResumeFileValidation:
         
         profile_id = _create_profile(candidate_client, run_async)
         
-        with patch("app.services.ai_matching_service.AIMatchingService.process_and_index_resume") as mock_process:
-            mock_process.return_value = ParsedResumeSchema(
-                full_name="Jane Doe",
-                skills=["Python"],
-            )
+        with patch(
+            "app.services.ai_matching_service.AIMatchingService.parse_and_save_resume_draft",
+            new_callable=AsyncMock,
+        ) as mock_parse:
+            mock_parse.return_value = _draft_response()
             
             # These should be treated as metadata only, not actual paths
             for traversal_name in ["../../evil.pdf", "..\\evil.pdf"]:

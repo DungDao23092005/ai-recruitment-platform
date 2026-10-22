@@ -99,6 +99,13 @@ class QdrantVectorRepository(BaseVectorRepository):
                     field_name="status",
                     field_schema=PayloadSchemaType.KEYWORD,
                 )
+            # Confirmation gate for candidate resume vectors (idempotent)
+            if collection_name == self.RESUME_COLLECTION:
+                await self.client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="is_confirmed",
+                    field_schema=PayloadSchemaType.BOOL,
+                )
 
     def _validate_vector(self, vector: list[float]) -> None:
         if len(vector) != settings.VECTOR_DIMENSION:
@@ -146,9 +153,12 @@ class QdrantVectorRepository(BaseVectorRepository):
             vector=vector,
             payload={
                 "candidate_id": self._serialize_point_id(candidate_id),
+                "resume_id": None,
                 "skills": skills or [],
                 "created_at": self._serialize_timestamp(created_at),
                 "is_deleted": False,
+                "is_confirmed": True,
+                "confirmed_at": self._serialize_timestamp(created_at),
             },
         )
 
@@ -217,10 +227,16 @@ class QdrantVectorRepository(BaseVectorRepository):
             return None
 
         point = points[0]
+        payload = point.payload or {}
+        if (
+            collection_name == self.RESUME_COLLECTION
+            and payload.get("is_confirmed") is not True
+        ):
+            return None
         return {
             "id": serialized_id,
             "vector": point.vector,
-            "payload": point.payload or {},
+            "payload": payload,
         }
 
     async def search_similar(
@@ -233,7 +249,11 @@ class QdrantVectorRepository(BaseVectorRepository):
         exclude_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         self._validate_vector(query_vector)
-        query_filter = self._build_query_filter(filters, exclude_ids)
+        query_filter = self._build_query_filter(
+            filters,
+            exclude_ids,
+            require_confirmed=collection_name == self.RESUME_COLLECTION,
+        )
         try:
             response = await self.client.query_points(
                 collection_name=collection_name,
@@ -257,16 +277,24 @@ class QdrantVectorRepository(BaseVectorRepository):
     def _build_query_filter(
         filters: dict[str, Any] | None = None,
         exclude_ids: list[str] | None = None,
+        require_confirmed: bool = False,
     ) -> Filter:
         must_conditions = []
+        if require_confirmed:
+            must_conditions.append(
+                FieldCondition(
+                    key="is_confirmed",
+                    match=MatchValue(value=True),
+                )
+            )
         if filters:
-            must_conditions = [
+            must_conditions.extend(
                 FieldCondition(
                     key=str(key),
                     match=MatchValue(value=value),
                 )
                 for key, value in filters.items()
-            ]
+            )
 
         must_not_conditions = list(SOFT_DELETE_FILTER.must_not)
         if exclude_ids:

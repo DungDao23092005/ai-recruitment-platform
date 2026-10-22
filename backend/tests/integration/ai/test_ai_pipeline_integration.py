@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 import httpx
@@ -183,6 +184,8 @@ async def _create_candidate_profile(session, candidate_id: uuid.UUID, user_id: u
     resume = Resume(
         candidate_id=candidate_id,
         is_primary=True,
+        is_confirmed=True,
+        confirmed_at=datetime.now(timezone.utc),
         title="Test Candidate Resume",
         parsed_data=ParsedResumeSchema(
             skills=skills,
@@ -304,19 +307,51 @@ async def _setup_candidate_recommendation_test_data(vector_repository, session, 
 
 
 class TestResumeIndexFlow:
-    def test_full_resume_index_and_retrieve_flow(self, vector_repository, tracked):
+    def test_draft_then_confirm_and_retrieve_flow(
+        self, vector_repository, tracked, session
+    ):
         async def _run():
             await vector_repository.init_collections()
+            db_session = session()
             candidate_id = uuid.uuid4()
             tracked("resumes", candidate_id)
+            user = User(
+                id=uuid.uuid4(),
+                email=f"candidate-{uuid.uuid4()}@example.com",
+                password_hash="hashed",
+                role=UserRole.CANDIDATE,
+            )
+            db_session.add(user)
+            await db_session.commit()
+            await _create_candidate_profile(
+                db_session, candidate_id, user.id, ["Python"]
+            )
             service = _make_service(vector_repository)
 
-            result = await service.process_and_index_resume(
+            draft = await service.parse_and_save_resume_draft(
                 candidate_id=candidate_id,
                 pdf_source=MINIMAL_PDF_BYTES,
+                session=db_session,
+                source_name="resume.pdf",
             )
 
-            assert result == EXPECTED_RESUME
+            assert draft.is_confirmed is False
+            assert draft.is_primary is False
+            assert (
+                await vector_repository.retrieve_vector(
+                    "resumes", candidate_id
+                )
+                is None
+            )
+
+            parsed = ParsedResumeSchema.model_validate(draft.parsed_data)
+            confirmed_at = datetime.now(timezone.utc)
+            await service.index_confirmed_resume(
+                candidate_id=candidate_id,
+                resume_id=draft.id,
+                parsed_resume=parsed,
+                confirmed_at=confirmed_at,
+            )
 
             retrieved = await vector_repository.retrieve_vector(
                 "resumes", candidate_id
@@ -324,7 +359,10 @@ class TestResumeIndexFlow:
             assert retrieved is not None
             assert len(retrieved["vector"]) == VECTOR_DIM
             assert retrieved["payload"]["candidate_id"] == str(candidate_id)
-            assert retrieved["payload"]["skills"] == result.skills
+            assert retrieved["payload"]["resume_id"] == str(draft.id)
+            assert retrieved["payload"]["is_confirmed"] is True
+            assert retrieved["payload"]["confirmed_at"] is not None
+            assert retrieved["payload"]["skills"] == parsed.skills
 
         run_async(_run())
 

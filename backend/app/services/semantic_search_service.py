@@ -11,7 +11,7 @@ from app.core.exceptions import (
     InvalidDocumentError,
 )
 from app.domain.enums import JobStatus, UserRole
-from app.models import CandidateProfile, Job
+from app.models import CandidateProfile, Job, Resume
 from app.repositories import BaseRepository
 from app.schemas.ai_search import SemanticSearchResult
 
@@ -182,10 +182,19 @@ class SemanticSearchService:
         if not candidate_ids:
             return []
         from sqlalchemy import select
+        confirmed_candidate_ids = (
+            select(Resume.candidate_id)
+            .where(
+                Resume.is_confirmed == True,  # noqa: E712
+                Resume.is_primary == True,  # noqa: E712
+                Resume.is_deleted == False,  # noqa: E712
+            )
+        )
         stmt = (
             select(CandidateProfile)
             .where(
                 CandidateProfile.id.in_(candidate_ids),
+                CandidateProfile.id.in_(confirmed_candidate_ids),
                 CandidateProfile.is_deleted == False,  # noqa: E712
             )
         )

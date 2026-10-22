@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -174,6 +175,34 @@ class FakeVectorRepository(BaseVectorRepository):
         return results[:limit]
 
 
+class FakeSession:
+    """Minimal async session for draft persistence in the pipeline test."""
+
+    def __init__(self) -> None:
+        self.added: list = []
+
+    async def execute(self, stmt):
+        return SimpleNamespace(
+            scalar_one_or_none=lambda: None,
+            scalars=lambda: SimpleNamespace(first=lambda: None),
+        )
+
+    def add(self, entity) -> None:
+        self.added.append(entity)
+
+    async def flush(self) -> None:
+        return None
+
+    async def refresh(self, entity) -> None:
+        return None
+
+    async def commit(self) -> None:
+        return None
+
+    async def rollback(self) -> None:
+        return None
+
+
 @pytest.fixture
 def pipeline() -> dict:
     llm = FakeLLMProvider(
@@ -200,24 +229,40 @@ def pipeline() -> dict:
 
 class TestResumePipeline:
     @pytest.mark.asyncio
-    async def test_resume_pipeline_indexes_pdf(self, pipeline):
+    async def test_resume_pipeline_parses_draft_then_indexes_on_confirm(
+        self, pipeline
+    ):
         candidate_id = uuid.uuid4()
         service = pipeline["service"]
         llm = pipeline["llm"]
         vector_repository = pipeline["vector_repository"]
+        session = FakeSession()
 
-        result = await service.process_and_index_resume(
+        draft = await service.parse_and_save_resume_draft(
             candidate_id=candidate_id,
             pdf_source=MINIMAL_PDF_BYTES,
+            session=session,
+            source_name="resume.pdf",
         )
 
-        assert result == EXPECTED_RESUME
-        assert result.full_name == "John Doe"
-        assert result.skills == ["Python", "FastAPI", "SQL Server"]
+        assert draft.parsed_data == EXPECTED_RESUME.model_dump(mode="json")
+        assert draft.is_confirmed is False
+        assert draft.is_primary is False
+        assert draft.confirmed_at is None
+        assert draft.title == "resume.pdf"
+        assert not vector_repository.store
 
         assert llm.prompts, "ResumeParser should have received a prompt"
         assert "John Doe" in llm.prompts[0], (
             "ResumeParser should receive extracted PDF text"
+        )
+
+        draft.id = uuid.uuid4()
+        await service.index_confirmed_resume(
+            candidate_id=candidate_id,
+            resume_id=draft.id,
+            parsed_resume=EXPECTED_RESUME,
+            confirmed_at=draft.confirmed_at,
         )
 
         key = ("resumes", str(candidate_id))
@@ -225,8 +270,10 @@ class TestResumePipeline:
         stored_vector, stored_payload = vector_repository.store[key]
         assert len(stored_vector) == VECTOR_DIM == 384
         assert stored_payload["candidate_id"] == str(candidate_id)
+        assert stored_payload["resume_id"] == str(draft.id)
         assert stored_payload["skills"] == ["Python", "FastAPI", "SQL Server"]
         assert stored_payload["is_deleted"] is False
+        assert stored_payload["is_confirmed"] is True
 
 
 class TestJobPipeline:
@@ -502,10 +549,12 @@ class TestDeterminism:
             vector_repository=FakeVectorRepository(),
             matching_engine=MatchingEngine(),
         )
-        parsed = await service.process_and_index_resume(
+        draft = await service.parse_and_save_resume_draft(
             candidate_id=uuid.uuid4(),
             pdf_source=MINIMAL_PDF_BYTES,
+            session=FakeSession(),
         )
+        parsed = ParsedResumeSchema.model_validate(draft.parsed_data or {})
         vector = FakeEmbeddingProvider._hash_vector(
             f"{parsed.title} {' '.join(parsed.skills)}"
         )

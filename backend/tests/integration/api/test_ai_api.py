@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.database.base_class import utc_now
 from app.database.session import async_session_factory
 from app.models import Resume
 from tests.integration.api.conftest import API_V1
@@ -124,13 +125,9 @@ class TestParseResume:
 
         assert resp.status_code in (401, 403)
 
-    @pytest.mark.skipif(
-        not QDRANT_AVAILABLE,
-        reason="BLOCKED BY ENVIRONMENT: Qdrant not available",
-    )
     @patch("app.services.ai_matching_service.PDFTextExtractor.extract")
     @patch("app.services.ai_matching_service.ResumeParser.parse", new_callable=AsyncMock)
-    def test_parse_resume_indexes(
+    def test_parse_resume_creates_draft(
         self, mock_parse_resume, mock_extract, candidate_client, run_async
     ):
         mock_extract.return_value = "Fake CV with Python skills"
@@ -157,10 +154,12 @@ class TestParseResume:
             )
         )
 
-        if resp.status_code != 200:
-            print("ERROR RESPONSE:", resp.json())
-        assert resp.status_code == 200
-        assert "full_name" in resp.json()
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["parsed_data"]["full_name"] == "Jane Doe"
+        assert body["is_confirmed"] is False
+        assert body["is_primary"] is False
+        assert body["confirmed_at"] is None
 
 
 class TestParseJD:
@@ -476,6 +475,8 @@ class TestRecommendationsCandidateName:
                     title="Integration Jane - Backend Engineer",
                     file_path="resume.pdf",
                     is_primary=True,
+                    is_confirmed=True,
+                    confirmed_at=utc_now(),
                     parsed_data={
                         "full_name": "Integration Jane",
                         "email": None,

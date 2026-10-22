@@ -13,6 +13,10 @@ from app.services.notification_service import NotificationService
 from app.services.payment_service import PaymentService
 from app.services.quota_enforcement_service import QuotaEnforcementService
 from app.services.recruitment_plan_service import RecruitmentPlanService
+from app.services.resume_service import (
+    ResumeConfirmationResult,
+    ResumeService,
+)
 from app.services.subscription_service import SubscriptionService
 from app.services.user_service import UserService
 
@@ -32,6 +36,8 @@ __all__ = [
     "SubscriptionService",
     "PaymentService",
     "AIMatchingService",
+    "ResumeService",
+    "ResumeConfirmationResult",
     "QuotaEnforcementService",
     "AdminSubscriptionService",
 ]

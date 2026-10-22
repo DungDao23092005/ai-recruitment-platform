@@ -113,6 +113,7 @@ async def _seed_resume(candidate_id, parsed_data: dict | None):
             candidate_id=candidate_id,
             title="cv.pdf",
             is_primary=True,
+            is_confirmed=True,
             parsed_data=parsed_data,
         )
         session.add(resume)

@@ -293,6 +293,7 @@ def test_delete_candidate_cleans_vector_and_still_emails(run_async, email_spy):
                     title="CV chính",
                     file_path="resumes/cv.pdf",
                     is_primary=True,
+                    is_confirmed=True,
                 )
             )
             await setup.commit()

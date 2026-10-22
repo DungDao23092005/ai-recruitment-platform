@@ -5,7 +5,7 @@ import { getFriendlyErrorMessage } from '@/utils/errors'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/utils/cn'
-import type { ParsedResume } from '@/types/ai'
+import type { ResumeRead } from '@/types/ai'
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
@@ -29,7 +29,7 @@ function getResumeUploadErrorMessage(error: unknown): string {
 }
 
 export interface ResumeUploadProps {
-  onParsed?: (resume: ParsedResume, fileName?: string) => void
+  onParsed?: (resume: ResumeRead, fileName?: string) => void
 }
 
 export function ResumeUpload({ onParsed }: ResumeUploadProps) {

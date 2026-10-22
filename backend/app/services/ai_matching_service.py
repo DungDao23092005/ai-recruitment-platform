@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import datetime, timezone
 from typing import BinaryIO
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.embeddings.embedding_service import EmbeddingService
+from app.ai.embeddings.embedding_service import (
+    EmbeddingService,
+    SentenceTransformerEmbeddingProvider,
+)
 from app.ai.extractors.pdf_extractor import PDFTextExtractor
 from app.ai.interfaces.base_provider import BaseVectorRepository
 from app.ai.matching.matching_engine import MatchingEngine
@@ -54,68 +58,83 @@ class AIMatchingService:
             return self._context_resolver
         return ContextResolver(session)
 
-    async def process_and_index_resume(
+    async def parse_and_save_resume_draft(
         self,
         candidate_id: uuid.UUID,
         pdf_source: bytes | str | os.PathLike[str] | BinaryIO,
-        session: AsyncSession | None = None,
+        session: AsyncSession,
         source_name: str | None = None,
-    ) -> ParsedResumeSchema:
-        """Extract text from PDF resume, parse structured data, generate embedding vector, index to Qdrant, and persist the parsed resume row."""
+    ) -> Resume:
+        """Parse a PDF into an unconfirmed draft without touching Qdrant.
+
+        The candidate's previously confirmed resume remains active until the
+        draft is explicitly confirmed through the resume lifecycle service.
+        """
         extracted_text = PDFTextExtractor.extract(pdf_source)
         parsed_resume = await self.resume_parser.parse(extracted_text)
 
-        # SQL-first transaction order: persist to SQL before Qdrant upsert
-        # This prevents orphan vectors if SQL commit fails
-        if session is not None:
-            await self._persist_resume(
-                session=session,
-                candidate_id=candidate_id,
-                source_name=source_name,
-                parsed_resume=parsed_resume,
-            )
-
-        # Qdrant upsert after successful SQL commit
-        vector = await self.embedding_service.embed_resume(parsed_resume)
-        payload = {
-            "candidate_id": str(candidate_id),
-            "skills": parsed_resume.skills,
-            "is_deleted": False,
-        }
-        await self.vector_repository.upsert_vector(
-            collection_name="resumes",
-            point_id=candidate_id,
-            vector=vector,
-            payload=payload,
-        )
-
-        return parsed_resume
-
-    async def _persist_resume(
-        self,
-        session: AsyncSession,
-        candidate_id: uuid.UUID,
-        source_name: str | None,
-        parsed_resume: ParsedResumeSchema,
-    ) -> None:
-        """Persist the parsed resume as the candidate's primary Resume row.
-
-        The Qdrant vector remains the candidate's embedding; the DB Resume
-        row is the source of truth for parsed CV metadata. If persistence
-        fails, the error propagates so a failed upload is never reported as
-        successful.
-        """
         repository = ResumeRepository(session, Resume)
         try:
-            await repository.upsert_primary(
+            draft = await repository.upsert_draft(
                 candidate_id=candidate_id,
                 title=source_name,
                 parsed_data=parsed_resume.model_dump(mode="json"),
             )
             await session.commit()
+            await session.refresh(draft)
         except Exception:
             await session.rollback()
             raise
+
+        return draft
+
+    async def index_confirmed_resume(
+        self,
+        candidate_id: uuid.UUID,
+        resume_id: uuid.UUID,
+        parsed_resume: ParsedResumeSchema,
+        confirmed_at: datetime | None = None,
+    ) -> None:
+        """Index only an explicitly confirmed resume in Qdrant."""
+        vector = await self.embedding_service.embed_resume(parsed_resume)
+        await self.vector_repository.upsert_vector(
+            collection_name="resumes",
+            point_id=candidate_id,
+            vector=vector,
+            payload=self._resume_payload(
+                candidate_id=candidate_id,
+                resume_id=resume_id,
+                skills=parsed_resume.skills,
+                is_deleted=False,
+                confirmed_at=confirmed_at,
+            ),
+        )
+
+    @staticmethod
+    def _serialize_confirmed_at(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+
+    @classmethod
+    def _resume_payload(
+        cls,
+        candidate_id: uuid.UUID,
+        resume_id: uuid.UUID | None,
+        skills: list[str],
+        is_deleted: bool,
+        confirmed_at: datetime | None = None,
+    ) -> dict:
+        return {
+            "candidate_id": str(candidate_id),
+            "resume_id": str(resume_id) if resume_id else None,
+            "skills": skills,
+            "is_deleted": is_deleted,
+            "is_confirmed": True,
+            "confirmed_at": cls._serialize_confirmed_at(confirmed_at),
+        }
 
     async def _reindex_resume(
         self,
@@ -123,30 +142,23 @@ class AIMatchingService:
         parsed_resume: ParsedResumeSchema,
         is_deleted: bool = False,
         vector: list[float] | None = None,
+        resume_id: uuid.UUID | None = None,
+        confirmed_at: datetime | None = None,
     ) -> None:
-        """Canonical reindex method for a resume.
-
-        This is the single source of truth for resume Qdrant indexing.
-        It handles both active and deleted resumes.
-
-        Args:
-            candidate_id: The candidate's UUID
-            parsed_resume: Parsed resume data
-            is_deleted: Whether the resume is deleted/inactive
-            vector: Pre-computed embedding vector. If not provided, will be generated.
-        """
+        """Canonical reindex method for an already-confirmed resume."""
         if vector is None:
             vector = await self.embedding_service.embed_resume(parsed_resume)
-        payload = {
-            "candidate_id": str(candidate_id),
-            "skills": parsed_resume.skills,
-            "is_deleted": is_deleted,
-        }
         await self.vector_repository.upsert_vector(
             collection_name="resumes",
             point_id=candidate_id,
             vector=vector,
-            payload=payload,
+            payload=self._resume_payload(
+                candidate_id=candidate_id,
+                resume_id=resume_id,
+                skills=parsed_resume.skills,
+                is_deleted=is_deleted,
+                confirmed_at=confirmed_at,
+            ),
         )
 
     async def delete_resume_vector(self, candidate_id: uuid.UUID) -> None:
@@ -249,7 +261,13 @@ class AIMatchingService:
                                     parsed_resume
                                 )
                                 # Self-heal: upsert the vector to Qdrant (pass vector to avoid double embedding)
-                                await self._reindex_resume(candidate_id, parsed_resume, vector=candidate_vector)
+                                await self._reindex_resume(
+                                    candidate_id,
+                                    parsed_resume,
+                                    vector=candidate_vector,
+                                    resume_id=primary_resume.id,
+                                    confirmed_at=primary_resume.confirmed_at,
+                                )
                             except Exception:
                                 # If parsing fails, fall through to error
                                 pass
@@ -367,8 +385,9 @@ class AIMatchingService:
         from app.models import Resume
         stmt = select(Resume).where(
             Resume.candidate_id.in_(candidate_ids),
-            Resume.is_primary == True,
-            Resume.is_deleted == False
+            Resume.is_primary == True,  # noqa: E712
+            Resume.is_confirmed == True,  # noqa: E712
+            Resume.is_deleted == False,  # noqa: E712
         )
         result = await session.execute(stmt)
         resumes = {}

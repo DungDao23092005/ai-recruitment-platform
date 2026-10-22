@@ -109,7 +109,7 @@ async def _override_get_db():
 @pytest.fixture
 def mock_service():
     service = MagicMock()
-    service.process_and_index_resume = AsyncMock()
+    service.parse_and_save_resume_draft = AsyncMock()
     service.process_and_index_job = AsyncMock()
     service.match_candidate_with_job = AsyncMock()
     service.recommend_jobs_for_candidate = AsyncMock()
@@ -253,6 +253,21 @@ def _parsed_resume():
     }
 
 
+def _resume_draft():
+    now = "2026-01-15T10:30:00+00:00"
+    return {
+        "id": uuid.uuid4(),
+        "candidate_id": uuid.uuid4(),
+        "title": None,
+        "is_primary": False,
+        "is_confirmed": False,
+        "confirmed_at": None,
+        "parsed_data": _parsed_resume(),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
 def _parsed_job():
     return {
         "title": "Backend Engineer",
@@ -261,8 +276,11 @@ def _parsed_job():
 
 
 class TestParseResume:
-    def test_parse_resume_success(self, candidate_client, mock_service):
-        mock_service.process_and_index_resume.return_value = _parsed_resume()
+    def test_parse_resume_returns_unconfirmed_draft(
+        self, candidate_client, mock_service
+    ):
+        draft = _resume_draft()
+        mock_service.parse_and_save_resume_draft.return_value = draft
 
         resp = candidate_client.post(
             "/api/v1/ai/parse-resume",
@@ -270,8 +288,19 @@ class TestParseResume:
         )
 
         assert resp.status_code == 200
-        assert resp.json()["full_name"] == "Jane Doe"
-        mock_service.process_and_index_resume.assert_called_once()
+        body = resp.json()
+        assert body["id"] == str(draft["id"])
+        assert body["parsed_data"]["full_name"] == "Jane Doe"
+        assert body["is_primary"] is False
+        assert body["is_confirmed"] is False
+        assert body["confirmed_at"] is None
+        mock_service.parse_and_save_resume_draft.assert_called_once()
+        call_kwargs = (
+            mock_service.parse_and_save_resume_draft.call_args.kwargs
+        )
+        assert call_kwargs["candidate_id"]
+        assert call_kwargs["pdf_source"] == b"%PDF-1.7 fake"
+        assert call_kwargs["source_name"] == "resume.pdf"
 
     def test_parse_resume_unauthorized(self, unauthorized_client, mock_service):
         resp = unauthorized_client.post(
@@ -280,12 +309,13 @@ class TestParseResume:
         )
 
         assert resp.status_code == status.HTTP_401_UNAUTHORIZED
-        mock_service.process_and_index_resume.assert_not_called()
+        mock_service.parse_and_save_resume_draft.assert_not_called()
 
-    def test_parse_resume_ai_error_maps_to_502(self, candidate_client, mock_service):
-        """Test that AIError from process_and_index_resume maps to HTTP 502."""
-        mock_service.process_and_index_resume.side_effect = AIError(
-            "Failed to upsert vector into collection 'resumes'"
+    def test_parse_resume_ai_error_maps_to_502(
+        self, candidate_client, mock_service
+    ):
+        mock_service.parse_and_save_resume_draft.side_effect = AIError(
+            "Failed to embed resume"
         )
 
         resp = candidate_client.post(
@@ -294,17 +324,8 @@ class TestParseResume:
         )
 
         assert resp.status_code == status.HTTP_502_BAD_GATEWAY
-        assert "Failed to upsert vector" in resp.json()["detail"]
-        mock_service.process_and_index_resume.assert_called_once()
-
-    def test_parse_resume_unauthorized(self, unauthorized_client, mock_service):
-        resp = unauthorized_client.post(
-            "/api/v1/ai/parse-resume",
-            files={"file": ("resume.pdf", b"%PDF fake", "application/pdf")},
-        )
-
-        assert resp.status_code == status.HTTP_401_UNAUTHORIZED
-        mock_service.process_and_index_resume.assert_not_called()
+        assert "Failed to embed resume" in resp.json()["detail"]
+        mock_service.parse_and_save_resume_draft.assert_called_once()
 
 
 class TestParseJD:

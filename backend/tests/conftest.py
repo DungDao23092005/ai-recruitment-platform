@@ -27,6 +27,13 @@ except ImportError:
 # This prevents pytest from accidentally dropping the development database.
 os.environ["DATABASE_NAME"] = "ai_recruitment_platform_test"
 
+# Integration tests drop/recreate the schema per test, while the FastAPI
+# lifespan (and its auto-started email outbox poll loop) is session-scoped.
+# Keep the background poller off in tests so it cannot query email_outbox
+# during the drop window; delivery tests start their own workers explicitly
+# and post-commit signals still dispatch.
+os.environ["EMAIL_OUTBOX_ENABLED"] = "false"
+
 
 @pytest.fixture(autouse=True)
 def _no_outbound_email():

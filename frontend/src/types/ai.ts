@@ -24,6 +24,14 @@ export interface ParsedResume {
   summary: string | null
   total_years_experience: number | null
   skills: string[]
+  technical_skills?: string[]
+  soft_skills?: string[]
+  job_titles?: string[]
+  projects?: Array<{
+    name: string | null
+    description: string | null
+    skills_used: string[]
+  }>
   experiences: WorkExperience[]
   education: Education[]
   certifications: string[]
@@ -35,9 +43,19 @@ export interface ResumeRead {
   candidate_id: string
   title: string | null
   is_primary: boolean
+  is_confirmed: boolean
+  confirmed_at: string | null
   parsed_data: ParsedResume | null
   created_at: string
   updated_at: string
+}
+
+export type ResumeIndexingStatus = 'indexed' | 'failed'
+
+export interface ResumeConfirmation {
+  resume: ResumeRead
+  indexing_status: ResumeIndexingStatus
+  message: string
 }
 
 export interface ParsedJob {

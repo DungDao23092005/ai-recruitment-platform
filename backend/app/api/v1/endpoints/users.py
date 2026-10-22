@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -14,7 +15,11 @@ from app.core.exceptions import (
 from app.models import Application, Job, Resume, User
 from app.repositories import ApplicationRepository, JobRepository, ResumeRepository
 from app.schemas.metrics import RecruiterMetricsResponse
-from app.schemas.resume import ResumeRead
+from app.schemas.resume import (
+    ResumeConfirmationRead,
+    ResumeDraftUpdate,
+    ResumeRead,
+)
 from app.schemas.user import (
     CandidateProfileCreate,
     CandidateProfileRead,
@@ -23,9 +28,29 @@ from app.schemas.user import (
     RecruiterProfileRead,
     RecruiterProfileUpdate,
 )
+from app.services.resume_service import ResumeService
 from app.services.user_service import UserService
 
 router = APIRouter()
+
+
+def _get_resume_service(
+    db: AsyncSession = Depends(get_db),
+) -> ResumeService:
+    return ResumeService(db)
+
+
+async def _require_candidate_profile_id(
+    current_user: User,
+    db: AsyncSession,
+) -> uuid.UUID:
+    user = await UserService(db).get_user_with_profile(current_user.id)
+    if user is None or user.candidate_profile is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Candidate profile not found",
+        )
+    return user.candidate_profile.id
 
 
 @router.post(
@@ -203,27 +228,104 @@ async def get_my_resume(
     current_user: User = Depends(require_candidate),
     db: AsyncSession = Depends(get_db),
 ) -> ResumeRead:
-    """Return the authenticated candidate's primary resume.
+    """Return the authenticated candidate's active confirmed primary resume.
 
     Identity always comes from the authenticated user's candidate profile;
     the endpoint never accepts a candidate/resume id from the client.
     """
-    user = await UserService(db).get_user_with_profile(current_user.id)
-    if user is None or user.candidate_profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Candidate profile not found",
-        )
-
+    candidate_id = await _require_candidate_profile_id(current_user, db)
     resume = await ResumeRepository(db, Resume).get_primary_by_candidate(
-        user.candidate_profile.id
+        candidate_id
     )
     if resume is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Resume not found",
+            detail="Confirmed resume not found",
         )
     return ResumeRead.model_validate(resume)
+
+
+@router.get(
+    "/me/resume/draft",
+    response_model=ResumeRead,
+)
+async def get_my_resume_draft(
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+    service: ResumeService = Depends(_get_resume_service),
+) -> ResumeRead:
+    """Return the newest unconfirmed resume draft for review."""
+    candidate_id = await _require_candidate_profile_id(current_user, db)
+    draft = await service.get_draft(candidate_id)
+    if draft is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Resume draft not found",
+        )
+    return ResumeRead.model_validate(draft)
+
+
+@router.put(
+    "/me/resume/{resume_id}",
+    response_model=ResumeRead,
+)
+async def update_my_resume_draft(
+    resume_id: uuid.UUID,
+    data: ResumeDraftUpdate,
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+    service: ResumeService = Depends(_get_resume_service),
+) -> ResumeRead:
+    """Persist candidate edits to an owned, unconfirmed resume draft."""
+    candidate_id = await _require_candidate_profile_id(current_user, db)
+    try:
+        draft = await service.save_draft(
+            candidate_id=candidate_id,
+            resume_id=resume_id,
+            parsed_data=data.parsed_data,
+            title=data.title,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ConflictException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return ResumeRead.model_validate(draft)
+
+
+@router.post(
+    "/me/resume/{resume_id}/confirm",
+    response_model=ResumeConfirmationRead,
+)
+async def confirm_my_resume(
+    resume_id: uuid.UUID,
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+    service: ResumeService = Depends(_get_resume_service),
+) -> ResumeConfirmationRead:
+    """Explicitly confirm an owned resume draft as the active searchable CV."""
+    candidate_id = await _require_candidate_profile_id(current_user, db)
+    try:
+        result = await service.confirm_resume(
+            candidate_id=candidate_id,
+            resume_id=resume_id,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    return ResumeConfirmationRead(
+        resume=ResumeRead.model_validate(result.resume),
+        indexing_status=result.indexing_status,
+        message=result.message,
+    )
 
 
 @router.get(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -51,30 +52,54 @@ def ai_service(mock_dependencies):
 
 
 @pytest.mark.asyncio
-async def test_process_and_index_resume_success(ai_service, mock_dependencies):
+async def test_parse_resume_and_save_draft_does_not_index(
+    ai_service, mock_dependencies
+):
     cand_id = uuid.uuid4()
     parsed_resume = ParsedResumeSchema(
         full_name="John Doe",
         skills=["Python", "FastAPI"],
     )
     mock_dependencies["resume_parser"].parse.return_value = parsed_resume
-    mock_dependencies["embedding_service"].embed_resume.return_value = [
-        0.1
-    ] * 384
-
-    fake_pdf = b"%PDF-1.7 Fake PDF content for resume testing"
+    draft = Resume(
+        id=uuid.uuid4(),
+        candidate_id=cand_id,
+        title="resume.pdf",
+        is_primary=False,
+        is_confirmed=False,
+        parsed_data=parsed_resume.model_dump(mode="json"),
+    )
+    session = _mock_db_session(existing=None)
+    repo = MagicMock()
+    repo.upsert_draft = AsyncMock(return_value=draft)
 
     with patch(
+        "app.services.ai_matching_service.ResumeRepository",
+        return_value=repo,
+    ), patch(
         "app.ai.extractors.pdf_extractor.PDFTextExtractor.extract",
         return_value="Extracted CV Text",
     ):
-        result = await ai_service.process_and_index_resume(cand_id, fake_pdf)
+        result = await ai_service.parse_and_save_resume_draft(
+            candidate_id=cand_id,
+            pdf_source=b"%PDF-1.7 fake",
+            session=session,
+            source_name="resume.pdf",
+        )
 
-    assert result == parsed_resume
+    assert result is draft
     mock_dependencies["resume_parser"].parse.assert_awaited_once_with(
         "Extracted CV Text"
     )
-    mock_dependencies["vector_repository"].upsert_vector.assert_awaited_once()
+    repo.upsert_draft.assert_awaited_once_with(
+        candidate_id=cand_id,
+        title="resume.pdf",
+        parsed_data=parsed_resume.model_dump(mode="json"),
+    )
+    mock_dependencies["embedding_service"].embed_resume.assert_not_awaited()
+    mock_dependencies["vector_repository"].upsert_vector.assert_not_awaited()
+    session.commit.assert_awaited_once()
+    session.refresh.assert_awaited_once_with(draft)
 
 
 def _mock_db_session(existing: Resume | None = None) -> MagicMock:
@@ -83,6 +108,7 @@ def _mock_db_session(existing: Resume | None = None) -> MagicMock:
     session.execute = AsyncMock()
     result_mock = MagicMock()
     result_mock.scalar_one_or_none.return_value = existing
+    result_mock.scalars.return_value.first.return_value = existing
     session.execute.return_value = result_mock
     session.flush = AsyncMock()
     session.refresh = AsyncMock()
@@ -91,7 +117,7 @@ def _mock_db_session(existing: Resume | None = None) -> MagicMock:
     return session
 
 
-def test_process_and_index_resume_creates_resume_row(
+def test_parse_resume_creates_unconfirmed_non_primary_draft(
     ai_service, mock_dependencies
 ):
     cand_id = uuid.uuid4()
@@ -102,9 +128,6 @@ def test_process_and_index_resume_creates_resume_row(
         languages=["Vietnamese"],
     )
     mock_dependencies["resume_parser"].parse.return_value = parsed_resume
-    mock_dependencies["embedding_service"].embed_resume.return_value = [
-        0.1
-    ] * 384
     session = _mock_db_session(existing=None)
 
     with patch(
@@ -112,7 +135,7 @@ def test_process_and_index_resume_creates_resume_row(
         return_value="Extracted CV Text",
     ):
         result = asyncio.run(
-            ai_service.process_and_index_resume(
+            ai_service.parse_and_save_resume_draft(
                 cand_id,
                 b"%PDF-1.7 fake",
                 session=session,
@@ -120,27 +143,30 @@ def test_process_and_index_resume_creates_resume_row(
             )
         )
 
-    assert result == parsed_resume
-    mock_dependencies["vector_repository"].upsert_vector.assert_awaited_once()
+    assert isinstance(result, Resume)
+    mock_dependencies["vector_repository"].upsert_vector.assert_not_awaited()
     session.add.assert_called_once()
     added = session.add.call_args.args[0]
     assert isinstance(added, Resume)
     assert added.candidate_id == cand_id
     assert added.title == "cv.pdf"
-    assert added.is_primary is True
+    assert added.is_primary is False
+    assert added.is_confirmed is False
+    assert added.confirmed_at is None
     assert added.parsed_data == parsed_resume.model_dump(mode="json")
     session.commit.assert_awaited_once()
 
 
-def test_process_and_index_resume_updates_primary_resume_row(
+def test_parse_resume_updates_existing_draft_without_touching_active_resume(
     ai_service, mock_dependencies
 ):
     cand_id = uuid.uuid4()
     existing = Resume(
         id=uuid.uuid4(),
         candidate_id=cand_id,
-        title="old.pdf",
+        title="old-draft.pdf",
         is_primary=True,
+        is_confirmed=False,
         parsed_data={"skills": ["Old"]},
     )
     parsed_resume = ParsedResumeSchema(
@@ -148,9 +174,6 @@ def test_process_and_index_resume_updates_primary_resume_row(
         skills=["Python", "FastAPI"],
     )
     mock_dependencies["resume_parser"].parse.return_value = parsed_resume
-    mock_dependencies["embedding_service"].embed_resume.return_value = [
-        0.1
-    ] * 384
     session = _mock_db_session(existing=existing)
 
     with patch(
@@ -158,7 +181,7 @@ def test_process_and_index_resume_updates_primary_resume_row(
         return_value="Extracted CV Text",
     ):
         asyncio.run(
-            ai_service.process_and_index_resume(
+            ai_service.parse_and_save_resume_draft(
                 cand_id,
                 b"%PDF-1.7 fake",
                 session=session,
@@ -168,12 +191,14 @@ def test_process_and_index_resume_updates_primary_resume_row(
 
     session.add.assert_not_called()
     assert existing.title == "new-cv.pdf"
-    assert existing.is_primary is True
+    assert existing.is_primary is False
+    assert existing.is_confirmed is False
     assert existing.parsed_data == parsed_resume.model_dump(mode="json")
+    mock_dependencies["vector_repository"].upsert_vector.assert_not_awaited()
     session.commit.assert_awaited_once()
 
 
-def test_process_and_index_resume_persistence_failure_raises(
+def test_parse_resume_draft_persistence_failure_rolls_back(
     ai_service, mock_dependencies
 ):
     cand_id = uuid.uuid4()
@@ -182,9 +207,6 @@ def test_process_and_index_resume_persistence_failure_raises(
         skills=["Python"],
     )
     mock_dependencies["resume_parser"].parse.return_value = parsed_resume
-    mock_dependencies["embedding_service"].embed_resume.return_value = [
-        0.1
-    ] * 384
     session = _mock_db_session(existing=None)
     session.commit.side_effect = RuntimeError("db unavailable")
 
@@ -194,7 +216,7 @@ def test_process_and_index_resume_persistence_failure_raises(
     ):
         with pytest.raises(RuntimeError, match="db unavailable"):
             asyncio.run(
-                ai_service.process_and_index_resume(
+                ai_service.parse_and_save_resume_draft(
                     cand_id,
                     b"%PDF-1.7 fake",
                     session=session,
@@ -203,28 +225,48 @@ def test_process_and_index_resume_persistence_failure_raises(
             )
 
     session.rollback.assert_awaited_once()
+    mock_dependencies["vector_repository"].upsert_vector.assert_not_awaited()
 
 
-def test_process_and_index_resume_skips_persistence_without_session(
+@pytest.mark.asyncio
+async def test_index_confirmed_resume_writes_confirmation_payload(
     ai_service, mock_dependencies
 ):
     cand_id = uuid.uuid4()
-    parsed_resume = ParsedResumeSchema(skills=["Python"])
-    mock_dependencies["resume_parser"].parse.return_value = parsed_resume
+    resume_id = uuid.uuid4()
+    confirmed_at = datetime(2026, 1, 15, 10, 30, tzinfo=timezone.utc)
+    parsed_resume = ParsedResumeSchema(
+        full_name="John Doe",
+        skills=["Python"],
+    )
     mock_dependencies["embedding_service"].embed_resume.return_value = [
         0.1
     ] * 384
 
-    with patch(
-        "app.ai.extractors.pdf_extractor.PDFTextExtractor.extract",
-        return_value="Extracted CV Text",
-    ):
-        result = asyncio.run(
-            ai_service.process_and_index_resume(cand_id, b"%PDF fake")
-        )
+    await ai_service.index_confirmed_resume(
+        candidate_id=cand_id,
+        resume_id=resume_id,
+        parsed_resume=parsed_resume,
+        confirmed_at=confirmed_at,
+    )
 
-    assert result == parsed_resume
+    mock_dependencies["embedding_service"].embed_resume.assert_awaited_once_with(
+        parsed_resume
+    )
     mock_dependencies["vector_repository"].upsert_vector.assert_awaited_once()
+    call_kwargs = (
+        mock_dependencies["vector_repository"].upsert_vector.call_args.kwargs
+    )
+    assert call_kwargs["collection_name"] == "resumes"
+    assert call_kwargs["point_id"] == cand_id
+    assert call_kwargs["payload"] == {
+        "candidate_id": str(cand_id),
+        "resume_id": str(resume_id),
+        "skills": ["Python"],
+        "is_deleted": False,
+        "is_confirmed": True,
+        "confirmed_at": "2026-01-15T10:30:00+00:00",
+    }
 
 
 @pytest.mark.asyncio
@@ -885,6 +927,7 @@ def test_recommend_candidates_resolves_profiles_in_one_batch(
         candidate_id=cand1_id,
         title="cv1.pdf",
         is_primary=True,
+        is_confirmed=True,
         is_deleted=False,
         parsed_data={
             "full_name": "Jane Doe",
@@ -897,6 +940,7 @@ def test_recommend_candidates_resolves_profiles_in_one_batch(
         candidate_id=cand2_id,
         title="cv2.pdf",
         is_primary=True,
+        is_confirmed=True,
         is_deleted=False,
         parsed_data={
             "full_name": "John Smith",
@@ -1218,6 +1262,7 @@ class TestResumeQdrantRegression:
                         candidate_id=cand_id,
                         title="cv.pdf",
                         is_primary=True,
+                        is_confirmed=True,
                         is_deleted=False,
                         parsed_data={
                             "full_name": f"Candidate {str(cand_id)[:8]}",
@@ -1322,13 +1367,10 @@ class TestResumeQdrantRegression:
         )
 
     @pytest.mark.asyncio
-    async def test_transaction_order_sql_before_qdrant(
+    async def test_draft_parse_commits_without_qdrant_write(
         self, ai_service_with_mocks
     ):
-        """Test that SQL persistence happens BEFORE Qdrant upsert.
-
-        Regression test for: SQL-first transaction ordering to prevent orphan vectors.
-        """
+        """Draft parsing persists SQL data without activating or indexing it."""
         ai_service, mocks = ai_service_with_mocks
         candidate_id = uuid.uuid4()
         parsed_resume = ParsedResumeSchema(
@@ -1336,51 +1378,33 @@ class TestResumeQdrantRegression:
             skills=["Python", "FastAPI"],
         )
         mocks["resume_parser"].parse.return_value = parsed_resume
-        mocks["embedding_service"].embed_resume.return_value = [0.1] * 384
 
         session = MagicMock()
         session.add = MagicMock()
         session.flush = AsyncMock()
         session.refresh = AsyncMock()
         session.rollback = AsyncMock()
-        # Need to mock session.execute for ResumeRepository.get_primary_by_candidate
         session.execute = AsyncMock()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
+        mock_result.scalars.return_value.first.return_value = None
         session.execute.return_value = mock_result
-
-        call_order = []
-
-        original_upsert = mocks["vector_repository"].upsert_vector
-
-        async def track_upsert(*args, **kwargs):
-            call_order.append("qdrant_upsert")
-            return await original_upsert(*args, **kwargs)
-
-        mocks["vector_repository"].upsert_vector = track_upsert
-
-        # Use AsyncMock for session.commit since it's an awaited async method
-        async def track_commit():
-            call_order.append("sql_commit")
-
-        session.commit = AsyncMock(side_effect=track_commit)
+        session.commit = AsyncMock()
 
         with patch(
             "app.ai.extractors.pdf_extractor.PDFTextExtractor.extract",
             return_value="Extracted CV Text",
         ):
-            await ai_service.process_and_index_resume(
+            await ai_service.parse_and_save_resume_draft(
                 candidate_id=candidate_id,
                 pdf_source=b"%PDF-1.4 fake",
                 session=session,
                 source_name="cv.pdf",
             )
 
-        # Verify order: SQL commit should happen before Qdrant upsert
-        assert "sql_commit" in call_order, "SQL commit should be called"
-        assert "qdrant_upsert" in call_order, "Qdrant upsert should be called"
-        assert call_order.index("sql_commit") < call_order.index("qdrant_upsert"), \
-            "SQL commit must happen before Qdrant upsert"
+        session.commit.assert_awaited_once()
+        mocks["embedding_service"].embed_resume.assert_not_awaited()
+        mocks["vector_repository"].upsert_vector.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_orphan_reconciliation_deletes_orphan_vectors(
@@ -1402,13 +1426,21 @@ class TestResumeQdrantRegression:
         for cid in sql_candidate_ids:
             qdrant_points.append({
                 "id": str(cid),
-                "payload": {"candidate_id": str(cid), "is_deleted": False},
+                "payload": {
+                    "candidate_id": str(cid),
+                    "is_deleted": False,
+                    "is_confirmed": True,
+                },
             })
         orphan_ids = [uuid.uuid4() for _ in range(3)]
         for oid in orphan_ids:
             qdrant_points.append({
                 "id": str(oid),
-                "payload": {"candidate_id": str(oid), "is_deleted": False},
+                "payload": {
+                    "candidate_id": str(oid),
+                    "is_deleted": False,
+                    "is_confirmed": True,
+                },
             })
 
         # Create a real QdrantVectorRepository with a mocked client
@@ -1508,6 +1540,7 @@ class TestResumeQdrantRegression:
             candidate_id=candidate_id,
             title="cv.pdf",
             is_primary=True,
+            is_confirmed=True,
             is_deleted=False,
             parsed_data={
                 "full_name": "Test Candidate",
@@ -1620,6 +1653,7 @@ class TestResumeQdrantRegression:
             candidate_id=candidate_id,
             title="cv.pdf",
             is_primary=True,
+            is_confirmed=True,
             is_deleted=False,
             parsed_data={
                 "full_name": "Test Candidate",
@@ -1657,7 +1691,11 @@ class TestResumeQdrantRegression:
 
         scroll_points = [{
             "id": str(candidate_id),
-            "payload": {"candidate_id": str(candidate_id), "is_deleted": False},
+            "payload": {
+                "candidate_id": str(candidate_id),
+                "is_deleted": False,
+                "is_confirmed": True,
+            },
         }]
 
         real_repo.client.scroll = AsyncMock(return_value=([MockPoint(p) for p in scroll_points], None))
@@ -1746,6 +1784,7 @@ class TestResumeQdrantRegression:
             candidate_id=candidate_id,
             title="cv.pdf",
             is_primary=True,
+            is_confirmed=True,
             is_deleted=False,
             parsed_data={
                 "full_name": "Test Candidate",

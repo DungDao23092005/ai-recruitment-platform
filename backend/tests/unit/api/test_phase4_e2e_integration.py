@@ -400,6 +400,7 @@ def _make_db_resume() -> MagicMock:
     resume = MagicMock()
     resume.candidate_id = KNOWN_CANDIDATE_ID
     resume.is_primary = True
+    resume.is_confirmed = True
     resume.is_deleted = False
     resume.parsed_data = {
         "full_name": "Test Candidate",
@@ -410,11 +411,24 @@ def _make_db_resume() -> MagicMock:
 
 def _fake_db_session() -> MagicMock:
     session = MagicMock()
-    session.add = MagicMock()
+    added: list = []
+    session.add = MagicMock(side_effect=added.append)
+
+    async def _flush() -> None:
+        from app.database.base_class import utc_now
+
+        for entity in added:
+            if getattr(entity, "id", None) is None:
+                entity.id = uuid.uuid4()
+            if getattr(entity, "created_at", None) is None:
+                entity.created_at = utc_now()
+            if getattr(entity, "updated_at", None) is None:
+                entity.updated_at = utc_now()
 
     def _execute(stmt):
         result = MagicMock()
         result.scalar_one_or_none.return_value = None
+        result.scalars().first.return_value = None
         result.scalars().unique().first.return_value = None
         result.scalars().all.return_value = []
         result.all.return_value = []
@@ -451,7 +465,7 @@ def _fake_db_session() -> MagicMock:
         return result
 
     session.execute = AsyncMock(side_effect=_execute)
-    session.flush = AsyncMock()
+    session.flush = AsyncMock(side_effect=_flush)
     session.refresh = AsyncMock()
     session.commit = AsyncMock()
     session.rollback = AsyncMock()
@@ -471,6 +485,7 @@ def client(pipeline_service, monkeypatch):
             "candidate_id": str(KNOWN_CANDIDATE_ID),
             "skills": ["Python", "FastAPI", "SQL Server"],
             "is_deleted": False,
+            "is_confirmed": True,
         },
     )
     store[("jobs", str(KNOWN_JOB_ID))] = (
@@ -752,8 +767,11 @@ class TestCandidateFlow:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["full_name"] == "John Doe"
-        assert "Python" in body["skills"]
+        assert body["parsed_data"]["full_name"] == "John Doe"
+        assert "Python" in body["parsed_data"]["skills"]
+        assert body["is_primary"] is False
+        assert body["is_confirmed"] is False
+        assert body["confirmed_at"] is None
 
         resume_keys = [k for k in vector_repository.store.keys() if k[0] == "resumes"]
         assert len(resume_keys) == 1
@@ -906,7 +924,9 @@ class TestAdminFlow:
         )
 
         assert resp.status_code == 200
-        assert resp.json()["full_name"] == "John Doe"
+        body = resp.json()
+        assert body["parsed_data"]["full_name"] == "John Doe"
+        assert body["is_confirmed"] is False
 
 
 class TestAiPipelineIntegration:

@@ -124,6 +124,9 @@ async def test_upsert_resume_vector_payload(repo: QdrantVectorRepository, mock_c
     assert payload["skills"] == skills
     assert payload["created_at"] == "2026-01-15T10:30:00+00:00"
     assert payload["is_deleted"] is False
+    assert payload["is_confirmed"] is True
+    assert payload["confirmed_at"] == "2026-01-15T10:30:00+00:00"
+    assert "resume_id" in payload
     assert not {"summary", "experiences", "education", "raw_text"}.intersection(
         payload
     )
@@ -199,6 +202,9 @@ async def test_search_similar_success(repo: QdrantVectorRepository, mock_client:
     query_filter = call_kwargs["query_filter"]
     assert query_filter.must_not == [
         FieldCondition(key="is_deleted", match=MatchValue(value=True))
+    ]
+    assert query_filter.must == [
+        FieldCondition(key="is_confirmed", match=MatchValue(value=True))
     ]
 
     assert result == [
@@ -304,7 +310,11 @@ async def test_retrieve_existing_vector(
     repo: QdrantVectorRepository, mock_client: AsyncMock
 ):
     vector = _vector()
-    payload = {"candidate_id": "c-1", "skills": ["Python"]}
+    payload = {
+        "candidate_id": "c-1",
+        "skills": ["Python"],
+        "is_confirmed": True,
+    }
     mock_client.retrieve.return_value = [
         _make_record("point-1", vector, payload)
     ]
@@ -320,7 +330,9 @@ async def test_retrieve_uuid_point_id(
 ):
     point_id = uuid.uuid4()
     mock_client.retrieve.return_value = [
-        _make_record(str(point_id), _vector(), {})
+        _make_record(
+            str(point_id), _vector(), {"is_confirmed": True}
+        )
     ]
 
     result = await repo.retrieve_vector("resumes", point_id)
@@ -353,6 +365,50 @@ async def test_retrieve_missing_point_returns_none(
 
 
 @pytest.mark.asyncio
+async def test_retrieve_unconfirmed_resume_returns_none(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    mock_client.retrieve.return_value = [
+        _make_record(
+            "point-1",
+            _vector(),
+            {"candidate_id": "c-1", "is_confirmed": False},
+        )
+    ]
+
+    result = await repo.retrieve_vector("resumes", "point-1")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_retrieve_legacy_resume_without_confirmation_returns_none(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    mock_client.retrieve.return_value = [
+        _make_record("point-1", _vector(), {"candidate_id": "c-1"})
+    ]
+
+    result = await repo.retrieve_vector("resumes", "point-1")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_retrieve_job_does_not_require_resume_confirmation(
+    repo: QdrantVectorRepository, mock_client: AsyncMock
+):
+    payload = {"job_id": "job-1"}
+    mock_client.retrieve.return_value = [
+        _make_record("job-1", _vector(), payload)
+    ]
+
+    result = await repo.retrieve_vector("jobs", "job-1")
+
+    assert result["payload"] == payload
+
+
+@pytest.mark.asyncio
 async def test_retrieve_uses_correct_collection(
     repo: QdrantVectorRepository, mock_client: AsyncMock
 ):
@@ -368,7 +424,9 @@ async def test_retrieve_uses_correct_collection(
 async def test_retrieve_uses_ids_list(
     repo: QdrantVectorRepository, mock_client: AsyncMock
 ):
-    mock_client.retrieve.return_value = [_make_record("point-1", _vector(), {})]
+    mock_client.retrieve.return_value = [
+        _make_record("point-1", _vector(), {"is_confirmed": True})
+    ]
 
     await repo.retrieve_vector("resumes", "point-1")
 
@@ -379,7 +437,9 @@ async def test_retrieve_uses_ids_list(
 async def test_retrieve_with_vectors_true(
     repo: QdrantVectorRepository, mock_client: AsyncMock
 ):
-    mock_client.retrieve.return_value = [_make_record("p", _vector(), {})]
+    mock_client.retrieve.return_value = [
+        _make_record("p", _vector(), {"is_confirmed": True})
+    ]
 
     await repo.retrieve_vector("resumes", "p")
 
@@ -390,7 +450,9 @@ async def test_retrieve_with_vectors_true(
 async def test_retrieve_with_payload_true(
     repo: QdrantVectorRepository, mock_client: AsyncMock
 ):
-    mock_client.retrieve.return_value = [_make_record("p", _vector(), {})]
+    mock_client.retrieve.return_value = [
+        _make_record("p", _vector(), {"is_confirmed": True})
+    ]
 
     await repo.retrieve_vector("resumes", "p")
 
@@ -419,7 +481,11 @@ async def test_retrieve_failure_maps_to_ai_error(
 async def test_retrieve_payload_preserved(
     repo: QdrantVectorRepository, mock_client: AsyncMock
 ):
-    payload = {"skills": ["Python", "SQL"], "is_deleted": False}
+    payload = {
+        "skills": ["Python", "SQL"],
+        "is_deleted": False,
+        "is_confirmed": True,
+    }
     mock_client.retrieve.return_value = [
         _make_record("point-1", _vector(), payload)
     ]
@@ -435,7 +501,7 @@ async def test_retrieve_vector_preserved(
 ):
     vector = [0.5, 0.25, 0.125]
     mock_client.retrieve.return_value = [
-        _make_record("point-1", vector, {"k": "v"})
+        _make_record("point-1", vector, {"is_confirmed": True})
     ]
 
     result = await repo.retrieve_vector("resumes", "point-1")
@@ -542,8 +608,8 @@ class TestInitCollectionsPayloadIndex:
         # Verify collection_exists called for all 3 collections
         assert mock_client.collection_exists.call_count == 3
 
-        # Verify create_payload_index called: 1 per collection (resumes, knowledge) + 2 for jobs (is_deleted + status)
-        assert mock_client.create_payload_index.call_count == 4
+        # 3 is_deleted indexes + jobs status + resumes is_confirmed
+        assert mock_client.create_payload_index.call_count == 5
 
         # Collect all index calls
         index_calls = []
@@ -569,6 +635,16 @@ class TestInitCollectionsPayloadIndex:
         assert coll == QdrantVectorRepository.JOB_COLLECTION
         assert schema == PayloadSchemaType.KEYWORD
 
+        # Verify is_confirmed index exists ONLY for resumes collection
+        confirmed_indexes = [
+            (coll, schema)
+            for coll, field, schema in index_calls
+            if field == "is_confirmed"
+        ]
+        assert confirmed_indexes == [
+            (QdrantVectorRepository.RESUME_COLLECTION, PayloadSchemaType.BOOL)
+        ]
+
     @pytest.mark.asyncio
     async def test_payload_index_created_for_new_collection(self):
         """New collection: init_collections creates collection then payload index for each."""
@@ -581,8 +657,8 @@ class TestInitCollectionsPayloadIndex:
         # Verify collection created for all 3 collections
         assert mock_client.create_collection.call_count == 3
 
-        # Verify create_payload_index called: 1 per collection (resumes, knowledge) + 2 for jobs (is_deleted + status)
-        assert mock_client.create_payload_index.call_count == 4
+        # 3 is_deleted indexes + jobs status + resumes is_confirmed
+        assert mock_client.create_payload_index.call_count == 5
 
         # Collect all index calls
         index_calls = []
@@ -602,6 +678,16 @@ class TestInitCollectionsPayloadIndex:
         coll, schema = status_indexes[0]
         assert coll == QdrantVectorRepository.JOB_COLLECTION
         assert schema == PayloadSchemaType.KEYWORD
+
+        # Verify is_confirmed index exists ONLY for resumes collection
+        confirmed_indexes = [
+            (coll, schema)
+            for coll, field, schema in index_calls
+            if field == "is_confirmed"
+        ]
+        assert confirmed_indexes == [
+            (QdrantVectorRepository.RESUME_COLLECTION, PayloadSchemaType.BOOL)
+        ]
 
         # Verify call order: for each collection, create_collection must be called before create_payload_index
         calls = mock_client.mock_calls
@@ -672,6 +758,6 @@ class TestInitCollectionsPayloadIndex:
         await repo.init_collections()
         await repo.init_collections()
 
-        # Should call create_payload_index 4 times per call (12 total): 
-        # 1 is_deleted for each of 3 collections + 1 status for jobs
-        assert mock_client.create_payload_index.call_count == 12
+        # 5 payload indexes per call (15 total): 3 is_deleted + jobs status
+        # + resumes is_confirmed
+        assert mock_client.create_payload_index.call_count == 15

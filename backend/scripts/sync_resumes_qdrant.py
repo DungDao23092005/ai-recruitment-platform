@@ -88,9 +88,15 @@ async def run_sync(
             with_payload=True,
             with_vectors=False,
             scroll_filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="is_confirmed",
+                        match=MatchValue(value=True),
+                    )
+                ],
                 must_not=[
                     FieldCondition(key="is_deleted", match=MatchValue(value=True))
-                ]
+                ],
             ),
         )
         points = scroll_result[0]
@@ -122,6 +128,7 @@ async def run_sync(
     async with async_session_factory() as session:
         stmt = select(Resume).options(selectinload(Resume.candidate).selectinload(CandidateProfile.user)).where(
             Resume.is_primary == True,  # noqa: E712
+            Resume.is_confirmed == True,  # noqa: E712
             Resume.is_deleted == False,  # noqa: E712
             CandidateProfile.is_deleted == False,  # noqa: E712
             User.is_active == True,  # noqa: E712
@@ -198,6 +205,7 @@ async def run_sync(
             .where(
                 Resume.candidate_id.in_(missing),
                 Resume.is_primary == True,  # noqa: E712
+                Resume.is_confirmed == True,  # noqa: E712
                 Resume.is_deleted == False,  # noqa: E712
                 CandidateProfile.is_deleted == False,  # noqa: E712
                 User.is_active == True,  # noqa: E712
@@ -222,6 +230,8 @@ async def run_sync(
                 candidate_id=resume.candidate_id,
                 parsed_resume=parsed_resume,
                 is_deleted=False,
+                resume_id=resume.id,
+                confirmed_at=resume.confirmed_at,
             )
             success += 1
             if success % 10 == 0 or success == len(resumes_to_index):

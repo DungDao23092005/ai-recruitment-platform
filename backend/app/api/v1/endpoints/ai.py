@@ -45,6 +45,7 @@ from app.schemas.ai_matching import (
     JobMatchRecommendation,
 )
 from app.schemas.ai_resume import ParsedResumeSchema
+from app.schemas.resume import ResumeRead
 from app.models.user import User
 from app.schemas.ai_search import SemanticSearchResult
 from app.services.ai_matching_service import AIMatchingService
@@ -97,7 +98,7 @@ def _get_interview_generator_service() -> InterviewGeneratorService:
 
 @router.post(
     "/parse-resume",
-    response_model=ParsedResumeSchema,
+    response_model=ResumeRead,
     status_code=status.HTTP_200_OK,
 )
 async def parse_resume(
@@ -106,7 +107,7 @@ async def parse_resume(
     db: AsyncSession = Depends(get_db),
     service: AIMatchingService = Depends(_get_ai_service),
     _: RateLimitResult = Depends(parse_resume_rate_limit),
-) -> ParsedResumeSchema:
+) -> ResumeRead:
     # Filename validation
     filename = file.filename or ""
     if len(filename) > MAX_FILENAME_LENGTH:
@@ -157,12 +158,13 @@ async def parse_resume(
             detail="Candidate profile required",
         )
     try:
-        return await service.process_and_index_resume(
+        draft = await service.parse_and_save_resume_draft(
             candidate_id=candidate_profile.id,
             pdf_source=pdf_bytes,
             session=db,
             source_name=file.filename,
         )
+        return ResumeRead.model_validate(draft)
     except EmptyDocumentError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
