@@ -1,10 +1,13 @@
+import { useEffect } from 'react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 import { PlansPage } from '@/pages/plans/PlansPage'
+import { useAuth } from '@/contexts/AuthContext'
 import { usePlans } from '@/features/subscriptions/hooks/usePlans'
 import { useMySubscription } from '@/features/subscriptions/hooks/useMySubscription'
+import type { UserRole } from '@/types/auth'
 
 // Mock the API modules
 vi.mock('@/api/plans', async () => {
@@ -24,8 +27,60 @@ vi.mock('@/api/subscriptions', async () => {
   }
 })
 
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: vi.fn(),
+}))
+
 const mockedGetPlans = (await import('@/api/plans')).getPlans
 const mockedGetMySubscription = (await import('@/api/subscriptions')).getMySubscription
+const mockedUseAuth = vi.mocked(useAuth)
+
+const loginMock = vi.fn()
+const logoutMock = vi.fn()
+const refreshCurrentUserMock = vi.fn()
+
+function makeUser(role: UserRole) {
+  return {
+    id: 'user-1',
+    email: 'user@example.com',
+    role,
+    is_active: true,
+    created_at: '2024-01-01',
+    updated_at: '2024-01-01',
+  }
+}
+
+function mockAuth(role: UserRole) {
+  mockedUseAuth.mockReturnValue({
+    currentUser: makeUser(role),
+    token: 'test-token',
+    isAuthenticated: true,
+    isLoading: false,
+    login: loginMock,
+    logout: logoutMock,
+    refreshCurrentUser: refreshCurrentUserMock,
+  } as ReturnType<typeof useAuth>)
+}
+
+let checkoutMounts = 0
+
+function CheckoutProbe() {
+  useEffect(() => {
+    checkoutMounts += 1
+  }, [])
+  return <div>CHECKOUT PAGE</div>
+}
+
+function renderPlans() {
+  return render(
+    <MemoryRouter initialEntries={['/plans']}>
+      <Routes>
+        <Route path="/plans" element={<PlansPage />} />
+        <Route path="/checkout/:planId" element={<CheckoutProbe />} />
+      </Routes>
+    </MemoryRouter>,
+  )
+}
 
 const plans = [
   {
@@ -80,6 +135,8 @@ const subscription = {
 describe('PlansPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    checkoutMounts = 0
+    mockAuth('recruiter')
   })
 
   it('shows loading UI while fetching data', async () => {
@@ -498,5 +555,188 @@ it('renders multiple plan cards with correct data', async () => {
 
     await waitFor(() => expect(screen.getAllByText('Chọn gói này').length).toBe(2))
     expect(mockedGetMySubscription).toHaveBeenCalledTimes(2)
+  })
+
+  describe('candidate recruiter upgrade flow', () => {
+    beforeEach(() => {
+      mockAuth('candidate')
+    })
+
+    async function openModal() {
+      mockedGetPlans.mockResolvedValueOnce(plans as any)
+      mockedGetMySubscription.mockResolvedValueOnce(null)
+
+      renderPlans()
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Chọn gói Gói Standard' }),
+      )
+      return screen.findByRole('dialog')
+    }
+
+    it('opens the transition modal instead of navigating to checkout', async () => {
+      const dialog = await openModal()
+
+      expect(dialog).toHaveAccessibleName('Bạn muốn trở thành nhà tuyển dụng?')
+      expect(
+        within(dialog).getByText('Bạn muốn trở thành nhà tuyển dụng?'),
+      ).toBeInTheDocument()
+      expect(dialog.contains(document.activeElement)).toBe(true)
+      expect(screen.queryByText('CHECKOUT PAGE')).not.toBeInTheDocument()
+    })
+
+    it('shows the selected plan name, price, duration, and quotas', async () => {
+      const dialog = await openModal()
+
+      expect(within(dialog).getByText('Gói Standard')).toBeInTheDocument()
+      expect(within(dialog).getByText('5.000.000 ₫')).toBeInTheDocument()
+      expect(within(dialog).getByText('/ 1 tháng')).toBeInTheDocument()
+      expect(within(dialog).getByText('Bài đăng tin')).toBeInTheDocument()
+      expect(within(dialog).getByText('Tìm kiếm ứng viên')).toBeInTheDocument()
+      expect(within(dialog).getByText('Tính năng AI')).toBeInTheDocument()
+    })
+
+    it('keeps the acknowledgement unchecked and continue disabled by default', async () => {
+      const dialog = await openModal()
+
+      const checkbox = within(dialog).getByRole('checkbox')
+      const continueButton = within(dialog).getByRole('button', {
+        name: /Tiếp tục tới thanh toán/,
+      })
+
+      expect(checkbox).not.toBeChecked()
+      expect(continueButton).toBeDisabled()
+
+      fireEvent.click(checkbox)
+
+      expect(checkbox).toBeChecked()
+      expect(continueButton).toBeEnabled()
+    })
+
+    it('explains the role change, lost candidate features, and retained data', async () => {
+      const dialog = await openModal()
+
+      expect(
+        within(dialog).getAllByText(/Tài khoản của bạn được chuyển từ/).length,
+      ).toBeGreaterThan(0)
+      expect(
+        within(dialog).getAllByText(/tính năng chỉ dành riêng cho ứng viên/)
+          .length,
+      ).toBeGreaterThan(0)
+      expect(
+        within(dialog).getAllByText(/Hồ sơ, CV và lịch sử ứng tuyển/)
+          .length,
+      ).toBeGreaterThan(0)
+      expect(
+        within(dialog).getAllByText(/xác minh thanh toán thành công/).length,
+      ).toBeGreaterThan(0)
+    })
+
+    it('navigates to checkout for the selected plan after acknowledgement', async () => {
+      const dialog = await openModal()
+
+      fireEvent.click(within(dialog).getByRole('checkbox'))
+      fireEvent.click(
+        within(dialog).getByRole('button', {
+          name: /Tiếp tục tới thanh toán/,
+        }),
+      )
+
+      await waitFor(() =>
+        expect(screen.getByText('CHECKOUT PAGE')).toBeInTheDocument(),
+      )
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(checkoutMounts).toBe(1)
+    })
+
+    it('cancels back to the plans page without checking out', async () => {
+      const dialog = await openModal()
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Hủy' }))
+
+      await waitFor(() =>
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
+      )
+      expect(screen.queryByText('CHECKOUT PAGE')).not.toBeInTheDocument()
+      expect(screen.getByText('Các gói tuyển dụng')).toBeInTheDocument()
+    })
+
+    it('closes on Escape without navigating', async () => {
+      await openModal()
+
+      fireEvent.keyDown(document, { key: 'Escape' })
+
+      await waitFor(() =>
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
+      )
+      expect(screen.queryByText('CHECKOUT PAGE')).not.toBeInTheDocument()
+    })
+
+    it('does not change the account role when opening or confirming', async () => {
+      const dialog = await openModal()
+
+      fireEvent.click(within(dialog).getByRole('checkbox'))
+      fireEvent.click(
+        within(dialog).getByRole('button', {
+          name: /Tiếp tục tới thanh toán/,
+        }),
+      )
+
+      await waitFor(() =>
+        expect(screen.getByText('CHECKOUT PAGE')).toBeInTheDocument(),
+      )
+      expect(refreshCurrentUserMock).not.toHaveBeenCalled()
+      expect(loginMock).not.toHaveBeenCalled()
+      expect(logoutMock).not.toHaveBeenCalled()
+    })
+
+    it('navigates only once when continue is activated again', async () => {
+      const dialog = await openModal()
+
+      fireEvent.click(within(dialog).getByRole('checkbox'))
+      const continueButton = within(dialog).getByRole('button', {
+        name: /Tiếp tục tới thanh toán/,
+      })
+      fireEvent.click(continueButton)
+
+      await waitFor(() =>
+        expect(screen.getByText('CHECKOUT PAGE')).toBeInTheDocument(),
+      )
+      fireEvent.click(continueButton)
+
+      expect(checkoutMounts).toBe(1)
+    })
+
+    it('does not open the transition modal for the current active plan', async () => {
+      mockedGetPlans.mockResolvedValueOnce(plans as any)
+      mockedGetMySubscription.mockResolvedValueOnce(subscription as any)
+
+      renderPlans()
+
+      const currentButton = await screen.findByText('Gói hiện tại của bạn')
+      fireEvent.click(currentButton)
+
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(screen.queryByText('CHECKOUT PAGE')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('recruiter plan selection flow', () => {
+    it('skips the candidate transition modal and goes straight to checkout', async () => {
+      mockAuth('recruiter')
+      mockedGetPlans.mockResolvedValueOnce(plans as any)
+      mockedGetMySubscription.mockResolvedValueOnce(null)
+
+      renderPlans()
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Chọn gói Gói Standard' }),
+      )
+
+      await waitFor(() =>
+        expect(screen.getByText('CHECKOUT PAGE')).toBeInTheDocument(),
+      )
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
   })
 })

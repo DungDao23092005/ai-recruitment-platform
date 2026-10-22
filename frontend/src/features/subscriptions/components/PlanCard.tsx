@@ -1,5 +1,7 @@
 import * as React from 'react'
+import { CheckCircle2 } from 'lucide-react'
 import { cn } from '@/utils/cn'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import type { RecruitmentPlanRead } from '@/types/subscription'
 
@@ -11,16 +13,20 @@ export interface PlanCardProps {
   className?: string
 }
 
-function formatPrice(price: number, currency: string): string {
-  return new Intl.NumberFormat('vi-VN', {
-    style: 'currency',
-    currency: currency,
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(price)
+export function formatPlanPrice(price: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat('vi-VN', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(price)
+  } catch {
+    return `${price.toLocaleString('vi-VN')} ${currency}`
+  }
 }
 
-function formatDuration(days: number): string {
+export function formatPlanDuration(days: number): string {
   if (days >= 365) {
     const years = Math.floor(days / 365)
     return `${years} năm`
@@ -50,65 +56,111 @@ const PlanCard = React.forwardRef<HTMLDivElement, PlanCardProps>(
       <article
         ref={ref}
         className={cn(
-          'flex flex-col border rounded-xl p-5 transition-all duration-200',
-          'hover:border-primary/50 hover:shadow-lg',
-          isSelected && 'border-primary bg-primary/5 ring-1 ring-primary/20',
-          !isSelected && isCurrent && 'border-primary/60 bg-primary/5',
+          'relative flex h-full flex-col rounded-2xl border bg-card p-6 shadow-soft transition-all duration-200',
+          'hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-soft-lg',
+          'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2',
+          isSelected && 'border-primary ring-2 ring-primary/30',
+          !isSelected && isCurrent && 'border-primary/50 ring-1 ring-primary/20',
           className,
         )}
+        aria-current={isCurrent ? 'true' : undefined}
       >
-        <div className="flex-1 flex flex-col">
-          <header className="mb-4">
-            <h3 className="text-lg font-semibold text-foreground leading-snug">
-              {plan.name}
-            </h3>
-          </header>
+        {isCurrent ? (
+          <Badge
+            variant="outline-ai"
+            className="absolute right-5 top-5 px-2.5 py-1 text-xs"
+          >
+            Gói của bạn
+          </Badge>
+        ) : null}
 
-          <div className="mb-4 space-y-2 text-sm">
-            <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-bold text-foreground">
-                {formatPrice(plan.price, plan.currency)}
-              </span>
-              <span className="text-muted-foreground">
-                / {formatDuration(plan.duration_days)}
-              </span>
-            </div>
+        <header className="flex-1">
+          <p className="text-xs font-semibold uppercase tracking-wider text-primary">
+            Gói tuyển dụng
+          </p>
+          <h3 className="mt-2 pr-16 text-xl font-semibold leading-snug text-foreground">
+            {plan.name}
+          </h3>
+          {plan.description ? (
+            <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">
+              {plan.description}
+            </p>
+          ) : null}
 
-            <div className="flex items-center gap-2 text-muted-foreground">
-              <span className="font-medium">{plan.max_job_posts}</span>
-              <span>bài đăng tin</span>
-            </div>
-
-            {plan.max_candidate_searches !== null && plan.max_candidate_searches !== undefined && (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <span className="font-medium">{plan.max_candidate_searches}</span>
-                <span>tìm kiếm ứng viên</span>
-              </div>
-            )}
-
-            {plan.max_ai_features !== null && plan.max_ai_features !== undefined && (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <span className="font-medium">{plan.max_ai_features}</span>
-                <span>tính năng AI</span>
-              </div>
-            )}
+          <div className="mt-5 flex items-baseline gap-2">
+            <span className="font-display text-3xl font-bold tracking-tight text-foreground">
+              {formatPlanPrice(plan.price, plan.currency)}
+            </span>
+            <span className="text-sm text-muted-foreground">
+              / {formatPlanDuration(plan.duration_days)}
+            </span>
           </div>
 
-          {plan.features && plan.features.length > 0 && (
-            <div className="mb-4 text-xs text-muted-foreground line-clamp-3">
-              {plan.features.map((feature, idx) => (
-                <span key={idx} className="block mb-1">
-                  • {feature}
+          <dl className="mt-5 space-y-3 border-t border-border pt-5 text-sm">
+            <div className="flex items-start gap-2.5">
+              <CheckCircle2
+                className="mt-0.5 h-4 w-4 shrink-0 text-primary"
+                aria-hidden="true"
+              />
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <span className="font-semibold text-foreground">
+                  {plan.max_job_posts}
                 </span>
-              ))}
+                <span>bài đăng tin</span>
+              </div>
             </div>
+
+            {plan.max_candidate_searches !== null &&
+              plan.max_candidate_searches !== undefined && (
+                <div className="flex items-start gap-2.5">
+                  <CheckCircle2
+                    className="mt-0.5 h-4 w-4 shrink-0 text-primary"
+                    aria-hidden="true"
+                  />
+                  <div className="flex items-center gap-1.5 text-muted-foreground">
+                    <span className="font-semibold text-foreground">
+                      {plan.max_candidate_searches}
+                    </span>
+                    <span>tìm kiếm ứng viên</span>
+                  </div>
+                </div>
+              )}
+
+            {plan.max_ai_features !== null &&
+              plan.max_ai_features !== undefined && (
+                <div className="flex items-start gap-2.5">
+                  <CheckCircle2
+                    className="mt-0.5 h-4 w-4 shrink-0 text-primary"
+                    aria-hidden="true"
+                  />
+                  <div className="flex items-center gap-1.5 text-muted-foreground">
+                    <span className="font-semibold text-foreground">
+                      {plan.max_ai_features}
+                    </span>
+                    <span>tính năng AI</span>
+                  </div>
+                </div>
+              )}
+          </dl>
+
+          {plan.features && plan.features.length > 0 && (
+            <ul className="mt-4 space-y-1.5 text-xs text-muted-foreground">
+              {plan.features.slice(0, 4).map((feature, idx) => (
+                <li key={idx} className="flex gap-2">
+                  <span aria-hidden="true" className="text-primary">
+                    •
+                  </span>
+                  <span>{feature}</span>
+                </li>
+              ))}
+            </ul>
           )}
-        </div>
+        </header>
 
         <Button
-          variant={isSelected ? 'default' : 'outline'}
-          size="sm"
-          className="mt-4 w-full"
+          variant={isSelected ? 'default' : isCurrent ? 'outline' : 'default'}
+          size="lg"
+          className="mt-6 w-full"
           onClick={(e) => {
             e.stopPropagation()
             if (isDisabled) {
