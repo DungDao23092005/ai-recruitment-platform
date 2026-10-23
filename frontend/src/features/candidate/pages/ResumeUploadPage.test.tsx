@@ -294,7 +294,7 @@ describe('ResumeUploadPage', () => {
         'CV này chưa được dùng để ghép nối hoặc tìm kiếm cho đến khi bạn xác nhận.',
       ),
     ).toBeInTheDocument()
-    expect(screen.getByDisplayValue('Trần Thị Bích')).toBeInTheDocument()
+    expect(await screen.findByDisplayValue('Trần Thị Bích')).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: 'Tải lên CV PDF' }),
     ).not.toBeInTheDocument()
@@ -357,8 +357,10 @@ describe('ResumeUploadPage', () => {
       expect(mockedParseResume).toHaveBeenCalledTimes(1)
       expect(screen.getByText('Xem lại và xác nhận CV')).toBeInTheDocument()
     })
-    expect(screen.getByDisplayValue('Trần Thị Bích')).toBeInTheDocument()
-    expect(screen.getByDisplayValue('Vue, Node.js')).toBeInTheDocument()
+    expect(await screen.findByDisplayValue('Trần Thị Bích')).toBeInTheDocument()
+    expect(
+      await screen.findByDisplayValue('Vue, Node.js'),
+    ).toBeInTheDocument()
     expect(mockedConfirmResume).not.toHaveBeenCalled()
   })
 

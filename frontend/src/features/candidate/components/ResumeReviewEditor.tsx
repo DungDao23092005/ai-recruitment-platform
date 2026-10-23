@@ -51,6 +51,15 @@ interface ResumeFields {
   totalYearsText: string
 }
 
+interface ResumeEditorState {
+  fields: ResumeFields
+  skillsText: string
+  experiences: ExperienceDraft[]
+  education: EducationDraft[]
+  certificationsText: string
+  languagesText: string
+}
+
 export interface ResumeReviewEditorProps {
   resume: ResumeRead
   isSaving: boolean
@@ -119,6 +128,28 @@ function educationToDraft(education: Education): EducationDraft {
   }
 }
 
+function buildEditorState(parsed: ParsedResume | null): ResumeEditorState {
+  const resume = parsed ?? EMPTY_RESUME
+  return {
+    fields: {
+      full_name: resume.full_name ?? '',
+      email: resume.email ?? '',
+      phone: resume.phone ?? '',
+      title: resume.title ?? '',
+      summary: resume.summary ?? '',
+      totalYearsText:
+        resume.total_years_experience != null
+          ? String(resume.total_years_experience)
+          : '',
+    },
+    skillsText: resume.skills.join(', '),
+    experiences: resume.experiences.map(experienceToDraft),
+    education: resume.education.map(educationToDraft),
+    certificationsText: resume.certifications.join(', '),
+    languagesText: resume.languages.join(', '),
+  }
+}
+
 export function ResumeReviewEditor({
   resume,
   isSaving,
@@ -127,39 +158,33 @@ export function ResumeReviewEditor({
   onSave,
   onConfirm,
 }: ResumeReviewEditorProps) {
-  const [fields, setFields] = useState<ResumeFields>({
-    full_name: '',
-    email: '',
-    phone: '',
-    title: '',
-    summary: '',
-    totalYearsText: '',
-  })
-  const [skillsText, setSkillsText] = useState('')
-  const [experiences, setExperiences] = useState<ExperienceDraft[]>([])
-  const [education, setEducation] = useState<EducationDraft[]>([])
-  const [certificationsText, setCertificationsText] = useState('')
-  const [languagesText, setLanguagesText] = useState('')
+  const [initialState] = useState(() =>
+    buildEditorState(resume.parsed_data),
+  )
+  const [fields, setFields] = useState<ResumeFields>(initialState.fields)
+  const [skillsText, setSkillsText] = useState(initialState.skillsText)
+  const [experiences, setExperiences] = useState<ExperienceDraft[]>(
+    initialState.experiences,
+  )
+  const [education, setEducation] = useState<EducationDraft[]>(
+    initialState.education,
+  )
+  const [certificationsText, setCertificationsText] = useState(
+    initialState.certificationsText,
+  )
+  const [languagesText, setLanguagesText] = useState(
+    initialState.languagesText,
+  )
   const [validationError, setValidationError] = useState<string | null>(null)
 
   useEffect(() => {
-    const parsed = resume.parsed_data ?? EMPTY_RESUME
-    setFields({
-      full_name: parsed.full_name ?? '',
-      email: parsed.email ?? '',
-      phone: parsed.phone ?? '',
-      title: parsed.title ?? '',
-      summary: parsed.summary ?? '',
-      totalYearsText:
-        parsed.total_years_experience != null
-          ? String(parsed.total_years_experience)
-          : '',
-    })
-    setSkillsText(parsed.skills.join(', '))
-    setExperiences(parsed.experiences.map(experienceToDraft))
-    setEducation(parsed.education.map(educationToDraft))
-    setCertificationsText(parsed.certifications.join(', '))
-    setLanguagesText(parsed.languages.join(', '))
+    const nextState = buildEditorState(resume.parsed_data)
+    setFields(nextState.fields)
+    setSkillsText(nextState.skillsText)
+    setExperiences(nextState.experiences)
+    setEducation(nextState.education)
+    setCertificationsText(nextState.certificationsText)
+    setLanguagesText(nextState.languagesText)
     setValidationError(null)
   }, [resume.id, resume.updated_at, resume.parsed_data])
 
