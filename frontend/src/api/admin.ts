@@ -1,6 +1,8 @@
 import apiClient from '@/api/client'
 import endpoints, { type HealthStatus } from '@/api/endpoints'
 import type {
+  AdminAuditLogList,
+  AdminAuditLogListParams,
   AdminCompanyList,
   AdminCompanyListParams,
   AdminJobList,
@@ -53,6 +55,15 @@ export async function activateAdminUser(id: string): Promise<AdminUser> {
 
 export async function deleteAdminUser(id: string): Promise<AdminUser> {
   return apiClient.delete<AdminUser, AdminUser>(`/admin/users/${id}`)
+}
+
+export async function getAdminAuditLogs(
+  params: AdminAuditLogListParams,
+): Promise<AdminAuditLogList> {
+  return apiClient.get<AdminAuditLogList, AdminAuditLogList>(
+    '/admin/audit-logs',
+    { params },
+  )
 }
 
 export async function getAdminCompanies(

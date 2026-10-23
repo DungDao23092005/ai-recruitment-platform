@@ -1,3 +1,4 @@
+from app.models.admin_audit_log import AdminAuditLog
 from app.models.ai_match_explanation import (
     AIMatchExplanationApplicationLease,
     AIMatchExplanationIdempotency,
@@ -29,6 +30,7 @@ from app.models.subscription_usage import SubscriptionUsage
 from app.models.user import User
 
 __all__ = [
+    "AdminAuditLog",
     "AIMatchExplanationApplicationLease",
     "AIMatchExplanationIdempotency",
     "Application",

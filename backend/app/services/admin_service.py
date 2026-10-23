@@ -6,9 +6,10 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import EntityNotFoundException
-from app.domain.enums import ApplicationStatus, UserRole
-from app.models import Application, Company, Job, User
+from app.domain.enums import AdminAuditAction, ApplicationStatus, UserRole
+from app.models import AdminAuditLog, Application, Company, Job, User
 from app.repositories import (
+    AdminAuditRepository,
     ApplicationRepository,
     CompanyRepository,
     JobRepository,
@@ -23,6 +24,7 @@ from app.schemas.admin import (
     AdminUserRead,
     ApplicationStatusCounts,
 )
+from app.schemas.admin_audit import AdminAuditLogListParams
 from app.services.account_email_service import (
     schedule_account_deleted_email,
     schedule_account_locked_email,
@@ -45,6 +47,34 @@ class AdminService:
         self.companies = CompanyRepository(session, Company)
         self.jobs = JobRepository(session, Job)
         self.applications = ApplicationRepository(session, Application)
+        self.audit_logs = AdminAuditRepository(session)
+
+    def _record_admin_audit(
+        self,
+        *,
+        admin_id: uuid.UUID | None,
+        target_user_id: uuid.UUID,
+        action: AdminAuditAction,
+        reason: str | None = None,
+        details: dict | None = None,
+    ) -> None:
+        """Stage an immutable audit row in the caller's transaction.
+
+        The HTTP layer always supplies the authenticated admin id. The optional
+        argument keeps direct service callers backward compatible; production
+        requests never accept an actor id from the client.
+        """
+        if admin_id is None:
+            return
+        self.session.add(
+            AdminAuditLog(
+                admin_id=admin_id,
+                target_user_id=target_user_id,
+                action=action,
+                reason=reason,
+                details=details,
+            )
+        )
 
     async def get_stats(self) -> AdminStatsResponse:
         users = await self.users.list_all()
@@ -85,6 +115,21 @@ class AdminService:
                 rejected=status_counts[ApplicationStatus.REJECTED],
                 withdrawn=status_counts[ApplicationStatus.WITHDRAWN],
             ),
+        )
+
+    async def list_audit_logs(
+        self,
+        params: AdminAuditLogListParams,
+    ) -> tuple[list[AdminAuditLog], int]:
+        return await self.audit_logs.list_page(
+            skip=params.skip,
+            limit=params.limit,
+            action=params.action,
+            admin_id=params.admin_id,
+            target_user_id=params.target_user_id,
+            created_from=params.created_from,
+            created_to=params.created_to,
+            search=params.search,
         )
 
     async def list_users(
@@ -141,6 +186,17 @@ class AdminService:
         user.locked_at = locked_at
         user.locked_by = admin_id
 
+        self._record_admin_audit(
+            admin_id=admin_id,
+            target_user_id=user.id,
+            action=AdminAuditAction.USER_LOCK,
+            reason=reason,
+            details={
+                "was_active": was_active,
+                "target_role": user.role.value,
+            },
+        )
+
         # Only a genuine active -> locked transition notifies the owner. A
         # repeated request still updates the reason/audit fields (existing
         # behaviour) but must not resend the lock email or re-emit the
@@ -164,7 +220,11 @@ class AdminService:
         await self.session.refresh(user)
         return user
 
-    async def activate_user(self, user_id: uuid.UUID) -> User:
+    async def activate_user(
+        self,
+        user_id: uuid.UUID,
+        admin_id: uuid.UUID | None = None,
+    ) -> User:
         """Unlock a user account by setting is_active = True.
 
         Preserves lock audit fields (lock_reason, locked_at, locked_by)
@@ -173,13 +233,27 @@ class AdminService:
         user = await self.users.get_admin_user(user_id)
         if user is None:
             raise EntityNotFoundException(f"User {user_id} not found")
+        was_active = user.is_active
         user.is_active = True
         # Preserve lock_reason, locked_at, locked_by for audit trail
+        self._record_admin_audit(
+            admin_id=admin_id,
+            target_user_id=user.id,
+            action=AdminAuditAction.USER_UNLOCK,
+            details={
+                "was_active": was_active,
+                "target_role": user.role.value,
+            },
+        )
         await self.session.commit()
         await self.session.refresh(user)
         return user
 
-    async def delete_user(self, user_id: uuid.UUID) -> User:
+    async def delete_user(
+        self,
+        user_id: uuid.UUID,
+        admin_id: uuid.UUID | None = None,
+    ) -> User:
         """Soft-delete a user account with email anonymization.
 
         This operation:
@@ -198,6 +272,7 @@ class AdminService:
         # ORM row is mutated/anonymized. The async email task must never receive
         # a live, detached, expired or lazily loaded ORM instance.
         already_deleted = bool(user.is_deleted)
+        was_active = user.is_active
         original_email = user.email
         deleted_at = datetime.now(timezone.utc)
 
@@ -219,6 +294,17 @@ class AdminService:
         user.email = f"deleted_{user.id}@anonymized.local"
         # Soft delete
         await self.users.soft_delete(user)
+
+        self._record_admin_audit(
+            admin_id=admin_id,
+            target_user_id=user.id,
+            action=AdminAuditAction.USER_DELETE,
+            details={
+                "was_active": was_active,
+                "was_already_deleted": already_deleted,
+                "target_role": user.role.value,
+            },
+        )
 
         # Notify the original address only on a real, first-time deletion. A
         # repeated request on an already deleted account sends nothing, and an

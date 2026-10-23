@@ -138,6 +138,12 @@ class SubscriptionAuditAction(str, Enum):
     REVOKE = "revoke"
 
 
+class AdminAuditAction(str, Enum):
+    USER_LOCK = "user_lock"
+    USER_UNLOCK = "user_unlock"
+    USER_DELETE = "user_delete"
+
+
 class SubscriptionUsageFeatureType(str, Enum):
     JOB_POST = "job_post"
     CANDIDATE_SEARCH = "candidate_search"

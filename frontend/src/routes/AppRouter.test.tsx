@@ -115,6 +115,7 @@ vi.mock('@/api/admin', () => ({
   deactivateAdminUser: vi.fn(),
   getAdminCompanies: vi.fn(),
   deleteAdminCompany: vi.fn(),
+  getAdminAuditLogs: vi.fn(),
 }))
 
 vi.mock('@/api/endpoints', () => {
@@ -161,6 +162,7 @@ const mockedGetAdminStats = vi.mocked(adminApi.getAdminStats)
 const mockedGetSystemHealth = vi.mocked(adminApi.getSystemHealth)
 const mockedGetAdminUsers = vi.mocked(adminApi.getAdminUsers)
 const mockedGetAdminCompanies = vi.mocked(adminApi.getAdminCompanies)
+const mockedGetAdminAuditLogs = vi.mocked(adminApi.getAdminAuditLogs)
 const mockedGetApplicationsByJob = vi.mocked(
   applicationsApi.getApplicationsByJob,
 )
@@ -220,6 +222,12 @@ beforeEach(async () => {
     total: 0,
     skip: 0,
     limit: 10,
+  })
+  mockedGetAdminAuditLogs.mockResolvedValue({
+    items: [],
+    total: 0,
+    skip: 0,
+    limit: 20,
   })
   mockedGetCandidateProfile.mockResolvedValue({
     id: 'candidate-1',
@@ -460,6 +468,34 @@ describe('AppRouter role guards', () => {
         screen.getByRole('heading', { name: 'Quản lý người dùng', level: 1 }),
       ).toBeInTheDocument()
     })
+  })
+
+  it('lets an admin open the audit ledger', async () => {
+    setUser('admin')
+
+    renderAt('/admin/audit')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Nhật ký quản trị', level: 1 }),
+      ).toBeInTheDocument()
+    })
+    expect(mockedGetAdminAuditLogs).toHaveBeenCalled()
+  })
+
+  it('blocks a candidate from the audit ledger', async () => {
+    setUser('candidate')
+
+    renderAt('/admin/audit')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Nhật ký quản trị' }),
+    ).not.toBeInTheDocument()
   })
 
   it('redirects anonymous users from /admin/companies to login', async () => {

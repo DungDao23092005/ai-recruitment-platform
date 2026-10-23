@@ -13,6 +13,7 @@ import {
   Mail,
   Menu,
   PlusCircle,
+  ScrollText,
   Search,
   Sparkles,
   User,
@@ -111,6 +112,7 @@ function useAppNav(role?: UserRole): NavSection[] {
         { to: '/admin/plans', label: 'Gói dịch vụ', icon: Sparkles },
         { to: '/admin/subscriptions', label: 'Thuê bao người dùng', icon: CreditCard },
         { to: '/admin/emails', label: 'Hàng đợi email', icon: Mail },
+        { to: '/admin/audit', label: 'Nhật ký quản trị', icon: ScrollText },
       ],
     },
     {

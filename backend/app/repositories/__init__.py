@@ -1,3 +1,4 @@
+from app.repositories.admin_audit_repository import AdminAuditRepository
 from app.repositories.application_activity_repository import (
     ApplicationActivityRepository,
 )
@@ -20,6 +21,7 @@ from app.repositories.subscription_audit_repository import SubscriptionAuditLogR
 from app.repositories.user_repository import UserRepository
 
 __all__ = [
+    "AdminAuditRepository",
     "BaseRepository",
     "BaseRepositoryInterface",
     "UserRepository",

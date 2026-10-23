@@ -286,3 +286,35 @@ export interface AdminEmailOutboxStats {
   total: number
   oldest_pending_created_at: string | null
 }
+
+export type AdminAuditAction = 'user_lock' | 'user_unlock' | 'user_delete'
+
+export interface AdminAuditLog {
+  id: string
+  admin_id: string
+  admin_email: string | null
+  target_user_id: string
+  target_user_email: string | null
+  action: AdminAuditAction
+  reason: string | null
+  details: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface AdminAuditLogList {
+  items: AdminAuditLog[]
+  total: number
+  skip: number
+  limit: number
+}
+
+export interface AdminAuditLogListParams {
+  skip: number
+  limit: number
+  action?: AdminAuditAction
+  admin_id?: string
+  target_user_id?: string
+  created_from?: string
+  created_to?: string
+  search?: string
+}
