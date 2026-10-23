@@ -143,22 +143,38 @@ class TestForbiddenHeadersNotPresent:
 
 
 class TestSecurityHeadersMiddlewareOrder:
-    """Test that middleware order is correct (CORS before SecurityHeaders)."""
+    """Verify body limits are outermost and security wraps CORS."""
 
     def test_middleware_order_in_app(self):
-        """Verify SecurityHeadersMiddleware is added after CORSMiddleware.
+        """Verify body-limit and security/CORS middleware ordering.
 
-        Starlette's add_middleware inserts at index 0, so the LAST added
-        middleware appears at index 0 in user_middleware. We verify CORS
-        was added first (higher index) and SecurityHeaders added second (index 0).
+        Starlette's add_middleware inserts at index 0, so the LAST-added
+        middleware appears first in app.user_middleware. The request body
+        limit is added last and must be outermost. SecurityHeadersMiddleware
+        must remain before CORSMiddleware in the stack.
         """
         from app.main import app
         middleware_names = [m.cls.__name__ for m in app.user_middleware]
+        for name in (
+            "RequestBodyLimitMiddleware",
+            "SecurityHeadersMiddleware",
+            "CORSMiddleware",
+        ):
+            assert name in middleware_names, (
+                f"{name} must be registered in app.user_middleware; "
+                f"actual order: {middleware_names}"
+            )
+        body_limit_index = middleware_names.index("RequestBodyLimitMiddleware")
         cors_index = middleware_names.index("CORSMiddleware")
         security_index = middleware_names.index("SecurityHeadersMiddleware")
-        # SecurityHeaders added last -> index 0; CORS added first -> index 1
-        assert security_index == 0, "SecurityHeadersMiddleware should be at index 0 (added last)"
-        assert cors_index == 1, "CORSMiddleware should be at index 1 (added first)"
+        assert body_limit_index == 0, (
+            "RequestBodyLimitMiddleware must be outermost (index 0); "
+            f"actual order: {middleware_names}"
+        )
+        assert security_index < cors_index, (
+            "SecurityHeadersMiddleware must precede CORSMiddleware; "
+            f"actual order: {middleware_names}"
+        )
 
 
 class TestDocsBehaviorPreserved:
