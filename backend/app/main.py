@@ -10,6 +10,7 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.pubsub import pubsub_manager
 from app.core.rate_limit import RateLimiter, set_rate_limiter
+from app.core.request_limits import RequestBodyLimitMiddleware
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 
 logger = logging.getLogger(__name__)
@@ -113,9 +114,32 @@ async def lifespan(app: FastAPI):
             "Failed to start email outbox worker: %s", exc
         )
 
+    # Start the analytics rollup/retention worker. It elects a single owner via
+    # a SQL Server application lock, so this is safe with multiple workers.
+    try:
+        from app.services.analytics_rollup_worker import (
+            start_default_worker as start_analytics_worker,
+        )
+
+        await start_analytics_worker()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to start analytics rollup worker: %s", exc
+        )
+
     yield
 
     # Shutdown
+    try:
+        from app.services.analytics_rollup_worker import (
+            stop_default_worker as stop_analytics_worker,
+        )
+
+        await stop_analytics_worker()
+    except Exception:
+        pass
+
     try:
         from app.services.email_outbox_worker import stop_default_worker
 
@@ -163,6 +187,10 @@ app.add_middleware(
 
 # Set up Security Headers middleware (after CORS to preserve CORS headers)
 app.add_middleware(SecurityHeadersMiddleware)
+
+# Body-size/deadline limits must see the raw ASGI stream before any other
+# middleware buffers or parses it, so this is added last (outermost).
+app.add_middleware(RequestBodyLimitMiddleware)
 
 # Include the central API v1 router
 app.include_router(api_router, prefix=settings.API_V1_STR)

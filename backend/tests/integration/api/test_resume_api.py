@@ -674,6 +674,60 @@ class TestParseResumeFileValidation:
         
         assert resp.status_code == 200
 
+    def test_large_valid_pdf_above_general_limit_accepted(
+        self, candidate_client, run_async
+    ):
+        """A valid CV above 1 MiB but below 10 MiB reaches the endpoint."""
+        from unittest.mock import patch
+
+        _create_profile(candidate_client, run_async)
+        content = b"%PDF-1.7\n" + (b"x" * (2 * 1024 * 1024))
+
+        with patch(
+            "app.services.ai_matching_service.AIMatchingService.parse_and_save_resume_draft",
+            new_callable=AsyncMock,
+        ) as mock_parse:
+            mock_parse.return_value = _draft_response()
+
+            resp = run_async(
+                candidate_client.post(
+                    f"{API_V1}/ai/parse-resume",
+                    files={
+                        "file": (
+                            "large-resume.pdf",
+                            content,
+                            "application/pdf",
+                        )
+                    },
+                )
+            )
+
+        assert resp.status_code == 200, resp.text
+        mock_parse.assert_awaited_once()
+
+    def test_trailing_slash_redirects_without_size_penalty(
+        self, candidate_client, run_async
+    ):
+        """The trailing-slash variant must redirect, not reject at 1 MiB."""
+        _create_profile(candidate_client, run_async)
+        content = b"%PDF-1.7\n" + (b"x" * (2 * 1024 * 1024))
+
+        resp = run_async(
+            candidate_client.post(
+                f"{API_V1}/ai/parse-resume/",
+                files={
+                    "file": (
+                        "large-resume.pdf",
+                        content,
+                        "application/pdf",
+                    )
+                },
+            )
+        )
+
+        assert resp.status_code == 307, resp.text
+        assert resp.headers["location"].endswith(f"{API_V1}/ai/parse-resume")
+
     def test_oversized_upload_rejected(self, candidate_client, run_async):
         """Oversized upload (>10MB) is rejected before full processing."""
         profile_id = _create_profile(candidate_client, run_async)

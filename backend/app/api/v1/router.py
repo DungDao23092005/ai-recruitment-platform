@@ -6,6 +6,7 @@ from app.api.v1.endpoints import (
     admin_plans,
     admin_subscriptions,
     ai,
+    analytics,
     applications,
     auth,
     companies,
@@ -33,6 +34,9 @@ api_router.include_router(
     notifications.router, prefix="/notifications", tags=["Notifications"]
 )
 api_router.include_router(ai.router, prefix="/ai", tags=["AI Engine"])
+api_router.include_router(
+    analytics.router, prefix="/analytics", tags=["Recruitment Analytics"]
+)
 api_router.include_router(payments.router, tags=["VNPAY Payments"])
 api_router.include_router(admin.router)
 api_router.include_router(admin_emails.router)

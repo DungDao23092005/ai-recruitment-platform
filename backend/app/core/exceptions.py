@@ -92,6 +92,23 @@ class MatchExplanationRefreshError(AIError):
         self.retry_after = retry_after
 
 
+class PDFWorkerUnavailableError(AIError):
+    """Raised when isolated PDF processing cannot complete safely.
+
+    Covers a busy worker pool, extraction timeout, worker crash/startup
+    failure, and the post-failure quarantine/degraded state. The message is
+    fixed and safe to expose; callers map this to HTTP 503.
+    """
+
+    def __init__(
+        self,
+        message: str = "PDF processing is temporarily unavailable.",
+        retry_after: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 class EmptyDocumentError(AIError):
     """Raised when a document contains no extractable text."""
 

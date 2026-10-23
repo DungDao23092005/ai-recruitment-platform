@@ -30,6 +30,7 @@ import { AdminEmailsPage } from '@/features/admin/pages/AdminEmailsPage'
 import { RecruiterPortalPage } from '@/features/recruiter/pages/RecruiterPortalPage'
 import { RecruiterCompanyPage } from '@/features/recruiter/pages/RecruiterCompanyPage'
 import { RecruiterJobsPage } from '@/features/recruiter/pages/RecruiterJobsPage'
+import { RecruiterAnalyticsPage } from '@/features/recruiter/pages/RecruiterAnalyticsPage'
 import { JobCreatePage } from '@/features/recruiter/pages/JobCreatePage'
 import { RecruiterJobEditPage } from '@/features/recruiter/pages/RecruiterJobEditPage'
 import { JobApplicantsPage } from '@/features/recruiter/pages/JobApplicantsPage'
@@ -187,6 +188,14 @@ export function AppRouter() {
             element={
               <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
                 <RecruiterJobsPage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/recruiter/analytics"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter']}>
+                <RecruiterAnalyticsPage />
               </ProtectedByRole>
             }
           />

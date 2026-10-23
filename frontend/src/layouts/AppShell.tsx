@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
+  BarChart3,
   Bot,
   Briefcase,
   Building,
@@ -85,6 +86,7 @@ function useAppNav(role?: UserRole): NavSection[] {
           { to: '/recruiter/company', label: 'Công ty', icon: Building },
           { to: '/recruiter/jobs', label: 'Tin tuyển dụng', icon: Briefcase, end: true },
           { to: '/recruiter/jobs/new', label: 'Đăng tin mới', icon: PlusCircle },
+          { to: '/recruiter/analytics', label: 'Phân tích', icon: BarChart3 },
           { to: '/plans', label: 'Gói dịch vụ', icon: Sparkles },
         ],
       },

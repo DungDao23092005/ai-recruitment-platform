@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, require_recruiter
+from app.api.deps import get_current_user_optional, get_db, require_recruiter
 from app.core.exceptions import (
     AIError,
     EmptyDocumentError,
@@ -20,6 +20,10 @@ from app.models import Job, User
 from app.schemas.job import JobCreate, JobRead, JobStatusUpdate, JobUpdate
 from app.services.company_service import CompanyService
 from app.services.job_service import JobService
+from app.services.job_view_telemetry_service import (
+    JobViewTelemetryService,
+    get_job_view_telemetry_service,
+)
 from app.services.user_service import UserService
 
 router = APIRouter()
@@ -275,7 +279,13 @@ async def delete_my_job(
 )
 async def get_job(
     id: uuid.UUID,
+    request: Request,
+    current_user: User | None = Depends(get_current_user_optional),
+    db: AsyncSession = Depends(get_db),
     service: JobService = Depends(_get_job_service),
+    telemetry: JobViewTelemetryService = Depends(
+        get_job_view_telemetry_service
+    ),
 ) -> JobRead:
     job = await service.jobs.get_job_with_company_and_skills(id)
     if job is None or job.is_deleted or job.status != JobStatus.PUBLISHED:
@@ -283,4 +293,23 @@ async def get_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Job not found",
         )
+    if not await _is_own_company_view(db, current_user, job):
+        # Best-effort, never raises: a telemetry outage must not break viewing.
+        await telemetry.record_view(request, job)
     return to_job_read(job)
+
+
+async def _is_own_company_view(
+    db: AsyncSession, current_user: User | None, job: Job
+) -> bool:
+    """True when a recruiter is viewing a job owned by their own company.
+
+    The company comes from the authoritative ``RecruiterProfile.company_id``
+    rather than from request data. Candidates, admins, anonymous visitors and
+    recruiters viewing another company's job all still count as views.
+    """
+    if current_user is None or current_user.role != UserRole.RECRUITER:
+        return False
+    user = await UserService(db).get_user_with_profile(current_user.id)
+    profile = user.recruiter_profile if user is not None else None
+    return profile is not None and profile.company_id == job.company_id

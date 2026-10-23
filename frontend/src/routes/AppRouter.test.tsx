@@ -132,6 +132,10 @@ vi.mock('@/api/metrics', () => ({
   getRecruiterMetrics: vi.fn(),
 }))
 
+vi.mock('@/api/analytics', () => ({
+  getRecruiterAnalytics: vi.fn(),
+}))
+
 vi.mock('@/api/notifications', () => ({
   getUnreadNotificationCount: vi.fn().mockResolvedValue({ unread_count: 0 }),
   getStreamTicket: vi.fn().mockResolvedValue({ ticket: 'test-ticket' }),
@@ -170,6 +174,9 @@ const mockedGetCompanyById = vi.mocked(companiesApi.getCompanyById)
 const healthGet = vi.mocked(endpointsApi.default.health.get)
 const mockedGetRecruiterMetrics = vi.mocked(
   (await import('@/api/metrics')).getRecruiterMetrics
+)
+const mockedGetRecruiterAnalytics = vi.mocked(
+  (await import('@/api/analytics')).getRecruiterAnalytics
 )
 
 function setUser(role: UserRole) {
@@ -568,6 +575,67 @@ describe('AppRouter recruiter job routes', () => {
     })
     expect(
       screen.queryByRole('heading', { name: 'Sửa tin tuyển dụng' }),
+    ).not.toBeInTheDocument()
+  })
+})
+
+describe('AppRouter recruiter analytics route', () => {
+  it('lets a recruiter open the analytics dashboard', async () => {
+    setUser('recruiter')
+    mockedGetRecruiterAnalytics.mockResolvedValue({
+      timezone: 'Asia/Ho_Chi_Minh',
+      start_date: '2026-01-01',
+      end_date: '2026-01-30',
+      generated_at: '2026-01-30T00:00:00Z',
+      kpis: {
+        total_views: 0,
+        unique_views: 0,
+        unverified_views: 0,
+        total_applications: 0,
+        hires: 0,
+        conversion_rate: 0,
+        avg_time_to_hire_days: null,
+      },
+      funnel: [],
+      daily_views: [],
+      jobs: [],
+      quota: {
+        subscription_status: 'none',
+        plan_name: null,
+        expires_at: null,
+        job_posts: { limit: null, used: 0, remaining: null },
+        candidate_searches: { limit: null, used: 0, remaining: null },
+        ai_features: { limit: null, used: 0, remaining: null },
+      },
+      data_quality: {
+        unique_views_reliable: true,
+        raw_fallback_dates: [],
+        note: 'Chưa có dữ liệu.',
+      },
+    })
+
+    renderAt('/recruiter/analytics')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Phân tích tuyển dụng' }),
+      ).toBeInTheDocument()
+    })
+    expect(mockedGetRecruiterAnalytics).toHaveBeenCalled()
+  })
+
+  it('blocks a candidate from the analytics dashboard', async () => {
+    setUser('candidate')
+
+    renderAt('/recruiter/analytics')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Phân tích tuyển dụng' }),
     ).not.toBeInTheDocument()
   })
 })

@@ -3,7 +3,16 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,9 +37,11 @@ from app.core.exceptions import (
     EntityNotFoundException,
     ForbiddenException,
     InvalidDocumentError,
+    PDFWorkerUnavailableError,
 )
 from app.domain.enums import UserRole
 from app.core.rate_limit import RateLimitResult, ai_chat_rate_limit, parse_resume_rate_limit, parse_jd_rate_limit, match_rate_limit, recommendations_rate_limit
+from app.core.request_limits import release_upload_permit
 from app.models import User
 from app.schemas.ai_chat import ChatRequest, ChatResponse
 from app.schemas.ai_explanation import ExplainMatchRequest
@@ -103,6 +114,7 @@ def _get_interview_generator_service() -> InterviewGeneratorService:
 )
 async def parse_resume(
     file: UploadFile,
+    request: Request,
     current_user: User = Depends(require_candidate),
     db: AsyncSession = Depends(get_db),
     service: AIMatchingService = Depends(_get_ai_service),
@@ -151,6 +163,11 @@ async def parse_resume(
             detail="Invalid PDF header: missing '%PDF' magic header",
         )
 
+    # Starlette has finished parsing and spooling the multipart body by now.
+    # Hand the upload slot back before any database or AI work so a slow LLM
+    # cannot starve the bounded upload pool.
+    release_upload_permit(request)
+
     candidate_profile = await current_user.awaitable_attrs.candidate_profile
     if candidate_profile is None:
         raise HTTPException(
@@ -174,6 +191,12 @@ async def parse_resume(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
+        ) from exc
+    except PDFWorkerUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after or 10)},
         ) from exc
     except AIProviderUnavailableError as exc:
         raise HTTPException(

@@ -34,6 +34,13 @@ os.environ["DATABASE_NAME"] = "ai_recruitment_platform_test"
 # and post-commit signals still dispatch.
 os.environ["EMAIL_OUTBOX_ENABLED"] = "false"
 
+# Keep the lifespan analytics rollup from racing the per-test schema reset.
+os.environ["ANALYTICS_ROLLUP_ENABLED"] = "false"
+
+# Service-level tests exercise the in-process extractor path (and patch it).
+# Process isolation has dedicated tests that construct IsolatedPDFProcessor.
+os.environ["PDF_ISOLATION_ENABLED"] = "false"
+
 
 @pytest.fixture(autouse=True)
 def _no_outbound_email():

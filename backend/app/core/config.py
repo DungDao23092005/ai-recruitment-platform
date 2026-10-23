@@ -81,6 +81,34 @@ class Settings(BaseSettings):
     # Trusted Proxies for safe client IP extraction
     TRUSTED_PROXIES: Annotated[list[str], NoDecode] = []
 
+    # Request body hardening. Every non-upload request is capped at 1 MiB; the
+    # CV upload route gets a slightly larger envelope so a 10 MiB PDF plus
+    # multipart framing fits. Deadlines bound how long a client may take to
+    # deliver a body, on top of the per-request size limit.
+    MAX_REQUEST_BODY_BYTES: int = 1 * 1024 * 1024
+    MAX_RESUME_REQUEST_BYTES: int = 11 * 1024 * 1024
+    UPLOAD_MAX_ACTIVE: int = 4
+    UPLOAD_MAX_WAITING: int = 8
+    UPLOAD_QUEUE_TIMEOUT_SECONDS: float = 5.0
+    UPLOAD_CHUNK_TIMEOUT_SECONDS: float = 15.0
+    UPLOAD_TOTAL_TIMEOUT_SECONDS: float = 120.0
+
+    # Isolated PDF extraction. The PDF parser runs in a spawned child process so
+    # a malformed document cannot exhaust the API process.
+    PDF_ISOLATION_ENABLED: bool = True
+    PDF_WORKER_MAX_CONCURRENCY: int = 2
+    PDF_WORKER_TIMEOUT_SECONDS: float = 30.0
+    PDF_WORKER_TERMINATE_GRACE_SECONDS: float = 2.0
+    PDF_WORKER_MAX_CONSECUTIVE_FAILURES: int = 3
+    PDF_WORKER_QUARANTINE_SECONDS: float = 60.0
+
+    # Recruitment analytics rollup and retention.
+    ANALYTICS_ROLLUP_ENABLED: bool = True
+    ANALYTICS_ROLLUP_INTERVAL_SECONDS: float = 300.0
+    ANALYTICS_ROLLUP_LOOKBACK_DAYS: int = 30
+    ANALYTICS_RAW_RETENTION_DAYS: int = 90
+    ANALYTICS_UNIQUE_VIEW_TTL_SECONDS: int = 93600
+
     # VNPAY Configuration
     VNPAY_TMN_CODE: str = ""
     VNPAY_HASH_SECRET: str = ""

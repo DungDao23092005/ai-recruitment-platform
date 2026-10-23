@@ -11,6 +11,8 @@ from app.models.email_outbox import EmailOutbox
 from app.models.interview import Interview
 from app.models.interview_evaluation import InterviewEvaluation
 from app.models.job import Job
+from app.models.job_view_daily_aggregate import JobViewDailyAggregate
+from app.models.job_view_event import JobViewEvent
 from app.models.junctions import JobSkill
 from app.models.knowledge import KnowledgeDocument
 from app.models.notification import Notification
@@ -39,6 +41,8 @@ __all__ = [
     "InterviewEvaluation",
     "Job",
     "JobSkill",
+    "JobViewDailyAggregate",
+    "JobViewEvent",
     "KnowledgeDocument",
     "Notification",
     "PasswordResetOTP",

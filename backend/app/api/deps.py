@@ -17,6 +17,10 @@ from app.services import UserService, AuthService
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/auth/login"
 )
+optional_oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl=f"{settings.API_V1_STR}/auth/login",
+    auto_error=False,
+)
 
 _UNAUTHORIZED_DETAIL = "Could not validate credentials"
 _UNAUTHORIZED_HEADERS = {"WWW-Authenticate": "Bearer"}
@@ -99,6 +103,24 @@ async def get_current_active_user(
             detail="Inactive user",
         )
     return current_user
+
+
+async def get_current_user_optional(
+    token: str | None = Depends(optional_oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Return the authenticated user when possible, otherwise ``None``.
+
+    This is for public endpoints that personalise behaviour for signed-in
+    users without requiring login. A missing or invalid token is treated the
+    same as an anonymous request; it never turns into a 401.
+    """
+    if token is None:
+        return None
+    try:
+        return await get_current_user(token=token, db=db)
+    except HTTPException:
+        return None
 
 
 def require_role(allowed_roles: list[UserRole]):

@@ -13,7 +13,7 @@ from app.ai.embeddings.embedding_service import (
     EmbeddingService,
     SentenceTransformerEmbeddingProvider,
 )
-from app.ai.extractors.pdf_extractor import PDFTextExtractor
+from app.ai.extractors.isolated_pdf import extract_pdf_text_isolated
 from app.ai.interfaces.base_provider import BaseVectorRepository
 from app.ai.matching.matching_engine import MatchingEngine
 from app.ai.parsers.job_parser import JobParser
@@ -70,7 +70,7 @@ class AIMatchingService:
         The candidate's previously confirmed resume remains active until the
         draft is explicitly confirmed through the resume lifecycle service.
         """
-        extracted_text = PDFTextExtractor.extract(pdf_source)
+        extracted_text = await extract_pdf_text_isolated(pdf_source)
         parsed_resume = await self.resume_parser.parse(extracted_text)
 
         repository = ResumeRepository(session, Resume)
