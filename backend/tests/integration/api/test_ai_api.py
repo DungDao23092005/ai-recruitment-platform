@@ -125,7 +125,10 @@ class TestParseResume:
 
         assert resp.status_code in (401, 403)
 
-    @patch("app.services.ai_matching_service.PDFTextExtractor.extract")
+    @patch(
+        "app.services.ai_matching_service.extract_pdf_text_isolated",
+        new_callable=AsyncMock,
+    )
     @patch("app.services.ai_matching_service.ResumeParser.parse", new_callable=AsyncMock)
     def test_parse_resume_creates_draft(
         self, mock_parse_resume, mock_extract, candidate_client, run_async
