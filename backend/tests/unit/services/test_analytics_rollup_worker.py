@@ -122,21 +122,30 @@ def _worker(session, *, lookback=2, retention=0):
 @pytest.mark.asyncio
 async def test_lock_denied_skips_the_entire_pass(repository_stub):
     session = FakeSession(lock_result=-1)
-    result = await _worker(session).run_once()
+    worker = _worker(session)
+    result = await worker.run_once()
     assert result["skipped"] is True
     assert result["days"] == 0
     assert repository_stub["raw_calls"] == []
     assert session.commits <= 1
+    assert worker.health_snapshot()["last_outcome"] == "skipped"
 
 
 @pytest.mark.asyncio
-async def test_lock_query_failure_skips_without_raising(repository_stub):
+async def test_lock_query_failure_is_a_failed_run(repository_stub):
     session = FakeSession()
     session.scalar_error = RuntimeError("db down")
-    result = await _worker(session).run_once()
-    assert result["skipped"] is True
+    worker = _worker(session)
+
+    with pytest.raises(RuntimeError):
+        await worker.run_once()
+
     assert repository_stub["raw_calls"] == []
     assert session.rollbacks >= 1
+    snapshot = worker.health_snapshot()
+    assert snapshot["last_outcome"] == "failure"
+    assert snapshot["consecutive_failures"] == 1
+    assert snapshot["last_error_type"] == "RuntimeError"
 
 
 @pytest.mark.asyncio
@@ -235,5 +244,30 @@ async def test_zero_lookback_still_runs_retention(repository_stub):
 async def test_worker_releases_the_app_lock_on_success(repository_stub):
     session = FakeSession()
     await _worker(session, lookback=0).run_once()
-    assert any("sp_releaseapplock" in call[0] for call in session.execute_calls)
+    assert any("sp_releaseapplock" in call[0] for call in session.scalar_calls)
     assert session.rollbacks >= 1
+
+
+@pytest.mark.asyncio
+async def test_failed_lock_release_discards_the_connection(repository_stub):
+    class ReleaseFailSession(FakeSession):
+        async def connection(self):
+            class Connection:
+                async def invalidate(self):
+                    self.invalidated = True
+
+            self.connection_obj = Connection()
+            self.connection_obj.invalidated = False
+            return self.connection_obj
+
+        async def scalar(self, statement, params=None):
+            self.scalar_calls.append((str(statement), params))
+            if "sp_releaseapplock" in str(statement):
+                return -1
+            return self.lock_result
+
+    session = ReleaseFailSession()
+    await _worker(session, lookback=0).run_once()
+
+    assert session.connection_obj.invalidated is True
+    assert session.commits == 1

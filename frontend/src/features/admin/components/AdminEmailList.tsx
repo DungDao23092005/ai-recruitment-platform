@@ -15,6 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorBanner } from '@/components/ui/error-banner'
 import { getFriendlyErrorMessage } from '@/utils/errors'
+import { maskEmail } from '@/features/admin/utils/maskEmail'
 import {
   ADMIN_EMAIL_OUTBOX_UPDATED_DOM_EVENT,
   STREAM_CONNECTED_DOM_EVENT,
@@ -455,7 +456,9 @@ export function AdminEmailList() {
                         className="border-b last:border-b-0 hover:bg-muted/40"
                       >
                         <td className="px-4 py-3">
-                          <span className="font-medium">{item.to_email}</span>
+                          <span className="font-medium">
+                            {maskEmail(item.to_email)}
+                          </span>
                           <p className="mt-0.5 max-w-[280px] truncate text-xs text-muted-foreground">
                             {item.subject}
                           </p>

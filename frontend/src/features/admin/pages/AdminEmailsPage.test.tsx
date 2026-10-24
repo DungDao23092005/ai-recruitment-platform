@@ -56,8 +56,9 @@ describe('AdminEmailsPage', () => {
     expect(screen.getByText('Hàng đợi email')).toBeInTheDocument()
 
     await waitFor(() => {
-      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+      expect(screen.getByText('b***@example.com')).toBeInTheDocument()
     })
+    expect(screen.queryByText('buyer@example.com')).not.toBeInTheDocument()
 
     expect(screen.getByText('Kích hoạt gói dịch vụ')).toBeInTheDocument()
     expect(screen.getByText('subscription_activated')).toBeInTheDocument()
@@ -74,7 +75,7 @@ describe('AdminEmailsPage', () => {
   it('searches by email or subject', async () => {
     render(<AdminEmailsPage />)
     await waitFor(() => {
-      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+      expect(screen.getByText('b***@example.com')).toBeInTheDocument()
     })
 
     fireEvent.change(screen.getByLabelText('Tìm theo email hoặc tiêu đề'), {
@@ -92,7 +93,7 @@ describe('AdminEmailsPage', () => {
   it('filters by status', async () => {
     render(<AdminEmailsPage />)
     await waitFor(() => {
-      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+      expect(screen.getByText('b***@example.com')).toBeInTheDocument()
     })
 
     fireEvent.change(screen.getByLabelText('Lọc theo trạng thái'), {
@@ -128,13 +129,13 @@ describe('AdminEmailsPage', () => {
         screen.getByText('Không thể tải số liệu hàng đợi email.'),
       ).toBeInTheDocument()
     })
-    expect(await screen.findByText('buyer@example.com')).toBeInTheDocument()
+    expect(await screen.findByText('b***@example.com')).toBeInTheDocument()
   })
 
   it('retries a failed message', async () => {
     render(<AdminEmailsPage />)
     await waitFor(() => {
-      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+      expect(screen.getByText('b***@example.com')).toBeInTheDocument()
     })
 
     fireEvent.click(screen.getByRole('button', { name: /gửi lại email msg-1/i }))
@@ -152,7 +153,7 @@ describe('AdminEmailsPage', () => {
 
     render(<AdminEmailsPage />)
     await waitFor(() => {
-      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+      expect(screen.getByText('b***@example.com')).toBeInTheDocument()
     })
 
     expect(
@@ -183,11 +184,11 @@ describe('AdminEmailsPage realtime', () => {
   it('updates a visible row in place on an outbox event without a reload', async () => {
     render(<AdminEmailsPage />)
     await waitFor(() =>
-      expect(screen.getByText('buyer@example.com')).toBeInTheDocument(),
+      expect(screen.getByText('b***@example.com')).toBeInTheDocument(),
     )
 
     const rowBefore = screen
-      .getByText('buyer@example.com')
+      .getByText('b***@example.com')
       .closest('tr') as HTMLElement
     expect(within(rowBefore).getByText('Thất bại')).toBeInTheDocument()
 
@@ -203,7 +204,7 @@ describe('AdminEmailsPage realtime', () => {
 
     // The row flips without waiting for the debounced reconciliation.
     const rowAfter = screen
-      .getByText('buyer@example.com')
+      .getByText('b***@example.com')
       .closest('tr') as HTMLElement
     expect(within(rowAfter).getByText('Đã gửi')).toBeInTheDocument()
     expect(within(rowAfter).queryByText('Thất bại')).not.toBeInTheDocument()
@@ -285,7 +286,7 @@ describe('AdminEmailsPage realtime', () => {
 
     render(<AdminEmailsPage />)
     await waitFor(() =>
-      expect(screen.getByText('buyer@example.com')).toBeInTheDocument(),
+      expect(screen.getByText('b***@example.com')).toBeInTheDocument(),
     )
 
     fireEvent.click(screen.getByRole('button', { name: /gửi lại email msg-1/i }))
@@ -293,7 +294,7 @@ describe('AdminEmailsPage realtime', () => {
     await waitFor(() => expect(retryAdminEmail).toHaveBeenCalledWith('msg-1'))
     await waitFor(() => {
       const row = screen
-        .getByText('buyer@example.com')
+        .getByText('b***@example.com')
         .closest('tr') as HTMLElement
       expect(within(row).getByText('Chờ gửi')).toBeInTheDocument()
     })
@@ -314,7 +315,7 @@ describe('AdminEmailsPage realtime', () => {
 
     render(<AdminEmailsPage />)
     await waitFor(() =>
-      expect(screen.getByText('buyer@example.com')).toBeInTheDocument(),
+      expect(screen.getByText('b***@example.com')).toBeInTheDocument(),
     )
 
     fireEvent.change(screen.getByLabelText('Lọc theo trạng thái'), {
@@ -326,7 +327,7 @@ describe('AdminEmailsPage realtime', () => {
       ),
     )
     await waitFor(() =>
-      expect(screen.getByText('buyer@example.com')).toBeInTheDocument(),
+      expect(screen.getByText('b***@example.com')).toBeInTheDocument(),
     )
 
     emitOutboxUpdate({
@@ -336,6 +337,6 @@ describe('AdminEmailsPage realtime', () => {
       timestamp: '2026-01-03T10:05:00Z',
     })
 
-    expect(screen.queryByText('buyer@example.com')).not.toBeInTheDocument()
+    expect(screen.queryByText('b***@example.com')).not.toBeInTheDocument()
   })
 })

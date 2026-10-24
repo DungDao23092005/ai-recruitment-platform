@@ -53,9 +53,11 @@ GET_APP_LOCK_SQL = text(
 
 RELEASE_APP_LOCK_SQL = text(
     """
-    EXEC sp_releaseapplock
+    DECLARE @result int;
+    EXEC @result = sp_releaseapplock
         @Resource = :resource,
         @LockOwner = 'Session';
+    SELECT @result AS result;
     """
 )
 
@@ -94,12 +96,23 @@ class AnalyticsRollupWorker:
         self._stop_event = asyncio.Event()
         self._task: Optional[asyncio.Task[None]] = None
 
+        self._started_at: datetime | None = None
+        self._last_heartbeat_at: datetime | None = None
+        self._last_run_at: datetime | None = None
+        self._last_success_at: datetime | None = None
+        self._last_outcome = "not_started"
+        self._consecutive_failures = 0
+        self._last_error_type: str | None = None
+        self._last_processed_days = 0
+        self._last_pruned_events = 0
+
     # --------------------------------------------------------------- lifecycle
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
         self._stop_event.clear()
+        self._started_at = datetime.now(timezone.utc)
         self._task = asyncio.create_task(
             self._run(), name="analytics-rollup-worker"
         )
@@ -147,6 +160,22 @@ class AnalyticsRollupWorker:
     async def run_once(self, now: datetime | None = None) -> dict[str, int | bool]:
         """Aggregate completed days and prune safely; returns a summary."""
         moment = now or datetime.now(timezone.utc)
+        try:
+            result = await self._run_pass(moment)
+        except asyncio.CancelledError:
+            self._record_outcome("cancelled")
+            raise
+        except Exception as exc:
+            self._record_outcome("failure", exc)
+            raise
+        self._record_outcome(
+            "skipped" if result["skipped"] else "success",
+            days=int(result["days"]),
+            pruned_events=int(result["pruned_events"]),
+        )
+        return result
+
+    async def _run_pass(self, moment: datetime) -> dict[str, int | bool]:
         today = vietnam_today(moment)
 
         # The lock session must stay checked out for the whole pass. An
@@ -183,6 +212,48 @@ class AnalyticsRollupWorker:
             finally:
                 await self._release_lock(lock_session)
                 await self._safe_rollback(lock_session)
+
+    def _record_outcome(
+        self,
+        outcome: str,
+        exc: Exception | None = None,
+        *,
+        days: int = 0,
+        pruned_events: int = 0,
+    ) -> None:
+        moment = datetime.now(timezone.utc)
+        self._last_run_at = moment
+        self._last_heartbeat_at = moment
+        self._last_outcome = outcome
+        self._last_processed_days = days
+        self._last_pruned_events = pruned_events
+        if outcome == "failure":
+            self._consecutive_failures += 1
+            self._last_error_type = type(exc).__name__ if exc else "Exception"
+        elif outcome in {"success", "skipped"}:
+            self._consecutive_failures = 0
+            self._last_error_type = None
+            if outcome == "success":
+                self._last_success_at = moment
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Return allowlisted operational state with no exception text."""
+        return {
+            "enabled": bool(settings.ANALYTICS_ROLLUP_ENABLED),
+            "running": self._task is not None and not self._task.done(),
+            "started_at": _isoformat(self._started_at),
+            "last_heartbeat_at": _isoformat(self._last_heartbeat_at),
+            "last_run_at": _isoformat(self._last_run_at),
+            "last_success_at": _isoformat(self._last_success_at),
+            "last_outcome": self._last_outcome,
+            "consecutive_failures": self._consecutive_failures,
+            "last_error_type": self._last_error_type,
+            "last_processed_days": self._last_processed_days,
+            "last_pruned_events": self._last_pruned_events,
+            "heartbeat_timeout_seconds": max(
+                float(self.interval_seconds) * 3, 300.0
+            ),
+        }
 
     async def _aggregate_day(
         self, session: AsyncSession, day: date, moment: datetime
@@ -261,26 +332,40 @@ class AnalyticsRollupWorker:
             result = await session.scalar(
                 GET_APP_LOCK_SQL, {"resource": LOCK_RESOURCE}
             )
-            # Deliberately no commit here: it keeps the transaction (and thus
-            # the physical connection that owns the session-scoped applock)
-            # pinned until the pass finishes.
-            return result is not None and int(result) >= 0
-        except Exception as exc:  # noqa: BLE001 - analytics must not crash startup
-            logger.warning(
-                "Could not acquire analytics rollup lock: %s",
-                type(exc).__name__,
-            )
+        except Exception:
             await self._safe_rollback(session)
-            return False
+            raise
+        # Deliberately no commit here: it keeps the transaction (and thus
+        # the physical connection that owns the session-scoped applock)
+        # pinned until the pass finishes.
+        return result is not None and int(result) >= 0
 
     async def _release_lock(self, session: AsyncSession) -> None:
         try:
-            await session.execute(
+            result = await session.scalar(
                 RELEASE_APP_LOCK_SQL, {"resource": LOCK_RESOURCE}
             )
+            if result is None or int(result) < 0:
+                logger.error(
+                    "Analytics rollup lock release returned %s", result
+                )
+                await self._discard_lock_connection(session)
+                return
             await session.commit()
-        except Exception:  # noqa: BLE001 - session close releases it anyway
-            await self._safe_rollback(session)
+        except Exception as exc:  # noqa: BLE001 - must not crash shutdown
+            logger.error(
+                "Analytics rollup lock release failed type=%s",
+                type(exc).__name__,
+            )
+            await self._discard_lock_connection(session)
+
+    @staticmethod
+    async def _discard_lock_connection(session: AsyncSession) -> None:
+        try:
+            connection = await session.connection()
+            await connection.invalidate()
+        except Exception:
+            pass
 
     @staticmethod
     async def _safe_rollback(session: AsyncSession) -> None:
@@ -303,6 +388,34 @@ def get_default_worker() -> AnalyticsRollupWorker:
 def reset_default_worker() -> None:
     global _default_worker
     _default_worker = None
+
+
+def default_worker_health() -> dict[str, Any]:
+    """Return safe telemetry for the current process worker, if created."""
+    worker = _default_worker
+    if worker is None:
+        return {
+            "enabled": bool(settings.ANALYTICS_ROLLUP_ENABLED),
+            "running": False,
+            "started_at": None,
+            "last_heartbeat_at": None,
+            "last_run_at": None,
+            "last_success_at": None,
+            "last_outcome": "not_started",
+            "consecutive_failures": 0,
+            "last_error_type": None,
+            "last_processed_days": 0,
+            "last_pruned_events": 0,
+            "heartbeat_timeout_seconds": max(
+                float(settings.ANALYTICS_ROLLUP_INTERVAL_SECONDS) * 3,
+                300.0,
+            ),
+        }
+    return worker.health_snapshot()
+
+
+def _isoformat(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
 
 
 async def start_default_worker() -> None:

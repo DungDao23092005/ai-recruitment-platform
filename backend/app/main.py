@@ -8,6 +8,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.core.correlation import (
+    CorrelationIdMiddleware,
+    apply_security_headers,
+    handle_unhandled_exception,
+)
 from app.core.pubsub import pubsub_manager
 from app.core.rate_limit import RateLimiter, set_rate_limiter
 from app.core.request_limits import RequestBodyLimitMiddleware
@@ -25,19 +30,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
-
-        # Safe headers for all responses (including errors)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-
-        # CSP for API: no browser resources expected from API endpoints.
-        # Skip restrictive CSP for development documentation routes (/docs, /redoc)
-        # to allow Swagger UI / ReDoc to load scripts and styles.
-        if not request.url.path.startswith(("/docs", "/redoc")):
-            response.headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-
-        # Do NOT add HSTS, HTTPS redirects, or proxy-header trust
+        apply_security_headers(response.headers, request.url.path)
         return response
 
 
@@ -174,6 +167,7 @@ app = FastAPI(
     docs_url=None if is_prod else "/docs",
     redoc_url=None if is_prod else "/redoc",
     lifespan=lifespan,
+    exception_handlers={Exception: handle_unhandled_exception},
 )
 
 # Set up CORS middleware
@@ -183,10 +177,15 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 # Set up Security Headers middleware (after CORS to preserve CORS headers)
 app.add_middleware(SecurityHeadersMiddleware)
+
+# Correlate every request before any response-producing middleware and expose
+# the ID on streaming responses without buffering their bodies.
+app.add_middleware(CorrelationIdMiddleware)
 
 # Body-size/deadline limits must see the raw ASGI stream before any other
 # middleware buffers or parses it, so this is added last (outermost).
