@@ -480,7 +480,9 @@ describe('AppRouter role guards', () => {
         screen.getByRole('heading', { name: 'Nhật ký quản trị', level: 1 }),
       ).toBeInTheDocument()
     })
-    expect(mockedGetAdminAuditLogs).toHaveBeenCalled()
+    await waitFor(() => {
+      expect(mockedGetAdminAuditLogs).toHaveBeenCalled()
+    })
   })
 
   it('blocks a candidate from the audit ledger', async () => {
