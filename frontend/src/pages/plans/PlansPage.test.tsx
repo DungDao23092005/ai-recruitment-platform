@@ -275,7 +275,8 @@ it('renders multiple plan cards with correct data', async () => {
       </MemoryRouter>
     )
 
-    await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(2))
+    await screen.findAllByText('Gói Standard')
+    await screen.findAllByText('Gói Nâng cao')
     // Check plan cards - use getAllByRole for plan cards
     const planCards = screen.getAllByRole('article')
     // First article is subscription card, next two are plan cards
