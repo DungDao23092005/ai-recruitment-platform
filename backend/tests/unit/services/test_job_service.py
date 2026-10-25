@@ -1042,6 +1042,111 @@ class TestUpdateJob:
         session.commit.assert_awaited_once()
 
 
+class TestUpdateJobSkillsReindex:
+    @staticmethod
+    def _track_skill_persistence(session):
+        added_skills = []
+        added_job_skills = []
+        original_add = session.add
+
+        def track_add(entity):
+            if isinstance(entity, Skill):
+                if entity.id is None:
+                    entity.id = uuid.uuid4()
+                added_skills.append(entity)
+            elif isinstance(entity, JobSkill):
+                added_job_skills.append(entity)
+            original_add(entity)
+
+        async def refresh_with_persisted_skills(entity, attribute_names=None):
+            if not attribute_names:
+                return
+            skills_by_id = {skill.id: skill for skill in added_skills}
+            persisted = [
+                (skills_by_id[job_skill.skill_id], job_skill.is_mandatory)
+                for job_skill in added_job_skills
+                if job_skill.job_id == entity.id
+            ]
+            entity.skills = [skill for skill, _ in persisted]
+            entity.required_skills = [
+                skill for skill, is_mandatory in persisted if is_mandatory
+            ]
+            entity.preferred_skills = [
+                skill for skill, is_mandatory in persisted if not is_mandatory
+            ]
+
+        session.add = MagicMock(side_effect=track_add)
+        session.refresh = AsyncMock(side_effect=refresh_with_persisted_skills)
+
+    @pytest.mark.asyncio
+    async def test_required_skills_only_update_reindexes_new_skills(self):
+        session = make_session()
+        embedding, vector_repository = make_ai_dependencies()
+        service = make_ai_service(session, embedding, vector_repository)
+        old_skill = Skill(id=uuid.uuid4(), name="Python")
+        job = make_job(status=JobStatus.PUBLISHED, skills=[old_skill])
+        job.skills = [old_skill]
+        job.required_skills = [old_skill]
+        job.preferred_skills = []
+        service.get_recruiter_job_by_id = AsyncMock(return_value=job)
+        self._track_skill_persistence(session)
+
+        result = await service.update_job(
+            MagicMock(),
+            job.id,
+            JobUpdate(required_skills=["Rust"]),
+        )
+
+        assert result is job
+        assert [skill.name for skill in job.required_skills] == ["Rust"]
+        embedding.embed_text.assert_awaited_once()
+        embedded_text = embedding.embed_text.call_args.args[0]
+        assert "Required Skills: Rust" in embedded_text
+        assert "Python" not in embedded_text
+        vector_repository.upsert_job_vector.assert_awaited_once_with(
+            job_id=job.id,
+            vector=[0.0] * 4,
+            skills=["Rust"],
+            created_at=job.created_at,
+            status=JobStatus.PUBLISHED.value,
+        )
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_preferred_skills_only_update_reindexes_new_skills(self):
+        session = make_session()
+        embedding, vector_repository = make_ai_dependencies()
+        service = make_ai_service(session, embedding, vector_repository)
+        old_skill = Skill(id=uuid.uuid4(), name="Docker")
+        job = make_job(status=JobStatus.PUBLISHED, skills=[old_skill])
+        job.skills = [old_skill]
+        job.required_skills = []
+        job.preferred_skills = [old_skill]
+        service.get_recruiter_job_by_id = AsyncMock(return_value=job)
+        self._track_skill_persistence(session)
+
+        result = await service.update_job(
+            MagicMock(),
+            job.id,
+            JobUpdate(preferred_skills=["GraphQL"]),
+        )
+
+        assert result is job
+        assert [skill.name for skill in job.preferred_skills] == ["GraphQL"]
+        embedding.embed_text.assert_awaited_once()
+        embedded_text = embedding.embed_text.call_args.args[0]
+        assert "Preferred Skills: GraphQL" in embedded_text
+        assert "Docker" not in embedded_text
+        vector_repository.upsert_job_vector.assert_awaited_once_with(
+            job_id=job.id,
+            vector=[0.0] * 4,
+            skills=["GraphQL"],
+            created_at=job.created_at,
+            status=JobStatus.PUBLISHED.value,
+        )
+        session.commit.assert_awaited_once()
+
+
 class TestDeleteJob:
     def test_soft_deletes_own_job_and_removes_vector(self):
         session = make_session()

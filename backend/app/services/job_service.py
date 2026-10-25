@@ -196,7 +196,7 @@ class JobService:
                 if required_skills is None:
                     required_skills = data.skills
                 await self._attach_skills(job, required_skills, data.preferred_skills)
-            if has_changes:
+            if has_changes or skills_changed:
                 await self._reindex_job(job)
             await self._commit_and_refresh(job)
         except Exception:
