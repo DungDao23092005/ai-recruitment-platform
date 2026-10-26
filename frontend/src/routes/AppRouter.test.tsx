@@ -659,7 +659,9 @@ describe('AppRouter recruiter analytics route', () => {
         screen.getByRole('heading', { name: 'Phân tích tuyển dụng' }),
       ).toBeInTheDocument()
     })
-    expect(mockedGetRecruiterAnalytics).toHaveBeenCalled()
+    await waitFor(() => {
+      expect(mockedGetRecruiterAnalytics).toHaveBeenCalled()
+    })
   })
 
   it('blocks a candidate from the analytics dashboard', async () => {
