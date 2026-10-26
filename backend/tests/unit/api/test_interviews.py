@@ -21,6 +21,7 @@ def _now() -> datetime:
 def mock_service():
     service = MagicMock()
     service.schedule_interview = AsyncMock()
+    service.update_interview = AsyncMock()
     service.cancel_interview = AsyncMock()
     service.candidate_action_interview = AsyncMock()
     return service
@@ -32,6 +33,24 @@ def candidate_client(mock_service):
         user = MagicMock()
         user.id = uuid.uuid4()
         user.role = UserRole.CANDIDATE
+        user.is_active = True
+        return user
+
+    app.dependency_overrides[get_current_user] = _override_user
+    with patch(
+        "app.api.v1.endpoints.applications.InterviewService",
+        return_value=mock_service,
+    ), TestClient(app) as c:
+        yield c
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def recruiter_client(mock_service):
+    async def _override_user():
+        user = MagicMock()
+        user.id = uuid.uuid4()
+        user.role = UserRole.RECRUITER
         user.is_active = True
         return user
 
@@ -237,3 +256,51 @@ def test_candidate_action_interview_anonymous_401():
         resp = c.patch(f"/api/v1/applications/{app_id}/interviews/{interview_id}/action", json=payload)
         assert resp.status_code == 401
     app.dependency_overrides.clear()
+
+
+def test_recruiter_cancel_ended_interview_returns_400(
+    recruiter_client, mock_service
+):
+    interview_id = uuid.uuid4()
+    mock_service.cancel_interview.side_effect = InvalidTransitionException(
+        "Interview has already ended"
+    )
+
+    resp = recruiter_client.delete(
+        f"/api/v1/applications/interviews/{interview_id}"
+    )
+
+    assert resp.status_code == 400
+    mock_service.cancel_interview.assert_awaited_once()
+
+
+def test_recruiter_update_ended_interview_returns_400(
+    recruiter_client, mock_service
+):
+    interview_id = uuid.uuid4()
+    mock_service.update_interview.side_effect = InvalidTransitionException(
+        "Interview has already ended"
+    )
+
+    resp = recruiter_client.patch(
+        f"/api/v1/applications/interviews/{interview_id}",
+        json={"notes": "Updated"},
+    )
+
+    assert resp.status_code == 400
+    mock_service.update_interview.assert_awaited_once()
+
+
+def test_recruiter_cancel_missing_interview_returns_404(
+    recruiter_client, mock_service
+):
+    interview_id = uuid.uuid4()
+    mock_service.cancel_interview.side_effect = EntityNotFoundException(
+        f"Interview {interview_id} not found"
+    )
+
+    resp = recruiter_client.delete(
+        f"/api/v1/applications/interviews/{interview_id}"
+    )
+
+    assert resp.status_code == 404

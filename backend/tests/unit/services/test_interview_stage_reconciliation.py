@@ -17,6 +17,7 @@ from app.services.pipeline_realtime import (
     ACTION_INTERVIEW_CANCELLED,
     ACTION_INTERVIEW_CONFIRMED,
     ACTION_INTERVIEW_DECLINED,
+    ACTION_INTERVIEW_UPDATED,
 )
 
 MODULE = "app.services.interview_service"
@@ -78,6 +79,19 @@ def make_interview(
         updated_at=now,
         is_deleted=False,
     )
+
+
+def make_update_data(**overrides) -> SimpleNamespace:
+    values = {
+        "scheduled_at": None,
+        "duration_minutes": None,
+        "interview_type": None,
+        "meeting_url": None,
+        "location": None,
+        "notes": None,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 @pytest.fixture
@@ -476,4 +490,314 @@ class TestRecruiterCancellationReconciliation:
         ] == [hiring.INTERVIEW_CANCELLED]
         assert side_effects.events[0]["to_status"] == (
             ApplicationStatus.OFFERED
+        )
+
+
+class TestRecruiterInterviewLifecycleGuards:
+    @staticmethod
+    def _now() -> datetime:
+        return datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+
+    def _patch_now(self, monkeypatch) -> datetime:
+        now = self._now()
+        monkeypatch.setattr(f"{MODULE}._utc_now", lambda: now)
+        return now
+
+    @staticmethod
+    def _assert_no_side_effects(side_effects) -> None:
+        assert side_effects.activities == []
+        assert side_effects.events == []
+        assert side_effects.notifications == []
+        assert side_effects.emails == []
+
+    @pytest.mark.asyncio
+    async def test_cancelling_ended_interview_is_rejected_before_mutation(
+        self, side_effects, monkeypatch
+    ):
+        now = self._patch_now(monkeypatch)
+        application = make_application()
+        interview = make_interview(
+            application, status=InterviewStatus.CANDIDATE_CONFIRMED
+        )
+        interview.scheduled_at = now - timedelta(hours=2)
+        patch_recruiter_job(monkeypatch)
+        service, session = build_service(application, interview, remaining=[])
+
+        with pytest.raises(InvalidTransitionException):
+            await service.cancel_interview(
+                current_user=SimpleNamespace(id=uuid.uuid4()),
+                interview_id=interview.id,
+            )
+
+        assert interview.status is InterviewStatus.CANDIDATE_CONFIRMED
+        assert application.status is ApplicationStatus.INTERVIEWING
+        service.interviews.soft_delete.assert_not_awaited()
+        service.interviews.list_by_application.assert_not_awaited()
+        service.applications.try_update_status.assert_not_awaited()
+        session.commit.assert_not_awaited()
+        session.rollback.assert_not_awaited()
+        self._assert_no_side_effects(side_effects)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status",
+        [
+            InterviewStatus.COMPLETED,
+            InterviewStatus.CANCELLED,
+            InterviewStatus.CANDIDATE_DECLINED,
+        ],
+    )
+    async def test_cancelling_terminal_interview_is_rejected(
+        self, status, side_effects, monkeypatch
+    ):
+        now = self._patch_now(monkeypatch)
+        application = make_application()
+        interview = make_interview(application, status=status)
+        interview.scheduled_at = now + timedelta(days=1)
+        patch_recruiter_job(monkeypatch)
+        service, session = build_service(application, interview, remaining=[])
+
+        with pytest.raises(InvalidTransitionException):
+            await service.cancel_interview(
+                current_user=SimpleNamespace(id=uuid.uuid4()),
+                interview_id=interview.id,
+            )
+
+        assert interview.status is status
+        service.interviews.soft_delete.assert_not_awaited()
+        service.applications.try_update_status.assert_not_awaited()
+        session.commit.assert_not_awaited()
+        self._assert_no_side_effects(side_effects)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "tz",
+        [None, timezone(timedelta(hours=7))],
+    )
+    async def test_cancelling_at_exact_end_is_rejected_in_any_timezone(
+        self, tz, side_effects, monkeypatch
+    ):
+        now = self._patch_now(monkeypatch)
+        application = make_application()
+        interview = make_interview(application)
+        scheduled_at = now - timedelta(minutes=60)
+        interview.scheduled_at = (
+            scheduled_at.replace(tzinfo=None)
+            if tz is None
+            else scheduled_at.astimezone(tz)
+        )
+        interview.duration_minutes = 60
+        patch_recruiter_job(monkeypatch)
+        service, session = build_service(application, interview, remaining=[])
+
+        with pytest.raises(InvalidTransitionException):
+            await service.cancel_interview(
+                current_user=SimpleNamespace(id=uuid.uuid4()),
+                interview_id=interview.id,
+            )
+
+        assert interview.status is InterviewStatus.SCHEDULED
+        service.interviews.soft_delete.assert_not_awaited()
+        session.commit.assert_not_awaited()
+        self._assert_no_side_effects(side_effects)
+
+    @pytest.mark.asyncio
+    async def test_cancelling_in_progress_interview_is_allowed(
+        self, side_effects, monkeypatch
+    ):
+        now = self._patch_now(monkeypatch)
+        application = make_application()
+        interview = make_interview(application)
+        interview.scheduled_at = now - timedelta(minutes=30)
+        interview.duration_minutes = 60
+        other = SimpleNamespace(status=InterviewStatus.SCHEDULED)
+        patch_recruiter_job(monkeypatch)
+        service, session = build_service(
+            application, interview, remaining=[other]
+        )
+
+        result = await service.cancel_interview(
+            current_user=SimpleNamespace(id=uuid.uuid4()),
+            interview_id=interview.id,
+        )
+
+        assert result.status is InterviewStatus.CANCELLED
+        assert interview.status is InterviewStatus.CANCELLED
+        service.interviews.soft_delete.assert_awaited_once_with(interview)
+        service.applications.try_update_status.assert_not_awaited()
+        session.commit.assert_awaited_once()
+        assert [
+            row["action_type"] for row in side_effects.activities
+        ] == [hiring.INTERVIEW_CANCELLED]
+        assert side_effects.emails[0]["event"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_updating_ended_interview_without_scheduled_at_is_rejected(
+        self, side_effects, monkeypatch
+    ):
+        now = self._patch_now(monkeypatch)
+        application = make_application()
+        interview = make_interview(application)
+        interview.scheduled_at = now - timedelta(hours=2)
+        interview.notes = "original"
+        patch_recruiter_job(monkeypatch)
+        service, session = build_service(application, interview, remaining=[])
+
+        with pytest.raises(InvalidTransitionException):
+            await service.update_interview(
+                current_user=SimpleNamespace(id=uuid.uuid4()),
+                interview_id=interview.id,
+                data=make_update_data(notes="changed"),
+            )
+
+        assert interview.notes == "original"
+        assert interview.scheduled_at == now - timedelta(hours=2)
+        assert interview.status is InterviewStatus.SCHEDULED
+        session.commit.assert_not_awaited()
+        session.rollback.assert_not_awaited()
+        self._assert_no_side_effects(side_effects)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status",
+        [
+            InterviewStatus.COMPLETED,
+            InterviewStatus.CANCELLED,
+            InterviewStatus.CANDIDATE_DECLINED,
+        ],
+    )
+    async def test_updating_terminal_interview_is_rejected(
+        self, status, side_effects, monkeypatch
+    ):
+        now = self._patch_now(monkeypatch)
+        application = make_application()
+        interview = make_interview(application, status=status)
+        interview.scheduled_at = now + timedelta(days=1)
+        interview.notes = "original"
+        patch_recruiter_job(monkeypatch)
+        service, session = build_service(application, interview, remaining=[])
+
+        with pytest.raises(InvalidTransitionException):
+            await service.update_interview(
+                current_user=SimpleNamespace(id=uuid.uuid4()),
+                interview_id=interview.id,
+                data=make_update_data(notes="changed"),
+            )
+
+        assert interview.notes == "original"
+        assert interview.status is status
+        session.commit.assert_not_awaited()
+        self._assert_no_side_effects(side_effects)
+
+    @pytest.mark.asyncio
+    async def test_updating_with_past_scheduled_at_is_rejected(
+        self, side_effects, monkeypatch
+    ):
+        now = self._patch_now(monkeypatch)
+        application = make_application()
+        interview = make_interview(application)
+        interview.scheduled_at = now + timedelta(days=1)
+        original_scheduled_at = interview.scheduled_at
+        patch_recruiter_job(monkeypatch)
+        service, session = build_service(application, interview, remaining=[])
+
+        with pytest.raises(InvalidTransitionException):
+            await service.update_interview(
+                current_user=SimpleNamespace(id=uuid.uuid4()),
+                interview_id=interview.id,
+                data=make_update_data(
+                    scheduled_at=now - timedelta(hours=1)
+                ),
+            )
+
+        assert interview.scheduled_at == original_scheduled_at
+        session.commit.assert_not_awaited()
+        self._assert_no_side_effects(side_effects)
+
+    @pytest.mark.asyncio
+    async def test_updating_upcoming_interview_succeeds(
+        self, side_effects, monkeypatch
+    ):
+        now = self._patch_now(monkeypatch)
+        application = make_application()
+        interview = make_interview(application)
+        interview.scheduled_at = now + timedelta(days=1)
+        patch_recruiter_job(monkeypatch)
+        service, session = build_service(application, interview, remaining=[])
+        new_scheduled_at = now + timedelta(days=2)
+
+        result = await service.update_interview(
+            current_user=SimpleNamespace(id=uuid.uuid4()),
+            interview_id=interview.id,
+            data=make_update_data(
+                scheduled_at=new_scheduled_at,
+                duration_minutes=90,
+                notes="Updated",
+            ),
+        )
+
+        assert result is interview
+        assert interview.scheduled_at == new_scheduled_at
+        assert interview.duration_minutes == 90
+        assert interview.notes == "Updated"
+        session.commit.assert_awaited_once()
+        session.rollback.assert_not_awaited()
+        assert [
+            row["action_type"] for row in side_effects.activities
+        ] == [hiring.INTERVIEW_RESCHEDULED]
+        assert side_effects.emails[0]["event"] == "rescheduled"
+        assert side_effects.notifications[0]["notification_type"] == (
+            "interview_updated"
+        )
+        assert side_effects.events[0]["action"] == ACTION_INTERVIEW_UPDATED
+
+    @pytest.mark.asyncio
+    async def test_updating_in_progress_interview_to_past_end_is_rejected(
+        self, side_effects, monkeypatch
+    ):
+        now = self._patch_now(monkeypatch)
+        application = make_application()
+        interview = make_interview(application)
+        interview.scheduled_at = now - timedelta(minutes=30)
+        interview.duration_minutes = 60
+        patch_recruiter_job(monkeypatch)
+        service, session = build_service(application, interview, remaining=[])
+
+        with pytest.raises(InvalidTransitionException):
+            await service.update_interview(
+                current_user=SimpleNamespace(id=uuid.uuid4()),
+                interview_id=interview.id,
+                data=make_update_data(duration_minutes=15),
+            )
+
+        assert interview.duration_minutes == 60
+        session.commit.assert_not_awaited()
+        session.rollback.assert_not_awaited()
+        self._assert_no_side_effects(side_effects)
+
+    @pytest.mark.asyncio
+    async def test_updating_in_progress_interview_duration_is_allowed(
+        self, side_effects, monkeypatch
+    ):
+        now = self._patch_now(monkeypatch)
+        application = make_application()
+        interview = make_interview(application)
+        interview.scheduled_at = now - timedelta(minutes=30)
+        interview.duration_minutes = 60
+        patch_recruiter_job(monkeypatch)
+        service, session = build_service(application, interview, remaining=[])
+
+        await service.update_interview(
+            current_user=SimpleNamespace(id=uuid.uuid4()),
+            interview_id=interview.id,
+            data=make_update_data(duration_minutes=90),
+        )
+
+        assert interview.duration_minutes == 90
+        session.commit.assert_awaited_once()
+        session.rollback.assert_not_awaited()
+        assert side_effects.activities == []
+        assert side_effects.emails == []
+        assert side_effects.notifications[0]["notification_type"] == (
+            "interview_updated"
         )

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,12 +47,47 @@ ACTIVE_INTERVIEW_STATUSES = frozenset(
     }
 )
 
+MUTABLE_INTERVIEW_STATUSES = frozenset(
+    {
+        InterviewStatus.SCHEDULED,
+        InterviewStatus.CANDIDATE_CONFIRMED,
+    }
+)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
 
 class InterviewService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.interviews = InterviewRepository(session, Interview)
         self.applications = ApplicationRepository(session, Application)
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    @classmethod
+    def _ends_at(
+        cls,
+        scheduled_at: datetime,
+        duration_minutes: int,
+    ) -> datetime:
+        return cls._as_utc(scheduled_at) + timedelta(minutes=duration_minutes)
+
+    @classmethod
+    def _has_ended(
+        cls,
+        scheduled_at: datetime,
+        duration_minutes: int,
+    ) -> bool:
+        return cls._ends_at(scheduled_at, duration_minutes) <= cls._as_utc(
+            _utc_now()
+        )
 
     @staticmethod
     def _candidate_email(application: Application) -> str | None:
@@ -129,7 +164,7 @@ class InterviewService:
         Transitions application to INTERVIEWING if not already in that state.
         """
         # Validate scheduled_at is not in the past
-        if data.scheduled_at < datetime.now(timezone.utc):
+        if self._as_utc(data.scheduled_at) < _utc_now():
             raise InvalidTransitionException(
                 "Không thể lên lịch phỏng vấn trong quá khứ. Vui lòng chọn thời gian trong tương lai."
             )
@@ -275,12 +310,41 @@ class InterviewService:
                 f"Interview {interview_id} not found"
             ) from None
 
-        # Validate scheduled_at if being updated
-        if data.scheduled_at is not None and data.scheduled_at < datetime.now(
-            timezone.utc
+        if interview.status not in MUTABLE_INTERVIEW_STATUSES:
+            raise InvalidTransitionException(
+                "Không thể cập nhật buổi phỏng vấn ở trạng thái "
+                f"{interview.status.value}."
+            )
+        if self._has_ended(
+            interview.scheduled_at,
+            interview.duration_minutes,
+        ):
+            raise InvalidTransitionException(
+                "Không thể cập nhật buổi phỏng vấn đã kết thúc."
+            )
+
+        now = _utc_now()
+        if (
+            data.scheduled_at is not None
+            and self._as_utc(data.scheduled_at) < now
         ):
             raise InvalidTransitionException(
                 "Không thể lên lịch phỏng vấn trong quá khứ. Vui lòng chọn thời gian trong tương lai."
+            )
+
+        proposed_scheduled_at = (
+            data.scheduled_at
+            if data.scheduled_at is not None
+            else interview.scheduled_at
+        )
+        proposed_duration = (
+            data.duration_minutes
+            if data.duration_minutes is not None
+            else interview.duration_minutes
+        )
+        if self._ends_at(proposed_scheduled_at, proposed_duration) <= now:
+            raise InvalidTransitionException(
+                "Không thể lên lịch phỏng vấn đã kết thúc. Vui lòng chọn thời gian trong tương lai."
             )
 
         original_scheduled_at = interview.scheduled_at
@@ -383,6 +447,19 @@ class InterviewService:
             raise EntityNotFoundException(
                 f"Interview {interview_id} not found"
             ) from None
+
+        if interview.status not in MUTABLE_INTERVIEW_STATUSES:
+            raise InvalidTransitionException(
+                "Không thể hủy buổi phỏng vấn ở trạng thái "
+                f"{interview.status.value}."
+            )
+        if self._has_ended(
+            interview.scheduled_at,
+            interview.duration_minutes,
+        ):
+            raise InvalidTransitionException(
+                "Không thể hủy buổi phỏng vấn đã kết thúc."
+            )
 
         previous_app_status = application.status
 
