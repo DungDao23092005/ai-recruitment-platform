@@ -387,3 +387,29 @@ def test_production_cors_localhost_ipv4_zero_rejected(monkeypatch: pytest.Monkey
     assert "Development origin 'http://0.0.0.0:3000' not allowed in production" in str(
         exc_info.value
     )
+
+
+def test_reset_password_rate_limit_defaults(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("RATE_LIMIT_RESET_PASSWORD_IP_PER_MINUTE", raising=False)
+    monkeypatch.delenv("RATE_LIMIT_RESET_PASSWORD_EMAIL_PER_MINUTE", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.RATE_LIMIT_RESET_PASSWORD_IP_PER_MINUTE == 10
+    assert settings.RATE_LIMIT_RESET_PASSWORD_EMAIL_PER_MINUTE == 5
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "RATE_LIMIT_RESET_PASSWORD_IP_PER_MINUTE",
+        "RATE_LIMIT_RESET_PASSWORD_EMAIL_PER_MINUTE",
+    ],
+)
+def test_reset_password_rate_limits_must_be_positive(
+    monkeypatch: pytest.MonkeyPatch, field: str
+):
+    monkeypatch.setenv(field, "0")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)

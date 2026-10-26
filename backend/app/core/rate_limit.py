@@ -503,6 +503,36 @@ async def verify_otp_rate_limit(request: Request) -> RateLimitResult:
     return ip_result
 
 
+async def reset_password_rate_limit(request: Request) -> RateLimitResult:
+    """Rate limit for password reset (IP + account identifier).
+
+    Both buckets are consumed before the endpoint can touch the database or
+    verify the reset token. The account bucket is keyed on the submitted email
+    regardless of whether the account or token is valid, so it cannot be used
+    for enumeration. The reset token is never included in a Redis key.
+    """
+    ip = get_client_ip(request)
+    ip_result = await _enforce_auth_limit(
+        endpoint="auth:reset_password:ip",
+        identifier=ip,
+        limit=settings.RATE_LIMIT_RESET_PASSWORD_IP_PER_MINUTE,
+    )
+
+    body = await _safe_json_body(request)
+    email = body.get("email") if body else None
+    if isinstance(email, str) and email.strip():
+        normalized_email = normalize_identifier(email)
+        email_result = await _enforce_auth_limit(
+            endpoint="auth:reset_password:email",
+            identifier=normalized_email,
+            limit=settings.RATE_LIMIT_RESET_PASSWORD_EMAIL_PER_MINUTE,
+        )
+        if email_result.remaining < ip_result.remaining:
+            return email_result
+
+    return ip_result
+
+
 EXPLANATION_REFRESH_ENDPOINT = "match_explanation_refresh"
 
 

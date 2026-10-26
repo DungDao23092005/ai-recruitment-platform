@@ -71,6 +71,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_FORGOT_PASSWORD_EMAIL_PER_MINUTE: int = 3
     RATE_LIMIT_VERIFY_OTP_IP_PER_MINUTE: int = 10
     RATE_LIMIT_VERIFY_OTP_EMAIL_PER_MINUTE: int = 5
+    RATE_LIMIT_RESET_PASSWORD_IP_PER_MINUTE: int = 10
+    RATE_LIMIT_RESET_PASSWORD_EMAIL_PER_MINUTE: int = 5
     RATE_LIMIT_AI_CHAT_PER_MINUTE: int = 10
     RATE_LIMIT_PARSE_RESUME_PER_MINUTE: int = 5
     RATE_LIMIT_PARSE_JD_PER_MINUTE: int = 5
@@ -271,6 +273,18 @@ class Settings(BaseSettings):
             raise ValueError(
                 "RATE_LIMIT_EXPLANATION_REFRESH_PER_MINUTE must be greater "
                 "than 0"
+            )
+        return value
+
+    @field_validator(
+        "RATE_LIMIT_RESET_PASSWORD_IP_PER_MINUTE",
+        "RATE_LIMIT_RESET_PASSWORD_EMAIL_PER_MINUTE",
+    )
+    @classmethod
+    def validate_reset_password_rate_limits(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError(
+                "Reset-password rate limit settings must be greater than 0"
             )
         return value
 

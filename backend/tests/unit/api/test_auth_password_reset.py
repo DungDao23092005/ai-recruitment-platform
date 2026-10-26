@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.exceptions import EntityNotFoundException
+from app.core.rate_limit import RateLimitResult, RateLimiter
 from app.domain.enums import UserRole
 from app.main import app
 from app.schemas.password_reset import (
@@ -72,6 +73,30 @@ def recruiter_client(mock_auth_service):
     ), TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+def _rate_limit_result(
+    *,
+    allowed: bool,
+    limit: int,
+    ttl_remaining: int = 60,
+) -> RateLimitResult:
+    count = 1 if allowed else limit
+    return RateLimitResult(
+        allowed=allowed,
+        current_count=count,
+        ttl_remaining=ttl_remaining,
+        reset_time=1234567860,
+        limit=limit,
+        remaining=max(0, limit - count),
+    )
+
+
+def _install_rate_limiter(monkeypatch, side_effect):
+    limiter = MagicMock()
+    limiter.check_limit = AsyncMock(side_effect=side_effect)
+    monkeypatch.setattr("app.core.rate_limit._rate_limiter", limiter)
+    return limiter
 
 
 def test_anonymous_forgot_password_returns_200(mock_auth_service):
@@ -238,6 +263,148 @@ def test_valid_reset_token_resets_password(candidate_client, mock_auth_service):
     data = resp.json()
     assert data["message"] == "Mật khẩu đã được đặt lại thành công"
     mock_auth_service.reset_password.assert_awaited_once_with("test@example.com", "valid-token", "newpassword123")
+
+
+def test_reset_password_with_rate_limiting_enabled(
+    candidate_client, mock_auth_service, monkeypatch
+):
+    """Both rate-limit buckets run before the service without consuming the body."""
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", [])
+    mock_auth_service.reset_password.return_value = True
+
+    def _allow(**kwargs):
+        return _rate_limit_result(allowed=True, limit=kwargs["limit"])
+
+    limiter = _install_rate_limiter(monkeypatch, _allow)
+
+    resp = candidate_client.post(
+        "/api/v1/auth/reset-password",
+        json={
+            "email": "test@example.com",
+            "reset_token": "valid-token",
+            "new_password": "newpassword123",
+            "confirm_password": "newpassword123",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert limiter.check_limit.await_count == 2
+    endpoints = [
+        call.kwargs["endpoint"]
+        for call in limiter.check_limit.await_args_list
+    ]
+    assert endpoints == [
+        "auth:reset_password:ip",
+        "auth:reset_password:email",
+    ]
+    mock_auth_service.reset_password.assert_awaited_once_with(
+        "test@example.com", "valid-token", "newpassword123"
+    )
+
+
+def test_reset_password_rate_limited_before_service(
+    candidate_client, mock_auth_service, monkeypatch
+):
+    """An exhausted email bucket returns 429 and never invokes reset work."""
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", [])
+
+    def _check(**kwargs):
+        if kwargs["endpoint"] == "auth:reset_password:email":
+            return _rate_limit_result(
+                allowed=False,
+                limit=settings.RATE_LIMIT_RESET_PASSWORD_EMAIL_PER_MINUTE,
+                ttl_remaining=37,
+            )
+        return _rate_limit_result(allowed=True, limit=kwargs["limit"])
+
+    _install_rate_limiter(monkeypatch, _check)
+
+    resp = candidate_client.post(
+        "/api/v1/auth/reset-password",
+        json={
+            "email": "test@example.com",
+            "reset_token": "valid-token",
+            "new_password": "newpassword123",
+            "confirm_password": "newpassword123",
+        },
+    )
+
+    assert resp.status_code == 429
+    assert resp.headers["Retry-After"] == "37"
+    mock_auth_service.reset_password.assert_not_awaited()
+
+
+def test_reset_password_invalid_token_still_consumes_email_bucket(
+    candidate_client, mock_auth_service, monkeypatch
+):
+    """Invalid tokens/accounts are still charged to the submitted email bucket."""
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", [])
+    mock_auth_service.reset_password.return_value = False
+
+    def _allow(**kwargs):
+        return _rate_limit_result(allowed=True, limit=kwargs["limit"])
+
+    limiter = _install_rate_limiter(monkeypatch, _allow)
+
+    resp = candidate_client.post(
+        "/api/v1/auth/reset-password",
+        json={
+            "email": "unknown@example.com",
+            "reset_token": "invalid-token",
+            "new_password": "newpassword123",
+            "confirm_password": "newpassword123",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert limiter.check_limit.await_count == 2
+    endpoints = [
+        call.kwargs["endpoint"]
+        for call in limiter.check_limit.await_args_list
+    ]
+    assert endpoints == [
+        "auth:reset_password:ip",
+        "auth:reset_password:email",
+    ]
+    mock_auth_service.reset_password.assert_awaited_once_with(
+        "unknown@example.com", "invalid-token", "newpassword123"
+    )
+
+
+def test_reset_password_redis_outage_returns_503_before_service(
+    candidate_client, mock_auth_service, monkeypatch
+):
+    """Redis failure fails closed with 503 instead of silently allowing reset."""
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+    monkeypatch.setattr(settings, "TRUSTED_PROXIES", [])
+
+    mock_redis = AsyncMock()
+    mock_script = AsyncMock(
+        side_effect=RedisConnectionError("Redis unavailable")
+    )
+    mock_redis.register_script = MagicMock(return_value=mock_script)
+    monkeypatch.setattr(
+        "app.core.rate_limit._rate_limiter", RateLimiter(mock_redis)
+    )
+
+    resp = candidate_client.post(
+        "/api/v1/auth/reset-password",
+        json={
+            "email": "test@example.com",
+            "reset_token": "valid-token",
+            "new_password": "newpassword123",
+            "confirm_password": "newpassword123",
+        },
+    )
+
+    assert resp.status_code == 503
+    assert resp.headers["Retry-After"] == "5"
+    mock_auth_service.reset_password.assert_not_awaited()
 
 
 def test_password_mismatch_rejected(candidate_client, mock_auth_service):

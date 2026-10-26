@@ -1,6 +1,7 @@
 """Rate limiting tests for Security-02."""
 
 import asyncio
+import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import Request
@@ -8,7 +9,13 @@ from fastapi.testclient import TestClient
 from redis.asyncio import Redis
 from redis.exceptions import RedisError, ConnectionError, TimeoutError
 
-from app.core.rate_limit import RateLimiter, RateLimitResult, set_rate_limiter, get_rate_limiter
+from app.core.rate_limit import (
+    RateLimiter,
+    RateLimitResult,
+    reset_password_rate_limit,
+    set_rate_limiter,
+    get_rate_limiter,
+)
 from app.core.config import settings
 from app.main import app
 
@@ -360,6 +367,175 @@ class TestRateLimitEndpoints:
         from app.api.v1.endpoints.auth import router
         route = [r for r in router.routes if r.path == "/verify-reset-otp" and "POST" in r.methods][0]
         assert len(route.dependencies) > 0
+
+    def test_reset_password_rate_limit(self):
+        """Test reset-password rate limiting is wired to the route."""
+        from app.api.v1.endpoints.auth import router
+        route = [r for r in router.routes if r.path == "/reset-password" and "POST" in r.methods][0]
+        assert len(route.dependencies) > 0
+
+
+def _reset_password_request(
+    payload: dict,
+    client_host: str = "203.0.113.10",
+) -> Request:
+    body = json.dumps(payload).encode("utf-8")
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/v1/auth/reset-password",
+        "raw_path": b"/api/v1/auth/reset-password",
+        "query_string": b"",
+        "headers": [(b"content-type", b"application/json")],
+        "client": (client_host, 50000),
+        "server": ("testserver", 80),
+    }
+    return Request(scope, receive)
+
+
+def _rate_limit_result(
+    *,
+    allowed: bool,
+    limit: int,
+    current_count: int | None = None,
+    ttl_remaining: int = 60,
+) -> RateLimitResult:
+    count = current_count if current_count is not None else (1 if allowed else limit)
+    return RateLimitResult(
+        allowed=allowed,
+        current_count=count,
+        ttl_remaining=ttl_remaining,
+        reset_time=1234567860,
+        limit=limit,
+        remaining=max(0, limit - count),
+    )
+
+
+class TestResetPasswordRateLimit:
+    """Reset-password consumes both IP and email buckets before reset work."""
+
+    @pytest.mark.asyncio
+    async def test_checks_ip_then_normalized_email(self, monkeypatch):
+        monkeypatch.setattr(settings, "TRUSTED_PROXIES", [])
+        calls = []
+
+        def _check(**kwargs):
+            calls.append(kwargs)
+            return _rate_limit_result(allowed=True, limit=kwargs["limit"])
+
+        limiter = MagicMock()
+        limiter.check_limit = AsyncMock(side_effect=_check)
+        monkeypatch.setattr("app.core.rate_limit._rate_limiter", limiter)
+
+        request = _reset_password_request(
+            {
+                "email": "  Victim@Example.COM ",
+                "reset_token": "never-log-this-token",
+                "new_password": "newpassword123",
+                "confirm_password": "newpassword123",
+            }
+        )
+        result = await reset_password_rate_limit(request)
+
+        assert result.allowed is True
+        assert [call["endpoint"] for call in calls] == [
+            "auth:reset_password:ip",
+            "auth:reset_password:email",
+        ]
+        assert calls[0]["identifier"] == "203.0.113.10"
+        assert calls[1]["identifier"] == "victim@example.com"
+        assert calls[0]["limit"] == settings.RATE_LIMIT_RESET_PASSWORD_IP_PER_MINUTE
+        assert calls[1]["limit"] == settings.RATE_LIMIT_RESET_PASSWORD_EMAIL_PER_MINUTE
+        assert all(call["fail_closed"] is True for call in calls)
+        assert all(
+            "never-log-this-token" not in str(call) for call in calls
+        )
+
+    @pytest.mark.asyncio
+    async def test_email_bucket_rejection_returns_429(self, monkeypatch):
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(settings, "TRUSTED_PROXIES", [])
+
+        def _check(**kwargs):
+            if kwargs["endpoint"] == "auth:reset_password:email":
+                return _rate_limit_result(
+                    allowed=False,
+                    limit=settings.RATE_LIMIT_RESET_PASSWORD_EMAIL_PER_MINUTE,
+                    ttl_remaining=42,
+                )
+            return _rate_limit_result(allowed=True, limit=kwargs["limit"])
+
+        limiter = MagicMock()
+        limiter.check_limit = AsyncMock(side_effect=_check)
+        monkeypatch.setattr("app.core.rate_limit._rate_limiter", limiter)
+
+        request = _reset_password_request({"email": "victim@example.com"})
+        with pytest.raises(HTTPException) as excinfo:
+            await reset_password_rate_limit(request)
+
+        assert excinfo.value.status_code == 429
+        assert excinfo.value.headers["Retry-After"] == "42"
+
+    @pytest.mark.asyncio
+    async def test_ip_bucket_rejection_stops_before_email(self, monkeypatch):
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(settings, "TRUSTED_PROXIES", [])
+        calls = []
+
+        def _check(**kwargs):
+            calls.append(kwargs)
+            return _rate_limit_result(
+                allowed=False,
+                limit=settings.RATE_LIMIT_RESET_PASSWORD_IP_PER_MINUTE,
+                ttl_remaining=30,
+            )
+
+        limiter = MagicMock()
+        limiter.check_limit = AsyncMock(side_effect=_check)
+        monkeypatch.setattr("app.core.rate_limit._rate_limiter", limiter)
+
+        request = _reset_password_request({"email": "victim@example.com"})
+        with pytest.raises(HTTPException) as excinfo:
+            await reset_password_rate_limit(request)
+
+        assert excinfo.value.status_code == 429
+        assert [call["endpoint"] for call in calls] == [
+            "auth:reset_password:ip"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_redis_outage_fails_closed_with_503(self, monkeypatch):
+        from fastapi import HTTPException
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        monkeypatch.setattr(settings, "TRUSTED_PROXIES", [])
+        mock_redis = AsyncMock()
+        mock_script = AsyncMock(
+            side_effect=RedisConnectionError("Redis unavailable")
+        )
+        mock_redis.register_script = MagicMock(return_value=mock_script)
+        limiter = RateLimiter(mock_redis)
+        monkeypatch.setattr("app.core.rate_limit._rate_limiter", limiter)
+
+        request = _reset_password_request({"email": "victim@example.com"})
+        with pytest.raises(HTTPException) as excinfo:
+            await reset_password_rate_limit(request)
+
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.headers["Retry-After"] == "5"
 
 
 # Run tests

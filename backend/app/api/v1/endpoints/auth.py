@@ -12,6 +12,7 @@ from app.core.rate_limit import (
     register_rate_limit,
     forgot_password_rate_limit,
     verify_otp_rate_limit,
+    reset_password_rate_limit,
     record_login_failure,
     clear_login_failures,
 )
@@ -194,6 +195,7 @@ async def verify_reset_otp(
 @router.post(
     "/reset-password",
     response_model=ResetPasswordResponse,
+    dependencies=[Depends(reset_password_rate_limit)],
 )
 async def reset_password(
     data: ResetPasswordRequest,
