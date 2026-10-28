@@ -68,6 +68,7 @@ from app.schemas.interview_evaluation import (
 )
 from app.schemas.resume import ResumeRead
 from app.services.ai_matching_service import AIMatchingService
+from app.services.application_access import require_candidate_application
 from app.services.application_activity_service import ApplicationActivityService
 from app.services.application_note_service import ApplicationNoteService
 from app.services.application_service import ApplicationService
@@ -220,6 +221,35 @@ async def list_my_applications(
         to_application_with_job_read(application)
         for application in applications
     ]
+
+
+@router.get(
+    "/mine/{application_id}",
+    response_model=ApplicationWithJobRead,
+)
+async def get_my_application(
+    application_id: uuid.UUID,
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+) -> ApplicationWithJobRead:
+    """Return one of the caller's applications with its job and interviews.
+
+    Missing and foreign applications surface as the same 404 so application
+    existence is never leaked between candidates.
+    """
+    try:
+        application = await require_candidate_application(
+            db,
+            current_user,
+            application_id,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    return to_application_with_job_read(application)
 
 
 @router.get(

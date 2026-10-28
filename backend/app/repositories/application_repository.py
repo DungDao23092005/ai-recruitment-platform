@@ -117,7 +117,8 @@ class ApplicationRepository(BaseRepository[Application]):
         stmt = (
             select(Application)
             .options(
-                selectinload(Application.job).selectinload(Job.company).selectinload(Company.recruiters)
+                selectinload(Application.job).selectinload(Job.company).selectinload(Company.recruiters),
+                selectinload(Application.interviews),
             )
             .where(
                 Application.id == application_id,

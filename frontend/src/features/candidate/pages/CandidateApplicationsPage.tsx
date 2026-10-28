@@ -1,16 +1,22 @@
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { FileText, Search, X } from 'lucide-react'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Spinner } from '@/components/ui/spinner'
 import { ErrorBanner } from '@/components/ui/error-banner'
 import { EmptyState } from '@/components/ui/empty-state'
 import { cn } from '@/utils/cn'
+import { getMyApplication } from '@/api/applications'
+import { getFriendlyErrorMessage, isNotFoundError } from '@/utils/errors'
 import { ApplicationCard } from '@/features/candidate/components/ApplicationCard'
 import { useMyApplications } from '@/features/candidate/hooks/useMyApplications'
 import type { ApplicationStatus, ApplicationWithJob } from '@/types/application'
+
+const TARGET_NOT_FOUND_MESSAGE =
+  'Đơn ứng tuyển này không tồn tại hoặc đã bị xóa.'
 
 type FilterKey = 'all' | 'active' | 'completed'
 
@@ -51,20 +57,141 @@ function matchesQuery(
 
 export function CandidateApplicationsPage() {
   const { applications, isLoading, error, refresh } = useMyApplications()
+  const [searchParams] = useSearchParams()
+  const targetId = searchParams.get('id')?.trim() || null
+
   const [filter, setFilter] = useState<FilterKey>('all')
   const [query, setQuery] = useState('')
+  const [targetApplication, setTargetApplication] =
+    useState<ApplicationWithJob | null>(null)
+  const [targetError, setTargetError] = useState<string | null>(null)
+  const [isTargetLoading, setIsTargetLoading] = useState(false)
+  const [targetRetryKey, setTargetRetryKey] = useState(0)
+  const [highlightedApplicationId, setHighlightedApplicationId] = useState<
+    string | null
+  >(null)
+
+  const targetRequestIdRef = useRef(0)
+  const attemptedTargetIdRef = useRef<string | null>(null)
+  const highlightedTargetIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    targetRequestIdRef.current += 1
+    attemptedTargetIdRef.current = null
+    highlightedTargetIdRef.current = null
+    setTargetApplication(null)
+    setTargetError(null)
+    setIsTargetLoading(Boolean(targetId))
+    setHighlightedApplicationId(null)
+    setFilter('all')
+  }, [targetId])
+
+  useEffect(() => {
+    if (!targetId || isLoading) return
+
+    if (applications.some((application) => application.id === targetId)) {
+      attemptedTargetIdRef.current = targetId
+      setIsTargetLoading(false)
+      setTargetError(null)
+      return
+    }
+
+    if (attemptedTargetIdRef.current === targetId) return
+
+    attemptedTargetIdRef.current = targetId
+    const requestId = targetRequestIdRef.current + 1
+    targetRequestIdRef.current = requestId
+    setIsTargetLoading(true)
+    setTargetError(null)
+
+    void getMyApplication(targetId)
+      .then((application) => {
+        if (targetRequestIdRef.current !== requestId) return
+        setTargetApplication(application)
+        setIsTargetLoading(false)
+      })
+      .catch((err) => {
+        if (targetRequestIdRef.current !== requestId) return
+        setTargetError(
+          isNotFoundError(err)
+            ? TARGET_NOT_FOUND_MESSAGE
+            : getFriendlyErrorMessage(err),
+        )
+        setIsTargetLoading(false)
+      })
+  }, [applications, isLoading, targetId, targetRetryKey])
+
+  const retryTarget = useCallback(() => {
+    if (!targetId) return
+    attemptedTargetIdRef.current = null
+    setTargetError(null)
+    setIsTargetLoading(true)
+    setTargetRetryKey((key) => key + 1)
+  }, [targetId])
+
+  const allApplications = useMemo(() => {
+    if (!targetApplication) return applications
+    if (
+      applications.some(
+        (application) => application.id === targetApplication.id,
+      )
+    ) {
+      return applications
+    }
+    return [...applications, targetApplication]
+  }, [applications, targetApplication])
 
   const normalizedQuery = query.trim().toLowerCase()
   const hasSearchOrFilter =
     filter !== 'all' || normalizedQuery.length > 0
-  const filteredApplications = applications.filter(
+  const filteredApplications = allApplications.filter(
     (application) =>
       matchesFilter(application.status, filter) &&
       matchesQuery(application, normalizedQuery),
   )
 
+  const targetCardRendered = Boolean(
+    targetId &&
+      filteredApplications.some(
+        (application) => application.id === targetId,
+      ),
+  )
+
+  useEffect(() => {
+    if (
+      !targetId ||
+      !targetCardRendered ||
+      highlightedTargetIdRef.current === targetId
+    ) {
+      return
+    }
+
+    highlightedTargetIdRef.current = targetId
+    const frame = requestAnimationFrame(() => {
+      const element = document.getElementById(`application-${targetId}`)
+      if (!element) return
+      element.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+      setHighlightedApplicationId(targetId)
+    })
+    const timer = window.setTimeout(() => {
+      setHighlightedApplicationId(null)
+    }, 3000)
+
+    return () => {
+      cancelAnimationFrame(frame)
+      window.clearTimeout(timer)
+    }
+  }, [targetCardRendered, targetId])
+
   const handleApplicationUpdated = () => {
     refresh()
+    if (
+      targetId &&
+      !applications.some((application) => application.id === targetId)
+    ) {
+      attemptedTargetIdRef.current = null
+      setTargetRetryKey((key) => key + 1)
+    }
   }
 
   const clearSearchAndFilters = () => {
@@ -90,7 +217,21 @@ export function CandidateApplicationsPage() {
 
       {error ? <ErrorBanner message={error} onRetry={refresh} /> : null}
 
-      {!isLoading && !error && applications.length === 0 ? (
+      {targetError ? (
+        <ErrorBanner message={targetError} onRetry={retryTarget} />
+      ) : null}
+
+      {isTargetLoading && !isLoading ? (
+        <div
+          role="status"
+          className="flex items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-4 py-3 text-sm text-muted-foreground"
+        >
+          <Spinner size="sm" />
+          Đang tải đơn ứng tuyển...
+        </div>
+      ) : null}
+
+      {!isLoading && !error && allApplications.length === 0 ? (
         <EmptyState
           icon={<FileText className="h-6 w-6" aria-hidden="true" />}
           title="Bạn chưa có đơn ứng tuyển"
@@ -105,7 +246,7 @@ export function CandidateApplicationsPage() {
         </EmptyState>
       ) : null}
 
-      {!isLoading && !error && applications.length > 0 ? (
+      {!isLoading && !error && allApplications.length > 0 ? (
         <div className="space-y-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div
@@ -114,7 +255,7 @@ export function CandidateApplicationsPage() {
               className="inline-flex flex-wrap gap-1 rounded-lg border border-border/70 bg-muted/40 p-1"
             >
               {FILTERS.map(({ key, label }) => {
-                const count = applications.filter((application) =>
+                const count = allApplications.filter((application) =>
                   matchesFilter(application.status, key),
                 ).length
                 const isActive = filter === key
@@ -183,6 +324,7 @@ export function CandidateApplicationsPage() {
                 <ApplicationCard
                   key={application.id}
                   application={application}
+                  highlighted={highlightedApplicationId === application.id}
                   onUpdated={handleApplicationUpdated}
                 />
               ))}
@@ -192,7 +334,7 @@ export function CandidateApplicationsPage() {
           {hasSearchOrFilter ? (
             <p role="status" className="sr-only">
               Hiển thị {filteredApplications.length} trong tổng số{' '}
-              {applications.length} đơn ứng tuyển.
+              {allApplications.length} đơn ứng tuyển.
             </p>
           ) : null}
         </div>

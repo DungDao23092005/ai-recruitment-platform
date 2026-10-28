@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { CandidateApplicationsPage } from './CandidateApplicationsPage'
@@ -11,14 +11,17 @@ vi.mock('@/api/applications', () => ({
   withdrawApplication: vi.fn(),
   getApplicationsByJob: vi.fn(),
   getMyApplications: vi.fn(),
+  getMyApplication: vi.fn(),
   getMyApplicationTimeline: vi.fn(),
 }))
 
 const mockedGetMyApplications = vi.mocked(applicationsApi.getMyApplications)
+const mockedGetMyApplication = vi.mocked(applicationsApi.getMyApplication)
 const mockedWithdrawApplication = vi.mocked(
   applicationsApi.withdrawApplication,
 )
 const mockedGetTimeline = vi.mocked(applicationsApi.getMyApplicationTimeline)
+const scrollIntoViewMock = vi.fn()
 
 const mockApplications: ApplicationWithJob[] = [
   {
@@ -50,13 +53,25 @@ const mockApplications: ApplicationWithJob[] = [
   },
 ]
 
-function renderPage() {
+function renderPage(
+  initialEntry = '/candidate/applications',
+  withTargetLink = false,
+) {
   return render(
-    <MemoryRouter initialEntries={['/candidate/applications']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
         <Route
           path="/candidate/applications"
-          element={<CandidateApplicationsPage />}
+          element={
+            <>
+              <CandidateApplicationsPage />
+              {withTargetLink ? (
+                <Link to="/candidate/applications?id=app-5">
+                  Next target
+                </Link>
+              ) : null}
+            </>
+          }
         />
         <Route path="/candidate/jobs" element={<div>Jobs Page</div>} />
         <Route path="/candidate/jobs/:id" element={<div>Job Detail</div>} />
@@ -74,7 +89,10 @@ async function renderWithData() {
 describe('CandidateApplicationsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockedGetMyApplication.mockReset()
     mockedGetTimeline.mockResolvedValue([])
+    Element.prototype.scrollIntoView = scrollIntoViewMock
+    scrollIntoViewMock.mockClear()
   })
 
   it('calls getMyApplications on mount', async () => {

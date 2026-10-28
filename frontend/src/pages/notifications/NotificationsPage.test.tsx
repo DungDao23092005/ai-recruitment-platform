@@ -613,8 +613,34 @@ describe('NotificationsPage', () => {
         expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('1');
       });
 
-      // Should navigate to candidate applications
-      expect(mockNavigate).toHaveBeenCalledWith('/candidate/applications');
+      // Should navigate to the targeted candidate application
+      expect(mockNavigate).toHaveBeenCalledWith('/candidate/applications?id=app-1');
+    });
+
+    it('Candidate: application notification without entity id does not navigate', async () => {
+      vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+
+      vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+        { ...mockNotifications[0], id: '1', entity_type: 'application', entity_id: null, is_read: false },
+      ]);
+      vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+        ...mockNotifications[0],
+        is_read: true,
+      });
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Notification 1')).toBeInTheDocument();
+      });
+
+      await screen.getByText('Test Notification 1').click();
+
+      await waitFor(() => {
+        expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('1');
+      });
+
+      expect(mockNavigate).not.toHaveBeenCalled();
     });
 
     it('Candidate: interview notification navigates to /candidate/applications', async () => {
@@ -675,9 +701,9 @@ describe('NotificationsPage', () => {
       expect(decrementMock).not.toHaveBeenCalled();
       expect(incrementMock).not.toHaveBeenCalled();
 
-      // Should still navigate to candidate applications
+      // Should still navigate to the targeted candidate application
       await waitFor(() => {
-        expect(mockNavigate).toHaveBeenCalledWith('/candidate/applications');
+        expect(mockNavigate).toHaveBeenCalledWith('/candidate/applications?id=app-1');
       });
     });
 
@@ -718,7 +744,7 @@ describe('NotificationsPage', () => {
 
       // Navigation should still happen despite mark-read failure
       await waitFor(() => {
-        expect(mockNavigate).toHaveBeenCalledWith('/candidate/applications');
+        expect(mockNavigate).toHaveBeenCalledWith('/candidate/applications?id=app-1');
       });
 
       // Wait for the promise rejection to be handled (rollback)

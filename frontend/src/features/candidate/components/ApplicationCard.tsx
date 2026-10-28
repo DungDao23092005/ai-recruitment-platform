@@ -44,6 +44,7 @@ export const WITHDRAWABLE_STATUSES: ApplicationStatus[] = [
 export interface ApplicationCardProps {
   application: ApplicationWithJob
   detailPath?: string
+  highlighted?: boolean
   onWithdrawn?: (applicationId: string) => void
   onUpdated?: () => void
 }
@@ -88,6 +89,7 @@ function interviewTypeLabel(interviewType: string): string {
 export function ApplicationCard({
   application,
   detailPath = '/candidate/jobs',
+  highlighted = false,
   onWithdrawn,
   onUpdated,
 }: ApplicationCardProps) {
@@ -148,7 +150,14 @@ export function ApplicationCard({
   }
 
   return (
-    <Card className="border-border/70 bg-card shadow-soft">
+    <Card
+      id={`application-${id}`}
+      data-highlighted={highlighted ? 'true' : undefined}
+      className={cn(
+        'border-border/70 bg-card shadow-soft transition-shadow',
+        highlighted && 'ring-2 ring-primary ring-offset-2 ring-offset-background',
+      )}
+    >
       <CardHeader className="gap-3">
         <div className="flex items-start gap-3">
           <div

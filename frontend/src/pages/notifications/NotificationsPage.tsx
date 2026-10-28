@@ -78,7 +78,7 @@ function getEntityRoute(entityType: string | null, entityId: string | null, user
       if (userRole === 'admin') {
         return null;
       }
-      return `/candidate/applications`;
+      return `/candidate/applications?id=${encodeURIComponent(entityId)}`;
     case 'interview':
       if (userRole === 'recruiter') {
         return null;

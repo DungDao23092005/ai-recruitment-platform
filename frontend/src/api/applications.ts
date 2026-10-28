@@ -110,6 +110,14 @@ export async function getMyApplications(
   )
 }
 
+export async function getMyApplication(
+  applicationId: string,
+): Promise<ApplicationWithJob> {
+  return apiClient.get<ApplicationWithJob, ApplicationWithJob>(
+    `/applications/mine/${applicationId}`,
+  )
+}
+
 export async function getMyApplicationTimeline(
   applicationId: string,
   params: PageParams = {},
