@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+import weakref
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -1136,15 +1137,16 @@ class TestApplicationCandidateEnrichment:
 class TestGetMyApplications:
     """GET /applications/mine — candidate-owned application history."""
 
-    # Cache company per recruiter client to respect single-company rule
-    _company_cache = {}
+    # Cache company per recruiter client to respect single-company rule.
+    # Weak keys tie the cache lifetime to the client instance, so a recycled
+    # object id can never expose another client's company.
+    _company_cache = weakref.WeakKeyDictionary()
 
     @staticmethod
     def create_job(recruiter_client, run_async, title, suffix=""):
-        # Use client's base_url or a unique identifier to cache company per recruiter
-        cache_key = id(recruiter_client)
-        if cache_key not in TestGetMyApplications._company_cache:
-            company = run_async(
+        company = TestGetMyApplications._company_cache.get(recruiter_client)
+        if company is None:
+            company_resp = run_async(
                 recruiter_client.post(
                     f"{API_V1}/companies",
                     json={
@@ -1153,17 +1155,22 @@ class TestGetMyApplications:
                         "tax_code": f"12{suffix or uuid.uuid4().hex[:8]}",
                     },
                 )
-            ).json()
-            TestGetMyApplications._company_cache[cache_key] = company
-        else:
-            company = TestGetMyApplications._company_cache[cache_key]
-        job = run_async(
+            )
+            assert company_resp.status_code == 201, (
+                f"{company_resp.status_code}: {company_resp.text}"
+            )
+            company = company_resp.json()
+            TestGetMyApplications._company_cache[recruiter_client] = company
+        job_resp = run_async(
             recruiter_client.post(
                 f"{API_V1}/jobs",
                 json={**JOB_BODY, "company_id": company["id"], "title": title},
             )
-        ).json()
-        return job
+        )
+        assert job_resp.status_code == 201, (
+            f"{job_resp.status_code}: {job_resp.text}"
+        )
+        return job_resp.json()
 
     def test_anonymous_returns_401(self, client, run_async):
         resp = run_async(client.get(f"{API_V1}/applications/mine"))
