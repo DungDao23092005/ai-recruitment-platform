@@ -112,6 +112,19 @@ export interface AdminPlanRead {
   updated_at: string
 }
 
+export interface AdminPlanList {
+  items: AdminPlanRead[]
+  total: number
+  skip: number
+  limit: number
+}
+
+export interface AdminPlanListParams {
+  skip: number
+  limit: number
+  search?: string
+}
+
 export interface AdminPlanCreate {
   name: string
   description: string | null

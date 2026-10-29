@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     PDF_WORKER_MAX_CONSECUTIVE_FAILURES: int = 3
     PDF_WORKER_QUARANTINE_SECONDS: float = 60.0
 
+    # Stale subscription-usage reservation reconciliation.
+    QUOTA_RECONCILIATION_ENABLED: bool = True
+    QUOTA_RECONCILIATION_INTERVAL_SECONDS: float = 300.0
+    QUOTA_RESERVATION_STALE_MINUTES: int = 60
+    QUOTA_RECONCILIATION_BATCH_SIZE: int = 100
+
     # Recruitment analytics rollup and retention.
     ANALYTICS_ROLLUP_ENABLED: bool = True
     ANALYTICS_ROLLUP_INTERVAL_SECONDS: float = 300.0

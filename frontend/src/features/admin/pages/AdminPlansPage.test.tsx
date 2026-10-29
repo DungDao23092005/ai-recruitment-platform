@@ -2,7 +2,7 @@ import { render, screen, waitFor, fireEvent, within } from '@testing-library/rea
 import { vi } from 'vitest'
 import { AdminPlansPage } from '@/features/admin/pages/AdminPlansPage'
 import { getAdminPlans, deleteAdminPlan } from '@/api/admin'
-import type { AdminPlanRead } from '@/types/admin'
+import type { AdminPlanList, AdminPlanRead } from '@/types/admin'
 
 vi.mock('@/api/admin')
 
@@ -39,13 +39,20 @@ const mockPlans: AdminPlanRead[] = [
   },
 ]
 
+const mockPlanList: AdminPlanList = {
+  items: mockPlans,
+  total: mockPlans.length,
+  skip: 0,
+  limit: 10,
+}
+
 describe('AdminPlansPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
   it('renders page header correctly', async () => {
-    vi.mocked(getAdminPlans).mockResolvedValue(mockPlans)
+    vi.mocked(getAdminPlans).mockResolvedValue(mockPlanList)
 
     render(<AdminPlansPage />)
 
@@ -58,7 +65,7 @@ describe('AdminPlansPage', () => {
   })
 
   it('clicking "+ Tạo gói" button opens Create modal', async () => {
-    vi.mocked(getAdminPlans).mockResolvedValue(mockPlans)
+    vi.mocked(getAdminPlans).mockResolvedValue(mockPlanList)
 
     render(<AdminPlansPage />)
 
@@ -79,7 +86,7 @@ describe('AdminPlansPage', () => {
   })
 
   it('cancel closes Create modal', async () => {
-    vi.mocked(getAdminPlans).mockResolvedValue(mockPlans)
+    vi.mocked(getAdminPlans).mockResolvedValue(mockPlanList)
 
     render(<AdminPlansPage />)
 
@@ -105,7 +112,7 @@ describe('AdminPlansPage', () => {
   })
 
   it('edit flow still works', async () => {
-    vi.mocked(getAdminPlans).mockResolvedValue(mockPlans)
+    vi.mocked(getAdminPlans).mockResolvedValue(mockPlanList)
 
     render(<AdminPlansPage />)
 
@@ -132,7 +139,7 @@ describe('AdminPlansPage', () => {
   })
 
   it('status toggle still works', async () => {
-    vi.mocked(getAdminPlans).mockResolvedValue(mockPlans)
+    vi.mocked(getAdminPlans).mockResolvedValue(mockPlanList)
 
     render(<AdminPlansPage />)
 
@@ -170,7 +177,7 @@ describe('AdminPlansPage', () => {
 
   describe('Plan deletion', () => {
     beforeEach(() => {
-      vi.mocked(getAdminPlans).mockResolvedValue(mockPlans)
+      vi.mocked(getAdminPlans).mockResolvedValue(mockPlanList)
       vi.mocked(deleteAdminPlan).mockResolvedValue(undefined)
     })
 

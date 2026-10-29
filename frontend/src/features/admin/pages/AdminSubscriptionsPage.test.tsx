@@ -9,6 +9,7 @@ import {
   revokeAdminSubscription,
 } from '@/api/admin'
 import type {
+  AdminPlanList,
   AdminPlanRead,
   AdminSubscriptionDetail,
   AdminSubscriptionList,
@@ -67,6 +68,13 @@ const mockPlans: AdminPlanRead[] = [
     updated_at: '2024-01-02T00:00:00Z',
   },
 ]
+
+const mockPlanList: AdminPlanList = {
+  items: mockPlans,
+  total: mockPlans.length,
+  skip: 0,
+  limit: 100,
+}
 
 const mockDetail: AdminSubscriptionDetail = {
   subscription: {
@@ -142,7 +150,7 @@ describe('AdminSubscriptionsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(getAdminSubscriptions).mockResolvedValue(mockList)
-    vi.mocked(getAdminPlans).mockResolvedValue(mockPlans)
+    vi.mocked(getAdminPlans).mockResolvedValue(mockPlanList)
     vi.mocked(getAdminSubscription).mockResolvedValue(mockDetail)
     vi.mocked(changeAdminSubscriptionPlan).mockResolvedValue(mockList.items[0])
     vi.mocked(revokeAdminSubscription).mockResolvedValue({

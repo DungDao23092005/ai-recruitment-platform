@@ -160,8 +160,32 @@ class TestAdminPlans:
         resp = run_async(admin_plan_client.get(f"{API_V1}/admin/plans"))
         assert resp.status_code == 200
         data = resp.json()
-        assert isinstance(data, list)
-        assert len(data) >= 2
+        assert isinstance(data["items"], list)
+        assert data["total"] >= 2
+        assert data["skip"] == 0
+        assert data["limit"] == 10
+
+    def test_admin_plan_list_supports_search_and_pagination(
+        self, admin_plan_client, run_async, plan_service_override
+    ):
+        prefix = f"Paged Plan {uuid.uuid4().hex[:8]}"
+        for index in range(3):
+            body = {**PLAN_BODY, "name": f"{prefix} {index}", "display_order": index}
+            _create_plan(admin_plan_client, run_async, body=body)
+
+        resp = run_async(
+            admin_plan_client.get(
+                f"{API_V1}/admin/plans",
+                params={"search": prefix, "skip": 1, "limit": 1},
+            )
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["total"] == 3
+        assert data["skip"] == 1
+        assert data["limit"] == 1
+        assert len(data["items"]) == 1
+        assert data["items"][0]["name"] == f"{prefix} 1"
 
     def test_admin_can_get_plan_by_id(self, admin_plan_client, run_async, plan_service_override):
         plan = _create_plan(admin_plan_client, run_async)

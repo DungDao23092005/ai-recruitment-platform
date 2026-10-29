@@ -33,7 +33,7 @@ export function AdminSubscriptionChangePlanModal({
         const data = await getAdminPlans({ skip: 0, limit: 100 })
         if (!cancelled) {
           setPlans(
-            data.filter(
+            data.items.filter(
               (plan) => plan.is_active && plan.id !== subscription.plan_id,
             ),
           )

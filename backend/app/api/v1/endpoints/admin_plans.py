@@ -11,6 +11,7 @@ from app.core.exceptions import ConflictException, EntityNotFoundException, Vali
 from app.models import User
 from app.schemas.recruitment_plan import (
     PlanStatusUpdate,
+    RecruitmentPlanAdminList,
     RecruitmentPlanAdminRead,
     RecruitmentPlanCreate,
     RecruitmentPlanUpdate,
@@ -26,7 +27,7 @@ def _get_plan_service(db: AsyncSession = Depends(get_db)) -> RecruitmentPlanServ
 
 @router.get(
     "",
-    response_model=list[RecruitmentPlanAdminRead],
+    response_model=RecruitmentPlanAdminList,
 )
 async def list_admin_plans(
     current_user: User = Depends(require_admin),
@@ -34,10 +35,15 @@ async def list_admin_plans(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=10, ge=1, le=100),
     search: Optional[str] = Query(default=None, max_length=100),
-) -> list[RecruitmentPlanAdminRead]:
+) -> RecruitmentPlanAdminList:
     """List all recruitment plans for admin (including inactive)."""
     plans, total = await service.list_admin(skip, limit, search)
-    return [RecruitmentPlanAdminRead.model_validate(p) for p in plans]
+    return RecruitmentPlanAdminList(
+        items=[RecruitmentPlanAdminRead.model_validate(p) for p in plans],
+        total=total,
+        skip=skip,
+        limit=limit,
+    )
 
 
 @router.post(

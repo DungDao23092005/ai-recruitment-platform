@@ -17,7 +17,7 @@ export const ADMIN_PLAN_PAGE_SIZE = 10
 type ListState =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'success'; data: AdminPlanRead[] }
+  | { kind: 'success'; items: AdminPlanRead[]; total: number }
 
 function formatDuration(days: number): string {
   if (days >= 365) {
@@ -51,7 +51,12 @@ export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps
         limit: ADMIN_PLAN_PAGE_SIZE,
         search: searchQuery.trim() || undefined,
       })
-      setListState({ kind: 'success', data })
+      const lastPage = Math.max(1, Math.ceil(data.total / ADMIN_PLAN_PAGE_SIZE))
+      if (page > lastPage) {
+        setPage(lastPage)
+        return
+      }
+      setListState({ kind: 'success', items: data.items, total: data.total })
     } catch (err) {
       setListState({ kind: 'error', message: getFriendlyErrorMessage(err) })
     }
@@ -67,8 +72,9 @@ export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps
     setSearchQuery(search.trim())
   }
 
-  const plans = listState.kind === 'success' ? listState.data : []
-  const totalPages = Math.max(1, Math.ceil(plans.length / ADMIN_PLAN_PAGE_SIZE))
+  const plans = listState.kind === 'success' ? listState.items : []
+  const total = listState.kind === 'success' ? listState.total : 0
+  const totalPages = Math.max(1, Math.ceil(total / ADMIN_PLAN_PAGE_SIZE))
 
   return (
     <div className="space-y-6">

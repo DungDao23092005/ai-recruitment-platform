@@ -240,6 +240,14 @@ async def parse_jd(
     quota_service = QuotaEnforcementService(db)
     reservation = None
     is_admin = current_user.role == UserRole.ADMIN
+
+    async def release_reservation() -> None:
+        if not reservation:
+            return
+        await db.rollback()
+        await quota_service.release_reservation(reservation.usage_id)
+        await db.commit()
+
     try:
         # Reserve quota for AI feature (parse-jd uses external LLM)
         reservation = await quota_service.reserve_ai_quota(
@@ -247,6 +255,9 @@ async def parse_jd(
             idempotency_key=idempotency_key,
             is_admin=is_admin,
         )
+        # Persist the reservation before the external call so a crash leaves a
+        # recoverable RESERVED row instead of an invisible in-flight counter.
+        await db.commit()
 
         result = await service.process_and_index_job(
             job_id=data.job_id or uuid.uuid4(),
@@ -256,30 +267,51 @@ async def parse_jd(
 
         # Finalize reservation on success
         await quota_service.finalize_reservation(reservation.usage_id, success=True)
+        await db.commit()
         return result
 
     except EmptyDocumentError as exc:
         # Release reservation on validation error
-        if reservation:
-            await quota_service.release_reservation(reservation.usage_id)
+        await release_reservation()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
     except InvalidDocumentError as exc:
-        if reservation:
-            await quota_service.release_reservation(reservation.usage_id)
+        await release_reservation()
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
+    except AIProviderQuotaExceededError as exc:
+        await release_reservation()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after) if exc.retry_after else "60"},
+        ) from exc
+    except AIProviderUnavailableError as exc:
+        await release_reservation()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after) if exc.retry_after else "60"},
+        ) from exc
     except ForbiddenException as exc:
-        if reservation:
-            await quota_service.release_reservation(reservation.usage_id)
+        await release_reservation()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(exc),
         ) from exc
+    except AIError as exc:
+        await release_reservation()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except Exception:
+        await release_reservation()
+        raise
 
 
 @router.post(

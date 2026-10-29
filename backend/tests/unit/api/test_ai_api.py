@@ -344,6 +344,60 @@ class TestParseJD:
         assert resp.json()["title"] == "Backend Engineer"
         mock_service.process_and_index_job.assert_called_once()
 
+    def test_parse_jd_provider_quota_error_releases_reservation(
+        self, recruiter_client, mock_service, mock_quota_service
+    ):
+        from app.core.exceptions import AIProviderQuotaExceededError
+
+        mock_service.process_and_index_job.side_effect = (
+            AIProviderQuotaExceededError(retry_after=30)
+        )
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/parse-jd",
+            json={"job_title": "Dev", "job_description": "Desc"},
+        )
+
+        assert resp.status_code == status.HTTP_429_TOO_MANY_REQUESTS
+        assert resp.headers.get("Retry-After") == "30"
+        mock_quota_service.release_reservation.assert_called_once()
+        mock_quota_service.finalize_reservation.assert_not_called()
+
+    def test_parse_jd_provider_unavailable_releases_reservation(
+        self, recruiter_client, mock_service, mock_quota_service
+    ):
+        from app.core.exceptions import AIProviderUnavailableError
+
+        mock_service.process_and_index_job.side_effect = (
+            AIProviderUnavailableError(retry_after=45)
+        )
+
+        resp = recruiter_client.post(
+            "/api/v1/ai/parse-jd",
+            json={"job_title": "Dev", "job_description": "Desc"},
+        )
+
+        assert resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        assert resp.headers.get("Retry-After") == "45"
+        mock_quota_service.release_reservation.assert_called_once()
+        mock_quota_service.finalize_reservation.assert_not_called()
+
+    def test_parse_jd_unexpected_error_releases_reservation(
+        self, recruiter_client, mock_service, mock_quota_service
+    ):
+        mock_service.process_and_index_job.side_effect = RuntimeError(
+            "vector store down"
+        )
+
+        with pytest.raises(RuntimeError, match="vector store down"):
+            recruiter_client.post(
+                "/api/v1/ai/parse-jd",
+                json={"job_title": "Dev", "job_description": "Desc"},
+            )
+
+        mock_quota_service.release_reservation.assert_called_once()
+        mock_quota_service.finalize_reservation.assert_not_called()
+
     def test_parse_jd_unauthorized(self, unauthorized_client, mock_service):
         resp = unauthorized_client.post(
             "/api/v1/ai/parse-jd",

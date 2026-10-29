@@ -68,5 +68,12 @@ class RecruitmentPlanAdminRead(RecruitmentPlanRead):
     is_deleted: bool
 
 
+class RecruitmentPlanAdminList(BaseModel):
+    items: list[RecruitmentPlanAdminRead]
+    total: int
+    skip: int
+    limit: int
+
+
 class PlanStatusUpdate(BaseModel):
     is_active: bool

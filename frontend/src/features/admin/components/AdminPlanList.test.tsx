@@ -1,8 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 import { AdminPlanList } from '@/features/admin/components/AdminPlanList'
 import { getAdminPlans } from '@/api/admin'
-import type { AdminPlanRead } from '@/types/admin'
+import type { AdminPlanList as AdminPlanListResponse, AdminPlanRead } from '@/types/admin'
 
 vi.mock('@/api/admin')
 
@@ -39,13 +39,22 @@ const mockPlans: AdminPlanRead[] = [
   },
 ]
 
+function makeResponse(
+  items: AdminPlanRead[] = mockPlans,
+  total = items.length,
+  skip = 0,
+  limit = 10,
+): AdminPlanListResponse {
+  return { items, total, skip, limit }
+}
+
 describe('AdminPlanList', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
   it('renders empty state with []', async () => {
-    vi.mocked(getAdminPlans).mockResolvedValue([])
+    vi.mocked(getAdminPlans).mockResolvedValue(makeResponse([]))
 
     render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} />)
 
@@ -56,7 +65,7 @@ describe('AdminPlanList', () => {
   })
 
   it('renders multiple plans', async () => {
-    vi.mocked(getAdminPlans).mockResolvedValue(mockPlans)
+    vi.mocked(getAdminPlans).mockResolvedValue(makeResponse())
 
     render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} />)
 
@@ -69,7 +78,7 @@ describe('AdminPlanList', () => {
   })
 
   it('renders active/inactive status', async () => {
-    vi.mocked(getAdminPlans).mockResolvedValue(mockPlans)
+    vi.mocked(getAdminPlans).mockResolvedValue(makeResponse())
 
     render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} />)
 
@@ -82,33 +91,49 @@ describe('AdminPlanList', () => {
     })
   })
 
-  it('does not access data.items', async () => {
-    vi.mocked(getAdminPlans).mockResolvedValue(mockPlans)
+  it('uses total from the API to render pagination', async () => {
+    vi.mocked(getAdminPlans).mockResolvedValue(makeResponse(mockPlans, 25))
 
     render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} />)
 
     await waitFor(() => {
-      expect(screen.getByText('Gói cơ bản')).toBeInTheDocument()
+      expect(screen.getByText('Trang 1 / 3')).toBeInTheDocument()
     })
 
-    // Ensure no error accessing data.items
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    fireEvent.click(screen.getByRole('button', { name: 'Trang sau' }))
+
     await waitFor(() => {
-      expect(screen.getByText('Gói nâng cao')).toBeInTheDocument()
+      expect(getAdminPlans).toHaveBeenLastCalledWith(
+        expect.objectContaining({ skip: 10, limit: 10 }),
+      )
     })
-    consoleError.mockRestore()
   })
 
-  it('does not crash when API returns plain array', async () => {
-    vi.mocked(getAdminPlans).mockResolvedValue(mockPlans)
+  it('resets to the first page and sends the trimmed search query', async () => {
+    vi.mocked(getAdminPlans).mockResolvedValue(makeResponse(mockPlans, 25))
 
-    const { container } = render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} />)
+    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} />)
 
     await waitFor(() => {
-      expect(screen.getByText('Gói cơ bản')).toBeInTheDocument()
+      expect(screen.getByText('Trang 1 / 3')).toBeInTheDocument()
     })
 
-    // Verify no errors in console
-    expect(container).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Trang sau' }))
+    await waitFor(() => {
+      expect(getAdminPlans).toHaveBeenLastCalledWith(
+        expect.objectContaining({ skip: 10 }),
+      )
+    })
+
+    fireEvent.change(screen.getByLabelText('Tìm theo tên gói'), {
+      target: { value: '  nâng cao  ' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Tìm kiếm' }))
+
+    await waitFor(() => {
+      expect(getAdminPlans).toHaveBeenLastCalledWith(
+        expect.objectContaining({ skip: 0, search: 'nâng cao' }),
+      )
+    })
   })
 })

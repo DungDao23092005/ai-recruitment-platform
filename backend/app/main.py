@@ -121,9 +121,31 @@ async def lifespan(app: FastAPI):
             "Failed to start analytics rollup worker: %s", exc
         )
 
+    # Release quota reservations abandoned by crashed or failed AI requests.
+    try:
+        from app.services.quota_reconciliation_worker import (
+            start_default_worker as start_quota_reconciliation_worker,
+        )
+
+        await start_quota_reconciliation_worker()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to start quota reconciliation worker: %s", exc
+        )
+
     yield
 
     # Shutdown
+    try:
+        from app.services.quota_reconciliation_worker import (
+            stop_default_worker as stop_quota_reconciliation_worker,
+        )
+
+        await stop_quota_reconciliation_worker()
+    except Exception:
+        pass
+
     try:
         from app.services.analytics_rollup_worker import (
             stop_default_worker as stop_analytics_worker,

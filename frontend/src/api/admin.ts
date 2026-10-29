@@ -12,6 +12,8 @@ import type {
   AdminUserList,
   AdminUserListParams,
   AdminPlanRead,
+  AdminPlanList,
+  AdminPlanListParams,
   AdminPlanCreate,
   AdminPlanUpdate,
   AdminPlanStatusUpdate,
@@ -87,9 +89,9 @@ export async function getAdminJobs(
 }
 
 export async function getAdminPlans(
-  params?: { skip?: number; limit?: number; search?: string },
-): Promise<AdminPlanRead[]> {
-  return apiClient.get<AdminPlanRead[], AdminPlanRead[]>('/admin/plans', { params })
+  params?: Partial<AdminPlanListParams>,
+): Promise<AdminPlanList> {
+  return apiClient.get<AdminPlanList, AdminPlanList>('/admin/plans', { params })
 }
 
 export async function getAdminPlan(id: string): Promise<AdminPlanRead> {
