@@ -303,6 +303,30 @@ describe('JobDetailPage', () => {
     })
   })
 
+  it.each(['draft', 'closed'] as const)(
+    'disables apply and shows a message for a %s job',
+    async (status) => {
+      mockedGetJobById.mockResolvedValue({ ...mockJob, status })
+      mockedGetMyApplicationForJob.mockResolvedValue(null)
+
+      renderJobDetailPage()
+
+      const applyButton = await screen.findByRole('button', {
+        name: /Ứng tuyển ngay/i,
+      })
+
+      expect(applyButton).toBeDisabled()
+      expect(
+        screen.getByText('Tin tuyển dụng này hiện không mở nhận hồ sơ.'),
+      ).toBeInTheDocument()
+
+      fireEvent.click(applyButton)
+      expect(
+        screen.queryByRole('dialog', { name: 'Xác nhận ứng tuyển' }),
+      ).not.toBeInTheDocument()
+    },
+  )
+
   it('disables apply button for recruiter', async () => {
     mockedGetJobById.mockResolvedValue(mockJob)
     mockedGetMyApplicationForJob.mockResolvedValue(null)

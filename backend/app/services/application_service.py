@@ -19,7 +19,12 @@ from app.core.exceptions import (
     MatchExplanationRefreshInputError,
 )
 from app.domain import hiring
-from app.domain.enums import ApplicationStatus, InterviewStatus, UserRole
+from app.domain.enums import (
+    ApplicationStatus,
+    InterviewStatus,
+    JobStatus,
+    UserRole,
+)
 from app.domain.models import Application as DomainApplication
 from app.domain.models.base import DomainException, utc_now
 from app.models import Application, Job, Resume, User
@@ -159,6 +164,12 @@ class ApplicationService:
         job = await self.jobs.get_job_with_company_and_recruiters(job_id)
         if job is None:
             raise EntityNotFoundException(f"Job {job_id} not found")
+
+        if job.status != JobStatus.PUBLISHED:
+            raise InvalidTransitionException(
+                f"Job {job_id} is not open for applications "
+                f"(status: {job.status.value})."
+            )
 
         existing = await self.applications.get_by_candidate_and_job(
             candidate_id,

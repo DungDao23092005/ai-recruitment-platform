@@ -2,6 +2,7 @@ import asyncio
 import uuid
 import weakref
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -128,6 +129,34 @@ class TestCandidateProfile:
 
 
 class TestApplyJob:
+    @staticmethod
+    def create_job_with_status(recruiter_client, run_async, status):
+        suffix = uuid.uuid4().hex[:8]
+        company_resp = run_async(
+            recruiter_client.post(
+                f"{API_V1}/companies",
+                json={
+                    **COMPANY_BODY,
+                    "slug": f"apply-status-{suffix}",
+                    "tax_code": f"98{suffix}",
+                },
+            )
+        )
+        assert company_resp.status_code == 201, company_resp.text
+        company = company_resp.json()
+        job_resp = run_async(
+            recruiter_client.post(
+                f"{API_V1}/jobs",
+                json={
+                    **JOB_BODY,
+                    "company_id": company["id"],
+                    "status": status,
+                },
+            )
+        )
+        assert job_resp.status_code == 201, job_resp.text
+        return job_resp.json()
+
     def test_candidate_applies_successfully(
         self, candidate_client, run_async, published_job
     ):
@@ -144,6 +173,71 @@ class TestApplyJob:
         body = resp.json()
         assert body["job_id"] == published_job["id"]
         assert body["status"] == "applied"
+
+    @pytest.mark.parametrize("job_status", ["draft", "closed"])
+    def test_candidate_cannot_apply_to_non_published_job(
+        self,
+        candidate_client,
+        recruiter_client,
+        run_async,
+        monkeypatch,
+        job_status,
+    ):
+        create_candidate_profile(candidate_client, run_async)
+        job = self.create_job_with_status(
+            recruiter_client, run_async, job_status
+        )
+        notification_mock = AsyncMock()
+        pipeline_event_mock = AsyncMock()
+        monkeypatch.setattr(
+            "app.services.application_service.NotificationService.create_notification",
+            notification_mock,
+        )
+        monkeypatch.setattr(
+            "app.services.application_service.schedule_application_pipeline_event",
+            pipeline_event_mock,
+        )
+
+        resp = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications",
+                json={"job_id": job["id"]},
+            )
+        )
+
+        assert resp.status_code == 400, resp.text
+        detail = resp.json()["detail"]
+        assert "not open for applications" in detail
+        assert job_status in detail
+        notification_mock.assert_not_awaited()
+        pipeline_event_mock.assert_not_awaited()
+
+        async def count_application_side_effects():
+            from sqlalchemy import func, select
+
+            from app.database.session import async_session_factory
+            from app.models import Application, Notification
+
+            async with async_session_factory() as session:
+                application_count = await session.scalar(
+                    select(func.count())
+                    .select_from(Application)
+                    .where(Application.job_id == uuid.UUID(job["id"]))
+                )
+                notification_count = await session.scalar(
+                    select(func.count())
+                    .select_from(Notification)
+                    .where(
+                        Notification.notification_type == "new_application"
+                    )
+                )
+                return application_count, notification_count
+
+        application_count, notification_count = run_async(
+            count_application_side_effects()
+        )
+        assert application_count == 0
+        assert notification_count == 0
 
     def test_candidate_without_profile_returns_400(
         self, candidate_client, run_async, published_job

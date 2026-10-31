@@ -258,6 +258,7 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
     currentUser && currentUser.role !== 'candidate',
   )
   const isLoggedOut = !currentUser
+  const isJobOpen = job.status === 'published'
 
   return (
     <div className="container mx-auto max-w-5xl py-10">
@@ -365,14 +366,18 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
                 <>
                   <Button
                     onClick={handleApply}
-                    disabled={isBlockedRole}
+                    disabled={isBlockedRole || !isJobOpen}
                     size="lg"
                     className="w-full"
                   >
                     <Briefcase className="h-4 w-4" aria-hidden="true" />
                     Ứng tuyển ngay
                   </Button>
-                  {isBlockedRole ? (
+                  {!isJobOpen ? (
+                    <p className="text-center text-xs text-muted-foreground">
+                      Tin tuyển dụng này hiện không mở nhận hồ sơ.
+                    </p>
+                  ) : isBlockedRole ? (
                     <p className="text-center text-xs text-muted-foreground">
                       Chỉ ứng viên mới có thể ứng tuyển.
                     </p>
