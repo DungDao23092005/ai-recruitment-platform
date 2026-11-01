@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests.integration.api.conftest import API_V1, PASSWORD
+from tests.integration.api.conftest import (
+    API_V1,
+    PASSWORD,
+    seed_confirmed_resume,
+)
 
 COMPANY_BODY = {
     "name": "Acme Corp",
@@ -39,13 +43,21 @@ def published_job(recruiter_client, run_async):
     return job
 
 
-def create_candidate_profile(candidate_client, run_async):
-    return run_async(
+def create_candidate_profile(
+    candidate_client,
+    run_async,
+    *,
+    with_confirmed_resume: bool = True,
+):
+    response = run_async(
         candidate_client.post(
             f"{API_V1}/users/me/candidate-profile",
             json={"full_name": "Jane Doe", "title": "Engineer"},
         )
     )
+    if with_confirmed_resume and response.status_code == 201:
+        run_async(seed_confirmed_resume(response.json()["id"]))
+    return response
 
 
 def set_status(client, run_async, application_id, status):
@@ -173,6 +185,51 @@ class TestApplyJob:
         body = resp.json()
         assert body["job_id"] == published_job["id"]
         assert body["status"] == "applied"
+
+    def test_candidate_without_resume_returns_400(
+        self, candidate_client, run_async, published_job
+    ):
+        create_candidate_profile(
+            candidate_client,
+            run_async,
+            with_confirmed_resume=False,
+        )
+
+        resp = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications",
+                json={"job_id": published_job["id"]},
+            )
+        )
+
+        assert resp.status_code == 400, resp.text
+        assert "xác nhận CV" in resp.json()["detail"]
+
+    def test_candidate_with_only_unconfirmed_resume_returns_400(
+        self, candidate_client, run_async, published_job
+    ):
+        profile = create_candidate_profile(
+            candidate_client,
+            run_async,
+            with_confirmed_resume=False,
+        ).json()
+        run_async(
+            seed_confirmed_resume(
+                profile["id"],
+                is_primary=False,
+                is_confirmed=False,
+            )
+        )
+
+        resp = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications",
+                json={"job_id": published_job["id"]},
+            )
+        )
+
+        assert resp.status_code == 400, resp.text
+        assert "xác nhận CV" in resp.json()["detail"]
 
     @pytest.mark.parametrize("job_status", ["draft", "closed"])
     def test_candidate_cannot_apply_to_non_published_job(
@@ -1204,12 +1261,13 @@ class TestApplicationCandidateEnrichment:
         job_a = self.create_job(
             recruiter_a_client, run_async, company_a["id"], "Job A"
         )
-        run_async(
+        profile = run_async(
             candidate_client.post(
                 f"{API_V1}/users/me/candidate-profile",
                 json={"full_name": None, "title": None},
             )
-        )
+        ).json()
+        run_async(seed_confirmed_resume(profile["id"]))
         application = run_async(
             candidate_client.post(
                 f"{API_V1}/applications", json={"job_id": job_a["id"]}
@@ -1463,12 +1521,13 @@ class TestApplicationStatusConcurrency:
                 json={**JOB_BODY, "company_id": company["id"]},
             )
         ).json()
-        run_async(
+        profile = run_async(
             candidate_client.post(
                 f"{API_V1}/users/me/candidate-profile",
                 json={"full_name": "Jane Doe", "title": "Engineer"},
             )
-        )
+        ).json()
+        run_async(seed_confirmed_resume(profile["id"]))
         application = run_async(
             candidate_client.post(
                 f"{API_V1}/applications", json={"job_id": job["id"]}

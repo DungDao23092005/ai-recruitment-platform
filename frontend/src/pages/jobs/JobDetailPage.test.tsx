@@ -11,7 +11,9 @@ import { JobDetailPage } from './JobDetailPage'
 import { AuthProvider } from '@/contexts/AuthContext'
 import * as jobsApi from '@/api/jobs'
 import * as applicationsApi from '@/api/applications'
+import * as aiApi from '@/api/ai'
 import * as authApi from '@/api/auth'
+import type { ResumeRead } from '@/types/ai'
 import type { Job } from '@/types/job'
 import type { User } from '@/types/auth'
 
@@ -45,6 +47,18 @@ const recruiterUser: User = {
   role: 'recruiter',
 }
 
+const mockResume: ResumeRead = {
+  id: 'resume-1',
+  candidate_id: 'candidate-1',
+  title: 'CV chính',
+  is_primary: true,
+  is_confirmed: true,
+  confirmed_at: '2026-01-10T00:00:00Z',
+  parsed_data: null,
+  created_at: '2026-01-09T00:00:00Z',
+  updated_at: '2026-01-10T00:00:00Z',
+}
+
 vi.mock('@/api/jobs', () => ({
   getJobs: vi.fn(),
   getJobById: vi.fn(),
@@ -53,6 +67,10 @@ vi.mock('@/api/jobs', () => ({
 vi.mock('@/api/applications', () => ({
   applyJob: vi.fn(),
   getMyApplicationForJob: vi.fn(),
+}))
+
+vi.mock('@/api/ai', () => ({
+  getMyResume: vi.fn(),
 }))
 
 vi.mock('@/api/auth', () => ({
@@ -66,6 +84,17 @@ vi.mock('@/api/auth', () => ({
 const mockedGetJobById = vi.mocked(jobsApi.getJobById)
 const mockedApplyJob = vi.mocked(applicationsApi.applyJob)
 const mockedGetMyApplicationForJob = vi.mocked(applicationsApi.getMyApplicationForJob)
+const mockedGetMyResume = vi.mocked(aiApi.getMyResume)
+
+async function findEnabledApplyButton() {
+  const button = await screen.findByRole('button', {
+    name: /Ứng tuyển ngay/i,
+  })
+  await waitFor(() => {
+    expect(button).toBeEnabled()
+  })
+  return button
+}
 
 const mockApplication = (status: string) => ({
   id: 'app-1',
@@ -100,6 +129,7 @@ function renderJobDetailPage(user: User | null = candidateUser) {
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
+  mockedGetMyResume.mockResolvedValue(mockResume)
 })
 
 describe('JobDetailPage', () => {
@@ -185,7 +215,7 @@ describe('JobDetailPage', () => {
       ).toBeInTheDocument()
     })
 
-    const applyButton = await screen.findByRole('button', { name: /Ứng tuyển ngay/i })
+    const applyButton = await findEnabledApplyButton()
 
     fireEvent.click(applyButton)
 
@@ -193,6 +223,119 @@ describe('JobDetailPage', () => {
       expect(
         screen.getByRole('dialog', { name: 'Xác nhận ứng tuyển' }),
       ).toBeInTheDocument()
+    })
+  })
+
+  describe('Resume requirement', () => {
+    it('requires a confirmed CV before applying', async () => {
+      const error = new Error('Not Found')
+      Object.assign(error, { response: { status: 404 } })
+      mockedGetMyResume.mockRejectedValue(error)
+      mockedGetJobById.mockResolvedValue(mockJob)
+      mockedGetMyApplicationForJob.mockResolvedValue(null)
+
+      renderJobDetailPage()
+
+      const applyButton = await screen.findByRole('button', {
+        name: /Ứng tuyển ngay/i,
+      })
+
+      await waitFor(() => {
+        expect(applyButton).toBeDisabled()
+      })
+      expect(
+        screen.getByText(
+          'Bạn cần tải lên và xác nhận CV trước khi ứng tuyển.',
+        ),
+      ).toBeInTheDocument()
+      expect(
+        screen.getByRole('link', { name: 'Tải lên và xác nhận CV' }),
+      ).toHaveAttribute('href', '/candidate/cv-upload')
+
+      fireEvent.click(applyButton)
+      expect(
+        screen.queryByRole('dialog', { name: 'Xác nhận ứng tuyển' }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('shows the confirmed CV and allows applying', async () => {
+      mockedGetJobById.mockResolvedValue(mockJob)
+      mockedGetMyApplicationForJob.mockResolvedValue(null)
+
+      renderJobDetailPage()
+
+      const applyButton = await findEnabledApplyButton()
+
+      expect(screen.getByText('Hồ sơ: CV chính')).toBeInTheDocument()
+
+      fireEvent.click(applyButton)
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole('dialog', { name: 'Xác nhận ứng tuyển' }),
+        ).toBeInTheDocument()
+      })
+    })
+
+    it('disables apply while checking the resume', async () => {
+      let resolveResume!: (resume: ResumeRead) => void
+      mockedGetMyResume.mockReturnValue(
+        new Promise((resolve) => {
+          resolveResume = resolve
+        }),
+      )
+      mockedGetJobById.mockResolvedValue(mockJob)
+      mockedGetMyApplicationForJob.mockResolvedValue(null)
+
+      renderJobDetailPage()
+
+      const applyButton = await screen.findByRole('button', {
+        name: /Ứng tuyển ngay/i,
+      })
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Đang kiểm tra hồ sơ ứng tuyển...'),
+        ).toBeInTheDocument()
+      })
+      expect(applyButton).toBeDisabled()
+
+      resolveResume(mockResume)
+
+      await waitFor(() => {
+        expect(applyButton).toBeEnabled()
+      })
+    })
+
+    it('shows a retryable error when the resume check fails', async () => {
+      mockedGetMyResume.mockRejectedValueOnce(new Error('Server error'))
+      mockedGetJobById.mockResolvedValue(mockJob)
+      mockedGetMyApplicationForJob.mockResolvedValue(null)
+
+      renderJobDetailPage()
+
+      const applyButton = await screen.findByRole('button', {
+        name: /Ứng tuyển ngay/i,
+      })
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toHaveTextContent(
+          'Không thể kiểm tra hồ sơ ứng tuyển. Vui lòng thử lại.',
+        )
+      })
+      expect(applyButton).toBeDisabled()
+      expect(
+        screen.queryByText(
+          'Bạn cần tải lên và xác nhận CV trước khi ứng tuyển.',
+        ),
+      ).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Thử lại' }))
+
+      await waitFor(() => {
+        expect(applyButton).toBeEnabled()
+      })
+      expect(screen.getByText('Hồ sơ: CV chính')).toBeInTheDocument()
     })
   })
 
@@ -217,11 +360,9 @@ describe('JobDetailPage', () => {
       ).toBeInTheDocument()
     })
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Ứng tuyển ngay/i })).toBeInTheDocument()
-    })
+    const applyButton = await findEnabledApplyButton()
 
-    fireEvent.click(screen.getByRole('button', { name: /Ứng tuyển ngay/i }))
+    fireEvent.click(applyButton)
     await waitFor(() => {
       expect(
         screen.getByRole('dialog', { name: 'Xác nhận ứng tuyển' }),
@@ -258,11 +399,9 @@ describe('JobDetailPage', () => {
       ).toBeInTheDocument()
     })
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Ứng tuyển ngay/i })).toBeInTheDocument()
-    })
+    const applyButton = await findEnabledApplyButton()
 
-    fireEvent.click(screen.getByRole('button', { name: /Ứng tuyển ngay/i }))
+    fireEvent.click(applyButton)
     await waitFor(() => {
       expect(
         screen.getByRole('dialog', { name: 'Xác nhận ứng tuyển' }),
@@ -292,11 +431,9 @@ describe('JobDetailPage', () => {
       ).toBeInTheDocument()
     })
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Ứng tuyển ngay/i })).toBeInTheDocument()
-    })
+    const applyButton = await findEnabledApplyButton()
 
-    fireEvent.click(screen.getByRole('button', { name: /Ứng tuyển ngay/i }))
+    fireEvent.click(applyButton)
 
     await waitFor(() => {
       expect(screen.getByText('Login Page')).toBeInTheDocument()

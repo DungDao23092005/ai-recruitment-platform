@@ -155,6 +155,7 @@ class ApplicationService:
         self.session = session
         self.applications = ApplicationRepository(session, Application)
         self.jobs = JobRepository(session, Job)
+        self.resumes = ResumeRepository(session, Resume)
 
     async def apply_job(
         self,
@@ -178,6 +179,12 @@ class ApplicationService:
         if existing is not None:
             raise ConflictException(
                 f"Candidate {candidate_id} already applied to job {job_id}"
+            )
+
+        resume = await self.resumes.get_primary_by_candidate(candidate_id)
+        if resume is None:
+            raise InvalidTransitionException(
+                "Bạn cần tải lên và xác nhận CV trước khi ứng tuyển."
             )
 
         application = Application(

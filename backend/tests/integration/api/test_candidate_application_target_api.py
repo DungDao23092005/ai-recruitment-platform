@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from tests.integration.api.conftest import API_V1
+from tests.integration.api.conftest import API_V1, apply_job_with_resume
 
 
 def _company_body() -> dict:
@@ -41,10 +41,8 @@ def _create_application(recruiter_client, candidate_client, run_async) -> dict:
         )
     )
     assert profile.status_code == 201, profile.text
-    application = run_async(
-        candidate_client.post(
-            f"{API_V1}/applications", json={"job_id": job["id"]}
-        )
+    application = apply_job_with_resume(
+        candidate_client, run_async, job["id"]
     ).json()
     return application
 

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from tests.integration.api.conftest import API_V1
+from tests.integration.api.conftest import API_V1, apply_job_with_resume
 
 COMPANY_BODY = {
     "name": "Privacy Corp",
@@ -50,10 +50,8 @@ def candidate_application(recruiter_client, candidate_client, run_async):
             json={"full_name": "Private Candidate", "title": "Engineer"},
         )
     )
-    application = run_async(
-        candidate_client.post(
-            f"{API_V1}/applications", json={"job_id": job["id"]}
-        )
+    application = apply_job_with_resume(
+        candidate_client, run_async, job["id"]
     ).json()
     return {"application": application, "job": job}
 

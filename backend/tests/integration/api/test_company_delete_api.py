@@ -7,7 +7,7 @@ from app.api.v1.endpoints import companies as companies_endpoints
 from app.main import app
 from app.services.company_service import CompanyService
 from app.services.job_service import JobService
-from tests.integration.api.conftest import API_V1
+from tests.integration.api.conftest import API_V1, apply_job_with_resume
 
 COMPANY_BODY = {
     "name": "Cascade Corp",
@@ -168,10 +168,8 @@ class TestAdminCompanyDelete:
             )
         )
         assert profile.status_code == 201, profile.text
-        application = run_async(
-            candidate_client.post(
-                f"{API_V1}/applications", json={"job_id": job["id"]}
-            )
+        application = apply_job_with_resume(
+            candidate_client, run_async, job["id"]
         )
         assert application.status_code == 201, application.text
 

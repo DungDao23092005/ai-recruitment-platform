@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from app.database.session import async_session_factory
 from app.main import app
 from app.models import Job
-from tests.integration.api.conftest import API_V1
+from tests.integration.api.conftest import API_V1, apply_job_with_resume
 
 COMPANY_BODY = {
     "name": "Acme Corp",
@@ -1430,10 +1430,8 @@ class TestDeleteJobApi:
             )
         )
         assert profile.status_code == 201, profile.text
-        applied = run_async(
-            candidate_client.post(
-                f"{API_V1}/applications", json={"job_id": job["id"]}
-            )
+        applied = apply_job_with_resume(
+            candidate_client, run_async, job["id"]
         )
         assert applied.status_code == 201, applied.text
 

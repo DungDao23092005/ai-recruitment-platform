@@ -10,22 +10,26 @@ import {
 } from 'lucide-react'
 import { getJobById } from '@/api/jobs'
 import { getMyApplicationForJob } from '@/api/applications'
+import { getMyResume } from '@/api/ai'
 import { useAuth } from '@/contexts/AuthContext'
 import { ApplyModal } from '@/features/jobs/components/ApplyModal'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ErrorBanner } from '@/components/ui/error-banner'
 import {
   Card,
   CardContent,
   CardHeader,
 } from '@/components/ui/card'
+import { isNotFoundError } from '@/utils/errors'
 import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
   WORKPLACE_TYPE_LABELS,
 } from '@/types/job'
 import type { ApplicationStatus } from '@/types/application'
+import type { ResumeRead } from '@/types/ai'
 import type { Job } from '@/types/job'
 
 type JobState =
@@ -67,6 +71,13 @@ type ApplicationStatusState =
   | { kind: 'loading' }
   | { kind: 'none' }
   | { kind: 'exists'; status: ApplicationStatus }
+
+type ResumeState =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'ready'; resume: ResumeRead }
+  | { kind: 'missing' }
+  | { kind: 'error' }
 
 function getStatusLabel(status: ApplicationStatus): string {
   switch (status) {
@@ -121,6 +132,8 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
   const [state, setState] = useState<JobState>({ kind: 'loading' })
   const [showApply, setShowApply] = useState(false)
   const [appStatus, setAppStatus] = useState<ApplicationStatusState>({ kind: 'loading' })
+  const [resumeState, setResumeState] = useState<ResumeState>({ kind: 'idle' })
+  const [resumeReloadKey, setResumeReloadKey] = useState(0)
 
   useEffect(() => {
     if (!id) {
@@ -131,6 +144,7 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
     let active = true
     setState({ kind: 'loading' })
     setAppStatus({ kind: 'loading' })
+    setResumeState({ kind: 'idle' })
 
     getJobById(id)
       .then((job) => {
@@ -194,6 +208,52 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
     }
   }, [id, state, currentUser, isAuthLoading])
 
+  useEffect(() => {
+    if (!id || state.kind !== 'success') {
+      return
+    }
+
+    if (isAuthLoading) {
+      return
+    }
+
+    if (!currentUser || currentUser.role !== 'candidate') {
+      setResumeState({ kind: 'idle' })
+      return
+    }
+
+    if (state.job.status !== 'published') {
+      setResumeState({ kind: 'idle' })
+      return
+    }
+
+    let active = true
+    setResumeState({ kind: 'loading' })
+
+    getMyResume()
+      .then((resume) => {
+        if (active) {
+          setResumeState({ kind: 'ready', resume })
+        }
+      })
+      .catch((err) => {
+        if (!active) return
+        setResumeState(
+          isNotFoundError(err) ? { kind: 'missing' } : { kind: 'error' },
+        )
+      })
+
+    return () => {
+      active = false
+    }
+  }, [
+    id,
+    state,
+    currentUser,
+    isAuthLoading,
+    resumeReloadKey,
+  ])
+
   const handleApply = () => {
     if (!currentUser) {
       navigate('/login', { state: { from: `${backPath}/${id}` } })
@@ -203,6 +263,9 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
       return
     }
     if (appStatus.kind === 'exists') {
+      return
+    }
+    if (resumeState.kind !== 'ready') {
       return
     }
     setShowApply(true)
@@ -259,6 +322,14 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
   )
   const isLoggedOut = !currentUser
   const isJobOpen = job.status === 'published'
+  const isCandidate = currentUser?.role === 'candidate'
+  const isResumeLoading = isCandidate && resumeState.kind === 'loading'
+  const isResumeMissing = isCandidate && resumeState.kind === 'missing'
+  const isResumeError = isCandidate && resumeState.kind === 'error'
+  const canApply =
+    !isBlockedRole &&
+    isJobOpen &&
+    (!isCandidate || resumeState.kind === 'ready')
 
   return (
     <div className="container mx-auto max-w-5xl py-10">
@@ -366,7 +437,7 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
                 <>
                   <Button
                     onClick={handleApply}
-                    disabled={isBlockedRole || !isJobOpen}
+                    disabled={!canApply}
                     size="lg"
                     className="w-full"
                   >
@@ -381,8 +452,33 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
                     <p className="text-center text-xs text-muted-foreground">
                       Chỉ ứng viên mới có thể ứng tuyển.
                     </p>
-                  ) : null}
-                  {isLoggedOut ? (
+                  ) : isResumeLoading ? (
+                    <p className="text-center text-xs text-muted-foreground">
+                      Đang kiểm tra hồ sơ ứng tuyển...
+                    </p>
+                  ) : isResumeMissing ? (
+                    <div className="space-y-2">
+                      <p className="text-center text-xs text-muted-foreground">
+                        Bạn cần tải lên và xác nhận CV trước khi ứng tuyển.
+                      </p>
+                      <Link to="/candidate/cv-upload" className="block">
+                        <Button variant="outline" className="w-full">
+                          Tải lên và xác nhận CV
+                        </Button>
+                      </Link>
+                    </div>
+                  ) : isResumeError ? (
+                    <ErrorBanner
+                      message="Không thể kiểm tra hồ sơ ứng tuyển. Vui lòng thử lại."
+                      onRetry={() =>
+                        setResumeReloadKey((key) => key + 1)
+                      }
+                    />
+                  ) : isCandidate && resumeState.kind === 'ready' ? (
+                    <p className="text-center text-xs text-muted-foreground">
+                      Hồ sơ: {resumeState.resume.title ?? 'CV đã xác nhận'}
+                    </p>
+                  ) : isLoggedOut ? (
                     <p className="text-center text-xs text-muted-foreground">
                       Đăng nhập với tài khoản ứng viên để ứng tuyển.
                     </p>

@@ -16,11 +16,60 @@ from app.database.session import async_session_factory
 from app.domain.enums import UserRole, SubscriptionStatus
 from app.domain.models.base import utc_now
 from app.main import app
-from app.models import User, RecruitmentPlan, Subscription
+from app.models import User, RecruitmentPlan, Subscription, Resume
 from redis.asyncio import Redis, ConnectionPool
 
 API_V1 = "/api/v1"
 PASSWORD = "password123"
+
+
+async def seed_confirmed_resume(
+    candidate_profile_id,
+    parsed_data: dict | None = None,
+    *,
+    is_primary: bool = True,
+    is_confirmed: bool = True,
+) -> Resume:
+    """Create a CV; defaults to the confirmed primary required by policy."""
+    async with async_session_factory() as session:
+        if is_primary and is_confirmed:
+            existing = await session.scalar(
+                select(Resume).where(
+                    Resume.candidate_id == candidate_profile_id,
+                    Resume.is_primary == True,  # noqa: E712
+                    Resume.is_confirmed == True,  # noqa: E712
+                    Resume.is_deleted == False,  # noqa: E712
+                )
+            )
+            if existing is not None:
+                return existing
+        resume = Resume(
+            candidate_id=candidate_profile_id,
+            title="cv.pdf",
+            is_primary=is_primary,
+            is_confirmed=is_confirmed,
+            confirmed_at=utc_now() if is_confirmed else None,
+            parsed_data=parsed_data if parsed_data is not None else {},
+        )
+        session.add(resume)
+        await session.commit()
+        await session.refresh(resume)
+        return resume
+
+
+def apply_job_with_resume(candidate_client, run_async, job_id):
+    """Apply after ensuring the candidate has the policy-required CV."""
+    profile = run_async(
+        candidate_client.get(f"{API_V1}/users/me/candidate-profile")
+    )
+    assert profile.status_code == 200, profile.text
+    run_async(seed_confirmed_resume(profile.json()["id"]))
+    return run_async(
+        candidate_client.post(
+            f"{API_V1}/applications",
+            json={"job_id": job_id},
+        )
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)

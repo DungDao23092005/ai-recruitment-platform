@@ -3,7 +3,7 @@ import uuid
 
 import pytest
 
-from tests.integration.api.conftest import API_V1
+from tests.integration.api.conftest import API_V1, apply_job_with_resume
 
 from app.api.v1.endpoints.applications import (
     _get_ai_matching_service,
@@ -11,7 +11,7 @@ from app.api.v1.endpoints.applications import (
 )
 from app.database.session import async_session_factory
 from app.main import app
-from app.models import Resume
+from app.models import Application, Resume
 from app.services.ai_matching_service import AIMatchingService
 from app.services.match_explanation_service import MatchExplanationService
 
@@ -121,6 +121,15 @@ async def _seed_resume(candidate_id, parsed_data: dict | None):
         return resume.id
 
 
+async def _create_application_direct(candidate_id, job_id):
+    async with async_session_factory() as session:
+        application = Application(candidate_id=candidate_id, job_id=job_id)
+        session.add(application)
+        await session.commit()
+        await session.refresh(application)
+        return application
+
+
 async def _seed_job_skills(job_id, skill_names):
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
@@ -186,11 +195,7 @@ def create_job(client, run_async, company_id, title, status="published"):
 
 
 def create_application(candidate_client, run_async, job_id):
-    resp = run_async(
-        candidate_client.post(
-            f"{API_V1}/applications", json={"job_id": job_id}
-        )
-    )
+    resp = apply_job_with_resume(candidate_client, run_async, job_id)
     assert resp.status_code == 201, resp.text
     return resp.json()
 
@@ -199,8 +204,8 @@ def _setup_application(recruiter_client, candidate_client, run_async, slug, tax)
     company = create_company(recruiter_client, run_async, slug, tax)
     job = create_job(recruiter_client, run_async, company["id"], "Job A")
     profile = create_candidate_profile(candidate_client, run_async).json()
-    application = create_application(candidate_client, run_async, job["id"])
     run_async(_seed_resume(profile["id"], PARSED_RESUME))
+    application = create_application(candidate_client, run_async, job["id"])
     run_async(_seed_job_skills(job["id"], ["Python", "Docker"]))
     return application
 
@@ -336,13 +341,15 @@ class TestApplicationMatchExplanation:
         job = create_job(
             recruiter_a_client, run_async, company["id"], "Job A"
         )
-        create_candidate_profile(candidate_client, run_async)
-        application = create_application(candidate_client, run_async, job["id"])
+        profile = create_candidate_profile(candidate_client, run_async).json()
+        application = run_async(
+            _create_application_direct(profile["id"], job["id"])
+        )
         run_async(_seed_job_skills(job["id"], ["Python"]))
 
         resp = run_async(
             recruiter_a_client.get(
-                f"{API_V1}/applications/{application['id']}/match-explanation"
+                f"{API_V1}/applications/{application.id}/match-explanation"
             )
         )
 

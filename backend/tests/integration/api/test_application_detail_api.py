@@ -5,7 +5,7 @@ import pytest
 from tests.integration.api.conftest import API_V1, PASSWORD
 
 from app.database.session import async_session_factory
-from app.models import Resume
+from app.models import Application, Resume
 
 COMPANY_BODY = {
     "name": "Acme Corp",
@@ -70,6 +70,18 @@ async def _seed_resume(candidate_id, parsed_data: dict | None):
         return resume.id
 
 
+async def _create_application_direct(candidate_id, job_id):
+    async with async_session_factory() as session:
+        application = Application(
+            candidate_id=candidate_id,
+            job_id=job_id,
+        )
+        session.add(application)
+        await session.commit()
+        await session.refresh(application)
+        return application
+
+
 def create_candidate_profile(candidate_client, run_async):
     return run_async(
         candidate_client.post(
@@ -127,20 +139,18 @@ class TestGetApplicationDetail:
         )
         profile = create_candidate_profile(candidate_client, run_async).json()
         application = run_async(
-            candidate_client.post(
-                f"{API_V1}/applications", json={"job_id": job["id"]}
-            )
-        ).json()
+            _create_application_direct(profile["id"], job["id"])
+        )
 
         resp = run_async(
             recruiter_a_client.get(
-                f"{API_V1}/applications/{application['id']}"
+                f"{API_V1}/applications/{application.id}"
             )
         )
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["id"] == application["id"]
+        assert body["id"] == str(application.id)
         assert body["candidate_id"] == profile["id"]
         assert body["job_id"] == job["id"]
         assert body["job_title"] == "Job A"
@@ -159,12 +169,12 @@ class TestGetApplicationDetail:
             recruiter_a_client, run_async, company["id"], "Job A"
         )
         profile = create_candidate_profile(candidate_client, run_async).json()
+        run_async(_seed_resume(profile["id"], PARSED_RESUME))
         application = run_async(
             candidate_client.post(
                 f"{API_V1}/applications", json={"job_id": job["id"]}
             )
         ).json()
-        run_async(_seed_resume(profile["id"], PARSED_RESUME))
 
         resp = run_async(
             recruiter_a_client.get(
@@ -197,12 +207,12 @@ class TestGetApplicationDetail:
             recruiter_a_client, run_async, company["id"], "Job A"
         )
         profile = create_candidate_profile(candidate_client, run_async).json()
+        run_async(_seed_resume(profile["id"], None))
         application = run_async(
             candidate_client.post(
                 f"{API_V1}/applications", json={"job_id": job["id"]}
             )
         ).json()
-        run_async(_seed_resume(profile["id"], None))
 
         resp = run_async(
             recruiter_a_client.get(
@@ -224,7 +234,8 @@ class TestGetApplicationDetail:
         job_a = create_job(
             recruiter_a_client, run_async, company_a["id"], "Job A"
         )
-        create_candidate_profile(candidate_client, run_async)
+        profile = create_candidate_profile(candidate_client, run_async).json()
+        run_async(_seed_resume(profile["id"], PARSED_RESUME))
         application = run_async(
             candidate_client.post(
                 f"{API_V1}/applications", json={"job_id": job_a["id"]}
@@ -253,7 +264,8 @@ class TestGetApplicationDetail:
         job_a = create_job(
             recruiter_a_client, run_async, company_a["id"], "Job A"
         )
-        create_candidate_profile(candidate_client, run_async)
+        profile = create_candidate_profile(candidate_client, run_async).json()
+        run_async(_seed_resume(profile["id"], PARSED_RESUME))
         application = run_async(
             candidate_client.post(
                 f"{API_V1}/applications", json={"job_id": job_a["id"]}
@@ -290,7 +302,8 @@ class TestGetApplicationDetail:
         job_b = create_job(
             recruiter_b_client, run_async, company_b["id"], "Job B"
         )
-        create_candidate_profile(candidate_client, run_async)
+        profile = create_candidate_profile(candidate_client, run_async).json()
+        run_async(_seed_resume(profile["id"], PARSED_RESUME))
         application = run_async(
             candidate_client.post(
                 f"{API_V1}/applications", json={"job_id": job_b["id"]}
@@ -315,12 +328,12 @@ class TestGetApplicationDetail:
             recruiter_a_client, run_async, company["id"], "Job A"
         )
         profile = create_candidate_profile(candidate_client, run_async).json()
+        run_async(_seed_resume(profile["id"], PARSED_RESUME))
         application = run_async(
             candidate_client.post(
                 f"{API_V1}/applications", json={"job_id": job["id"]}
             )
         ).json()
-        run_async(_seed_resume(profile["id"], PARSED_RESUME))
 
         resp = run_async(
             recruiter_a_client.get(
@@ -344,7 +357,8 @@ class TestGetApplicationDetail:
         job = create_job(
             recruiter_a_client, run_async, company["id"], "Job A"
         )
-        create_candidate_profile(candidate_client, run_async)
+        profile = create_candidate_profile(candidate_client, run_async).json()
+        run_async(_seed_resume(profile["id"], PARSED_RESUME))
         application = run_async(
             candidate_client.post(
                 f"{API_V1}/applications", json={"job_id": job["id"]}

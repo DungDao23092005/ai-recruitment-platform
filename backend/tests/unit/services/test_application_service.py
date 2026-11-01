@@ -12,8 +12,12 @@ from app.core.exceptions import (
     InvalidTransitionException,
 )
 from app.domain.enums import ApplicationStatus, InterviewStatus, InterviewType, UserRole
-from app.models import Application, Interview, Job
-from app.repositories import ApplicationRepository, JobRepository
+from app.models import Application, Interview, Job, Resume
+from app.repositories import (
+    ApplicationRepository,
+    JobRepository,
+    ResumeRepository,
+)
 from app.services.application_service import ApplicationService
 
 
@@ -113,10 +117,23 @@ def make_job() -> Job:
     return job
 
 
+def make_resume() -> Resume:
+    return Resume(
+        id=uuid.uuid4(),
+        candidate_id=uuid.uuid4(),
+        title="cv.pdf",
+        is_primary=True,
+        is_confirmed=True,
+        parsed_data={},
+    )
+
+
 def make_service(session) -> ApplicationService:
     service = ApplicationService(session)
     service.applications = AsyncMock(spec=ApplicationRepository)
     service.jobs = AsyncMock(spec=JobRepository)
+    service.resumes = AsyncMock(spec=ResumeRepository)
+    service.resumes.get_primary_by_candidate.return_value = make_resume()
     return service
 
 
@@ -130,6 +147,7 @@ class TestApplyJob:
         job = make_job()
         service.jobs.get_job_with_company_and_recruiters.return_value = job
         service.applications.get_by_candidate_and_job.return_value = None
+        service.resumes.get_primary_by_candidate.return_value = make_resume()
         candidate_id = uuid.uuid4()
 
         application = asyncio.run(
@@ -138,6 +156,9 @@ class TestApplyJob:
 
         assert application.candidate_id == candidate_id
         assert application.job_id == job.id
+        service.resumes.get_primary_by_candidate.assert_awaited_once_with(
+            candidate_id
+        )
         session.add.assert_called_once_with(application)
         session.commit.assert_awaited_once()
         session.refresh.assert_awaited_once_with(
@@ -180,6 +201,47 @@ class TestApplyJob:
 
         session.add.assert_not_called()
         session.commit.assert_not_awaited()
+
+    @patch(
+        "app.services.application_service.schedule_application_pipeline_event",
+        new_callable=AsyncMock,
+    )
+    @patch("app.services.application_service.NotificationService")
+    def test_missing_confirmed_resume_rejects_without_side_effects(
+        self,
+        mock_notification_service_class,
+        pipeline_event_mock,
+    ):
+        mock_notification_service_class.return_value.create_notification = (
+            AsyncMock()
+        )
+        session = make_session()
+        service = make_service(session)
+        job = make_job()
+        service.jobs.get_job_with_company_and_recruiters.return_value = job
+        service.applications.get_by_candidate_and_job.return_value = None
+        service.resumes.get_primary_by_candidate.return_value = None
+        candidate_id = uuid.uuid4()
+
+        with pytest.raises(
+            InvalidTransitionException, match="xác nhận CV"
+        ):
+            asyncio.run(
+                service.apply_job(
+                    candidate_id=candidate_id,
+                    job_id=job.id,
+                )
+            )
+
+        service.resumes.get_primary_by_candidate.assert_awaited_once_with(
+            candidate_id
+        )
+        session.add.assert_not_called()
+        session.flush.assert_not_awaited()
+        session.commit.assert_not_awaited()
+        session.rollback.assert_not_awaited()
+        mock_notification_service_class.return_value.create_notification.assert_not_awaited()
+        pipeline_event_mock.assert_not_awaited()
 
     @patch("app.services.application_service.NotificationService")
     def test_commit_failure_rolls_back(self, mock_notification_service_class):
