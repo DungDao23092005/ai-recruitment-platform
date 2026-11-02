@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -52,6 +52,70 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    @staticmethod
+    def _stale_active_condition(now: datetime):
+        return and_(
+            Subscription.is_deleted == False,  # noqa: E712
+            Subscription.status == SubscriptionStatus.ACTIVE,
+            Subscription.expires_at.is_not(None),
+            Subscription.expires_at <= now,
+        )
+
+    async def expire_stale_active_for_user(
+        self,
+        user_id: Any,
+        now: datetime,
+    ) -> int:
+        """Persist ``ACTIVE -> EXPIRED`` for one user's stale rows.
+
+        This is an in-transaction bulk update. The caller owns the user lock
+        and the commit, so activation can retire stale rows before checking for
+        a genuinely overlapping subscription without splitting the transaction.
+        """
+        stmt = (
+            update(Subscription)
+            .where(
+                Subscription.user_id == user_id,
+                self._stale_active_condition(now),
+            )
+            .values(status=SubscriptionStatus.EXPIRED)
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
+        return max(0, result.rowcount or 0)
+
+    async def expire_stale_active(
+        self,
+        now: datetime,
+        limit: Optional[int] = None,
+    ) -> int:
+        """Atomically persist ``ACTIVE -> EXPIRED`` for stale rows.
+
+        Candidate ids only bound the batch and provide oldest-first ordering.
+        The outer UPDATE re-checks every expiration predicate at write time, so
+        a row renewed between candidate selection and the write is not expired.
+        No ORM instances are loaded, avoiding identity-map overwrites.
+        """
+        stale_ids = (
+            select(Subscription.id)
+            .where(self._stale_active_condition(now))
+            .order_by(Subscription.expires_at.asc(), Subscription.id.asc())
+        )
+        if limit is not None:
+            stale_ids = stale_ids.limit(max(1, int(limit)))
+
+        stmt = (
+            update(Subscription)
+            .where(
+                Subscription.id.in_(stale_ids),
+                self._stale_active_condition(now),
+            )
+            .values(status=SubscriptionStatus.EXPIRED)
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
+        return max(0, result.rowcount or 0)
 
     async def get_by_user_and_plan(
         self,

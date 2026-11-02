@@ -15,6 +15,7 @@ from app.core.exceptions import (
 )
 from app.domain.enums import PaymentOrderStatus, PaymentProvider, PaymentTransactionStatus, SubscriptionStatus, UserRole
 from app.models import PaymentOrder, PaymentTransaction, RecruiterProfile, Subscription, User
+from app.repositories import SubscriptionRepository
 from app.services.payment_service import PaymentService
 from app.services.payment_providers.vnpay import VNPAYProvider
 
@@ -402,6 +403,19 @@ def _patch_activation_notifier(monkeypatch):
     return mock_cls
 
 
+@pytest.fixture
+def stub_stale_expiry(monkeypatch):
+    """Keep legacy activation tests focused on their original execute calls."""
+
+    async def _noop(self, user_id, now):
+        return 0
+
+    monkeypatch.setattr(
+        SubscriptionRepository, "expire_stale_active_for_user", _noop
+    )
+
+
+@pytest.mark.usefixtures("stub_stale_expiry")
 class TestActivateSubscriptionForPaymentRoleTransition:
     """Phase 6.1: Tests for role transition and RecruiterProfile creation during payment activation."""
 
@@ -608,6 +622,36 @@ class TestActivateSubscriptionForPaymentRoleTransition:
         assert len(add_calls) == 0  # No new profile created
 
 
+class TestActivateSubscriptionStaleExpiry:
+    def test_retires_stale_active_before_activation(self):
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+
+        sub_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        sub = _make_subscription(sub_id, user_id, plan_id, SubscriptionStatus.PENDING)
+        plan = _make_plan(plan_id)
+        user = _make_user(user_id=user_id, role=UserRole.ADMIN)
+
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(
+            return_value=sub
+        )
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.subscriptions.get_active_by_user_id = AsyncMock(return_value=None)
+        service.subscriptions.expire_stale_active_for_user = AsyncMock(
+            return_value=1
+        )
+        session.execute.side_effect = [_make_lock_result(user)]
+
+        result = asyncio.run(service._activate_subscription_for_payment(sub_id))
+
+        assert result is sub
+        assert sub.status == SubscriptionStatus.ACTIVE
+        service.subscriptions.expire_stale_active_for_user.assert_awaited_once()
+
+
+@pytest.mark.usefixtures("stub_stale_expiry")
 class TestActivateSubscriptionQuotaSnapshot:
     """Bug B: quota limits must be snapshotted from the authoritative plan."""
 
@@ -727,6 +771,7 @@ class TestActivateSubscriptionQuotaSnapshot:
         assert sub.max_job_posts == 9
 
 
+@pytest.mark.usefixtures("stub_stale_expiry")
 class TestActivationNotification:
     """The shared success path emits exactly one subscription activation notification."""
 
@@ -1078,6 +1123,7 @@ class TestPendingCheckoutPolicy:
         assert self._added_orders(session) == []
 
 
+@pytest.mark.usefixtures("stub_stale_expiry")
 class TestActivateSubscriptionUpgrade:
     """P0: activation replaces a strictly lower-tier ACTIVE subscription."""
 
@@ -1244,6 +1290,7 @@ class TestRecordSuccessRefusedActivation:
         receipt_sched.assert_not_called()
 
 
+@pytest.mark.usefixtures("stub_stale_expiry")
 class TestVnpayReceiptEmail:
     """The verified VNPAY success path schedules the enriched receipt once."""
 

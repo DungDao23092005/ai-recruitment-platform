@@ -89,7 +89,7 @@ const mockDetail: AdminSubscriptionDetail = {
       plan_name: 'Gói cơ bản',
       status: 'active',
       started_at: '2026-01-01T00:00:00Z',
-      expires_at: '2026-02-01T00:00:00Z',
+      expires_at: '2027-02-01T00:00:00Z',
       created_at: '2026-01-01T00:00:00Z',
       max_job_posts: 5,
       max_candidate_searches: 10,
@@ -345,6 +345,73 @@ describe('AdminSubscriptionsPage', () => {
     await waitFor(() => {
       expect(screen.getAllByText('Hết hạn').length).toBeGreaterThanOrEqual(2)
     })
+  })
+
+  it('shows effective expired history and hides revoke for a stale active row', async () => {
+    vi.mocked(getAdminSubscription).mockResolvedValueOnce({
+      ...mockDetail,
+      history: [
+        {
+          ...mockDetail.history[0],
+          status: 'expired',
+          expires_at: '2020-01-01T00:00:00Z',
+        },
+      ],
+    })
+
+    render(<AdminSubscriptionsPage />)
+    await waitFor(() => {
+      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /xem chi ti/i,
+      }),
+    )
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getAllByText('Hết hạn').length).toBeGreaterThan(0)
+    expect(
+      within(dialog).queryByRole('button', { name: /sub-1/i }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('trusts backend effective history status over the client clock', async () => {
+    vi.mocked(getAdminSubscription).mockResolvedValueOnce({
+      ...mockDetail,
+      history: [
+        {
+          ...mockDetail.history[0],
+          status: 'active',
+          expires_at: '2027-01-01T00:00:00Z',
+        },
+      ],
+    })
+    const nowSpy = vi
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2030-01-01T00:00:00Z').getTime())
+
+    try {
+      render(<AdminSubscriptionsPage />)
+      await waitFor(() => {
+        expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+      })
+
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: /xem chi tiết thuê bao buyer@example.com/i,
+        }),
+      )
+
+      const dialog = await screen.findByRole('dialog')
+      expect(within(dialog).getAllByText('Đang hoạt động').length).toBeGreaterThan(0)
+      expect(
+        within(dialog).getByRole('button', { name: /thu hồi thuê bao sub-1/i }),
+      ).toBeInTheDocument()
+    } finally {
+      nowSpy.mockRestore()
+    }
   })
 
   it('revokes a specific subscription from the detail history', async () => {

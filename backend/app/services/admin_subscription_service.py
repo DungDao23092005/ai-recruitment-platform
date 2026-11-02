@@ -170,7 +170,9 @@ class AdminSubscriptionService:
                 user_email=user_email,
             ),
             history=[
-                self._to_history_item(item, payments_by_sub.get(item.id, []))
+                self._to_history_item(
+                    item, payments_by_sub.get(item.id, []), now=now
+                )
                 for item in history_subs
             ],
             audit_logs=[self._to_audit_read(log) for log in audit_logs],
@@ -191,6 +193,7 @@ class AdminSubscriptionService:
 
         await self._lock_user(user_id)
         now = utc_now()
+        await self.subscriptions.expire_stale_active_for_user(user_id, now)
 
         existing_active = await self._check_active_overlap(user_id, now)
         if existing_active is not None:
@@ -263,17 +266,20 @@ class AdminSubscriptionService:
         sub = await self.subscriptions.get_by_id_including_deleted(subscription_id)
         if sub is None:
             raise EntityNotFoundException(f"Subscription {subscription_id} not found")
-        if sub.status != SubscriptionStatus.ACTIVE:
+        effective_status = _effective_status(sub, utc_now())
+        if effective_status != SubscriptionStatus.ACTIVE:
             raise InvalidTransitionException(
-                f"Cannot change plan of subscription in status {sub.status.value}"
+                f"Cannot change plan of subscription in status {effective_status.value}"
             )
 
         await self._lock_user(sub.user_id)
-        # Re-read under the lock so the ACTIVE check is a single-winner guard.
+        # Re-read under the lock so the effective-ACTIVE check is a
+        # single-winner guard, including rows stored ACTIVE past expiry.
         await self.session.refresh(sub)
-        if sub.status != SubscriptionStatus.ACTIVE:
+        effective_status = _effective_status(sub, utc_now())
+        if effective_status != SubscriptionStatus.ACTIVE:
             raise InvalidTransitionException(
-                f"Cannot change plan of subscription in status {sub.status.value}"
+                f"Cannot change plan of subscription in status {effective_status.value}"
             )
 
         await self._assert_no_unresolved_payment(sub.user_id)
@@ -342,16 +348,24 @@ class AdminSubscriptionService:
         sub = await self.subscriptions.get_by_id_including_deleted(subscription_id)
         if sub is None:
             raise EntityNotFoundException(f"Subscription {subscription_id} not found")
-        if sub.status not in (SubscriptionStatus.ACTIVE, SubscriptionStatus.PENDING):
+        effective_status = _effective_status(sub, utc_now())
+        if effective_status not in (
+            SubscriptionStatus.ACTIVE,
+            SubscriptionStatus.PENDING,
+        ):
             raise InvalidTransitionException(
-                f"Cannot revoke subscription in status {sub.status.value}"
+                f"Cannot revoke subscription in status {effective_status.value}"
             )
 
         await self._lock_user(sub.user_id)
         await self.session.refresh(sub)
-        if sub.status not in (SubscriptionStatus.ACTIVE, SubscriptionStatus.PENDING):
+        effective_status = _effective_status(sub, utc_now())
+        if effective_status not in (
+            SubscriptionStatus.ACTIVE,
+            SubscriptionStatus.PENDING,
+        ):
             raise InvalidTransitionException(
-                f"Cannot revoke subscription in status {sub.status.value}"
+                f"Cannot revoke subscription in status {effective_status.value}"
             )
 
         await self._assert_no_unresolved_payment(sub.user_id)
@@ -564,13 +578,17 @@ class AdminSubscriptionService:
         self,
         sub: Subscription,
         payments: list[PaymentOrder],
+        *,
+        now: Optional[datetime] = None,
     ) -> SubscriptionSummary:
+        if now is None:
+            now = utc_now()
         plan = getattr(sub, "plan", None)
         return SubscriptionSummary(
             id=sub.id,
             plan_id=sub.plan_id,
             plan_name=plan.name if plan is not None else None,
-            status=sub.status,
+            status=_effective_status(sub, now),
             started_at=sub.started_at,
             expires_at=sub.expires_at,
             created_at=sub.created_at,

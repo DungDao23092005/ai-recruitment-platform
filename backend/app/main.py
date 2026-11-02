@@ -134,9 +134,31 @@ async def lifespan(app: FastAPI):
             "Failed to start quota reconciliation worker: %s", exc
         )
 
+    # Persist ACTIVE -> EXPIRED for subscriptions whose expires_at has passed.
+    try:
+        from app.services.subscription_expiration_worker import (
+            start_default_worker as start_subscription_expiration_worker,
+        )
+
+        await start_subscription_expiration_worker()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to start subscription expiration worker: %s", exc
+        )
+
     yield
 
     # Shutdown
+    try:
+        from app.services.subscription_expiration_worker import (
+            stop_default_worker as stop_subscription_expiration_worker,
+        )
+
+        await stop_subscription_expiration_worker()
+    except Exception:
+        pass
+
     try:
         from app.services.quota_reconciliation_worker import (
             stop_default_worker as stop_quota_reconciliation_worker,

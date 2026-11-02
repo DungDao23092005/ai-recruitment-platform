@@ -545,54 +545,45 @@ class TestConcurrency:
 
 
 class TestCheckAndExpireSubscriptions:
-    def test_expires_overdue_subscriptions(self):
+    def test_delegates_to_atomic_repository_and_commits(self):
         session = make_session()
         service = make_service(session)
         now = utc_now()
-
-        expired_sub1 = make_subscription(
-            expires_at=now - timedelta(days=1),
-            status=SubscriptionStatus.ACTIVE,
-        )
-        expired_sub2 = make_subscription(
-            expires_at=now - timedelta(hours=1),
-            status=SubscriptionStatus.ACTIVE,
-        )
-        active_sub = make_subscription(
-            expires_at=now + timedelta(days=10),
-            status=SubscriptionStatus.ACTIVE,
-        )
-
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [expired_sub1, expired_sub2]
-        session.execute.return_value = mock_result
+        service.subscriptions.expire_stale_active.return_value = 2
 
         count = asyncio.run(service.check_and_expire_subscriptions(now))
 
         assert count == 2
-        assert expired_sub1.status == SubscriptionStatus.EXPIRED
-        assert expired_sub2.status == SubscriptionStatus.EXPIRED
-        assert active_sub.status == SubscriptionStatus.ACTIVE
+        service.subscriptions.expire_stale_active.assert_awaited_once_with(
+            now, limit=None
+        )
         session.commit.assert_awaited_once()
 
     def test_returns_zero_when_none_expired(self):
         session = make_session()
         service = make_service(session)
-        now = utc_now()
+        service.subscriptions.expire_stale_active.return_value = 0
 
-        active_sub = make_subscription(
-            expires_at=now + timedelta(days=10),
-            status=SubscriptionStatus.ACTIVE,
-        )
-
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = []
-        session.execute.return_value = mock_result
-
-        count = asyncio.run(service.check_and_expire_subscriptions(now))
+        count = asyncio.run(service.check_and_expire_subscriptions(utc_now()))
 
         assert count == 0
         session.commit.assert_not_awaited()
+
+    def test_passes_batch_limit_to_repository(self):
+        session = make_session()
+        service = make_service(session)
+        now = utc_now()
+        service.subscriptions.expire_stale_active.return_value = 7
+
+        count = asyncio.run(
+            service.check_and_expire_subscriptions(now, limit=7)
+        )
+
+        assert count == 7
+        service.subscriptions.expire_stale_active.assert_awaited_once_with(
+            now, limit=7
+        )
+        session.commit.assert_awaited_once()
 
 
 class TestActivateSubscriptionRoleTransition:
@@ -629,6 +620,34 @@ class TestActivateSubscriptionRoleTransition:
                           if isinstance(call.args[0], RecruiterProfile)]
         assert len(added_profiles) == 1
         assert added_profiles[0].user_id == user.id
+
+    def test_activation_retires_stale_active_rows_before_overlap_check(self):
+        session = make_session()
+        service = make_service(session)
+        sub_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        plan = make_plan(plan_id=plan_id)
+        sub = make_subscription(
+            sub_id=sub_id,
+            plan_id=plan_id,
+            status=SubscriptionStatus.PENDING,
+        )
+        user = make_user(user_id=sub.user_id, role=UserRole.ADMIN)
+
+        session.execute.side_effect = [
+            _make_lock_result(user),
+            _make_check_result(None),
+            _make_user_result(user),
+        ]
+        service.subscriptions.get_by_id_including_deleted.return_value = sub
+        service.plans.get_active_by_id.return_value = plan
+        service.subscriptions.expire_stale_active_for_user.return_value = 1
+
+        asyncio.run(service.activate_subscription(sub_id))
+
+        service.subscriptions.expire_stale_active_for_user.assert_awaited_once()
+        args = service.subscriptions.expire_stale_active_for_user.await_args.args
+        assert args[0] == sub.user_id
 
     def test_existing_recruiter_activation_keeps_role_and_reuses_profile(self):
         """TEST 2: RECRUITER + activation → remains RECRUITER + existing profile reused."""

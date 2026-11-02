@@ -648,10 +648,14 @@ class PaymentService:
         if user is None:
             raise EntityNotFoundException(f"User {sub.user_id} not found")
 
+        now = utc_now()
+
+        # Retire stale ACTIVE rows before overlap/upgrade checks. This shares the
+        # per-user lock and transaction with the activation.
+        await self.subscriptions.expire_stale_active_for_user(sub.user_id, now)
+
         # Ensure recruiter access (role transition + profile creation)
         await ensure_recruiter_access(self.session, user)
-
-        now = utc_now()
 
         plan = await self.plans.get_active_by_id(sub.plan_id)
         if plan is None:
