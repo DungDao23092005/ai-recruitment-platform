@@ -2,12 +2,17 @@ import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.orm.attributes import set_committed_value
 
-from app.core.exceptions import ConflictException, EntityNotFoundException
+import app.services.admin_subscription_service as admin_subscription_module
+from app.core.exceptions import (
+    ConflictException,
+    EntityNotFoundException,
+    InvalidTransitionException,
+)
 from app.domain.enums import (
     PaymentOrderStatus,
     PaymentProvider,
@@ -178,6 +183,55 @@ class TestApplyPlanSnapshot:
 
 
 class TestChangePlanGuards:
+    def test_rejects_effectively_expired_subscription_before_lock(self):
+        service = make_service()
+        sub = make_subscription(
+            status=SubscriptionStatus.ACTIVE,
+            expires_at=utc_now() - timedelta(seconds=1),
+        )
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service._lock_user = AsyncMock()
+
+        with pytest.raises(InvalidTransitionException, match="expired"):
+            asyncio.run(
+                service.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    target_plan_id=uuid.uuid4(),
+                    reason="đổi gói đã hết hạn",
+                )
+            )
+
+        service._lock_user.assert_not_awaited()
+
+    def test_rejects_when_refresh_becomes_effectively_expired(self):
+        service = make_service()
+        sub = make_subscription(
+            status=SubscriptionStatus.ACTIVE,
+            expires_at=utc_now() + timedelta(days=1),
+        )
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service._lock_user = AsyncMock()
+        service._assert_no_unresolved_payment = AsyncMock()
+        service.plans.get_active_by_id = AsyncMock(return_value=make_plan())
+
+        async def _refresh(obj):
+            obj.expires_at = utc_now() - timedelta(seconds=1)
+
+        service.session.refresh = AsyncMock(side_effect=_refresh)
+
+        with pytest.raises(InvalidTransitionException, match="expired"):
+            asyncio.run(
+                service.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    target_plan_id=uuid.uuid4(),
+                    reason="đổi gói vừa hết hạn",
+                )
+            )
+
+        service._assert_no_unresolved_payment.assert_not_awaited()
+
     def test_rejects_target_equal_to_current_plan(self):
         service = make_service()
         plan_id = uuid.uuid4()
@@ -351,6 +405,41 @@ class TestHistoryMapping:
         assert item.plan_name is None
         assert item.payments == []
 
+    def test_history_item_uses_effective_expired_status(self):
+        service = make_service()
+        now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        sub = make_subscription(
+            status=SubscriptionStatus.ACTIVE,
+            expires_at=now - timedelta(seconds=1),
+        )
+
+        item = service._to_history_item(sub, [], now=now)
+
+        assert item.status == SubscriptionStatus.EXPIRED
+
+
+class TestRevokeEffectiveStatus:
+    def test_rejects_stored_active_past_expiry(self):
+        service = make_service()
+        sub = make_subscription(
+            status=SubscriptionStatus.ACTIVE,
+            expires_at=utc_now() - timedelta(seconds=1),
+        )
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(
+            return_value=sub
+        )
+
+        with pytest.raises(InvalidTransitionException):
+            asyncio.run(
+                service.revoke(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    reason="Thu hồi không hợp lệ",
+                )
+            )
+
+        assert sub.status == SubscriptionStatus.ACTIVE
+
 
 class TestPaymentDiagnostics:
     def test_combines_pending_and_incident(self):
@@ -517,3 +606,78 @@ class TestGetDetailWiring:
 
         with pytest.raises(EntityNotFoundException):
             asyncio.run(service.get_detail(uuid.uuid4()))
+
+
+class TestProvisionStaleExpiration:
+    def test_expires_stale_active_before_overlap_and_activation(self):
+        service = make_service()
+        admin_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        plan = make_plan()
+        user = SimpleNamespace(id=user_id, email="provision@example.com")
+        calls: list[str] = []
+
+        async def lock_user(_user_id):
+            calls.append("lock")
+            return user
+
+        async def expire_stale(expire_user_id, _now):
+            calls.append("expire")
+            assert expire_user_id == user_id
+            return 1
+
+        async def check_overlap(overlap_user_id, _now):
+            calls.append("overlap")
+            assert overlap_user_id == user_id
+            return None
+
+        service._lock_user = lock_user
+        service._load_user = AsyncMock(return_value=user)
+        service._check_active_overlap = check_overlap
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.subscriptions.expire_stale_active_for_user = expire_stale
+        service.subscriptions.get_pending_by_user_and_plan = AsyncMock(
+            return_value=None
+        )
+        service.payment_orders.get_active_pending_for_user = AsyncMock(
+            return_value=[]
+        )
+        service.payment_orders.has_paid_order_with_pending_subscription = AsyncMock(
+            return_value=False
+        )
+
+        original_apply_plan_snapshot = service._apply_plan_snapshot
+
+        def apply_plan_snapshot(*args, **kwargs):
+            calls.append("activate")
+            return original_apply_plan_snapshot(*args, **kwargs)
+
+        service._apply_plan_snapshot = apply_plan_snapshot
+        notification = MagicMock()
+        notification.notify_subscription_activated = AsyncMock(return_value=None)
+
+        with (
+            patch.object(
+                admin_subscription_module,
+                "ensure_recruiter_access",
+                AsyncMock(),
+            ),
+            patch.object(
+                admin_subscription_module,
+                "NotificationService",
+                MagicMock(return_value=notification),
+            ),
+            patch.object(
+                admin_subscription_module,
+                "schedule_admin_subscription_event",
+                MagicMock(),
+            ),
+        ):
+            sub = asyncio.run(
+                service.provision(admin_id=admin_id, user_id=user_id, plan_id=plan.id)
+            )
+
+        assert calls[:4] == ["lock", "expire", "overlap", "activate"]
+        assert sub.user_id == user_id
+        assert sub.plan_id == plan.id
+        assert sub.status == SubscriptionStatus.ACTIVE

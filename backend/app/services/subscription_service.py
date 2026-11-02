@@ -178,6 +178,11 @@ class SubscriptionService:
 
         now = utc_now()
 
+        # Retire stale ACTIVE rows first so they cannot be mistaken for a live
+        # overlap. This runs under the same per-user lock and transaction as the
+        # activation, so the status change and new activation commit together.
+        await self.subscriptions.expire_stale_active_for_user(sub.user_id, now)
+
         # Check for existing active subscription BEFORE activating
         existing_active = await self._check_active_overlap(sub.user_id, now)
         if existing_active is not None and existing_active.id != sub.id:
@@ -280,27 +285,19 @@ class SubscriptionService:
     async def check_and_expire_subscriptions(
         self,
         now: Optional[datetime] = None,
+        limit: Optional[int] = None,
     ) -> int:
-        """Check for expired subscriptions and update their status.
-        This is a lazy expiration check - subscriptions are treated as expired
-        when expires_at <= now, but this method can be called periodically
-        to update the status in the database.
+        """Check for expired subscriptions and persist their status.
+
+        Expiration is a lazy, database-level conditional update: rows are
+        selected oldest-first for the batch, then the UPDATE re-checks status,
+        soft-delete and ``expires_at <= now`` at write time so a concurrent
+        renewal cannot be overwritten with EXPIRED.
         """
         if now is None:
             now = utc_now()
 
-        stmt = select(Subscription).where(
-            Subscription.is_deleted == False,  # noqa: E712
-            Subscription.status == SubscriptionStatus.ACTIVE,
-            Subscription.expires_at <= now,
-        )
-        result = await self.session.execute(stmt)
-        expired_subs = list(result.scalars().all())
-
-        count = 0
-        for sub in expired_subs:
-            sub.status = SubscriptionStatus.EXPIRED
-            count += 1
+        count = await self.subscriptions.expire_stale_active(now, limit=limit)
 
         if count > 0:
             try:

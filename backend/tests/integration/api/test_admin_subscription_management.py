@@ -237,6 +237,44 @@ class TestAdminChangePlan:
         )
         assert resp.status_code == 409, resp.text
 
+    def test_change_plan_rejects_effectively_expired_subscription(
+        self, admin_client, candidate_client, run_async
+    ):
+        plan_a = _create_plan(admin_client, run_async)
+        plan_b = _create_plan(admin_client, run_async)
+        user_id = _user_id_from_client(candidate_client)
+        sub_id = _provision(admin_client, run_async, user_id, plan_a["id"]).json()["id"]
+
+        async def _expire() -> None:
+            async with async_session_factory() as session:
+                sub = (
+                    await session.execute(
+                        select(Subscription).where(
+                            Subscription.id == uuid.UUID(sub_id)
+                        )
+                    )
+                ).scalar_one()
+                sub.expires_at = utc_now() - timedelta(seconds=1)
+                await session.commit()
+
+        run(_expire())
+
+        resp = run_async(
+            admin_client.post(
+                f"{API_V1}/admin/subscriptions/{sub_id}/change-plan",
+                json={
+                    "target_plan_id": plan_b["id"],
+                    "reason": "đổi gói đã hết hạn",
+                },
+            )
+        )
+        assert resp.status_code == 409, resp.text
+        assert "expired" in resp.json()["detail"].lower()
+
+        stored = run(_load_subscription(sub_id))
+        assert stored.status == SubscriptionStatus.ACTIVE
+        assert str(stored.plan_id) == plan_a["id"]
+
     def test_change_to_inactive_plan_is_404(
         self, admin_client, candidate_client, run_async
     ):

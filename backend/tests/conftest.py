@@ -37,6 +37,10 @@ os.environ["EMAIL_OUTBOX_ENABLED"] = "false"
 # Keep the lifespan analytics rollup from racing the per-test schema reset.
 os.environ["ANALYTICS_ROLLUP_ENABLED"] = "false"
 
+# Keep the lifespan subscription expiration worker from racing the per-test
+# schema reset.
+os.environ["SUBSCRIPTION_EXPIRATION_ENABLED"] = "false"
+
 # Service-level tests exercise the in-process extractor path (and patch it).
 # Process isolation has dedicated tests that construct IsolatedPDFProcessor.
 os.environ["PDF_ISOLATION_ENABLED"] = "false"
