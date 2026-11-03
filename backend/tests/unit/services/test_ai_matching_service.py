@@ -965,9 +965,10 @@ def test_recommend_candidates_resolves_profiles_in_one_batch(
 
     assert len(recs) == 2
     by_id = {rec.candidate_id: rec for rec in recs}
-    assert by_id[cand1_id].parsed_resume.full_name == "Jane Doe"
+    # No actor_user means no authorization context: direct PII must be redacted.
+    assert by_id[cand1_id].parsed_resume.full_name is None
     assert by_id[cand1_id].parsed_resume.title == "Backend Engineer"
-    assert by_id[cand2_id].parsed_resume.full_name == "John Smith"
+    assert by_id[cand2_id].parsed_resume.full_name is None
     assert by_id[cand2_id].parsed_resume.title == "Data Engineer"
     # Session.execute is called twice: once for CandidateProfile, once for Resume
     assert session.execute.await_count == 2
@@ -1105,6 +1106,137 @@ def test_recommend_candidates_deleted_profiles_not_resolved(
     )
     assert "is_deleted" in compiled_sql
     assert str(cand1_id).replace("-", "") in compiled_sql
+
+
+def test_recommend_candidates_redacts_non_applicant_pii_end_to_end(
+    ai_service, mock_dependencies
+):
+    """Recommendation hydration must withhold direct PII from non-applicants."""
+    from app.domain.enums import UserRole
+
+    job_id = uuid.uuid4()
+    company_id = uuid.uuid4()
+    applicant_id = uuid.uuid4()
+    outsider_id = uuid.uuid4()
+
+    recruiter = User(
+        id=uuid.uuid4(),
+        email="recruiter@example.com",
+        password_hash="hashed",
+        role=UserRole.RECRUITER,
+        is_active=True,
+    )
+
+    mock_dependencies["vector_repository"].search_similar.return_value = [
+        {
+            "id": str(applicant_id),
+            "score": 0.9,
+            "payload": {"candidate_id": str(applicant_id), "skills": ["Python"]},
+            "vector": [0.1] * 384,
+        },
+        {
+            "id": str(outsider_id),
+            "score": 0.8,
+            "payload": {"candidate_id": str(outsider_id), "skills": ["SQL"]},
+            "vector": [0.2] * 384,
+        },
+    ]
+    mock_dependencies["matching_engine"].match_resume_to_job.return_value = (
+        MatchResultSchema(
+            overall_score=80.0,
+            cosine_similarity=0.8,
+            skill_coverage_score=1.0,
+            experience_match_score=0.5,
+            matching_skills=["Python"],
+        )
+    )
+
+    profiles = [
+        CandidateProfile(
+            id=applicant_id,
+            user_id=uuid.uuid4(),
+            full_name="Applicant Alice",
+            title="Backend Engineer",
+        ),
+        CandidateProfile(
+            id=outsider_id,
+            user_id=uuid.uuid4(),
+            full_name="Outsider Oscar",
+            title="Data Engineer",
+        ),
+    ]
+    resumes = [
+        Resume(
+            id=uuid.uuid4(),
+            candidate_id=applicant_id,
+            is_primary=True,
+            is_confirmed=True,
+            is_deleted=False,
+            parsed_data={
+                "full_name": "Applicant Alice",
+                "email": "alice@example.com",
+                "phone": "+84900000001",
+                "title": "Backend Engineer",
+                "skills": ["Python"],
+            },
+        ),
+        Resume(
+            id=uuid.uuid4(),
+            candidate_id=outsider_id,
+            is_primary=True,
+            is_confirmed=True,
+            is_deleted=False,
+            parsed_data={
+                "full_name": "Outsider Oscar",
+                "email": "oscar@example.com",
+                "phone": "+84900000002",
+                "title": "Data Engineer",
+                "skills": ["SQL"],
+            },
+        ),
+    ]
+
+    company_result = MagicMock()
+    company_result.scalar_one_or_none.return_value = company_id
+    profiles_result = MagicMock()
+    profiles_result.scalars.return_value.all.return_value = profiles
+    application_result = MagicMock()
+    application_result.all.return_value = [(applicant_id,)]
+    resumes_result = MagicMock()
+    resumes_result.scalars.return_value.all.return_value = resumes
+
+    session = MagicMock()
+    session.execute = AsyncMock(
+        side_effect=[
+            company_result,
+            profiles_result,
+            company_result,
+            application_result,
+            resumes_result,
+        ]
+    )
+
+    recs = asyncio.run(
+        ai_service.recommend_candidates_for_job(
+            job_id=job_id,
+            job_vector=[0.5] * 384,
+            limit=5,
+            session=session,
+            actor_user=recruiter,
+        )
+    )
+
+    by_id = {rec.candidate_id: rec for rec in recs}
+    assert by_id[applicant_id].parsed_resume.full_name == "Applicant Alice"
+    assert by_id[applicant_id].parsed_resume.email == "alice@example.com"
+    assert by_id[applicant_id].parsed_resume.phone == "+84900000001"
+
+    assert by_id[outsider_id].parsed_resume.full_name is None
+    assert by_id[outsider_id].parsed_resume.email is None
+    assert by_id[outsider_id].parsed_resume.phone is None
+    assert by_id[outsider_id].parsed_resume.title == "Data Engineer"
+    assert by_id[outsider_id].parsed_resume.skills == ["SQL"]
+    assert by_id[outsider_id].match_result.overall_score == 80.0
 
 
 # ===== REGRESSION TESTS FOR RESUME QDRANT SYNCHRONIZATION =====

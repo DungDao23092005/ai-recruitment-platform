@@ -815,6 +815,154 @@ class TestContextResolverRequireApplication:
         first_sql = str(first_compiled)
         assert "applications" in first_sql.lower()
 
+    @pytest.mark.asyncio
+    async def test_recommendation_redacts_pii_for_non_applicant_candidate(self):
+        """Recruiters get matching data without direct PII for non-applicants."""
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+
+        company_id = uuid.uuid4()
+        recruiter_id = uuid.uuid4()
+        applicant_id = uuid.uuid4()
+        outsider_id = uuid.uuid4()
+
+        resolver._get_recruiter_company_id = AsyncMock(return_value=company_id)
+
+        applicant_resume = make_resume(
+            applicant_id,
+            parsed_data={
+                "full_name": "Applicant Alice",
+                "email": "alice@example.com",
+                "phone": "+84900000001",
+                "title": "Backend Engineer",
+                "skills": ["Python"],
+            },
+        )
+        outsider_resume = make_resume(
+            outsider_id,
+            parsed_data={
+                "full_name": "Outsider Oscar",
+                "email": "oscar@example.com",
+                "phone": "+84900000002",
+                "title": "Data Engineer",
+                "skills": ["SQL"],
+            },
+        )
+
+        application_result = MagicMock()
+        application_result.all.return_value = [(applicant_id,)]
+        resume_result = MagicMock()
+        resume_result.scalars.return_value.all.return_value = [
+            applicant_resume,
+            outsider_resume,
+        ]
+        session.execute = AsyncMock(
+            side_effect=[application_result, resume_result]
+        )
+
+        recruiter_user = make_user(UserRole.RECRUITER, recruiter_id)
+
+        result = await resolver.resolve_resumes(
+            [applicant_id, outsider_id],
+            recruiter_user,
+            require_application=False,
+            redact_unauthorized_pii=True,
+        )
+
+        assert result[applicant_id].full_name == "Applicant Alice"
+        assert result[applicant_id].email == "alice@example.com"
+        assert result[applicant_id].phone == "+84900000001"
+
+        assert result[outsider_id].full_name is None
+        assert result[outsider_id].email is None
+        assert result[outsider_id].phone is None
+        assert result[outsider_id].title == "Data Engineer"
+        assert result[outsider_id].skills == ["SQL"]
+
+        # Application authorization predicate must be present in the SQL.
+        first_stmt = session.execute.call_args_list[0][0][0]
+        first_sql = str(first_stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "applications" in first_sql.lower()
+        assert "jobs" in first_sql.lower()
+
+    @pytest.mark.asyncio
+    async def test_recommendation_redacts_all_pii_when_company_has_no_applications(self):
+        """No application/consent signal means every recommendation is redacted."""
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+
+        company_id = uuid.uuid4()
+        recruiter_id = uuid.uuid4()
+        candidate_id = uuid.uuid4()
+
+        resolver._get_recruiter_company_id = AsyncMock(return_value=company_id)
+
+        resume = make_resume(
+            candidate_id,
+            parsed_data={
+                "full_name": "Candidate Carol",
+                "email": "carol@example.com",
+                "phone": "+84900000003",
+                "title": "Platform Engineer",
+                "skills": ["Python", "Kubernetes"],
+            },
+        )
+
+        application_result = MagicMock()
+        application_result.all.return_value = []
+        resume_result = MagicMock()
+        resume_result.scalars.return_value.all.return_value = [resume]
+        session.execute = AsyncMock(
+            side_effect=[application_result, resume_result]
+        )
+
+        recruiter_user = make_user(UserRole.RECRUITER, recruiter_id)
+
+        result = await resolver.resolve_resumes(
+            [candidate_id],
+            recruiter_user,
+            require_application=False,
+            redact_unauthorized_pii=True,
+        )
+
+        assert candidate_id in result
+        assert result[candidate_id].full_name is None
+        assert result[candidate_id].email is None
+        assert result[candidate_id].phone is None
+        assert result[candidate_id].title == "Platform Engineer"
+        assert result[candidate_id].skills == ["Python", "Kubernetes"]
+
+    @pytest.mark.asyncio
+    async def test_admin_recommendation_keeps_full_resume(self):
+        """Admin access is unchanged by the recruiter redaction policy."""
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+
+        candidate_id = uuid.uuid4()
+        resume = make_resume(
+            candidate_id,
+            parsed_data={
+                "full_name": "Candidate Carol",
+                "email": "carol@example.com",
+                "phone": "+84900000003",
+                "skills": ["Python"],
+            },
+        )
+        session.execute = AsyncMock(return_value=make_mock_result([resume]))
+
+        admin_user = make_user(UserRole.ADMIN)
+
+        result = await resolver.resolve_resumes(
+            [candidate_id],
+            admin_user,
+            require_application=False,
+            redact_unauthorized_pii=True,
+        )
+
+        assert result[candidate_id].full_name == "Candidate Carol"
+        assert result[candidate_id].email == "carol@example.com"
+        assert result[candidate_id].phone == "+84900000003"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

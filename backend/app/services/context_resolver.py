@@ -37,6 +37,7 @@ class ContextResolver:
         actor_user: User,
         include_primary_only: bool = True,
         require_application: bool = True,
+        redact_unauthorized_pii: bool = False,
     ) -> dict[uuid.UUID, ParsedResumeSchema]:
         """
         Resolve parsed resumes by candidate IDs with authorization.
@@ -53,12 +54,20 @@ class ContextResolver:
             require_application: Whether to require application history (default True).
                 When False, candidates without applications are still returned.
                 Used for recommendation flows.
+            redact_unauthorized_pii: When True, recruiters receive resumes for
+                candidates without an application to their company, but the
+                direct identifiers (full_name, email, phone) are removed. This
+                fails closed because the system has no candidate consent signal
+                authorizing cross-company disclosure. Admins and candidates are
+                unaffected.
 
         Returns:
             Mapping of candidate_id -> ParsedResumeSchema for authorized records only
         """
         if not candidate_ids or self.session is None:
             return {}
+
+        pii_authorized_candidate_ids: set[uuid.UUID] | None = None
 
         # Build authorization filters based on actor role
         if actor_user.role.name == "ADMIN":
@@ -72,24 +81,25 @@ class ContextResolver:
 
             if require_application:
                 # Get candidate IDs who applied to this recruiter's company jobs
-                from app.models import Application, Job
-                stmt = select(Application.candidate_id).join(
-                    Job, Application.job_id == Job.id
-                ).where(
-                    Job.company_id == recruiter_company_id,
-                    Application.candidate_id.in_(candidate_ids),
-                    Application.is_deleted == False,
+                authorized_candidate_ids = await self._get_company_applicant_ids(
+                    recruiter_company_id, candidate_ids
                 )
-                result = await self.session.execute(stmt)
-                authorized_candidate_ids = [row[0] for row in result.all()]
 
                 if not authorized_candidate_ids:
                     return {}
 
                 filters = [Resume.candidate_id.in_(authorized_candidate_ids)]
+                pii_authorized_candidate_ids = set(authorized_candidate_ids)
             else:
-                # For recommendation flow: return all candidate resumes from company jobs
+                # For recommendation flow: return all candidate resumes from
+                # company jobs, but withhold direct identifiers unless the
+                # candidate applied to this recruiter's company.
                 filters = [Resume.candidate_id.in_(candidate_ids)]
+                if redact_unauthorized_pii:
+                    applicant_ids = await self._get_company_applicant_ids(
+                        recruiter_company_id, candidate_ids
+                    )
+                    pii_authorized_candidate_ids = set(applicant_ids)
         else:
             # CANDIDATE - can only access their own resume
             candidate_profile = await self._get_candidate_profile(actor_user.id)
@@ -110,7 +120,19 @@ class ContextResolver:
         for r in result.scalars().all():
             if r.parsed_data:
                 try:
-                    resumes[r.candidate_id] = ParsedResumeSchema(**r.parsed_data)
+                    parsed_resume = ParsedResumeSchema(**r.parsed_data)
+                    if (
+                        pii_authorized_candidate_ids is not None
+                        and r.candidate_id not in pii_authorized_candidate_ids
+                    ):
+                        parsed_resume = parsed_resume.model_copy(
+                            update={
+                                "full_name": None,
+                                "email": None,
+                                "phone": None,
+                            }
+                        )
+                    resumes[r.candidate_id] = parsed_resume
                 except Exception:
                     pass
 
@@ -309,6 +331,24 @@ class ContextResolver:
                 pass
 
         return documents
+
+    async def _get_company_applicant_ids(
+        self,
+        company_id: uuid.UUID,
+        candidate_ids: list[uuid.UUID],
+    ) -> list[uuid.UUID]:
+        """Return candidates who applied to any non-deleted job at the company."""
+        from app.models import Application, Job
+
+        stmt = select(Application.candidate_id).join(
+            Job, Application.job_id == Job.id
+        ).where(
+            Job.company_id == company_id,
+            Application.candidate_id.in_(candidate_ids),
+            Application.is_deleted == False,  # noqa: E712
+        )
+        result = await self.session.execute(stmt)
+        return [row[0] for row in result.all()]
 
     async def _get_recruiter_company_id(self, user_id: uuid.UUID) -> uuid.UUID | None:
         """Get the company ID for a recruiter user."""

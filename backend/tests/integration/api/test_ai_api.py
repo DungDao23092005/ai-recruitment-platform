@@ -419,6 +419,38 @@ def _configured_qdrant_available() -> bool:
 CONFIGURED_QDRANT_AVAILABLE = _configured_qdrant_available()
 
 
+def _create_candidate_with_resume(candidate_client, run_async, parsed_data):
+    """Create a candidate profile plus a confirmed primary resume with parsed data."""
+    profile = run_async(
+        candidate_client.post(
+            f"{API_V1}/users/me/candidate-profile",
+            json={
+                "full_name": parsed_data["full_name"],
+                "title": parsed_data.get("title"),
+            },
+        )
+    )
+    assert profile.status_code == 201, profile.text
+    candidate_id = profile.json()["id"]
+
+    async def _seed_resume():
+        async with async_session_factory() as session:
+            resume = Resume(
+                candidate_id=candidate_id,
+                title=f"{parsed_data['full_name']} Resume",
+                file_path="resume.pdf",
+                is_primary=True,
+                is_confirmed=True,
+                confirmed_at=utc_now(),
+                parsed_data=parsed_data,
+            )
+            session.add(resume)
+            await session.commit()
+
+    run(_seed_resume())
+    return candidate_id
+
+
 class TestRecommendationsCandidateName:
     """BUG 2 — AI recommendations resolve real candidate display data."""
 
@@ -482,8 +514,8 @@ class TestRecommendationsCandidateName:
                     confirmed_at=utc_now(),
                     parsed_data={
                         "full_name": "Integration Jane",
-                        "email": None,
-                        "phone": None,
+                        "email": "jane@example.com",
+                        "phone": "+84901234567",
                         "title": "Backend Engineer",
                         "summary": None,
                         "total_years_experience": None,
@@ -502,6 +534,14 @@ class TestRecommendationsCandidateName:
                 await session.commit()
 
         run(_seed_resume())
+
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications",
+                json={"job_id": job["id"]},
+            )
+        )
+        assert application.status_code == 201, application.text
 
         repo = QdrantVectorRepository()
         try:
@@ -545,7 +585,107 @@ class TestRecommendationsCandidateName:
         assert matched[0]["parsed_resume"]["full_name"] == "Integration Jane"
         assert matched[0]["parsed_resume"]["title"] == "Backend Engineer"
         assert matched[0]["parsed_resume"]["skills"] == ["Python"]
-        assert matched[0]["parsed_resume"]["email"] is None
-        assert matched[0]["parsed_resume"]["phone"] is None
+        assert matched[0]["parsed_resume"]["email"] == "jane@example.com"
+        assert matched[0]["parsed_resume"]["phone"] == "+84901234567"
         assert "candidate_id" in matched[0]
+        assert "password" not in resp.text.lower()
+
+    @pytest.mark.skipif(
+        not CONFIGURED_QDRANT_AVAILABLE,
+        reason="BLOCKED BY ENVIRONMENT: Qdrant not available",
+    )
+    def test_recommendation_redacts_cross_company_applicant_pii(
+        self, recruiter_a_client, recruiter_b_client, candidate_client, run_async
+    ):
+        from app.ai.vector_db.qdrant_client import QdrantVectorRepository
+
+        company_a = TestRecommendationsCandidatesOwnership.create_company(
+            recruiter_a_client, run_async, "acme-a-redaction", "222222222"
+        )
+        job_a = TestRecommendationsCandidatesOwnership.create_job(
+            recruiter_a_client, run_async, company_a["id"], "Backend Engineer A"
+        )
+
+        company_b = TestRecommendationsCandidatesOwnership.create_company(
+            recruiter_b_client, run_async, "acme-b-redaction", "333333333"
+        )
+        job_b = TestRecommendationsCandidatesOwnership.create_job(
+            recruiter_b_client, run_async, company_b["id"], "Backend Engineer B"
+        )
+
+        candidate_id = _create_candidate_with_resume(
+            candidate_client,
+            run_async,
+            {
+                "full_name": "Private Patricia",
+                "email": "patricia@example.com",
+                "phone": "+84907654321",
+                "title": "Backend Engineer",
+                "summary": None,
+                "total_years_experience": None,
+                "skills": ["Python"],
+                "technical_skills": ["Python"],
+                "soft_skills": [],
+                "job_titles": ["Backend Engineer"],
+                "projects": [],
+                "experiences": [],
+                "education": [],
+                "certifications": [],
+                "languages": [],
+            },
+        )
+
+        application = run_async(
+            candidate_client.post(
+                f"{API_V1}/applications",
+                json={"job_id": job_b["id"]},
+            )
+        )
+        assert application.status_code == 201, application.text
+
+        repo = QdrantVectorRepository()
+        try:
+            run_async(repo.init_collections())
+            run_async(
+                repo.upsert_job_vector(
+                    job_id=job_a["id"],
+                    vector=_vector(),
+                    skills=["Python"],
+                )
+            )
+            run_async(
+                repo.upsert_resume_vector(
+                    candidate_id=candidate_id,
+                    vector=_vector(),
+                    skills=["Python"],
+                )
+            )
+
+            resp = run_async(
+                recruiter_a_client.get(
+                    f"{API_V1}/ai/recommendations/candidates",
+                    params={"job_id": job_a["id"]},
+                )
+            )
+        finally:
+            run_async(
+                repo.delete_vector(collection_name="jobs", point_id=job_a["id"])
+            )
+            run_async(
+                repo.delete_vector(
+                    collection_name="resumes", point_id=candidate_id
+                )
+            )
+
+        assert resp.status_code == 200, resp.text
+        matched = [r for r in resp.json() if r["candidate_id"] == candidate_id]
+        assert matched, "recommendation for seeded candidate not found"
+        parsed_resume = matched[0]["parsed_resume"]
+        assert parsed_resume["full_name"] is None
+        assert parsed_resume["email"] is None
+        assert parsed_resume["phone"] is None
+        assert parsed_resume["title"] == "Backend Engineer"
+        assert parsed_resume["skills"] == ["Python"]
+        assert "address" not in parsed_resume
+        assert matched[0]["match_result"]["overall_score"] > 0
         assert "password" not in resp.text.lower()

@@ -33,6 +33,13 @@ from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.context_resolver import ContextResolver
 
 
+def _redact_resume_pii(parsed_resume: ParsedResumeSchema) -> ParsedResumeSchema:
+    """Remove direct identifiers when no authorization context exists."""
+    return parsed_resume.model_copy(
+        update={"full_name": None, "email": None, "phone": None}
+    )
+
+
 class AIMatchingService:
     """Unified AI Matching Application Service coordinating extractors, parsers, embeddings, vector storage, and matching engine."""
 
@@ -534,11 +541,23 @@ class AIMatchingService:
         if session is not None and actor_user is not None and candidate_ids:
             resolver = self._get_resolver(session)
             profiles = await resolver.resolve_candidate_profiles(candidate_ids, actor_user, require_application=False)
-            full_resumes = await resolver.resolve_resumes(candidate_ids, actor_user, require_application=False)
+            full_resumes = await resolver.resolve_resumes(
+                candidate_ids,
+                actor_user,
+                require_application=False,
+                redact_unauthorized_pii=True,
+            )
         elif session is not None and candidate_ids:
-            # Backward compatibility: use legacy resolution without authorization
+            # Backward compatibility: use legacy resolution without authorization.
+            # No actor means no authorization context, so fail closed on direct PII.
             profiles = await self._resolve_candidate_profiles_legacy(session, candidate_ids)
-            full_resumes = await self._resolve_primary_resumes_legacy(session, candidate_ids)
+            legacy_resumes = await self._resolve_primary_resumes_legacy(
+                session, candidate_ids
+            )
+            full_resumes = {
+                candidate_id: _redact_resume_pii(parsed_resume)
+                for candidate_id, parsed_resume in legacy_resumes.items()
+            }
 
         for res in qdrant_results:
             c_id_raw = res.get("id") or res.get("payload", {}).get(
