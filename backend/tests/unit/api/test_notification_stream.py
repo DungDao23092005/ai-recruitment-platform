@@ -364,11 +364,9 @@ async def test_ticket_stores_server_resolved_recruiter_company():
     user = SimpleNamespace(id=user_id, role=UserRole.RECRUITER)
     manager = _FakePubSubManager(None, _FakePubSub([]))
 
-    with patch.object(notifications_module, "UserService") as service_cls:
-        service_cls.return_value.get_user_with_profile = AsyncMock(
-            return_value=SimpleNamespace(
-                recruiter_profile=SimpleNamespace(company_id=company_id)
-            )
+    with patch.object(notifications_module, "WorkspaceService") as service_cls:
+        service_cls.return_value.resolve = AsyncMock(
+            return_value=SimpleNamespace(company_id=company_id)
         )
         result = await create_stream_ticket(  # type: ignore[call-arg]
             current_user=user,
@@ -456,6 +454,126 @@ async def test_bounded_stream_lifetime_terminates(monkeypatch):
         ADMIN_SUBSCRIPTIONS_CHANNEL,
         ADMIN_EMAILS_CHANNEL,
     }
+
+
+async def test_workspace_revocation_terminates_matching_stream_and_cleans_up():
+    user_id = uuid.uuid4()
+    company_id = uuid.uuid4()
+    payload = {
+        "type": notifications_module.WORKSPACE_REVOKED_EVENT,
+        "company_id": str(company_id),
+        "membership_id": str(uuid.uuid4()),
+    }
+    pubsub = _FakePubSub(
+        [_message(f"notifications:user:{user_id}", payload)]
+    )
+    manager = _FakePubSubManager(
+        _ticket(user_id, is_admin=False, company_id=company_id), pubsub
+    )
+
+    response = await notification_stream(ticket="t", pubsub=manager)  # type: ignore[arg-type]
+    generator = response.body_iterator
+    await _next(generator)
+    revoked_event = await _next(generator)
+
+    assert f"event: {notifications_module.WORKSPACE_REVOKED_EVENT}" in revoked_event
+    assert payload["membership_id"] in revoked_event
+    with pytest.raises(StopAsyncIteration):
+        await _next(generator)
+
+    assert set(pubsub.unsubscribed) == {
+        f"notifications:user:{user_id}",
+        company_pipeline_channel(company_id),
+    }
+    assert pubsub.closed is True
+
+
+async def test_other_company_revocation_does_not_terminate_stream():
+    user_id = uuid.uuid4()
+    company_id = uuid.uuid4()
+    other_company_id = uuid.uuid4()
+    other_revocation = {
+        "type": notifications_module.WORKSPACE_REVOKED_EVENT,
+        "company_id": str(other_company_id),
+        "membership_id": str(uuid.uuid4()),
+    }
+    matching_revocation = {
+        "type": notifications_module.WORKSPACE_REVOKED_EVENT,
+        "company_id": str(company_id),
+        "membership_id": str(uuid.uuid4()),
+    }
+    personal_channel = f"notifications:user:{user_id}"
+    pubsub = _FakePubSub(
+        [
+            _message(personal_channel, other_revocation),
+            _message(personal_channel, matching_revocation),
+        ]
+    )
+    manager = _FakePubSubManager(
+        _ticket(user_id, is_admin=False, company_id=company_id), pubsub
+    )
+
+    response = await notification_stream(ticket="t", pubsub=manager)  # type: ignore[arg-type]
+    generator = response.body_iterator
+    await _next(generator)
+    revoked_event = await _next(generator)
+
+    assert matching_revocation["membership_id"] in revoked_event
+    assert other_revocation["membership_id"] not in revoked_event
+    with pytest.raises(StopAsyncIteration):
+        await _next(generator)
+
+
+async def test_heartbeat_revokes_when_pubsub_event_was_lost(monkeypatch):
+    user_id = uuid.uuid4()
+    company_id = uuid.uuid4()
+    pubsub = _FakePubSub(empty_returns_none=True)
+    manager = _FakePubSubManager(
+        _ticket(user_id, is_admin=False, company_id=company_id), pubsub
+    )
+    monkeypatch.setattr(notifications_module, "STREAM_HEARTBEAT_SECONDS", 0)
+    monkeypatch.setattr(notifications_module.asyncio, "sleep", _noop_sleep)
+    monkeypatch.setattr(
+        notifications_module,
+        "_workspace_stream_is_authorized",
+        AsyncMock(return_value=False),
+    )
+
+    response = await notification_stream(ticket="t", pubsub=manager)  # type: ignore[arg-type]
+    generator = response.body_iterator
+    chunks = [chunk async for chunk in generator]
+
+    assert any(
+        f"event: {notifications_module.WORKSPACE_REVOKED_EVENT}" in chunk
+        for chunk in chunks
+    )
+    assert pubsub.closed is True
+
+
+async def test_heartbeat_database_failure_fails_closed(monkeypatch):
+    user_id = uuid.uuid4()
+    company_id = uuid.uuid4()
+    pubsub = _FakePubSub(empty_returns_none=True)
+    manager = _FakePubSubManager(
+        _ticket(user_id, is_admin=False, company_id=company_id), pubsub
+    )
+    monkeypatch.setattr(notifications_module, "STREAM_HEARTBEAT_SECONDS", 0)
+    monkeypatch.setattr(notifications_module.asyncio, "sleep", _noop_sleep)
+    monkeypatch.setattr(
+        notifications_module,
+        "_workspace_stream_is_authorized",
+        AsyncMock(side_effect=RuntimeError("database down")),
+    )
+
+    response = await notification_stream(ticket="t", pubsub=manager)  # type: ignore[arg-type]
+    generator = response.body_iterator
+    chunks = [chunk async for chunk in generator]
+
+    assert any(
+        f"event: {notifications_module.WORKSPACE_REVOKED_EVENT}" in chunk
+        for chunk in chunks
+    )
+    assert pubsub.closed is True
 
 
 async def _noop_sleep(*_args, **_kwargs) -> None:

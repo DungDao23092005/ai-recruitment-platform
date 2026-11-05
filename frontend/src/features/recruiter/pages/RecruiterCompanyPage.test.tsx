@@ -24,6 +24,19 @@ vi.mock('@/api/client', () => ({
   },
 }))
 
+const workspaceMocks = vi.hoisted(() => ({
+  selectWorkspace: vi.fn(),
+  refreshWorkspaces: vi.fn().mockResolvedValue([]),
+}))
+
+vi.mock('@/contexts/WorkspaceContext', () => ({
+  useWorkspace: () => ({
+    selectedCompanyId: null,
+    selectWorkspace: workspaceMocks.selectWorkspace,
+    refreshWorkspaces: workspaceMocks.refreshWorkspaces,
+  }),
+}))
+
 const mockedGet = vi.mocked(apiClient.get)
 const mockedPost = vi.mocked(apiClient.post)
 const mockedPatch = vi.mocked(apiClient.patch)

@@ -9,8 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import EntityNotFoundException, ValidationError
-from app.domain.enums import ApplicationStatus, SubscriptionStatus
-from app.models import RecruiterProfile, RecruitmentPlan, Subscription, User
+from app.domain.enums import ApplicationStatus, SubscriptionStatus, UserRole
+from app.models import (
+    CompanyMembership,
+    RecruitmentPlan,
+    Subscription,
+    User,
+)
+from app.repositories import CompanyMembershipRepository
 from app.repositories.analytics_repository import AnalyticsRepository
 from app.schemas.analytics import (
     ANALYTICS_TIMEZONE,
@@ -28,6 +34,7 @@ from app.services.analytics_time import (
     day_start_utc,
     vietnam_today,
 )
+from app.services.workspace_service import get_workspace_company_id
 
 MAX_ANALYTICS_RANGE_DAYS = 366
 DEFAULT_ANALYTICS_RANGE_DAYS = 30
@@ -81,12 +88,24 @@ class AnalyticsService:
     async def _resolve_company_id(
         self, current_user: User, job_id: uuid.UUID | None = None
     ) -> uuid.UUID:
-        company_id = await self.session.scalar(
-            select(RecruiterProfile.company_id).where(
-                RecruiterProfile.user_id == current_user.id,
-                RecruiterProfile.is_deleted == False,  # noqa: E712
-            )
+        memberships = CompanyMembershipRepository(
+            self.session, CompanyMembership
         )
+        selected_company_id = get_workspace_company_id()
+        company_id: uuid.UUID | None = None
+        if selected_company_id is not None:
+            if current_user.role == UserRole.ADMIN:
+                company_id = selected_company_id
+            else:
+                membership = await memberships.get_active(
+                    current_user.id, selected_company_id
+                )
+                if membership is not None:
+                    company_id = selected_company_id
+        else:
+            active = await memberships.list_active_for_user(current_user.id)
+            if len(active) == 1:
+                company_id = active[0].company_id
         if company_id is None:
             raise EntityNotFoundException("Recruiter company not found")
 

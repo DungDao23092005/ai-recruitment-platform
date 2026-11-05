@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -53,8 +54,18 @@ class FakeDb:
     def __init__(self, company_id: uuid.UUID | None = None) -> None:
         self.company_id = company_id
 
-    async def scalar(self, _statement):
-        return self.company_id
+    async def execute(self, _statement):
+        result = MagicMock()
+        membership = (
+            SimpleNamespace(company_id=self.company_id)
+            if self.company_id is not None
+            else None
+        )
+        result.scalar_one_or_none.return_value = membership
+        result.scalars.return_value.unique.return_value.all.return_value = (
+            [membership] if membership is not None else []
+        )
+        return result
 
 
 def make_user() -> User:

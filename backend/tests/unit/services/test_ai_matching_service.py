@@ -1196,8 +1196,12 @@ def test_recommend_candidates_redacts_non_applicant_pii_end_to_end(
         ),
     ]
 
-    company_result = MagicMock()
-    company_result.scalar_one_or_none.return_value = company_id
+    membership = MagicMock()
+    membership.company_id = company_id
+    membership_result = MagicMock()
+    membership_result.scalars.return_value.unique.return_value.all.return_value = [
+        membership
+    ]
     profiles_result = MagicMock()
     profiles_result.scalars.return_value.all.return_value = profiles
     application_result = MagicMock()
@@ -1208,9 +1212,9 @@ def test_recommend_candidates_redacts_non_applicant_pii_end_to_end(
     session = MagicMock()
     session.execute = AsyncMock(
         side_effect=[
-            company_result,
+            membership_result,
             profiles_result,
-            company_result,
+            membership_result,
             application_result,
             resumes_result,
         ]

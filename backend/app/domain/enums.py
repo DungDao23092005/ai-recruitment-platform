@@ -7,6 +7,23 @@ class UserRole(str, Enum):
     RECRUITER = "recruiter"
 
 
+class MembershipRole(str, Enum):
+    ADMIN = "admin"
+    RECRUITER = "recruiter"
+
+
+class MembershipStatus(str, Enum):
+    ACTIVE = "active"
+    REVOKED = "revoked"
+
+
+class InvitationStatus(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
 class JobStatus(str, Enum):
     DRAFT = "draft"
     PUBLISHED = "published"
@@ -142,6 +159,7 @@ class AdminAuditAction(str, Enum):
     USER_LOCK = "user_lock"
     USER_UNLOCK = "user_unlock"
     USER_DELETE = "user_delete"
+    WORKSPACE_ACCESS = "workspace_access"
 
 
 class SubscriptionUsageFeatureType(str, Enum):

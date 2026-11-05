@@ -9,12 +9,15 @@ from app.core.exceptions import (
     EntityNotFoundException,
     ForbiddenException,
 )
-from app.domain.enums import UserRole
-from app.models import Company, User
-from app.repositories import CompanyRepository
+from app.domain.enums import MembershipRole, MembershipStatus, UserRole
+from app.models import Company, CompanyMembership, RecruiterProfile, User
+from app.repositories import (
+    CompanyMembershipRepository,
+    CompanyRepository,
+    UserRepository,
+)
 from app.schemas.company import CompanyCreate, CompanyUpdate
 from app.services.job_service import JobService
-from app.services.user_service import UserService
 
 
 class CompanyService:
@@ -25,6 +28,10 @@ class CompanyService:
     ) -> None:
         self.session = session
         self.companies = CompanyRepository(session, Company)
+        self.users = UserRepository(session, User)
+        self.memberships = CompanyMembershipRepository(
+            session, CompanyMembership
+        )
         self.job_service = job_service
 
     async def create_company(self, data: CompanyCreate) -> Company:
@@ -52,40 +59,95 @@ class CompanyService:
             raise
         return company
 
+    async def create_company_for_owner(
+        self,
+        data: CompanyCreate,
+        owner: User,
+    ) -> Company:
+        """Create a company and its first Admin membership atomically."""
+        loaded_owner = await self.users.get_with_profile(owner.id)
+        if loaded_owner is not None:
+            owner = loaded_owner
+        if await self.companies.get_by_slug(data.slug) is not None:
+            raise ConflictException(
+                f"Đường dẫn (slug) {data.slug!r} đã được sử dụng."
+            )
+        if await self.companies.get_by_tax_code(data.tax_code) is not None:
+            raise ConflictException(
+                f"Mã số thuế {data.tax_code!r} đã được sử dụng."
+            )
+
+        company = Company(
+            name=data.name,
+            slug=data.slug,
+            tax_code=data.tax_code,
+            size=data.size,
+        )
+        self.session.add(company)
+        await self.session.flush()
+
+        membership = CompanyMembership(
+            company_id=company.id,
+            user_id=owner.id,
+            role=MembershipRole.ADMIN,
+            status=MembershipStatus.ACTIVE,
+            joined_at=company.created_at,
+        )
+        self.session.add(membership)
+
+        if owner.recruiter_profile is None:
+            self.session.add(
+                RecruiterProfile(
+                    user_id=owner.id,
+                    company_id=company.id,
+                )
+            )
+        elif owner.recruiter_profile.company_id is None:
+            owner.recruiter_profile.company_id = company.id
+
+        try:
+            await self.session.commit()
+            await self.session.refresh(company)
+        except Exception:
+            await self.session.rollback()
+            raise
+        return company
+
     async def get_company_by_id(self, company_id: uuid.UUID) -> Company | None:
         return await self.companies.get_by_id(company_id)
 
     async def list_companies(self) -> list[Company]:
         return await self.companies.list_all()
 
+    async def list_companies_for_user(self, user: User) -> list[Company]:
+        if user.role == UserRole.ADMIN:
+            return await self.companies.list_all()
+        memberships = await self.memberships.list_active_for_user(user.id)
+        return [
+            membership.company
+            for membership in memberships
+            if membership.company is not None
+        ]
+
     async def update_owned_company(
         self,
         user: User,
         company_id: uuid.UUID,
         data: CompanyUpdate,
+        workspace_company_id: uuid.UUID | None = None,
     ) -> Company:
-        """Update a company with recruiter ownership enforced.
-
-        Mirrors ``JobService`` ownership: an admin may update any company; a
-        recruiter may only update the company their profile points to. All
-        validation, uniqueness checks and the commit are delegated to
-        ``update_company`` so no logic is duplicated.
-        """
+        """Update a company using the caller's active workspace membership."""
         if user.role != UserRole.ADMIN:
-            owned_company_id = await self._get_owned_company_id(user.id)
-            if owned_company_id is None or owned_company_id != company_id:
+            company = await self.companies.get_by_id(company_id)
+            if company is None:
+                raise EntityNotFoundException(
+                    f"Company {company_id} not found"
+                )
+            if workspace_company_id != company_id:
                 raise ForbiddenException(
                     f"Not allowed to update company {company_id}"
                 )
         return await self.update_company(company_id, data)
-
-    async def _get_owned_company_id(
-        self,
-        user_id: uuid.UUID,
-    ) -> uuid.UUID | None:
-        user = await UserService(self.session).get_user_with_profile(user_id)
-        profile = user.recruiter_profile if user is not None else None
-        return profile.company_id if profile is not None else None
 
     async def update_company(
         self,

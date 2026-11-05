@@ -119,3 +119,11 @@ class InvalidDocumentError(AIError):
 
 class ValidationError(ServiceException):
     """Raised when input validation fails (maps to HTTP 422)."""
+
+
+class WorkspaceSelectionRequiredException(ServiceException):
+    """Raised when a user has multiple workspaces and no valid selector."""
+
+
+class WorkspaceRequiredException(ForbiddenException):
+    """Raised when no active workspace membership grants access."""

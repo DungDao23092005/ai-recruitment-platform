@@ -4,6 +4,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { AppShell } from './AppShell'
 import { AuthProvider } from '@/contexts/AuthContext'
+import { WorkspaceProvider } from '@/contexts/WorkspaceContext'
 import * as authApi from '@/api/auth'
 import type { User, UserRole } from '@/types/auth'
 
@@ -28,6 +29,10 @@ vi.mock('@/components/common/NotificationBell', () => ({
   NotificationBell: () => null,
 }))
 
+vi.mock('@/api/workspaces', () => ({
+  getWorkspaces: vi.fn().mockResolvedValue([]),
+}))
+
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
 
 function renderShell(role: UserRole, path: string) {
@@ -37,11 +42,13 @@ function renderShell(role: UserRole, path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <AuthProvider>
-        <Routes>
-          <Route element={<AppShell />}>
-            <Route path={path} element={<div>App Content</div>} />
-          </Route>
-        </Routes>
+        <WorkspaceProvider>
+          <Routes>
+            <Route element={<AppShell />}>
+              <Route path={path} element={<div>App Content</div>} />
+            </Route>
+          </Routes>
+        </WorkspaceProvider>
       </AuthProvider>
     </MemoryRouter>,
   )

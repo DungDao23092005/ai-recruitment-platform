@@ -7,11 +7,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import EntityNotFoundException, ForbiddenException, InvalidTransitionException
 from app.domain.enums import JobStatus, JobType, UserRole, WorkplaceType
-from app.models import Company, Job, JobSkill, Skill, User
-from app.repositories import CompanyRepository, JobRepository
+from app.models import Company, CompanyMembership, Job, JobSkill, Skill, User
+from app.repositories import (
+    CompanyMembershipRepository,
+    CompanyRepository,
+    JobRepository,
+)
 from app.schemas.job import JobCreate, JobUpdate
 from app.services.quota_enforcement_service import QuotaEnforcementService
-from app.services.user_service import UserService
+from app.services.workspace_service import get_workspace_company_id
 
 JOB_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
     JobStatus.DRAFT: {JobStatus.PUBLISHED},
@@ -39,6 +43,9 @@ class JobService:
         self.session = session
         self.jobs = JobRepository(session, Job)
         self.companies = CompanyRepository(session, Company)
+        self.memberships = CompanyMembershipRepository(
+            session, CompanyMembership
+        )
         self.embedding_service = embedding_service or EmbeddingService(
             SentenceTransformerEmbeddingProvider()
         )
@@ -305,8 +312,11 @@ class JobService:
         user_id: uuid.UUID,
         skip: int = 0,
         limit: int = 10,
+        company_id: uuid.UUID | None = None,
     ) -> list[Job]:
-        owned_company_id = await self._get_owned_company_id(user_id)
+        owned_company_id = await self._get_owned_company_id(
+            user_id, company_id
+        )
         if owned_company_id is None:
             return []
         return await self.jobs.list_jobs_by_company(
@@ -319,6 +329,7 @@ class JobService:
         self,
         user: User,
         job_id: uuid.UUID,
+        company_id: uuid.UUID | None = None,
     ) -> Job:
         """Resolve a job for a recruiter/admin with ownership enforced.
 
@@ -334,7 +345,9 @@ class JobService:
         if user.role == UserRole.ADMIN:
             return job
 
-        owned_company_id = await self._get_owned_company_id(user.id)
+        owned_company_id = await self._get_owned_company_id(
+            user.id, company_id
+        )
         if owned_company_id is None or owned_company_id != job.company_id:
             raise EntityNotFoundException(f"Job {job_id} not found")
         return job
@@ -342,10 +355,20 @@ class JobService:
     async def _get_owned_company_id(
         self,
         user_id: uuid.UUID,
+        company_id: uuid.UUID | None = None,
     ) -> uuid.UUID | None:
-        user = await UserService(self.session).get_user_with_profile(user_id)
-        profile = user.recruiter_profile if user is not None else None
-        return profile.company_id if profile is not None else None
+        selected_company_id = company_id or get_workspace_company_id()
+        if selected_company_id is not None:
+            membership = await self.memberships.get_active(
+                user_id, selected_company_id
+            )
+            return (
+                selected_company_id if membership is not None else None
+            )
+        memberships = await self.memberships.list_active_for_user(user_id)
+        if len(memberships) == 1:
+            return memberships[0].company_id
+        return None
 
     async def list_all_jobs(
         self,

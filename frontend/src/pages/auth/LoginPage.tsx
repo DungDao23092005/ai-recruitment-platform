@@ -23,6 +23,12 @@ interface FormErrors {
   password?: string
 }
 
+interface LoginLocationState {
+  from?: string
+  registered?: boolean
+  invitationToken?: string
+}
+
 function validate(values: FormValues): FormErrors {
   const errors: FormErrors = {}
   if (!values.email.trim()) {
@@ -52,9 +58,10 @@ export function LoginPage() {
   const [apiError, setApiError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
-  const from = (location.state as { from?: string } | null)?.from
-  const justRegistered = (location.state as { registered?: boolean } | null)
-    ?.registered
+  const state = location.state as LoginLocationState | null
+  const from = state?.from
+  const invitationToken = state?.invitationToken
+  const justRegistered = state?.registered
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -72,7 +79,10 @@ export function LoginPage() {
         email: values.email.trim(),
         password: values.password,
       })
-      navigate(from ?? homeForRole(user.role), { replace: true })
+      navigate(from ?? homeForRole(user.role), {
+        replace: true,
+        state: invitationToken ? { invitationToken } : undefined,
+      })
     } catch (error) {
       setApiError(getFriendlyErrorMessage(error))
     } finally {

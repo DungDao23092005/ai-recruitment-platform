@@ -6,8 +6,12 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.domain.enums import JobStatus, JobType, WorkplaceType
-from app.models import Company, Job
+from app.models import Company, CompanyMembership, Job
 from app.repositories.base import BaseRepository
+from app.core.workspace_context import get_workspace_company_id
+from app.repositories.company_membership_repository import (
+    CompanyMembershipRepository,
+)
 
 
 class JobRepository(BaseRepository[Job]):
@@ -204,6 +208,24 @@ class JobRepository(BaseRepository[Job]):
 
         return items, total
 
+    async def _resolve_matching_company_id(
+        self,
+        user_id: Any,
+    ) -> Any | None:
+        memberships = CompanyMembershipRepository(
+            self.session, CompanyMembership
+        )
+        selected_company_id = get_workspace_company_id()
+        if selected_company_id is not None:
+            membership = await memberships.get_active(
+                user_id, selected_company_id
+            )
+            return selected_company_id if membership is not None else None
+        active = await memberships.list_active_for_user(user_id)
+        if len(active) == 1:
+            return active[0].company_id
+        return None
+
     async def count_matching_jobs(
         self,
         user_role: str,
@@ -224,19 +246,14 @@ class JobRepository(BaseRepository[Job]):
         Returns:
             Total count of matching jobs
         """
-        from app.models import RecruiterProfile
-
         filters = [Job.is_deleted == False]  # noqa: E712
 
         if user_role == "ADMIN":
             pass
         elif user_role == "RECRUITER":
-            stmt = select(RecruiterProfile.company_id).where(
-                RecruiterProfile.user_id == actor_user_id,
-                RecruiterProfile.is_deleted == False,  # noqa: E712
+            recruiter_company_id = await self._resolve_matching_company_id(
+                actor_user_id
             )
-            result = await self.session.execute(stmt)
-            recruiter_company_id = result.scalar_one_or_none()
             if recruiter_company_id is None:
                 return 0
             filters.append(Job.company_id == recruiter_company_id)
@@ -278,19 +295,14 @@ class JobRepository(BaseRepository[Job]):
         Returns:
             List of matching jobs with skills and company loaded
         """
-        from app.models import RecruiterProfile
-
         filters = [Job.is_deleted == False]  # noqa: E712
 
         if user_role == "ADMIN":
             pass
         elif user_role == "RECRUITER":
-            stmt = select(RecruiterProfile.company_id).where(
-                RecruiterProfile.user_id == actor_user_id,
-                RecruiterProfile.is_deleted == False,  # noqa: E712
+            recruiter_company_id = await self._resolve_matching_company_id(
+                actor_user_id
             )
-            result = await self.session.execute(stmt)
-            recruiter_company_id = result.scalar_one_or_none()
             if recruiter_company_id is None:
                 return []
             filters.append(Job.company_id == recruiter_company_id)

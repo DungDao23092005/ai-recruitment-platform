@@ -11,8 +11,9 @@ from app.core.exceptions import (
     InvalidDocumentError,
 )
 from app.domain.enums import JobStatus, UserRole
-from app.models import CandidateProfile, Job, Resume
-from app.repositories import BaseRepository
+from app.models import Application, CandidateProfile, CompanyMembership, Job, Resume
+from app.repositories import BaseRepository, CompanyMembershipRepository
+from app.services.workspace_service import get_workspace_company_id
 from app.schemas.ai_search import SemanticSearchResult
 
 
@@ -122,6 +123,7 @@ class SemanticSearchService:
         limit: int = 10,
         score_threshold: float | None = None,
         candidate_repository: BaseRepository[CandidateProfile] | None = None,
+        actor_user: Any | None = None,
     ) -> list[SemanticSearchResult]:
         """Search candidates and enrich with profile data.
 
@@ -146,9 +148,24 @@ class SemanticSearchService:
         # Extract candidate IDs from Qdrant results (preserving order)
         candidate_ids = [uuid.UUID(r.id) for r in raw_results]
 
+        authorized_candidate_ids: list[uuid.UUID] | None = None
+        if actor_user is not None and actor_user.role == UserRole.RECRUITER:
+            company_id = await self._get_recruiter_company_id(
+                candidate_repository, actor_user.id
+            )
+            if company_id is None:
+                return []
+            authorized_candidate_ids = await self._get_company_applicant_ids(
+                candidate_repository, company_id, candidate_ids
+            )
+            if not authorized_candidate_ids:
+                return []
+
         # Batch query for candidate profiles
         profiles = await self._fetch_candidate_profiles(
-            candidate_repository, candidate_ids
+            candidate_repository,
+            candidate_ids,
+            authorized_candidate_ids=authorized_candidate_ids,
         )
 
         # Build lookup map
@@ -177,6 +194,8 @@ class SemanticSearchService:
         self,
         repository: BaseRepository[CandidateProfile],
         candidate_ids: list[uuid.UUID],
+        *,
+        authorized_candidate_ids: list[uuid.UUID] | None = None,
     ) -> list[CandidateProfile]:
         """Batch fetch non-deleted candidate profiles by IDs."""
         if not candidate_ids:
@@ -198,8 +217,33 @@ class SemanticSearchService:
                 CandidateProfile.is_deleted == False,  # noqa: E712
             )
         )
+        if authorized_candidate_ids is not None:
+            stmt = stmt.where(
+                CandidateProfile.id.in_(authorized_candidate_ids)
+            )
         result = await repository.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def _get_company_applicant_ids(
+        self,
+        repository: BaseRepository,
+        company_id: uuid.UUID,
+        candidate_ids: list[uuid.UUID],
+    ) -> list[uuid.UUID]:
+        from sqlalchemy import select
+
+        stmt = (
+            select(Application.candidate_id)
+            .join(Job, Application.job_id == Job.id)
+            .where(
+                Job.company_id == company_id,
+                Job.is_deleted == False,  # noqa: E712
+                Application.candidate_id.in_(candidate_ids),
+                Application.is_deleted == False,  # noqa: E712
+            )
+        )
+        result = await repository.session.execute(stmt)
+        return [row[0] for row in result.all()]
 
     async def _fetch_jobs(
         self,
@@ -240,16 +284,26 @@ class SemanticSearchService:
         result = await repository.session.execute(stmt)
         return list(result.scalars().unique().all())
 
-    async def _get_recruiter_company_id(self, repository: BaseRepository[Job], user_id: uuid.UUID) -> uuid.UUID | None:
-        """Get the company ID for a recruiter user."""
-        from sqlalchemy import select
-        from app.models import RecruiterProfile
-        stmt = select(RecruiterProfile.company_id).where(
-            RecruiterProfile.user_id == user_id,
-            RecruiterProfile.is_deleted == False,  # noqa: E712
+    async def _get_recruiter_company_id(
+        self,
+        repository: BaseRepository,
+        user_id: uuid.UUID,
+    ) -> uuid.UUID | None:
+        """Resolve the recruiter's selected, authorized workspace."""
+        memberships = CompanyMembershipRepository(
+            repository.session, CompanyMembership
         )
-        result = await repository.session.execute(stmt)
-        return result.scalar_one_or_none()
+        selected_company_id = get_workspace_company_id()
+        if selected_company_id is not None:
+            membership = await memberships.get_active(
+                user_id, selected_company_id
+            )
+            return selected_company_id if membership is not None else None
+
+        active = await memberships.list_active_for_user(user_id)
+        if len(active) == 1:
+            return active[0].company_id
+        return None
 
     async def _search_jobs_dynamic(
         self,

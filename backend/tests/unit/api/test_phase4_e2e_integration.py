@@ -438,6 +438,15 @@ def _fake_db_session() -> MagicMock:
         if "from jobs" in compiled:
             result.scalars().unique().first.return_value = _make_db_job()
             result.scalars().all.return_value = [_make_db_job()]
+        elif "from company_memberships" in compiled:
+            membership = SimpleNamespace(
+                company_id=KNOWN_COMPANY_ID,
+                company=SimpleNamespace(
+                    id=KNOWN_COMPANY_ID, name="TechNova AI"
+                ),
+            )
+            result.scalar_one_or_none.return_value = membership
+            result.scalars().unique().all.return_value = [membership]
         elif "from candidate_profiles" in compiled or "from candidateprofile" in compiled:
             if "is_deleted" in compiled:
                 # ContextResolver candidate profile query
@@ -632,10 +641,25 @@ class TestApiRegression:
         }
         assert expected.issubset(routes)
 
-    def test_health_endpoint_is_healthy(self, client):
+    def test_health_endpoint_is_healthy(self, client, monkeypatch):
+        async def healthy_component(*_args, **_kwargs):
+            return {"status": "healthy"}
+
+        # Unit tests must not depend on host DNS resolving localhost to the
+        # container's IPv4 bind address, or on live Redis/Qdrant availability.
+        monkeypatch.setattr(
+            "app.api.v1.endpoints.health.check_database", healthy_component
+        )
+        monkeypatch.setattr(
+            "app.api.v1.endpoints.health.check_redis", healthy_component
+        )
+        monkeypatch.setattr(
+            "app.api.v1.endpoints.health.check_qdrant", healthy_component
+        )
+
         resp = client.get("/api/v1/health")
 
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["status"] == "healthy"
         assert body["service"] == "AI Recruitment Platform API"

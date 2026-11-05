@@ -1,8 +1,10 @@
 import logging
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from redis.asyncio import Redis, ConnectionPool
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -16,6 +18,10 @@ from app.core.correlation import (
 from app.core.pubsub import pubsub_manager
 from app.core.rate_limit import RateLimiter, set_rate_limiter
 from app.core.request_limits import RequestBodyLimitMiddleware
+from app.core.workspace_context import (
+    reset_workspace_company_id,
+    set_workspace_company_id,
+)
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 
 logger = logging.getLogger(__name__)
@@ -213,6 +219,31 @@ app = FastAPI(
     lifespan=lifespan,
     exception_handlers={Exception: handle_unhandled_exception},
 )
+
+@app.middleware("http")
+async def workspace_header_context(request: Request, call_next):
+    """Expose the selected company header to services.
+
+    This only parses the untrusted selector. Authorization is enforced by
+    ``get_current_workspace`` and by services validating an active membership
+    before using the selector.
+    """
+    raw_company_id = request.headers.get("X-Company-ID")
+    token = None
+    if raw_company_id:
+        try:
+            token = set_workspace_company_id(uuid.UUID(raw_company_id))
+        except (TypeError, ValueError):
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "X-Company-ID must be a valid UUID"},
+            )
+    try:
+        return await call_next(request)
+    finally:
+        if token is not None:
+            reset_workspace_company_id(token)
+
 
 # Set up CORS middleware
 app.add_middleware(

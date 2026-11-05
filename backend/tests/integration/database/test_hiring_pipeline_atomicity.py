@@ -20,6 +20,8 @@ from app.domain.enums import (
     CompanySize,
     JobStatus,
     JobType,
+    MembershipRole,
+    MembershipStatus,
     UserRole,
     WorkplaceType,
 )
@@ -28,6 +30,7 @@ from app.models import (
     ApplicationActivity,
     CandidateProfile,
     Company,
+    CompanyMembership,
     EmailOutbox,
     Job,
     RecruiterProfile,
@@ -67,6 +70,14 @@ async def _seed(session):
     await session.flush()
 
     session.add(RecruiterProfile(user_id=recruiter.id, company_id=company.id))
+    session.add(
+        CompanyMembership(
+            company_id=company.id,
+            user_id=recruiter.id,
+            role=MembershipRole.ADMIN,
+            status=MembershipStatus.ACTIVE,
+        )
+    )
     candidate_profile = CandidateProfile(
         id=uuid.uuid4(), user_id=candidate.id, full_name="Atomic Candidate"
     )

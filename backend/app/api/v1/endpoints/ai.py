@@ -25,6 +25,7 @@ from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 from app.api.deps import (
     get_current_active_user,
     get_db,
+    get_optional_workspace,
     require_candidate,
     require_recruiter,
     require_admin,
@@ -592,6 +593,7 @@ async def semantic_search_jobs(
     "/search/candidates",
     response_model=list[SemanticSearchResult],
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def semantic_search_candidates(
     q: str = Query(..., min_length=1),
@@ -622,6 +624,7 @@ async def semantic_search_candidates(
             limit=limit,
             score_threshold=score_threshold,
             candidate_repository=candidate_repo,
+            actor_user=current_user,
         )
 
         # Finalize reservation on success
@@ -658,6 +661,7 @@ async def semantic_search_candidates(
     "/recommendations/candidates",
     response_model=list[CandidateMatchRecommendation],
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def recommend_candidates_for_job(
     current_user: User = Depends(require_recruiter),

@@ -13,9 +13,27 @@ from app.services.analytics_service import AnalyticsService
 from app.services.analytics_time import vietnam_today
 
 
+class FakeResult:
+    def __init__(self, rows) -> None:
+        self._rows = list(rows)
+
+    def scalars(self):
+        return self
+
+    def unique(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+
 class FakeSession:
-    def __init__(self, *scalars) -> None:
+    def __init__(self, *scalars, memberships=()) -> None:
         self._scalars = list(scalars)
+        self._memberships = [
+            SimpleNamespace(company_id=company_id)
+            for company_id in memberships
+        ]
         self.scalar_calls = []
         self.get_calls = []
 
@@ -24,6 +42,9 @@ class FakeSession:
         if not self._scalars:
             return None
         return self._scalars.pop(0)
+
+    async def execute(self, statement, params=None):
+        return FakeResult(self._memberships)
 
     async def get(self, model, key):
         self.get_calls.append((model, key))
@@ -99,8 +120,16 @@ def _funnel_row(job_id, status="applied", **flags):
     }
 
 
-def _service(repository, *, session_scalars=(uuid.uuid4(),), quota=None):
-    service = AnalyticsService(FakeSession(*session_scalars))
+def _service(
+    repository,
+    *,
+    session_scalars=(),
+    memberships=(uuid.uuid4(),),
+    quota=None,
+):
+    service = AnalyticsService(
+        FakeSession(*session_scalars, memberships=memberships)
+    )
     service.repository = repository
 
     async def fake_quota(user_id):
@@ -136,10 +165,7 @@ async def test_today_uses_raw_events_and_historical_days_use_aggregates():
         avg=2.5,
         jobs={job_id: SimpleNamespace(title="Backend", status=JobStatus.PUBLISHED)},
     )
-    service = _service(
-        repository,
-        session_scalars=(company_id,),
-    )
+    service = _service(repository, memberships=(company_id,))
 
     response = await service.get_recruiter_dashboard(FakeUser())
 
@@ -160,10 +186,10 @@ async def test_today_uses_raw_events_and_historical_days_use_aggregates():
 
 
 @pytest.mark.asyncio
-async def test_company_is_resolved_from_the_recruiter_profile():
+async def test_company_is_resolved_from_the_active_membership():
     company_id = uuid.uuid4()
     repository = FakeRepository()
-    service = _service(repository, session_scalars=(company_id,))
+    service = _service(repository, memberships=(company_id,))
 
     await service.get_recruiter_dashboard(FakeUser())
 
@@ -172,9 +198,9 @@ async def test_company_is_resolved_from_the_recruiter_profile():
 
 
 @pytest.mark.asyncio
-async def test_missing_recruiter_company_raises_not_found():
+async def test_missing_workspace_raises_not_found():
     repository = FakeRepository()
-    service = _service(repository, session_scalars=(None,))
+    service = _service(repository, memberships=())
 
     with pytest.raises(EntityNotFoundException):
         await service.get_recruiter_dashboard(FakeUser())
@@ -186,7 +212,11 @@ async def test_foreign_job_filter_is_rejected_by_tenant_check():
     company_id = uuid.uuid4()
     job_id = uuid.uuid4()
     repository = FakeRepository()
-    service = _service(repository, session_scalars=(company_id, None))
+    service = _service(
+        repository,
+        session_scalars=(None,),
+        memberships=(company_id,),
+    )
 
     with pytest.raises(EntityNotFoundException):
         await service.get_recruiter_dashboard(FakeUser(), job_id=job_id)
@@ -220,7 +250,8 @@ async def test_job_filter_restricts_views_funnel_hires_and_metadata():
     )
     service = _service(
         repository,
-        session_scalars=(company_id, job_a),
+        session_scalars=(job_a,),
+        memberships=(company_id,),
     )
 
     response = await service.get_recruiter_dashboard(FakeUser(), job_id=job_a)
@@ -243,10 +274,7 @@ async def test_aggregate_wins_over_raw_for_completed_days_even_if_raw_differs():
         aggregates=[_view_row(job_id, day, 20, 10, 0)],
         raw=[_view_row(job_id, day, 7, 7, 7)],
     )
-    service = _service(
-        repository,
-        session_scalars=(company_id,),
-    )
+    service = _service(repository, memberships=(company_id,))
 
     response = await service.get_recruiter_dashboard(FakeUser())
 

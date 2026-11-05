@@ -9,8 +9,16 @@ from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import EntityNotFoundException
 from app.domain.enums import JobStatus
-from app.models import CandidateProfile, Company, Job, KnowledgeDocument, RecruiterProfile, Resume, User
-from app.repositories import ResumeRepository
+from app.models import (
+    CandidateProfile,
+    CompanyMembership,
+    Job,
+    KnowledgeDocument,
+    Resume,
+    User,
+)
+from app.repositories import CompanyMembershipRepository, ResumeRepository
+from app.services.workspace_service import get_workspace_company_id
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.schemas.ai_knowledge import KnowledgeDocumentRead
@@ -351,13 +359,21 @@ class ContextResolver:
         return [row[0] for row in result.all()]
 
     async def _get_recruiter_company_id(self, user_id: uuid.UUID) -> uuid.UUID | None:
-        """Get the company ID for a recruiter user."""
-        stmt = select(RecruiterProfile.company_id).where(
-            RecruiterProfile.user_id == user_id,
-            RecruiterProfile.is_deleted == False,  # noqa: E712
+        """Resolve the recruiter's selected, authorized workspace."""
+        memberships = CompanyMembershipRepository(
+            self.session, CompanyMembership
         )
-        result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        selected_company_id = get_workspace_company_id()
+        if selected_company_id is not None:
+            membership = await memberships.get_active(
+                user_id, selected_company_id
+            )
+            return selected_company_id if membership is not None else None
+
+        active = await memberships.list_active_for_user(user_id)
+        if len(active) == 1:
+            return active[0].company_id
+        return None
 
     async def _get_candidate_profile(self, user_id: uuid.UUID) -> CandidateProfile | None:
         """Get candidate profile for a user."""

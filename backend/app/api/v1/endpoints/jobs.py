@@ -5,7 +5,12 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user_optional, get_db, require_recruiter
+from app.api.deps import (
+    get_current_user_optional,
+    get_db,
+    get_optional_workspace,
+    require_recruiter,
+)
 from app.core.exceptions import (
     AIError,
     EmptyDocumentError,
@@ -16,7 +21,8 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.domain.enums import JobStatus, JobType, UserRole, WorkplaceType
-from app.models import Job, User
+from app.models import CompanyMembership, Job, User
+from app.repositories import CompanyMembershipRepository
 from app.schemas.job import JobCreate, JobRead, JobStatusUpdate, JobUpdate
 from app.services.company_service import CompanyService
 from app.services.job_service import JobService
@@ -24,7 +30,7 @@ from app.services.job_view_telemetry_service import (
     JobViewTelemetryService,
     get_job_view_telemetry_service,
 )
-from app.services.user_service import UserService
+from app.services.workspace_service import WorkspaceContext
 
 router = APIRouter()
 
@@ -60,6 +66,7 @@ def _get_job_service(db: AsyncSession = Depends(get_db)) -> JobService:
 async def create_job(
     data: JobCreate,
     current_user: User = Depends(require_recruiter),
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     service: JobService = Depends(_get_job_service),
 ) -> JobRead:
     company = await CompanyService(service.session).get_company_by_id(
@@ -73,12 +80,7 @@ async def create_job(
 
     is_admin = current_user.role == UserRole.ADMIN
     if not is_admin:
-        user = await UserService(service.session).get_user_with_profile(
-            current_user.id
-        )
-        profile = user.recruiter_profile if user is not None else None
-        owned_company_id = profile.company_id if profile is not None else None
-        if owned_company_id is None or owned_company_id != data.company_id:
+        if workspace is None or workspace.company_id != data.company_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(
@@ -145,17 +147,19 @@ async def list_jobs(
 )
 async def list_my_jobs(
     current_user: User = Depends(require_recruiter),
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     skip: int = 0,
     limit: int = 10,
     service: JobService = Depends(_get_job_service),
 ) -> list[JobRead]:
-    if current_user.role == UserRole.ADMIN:
+    if current_user.role == UserRole.ADMIN and workspace is None:
         jobs = await service.list_all_jobs(skip=skip, limit=limit)
     else:
         jobs = await service.list_recruiter_jobs(
             current_user.id,
             skip=skip,
             limit=limit,
+            company_id=workspace.company_id if workspace else None,
         )
     return [to_job_read(j) for j in jobs]
 
@@ -167,10 +171,15 @@ async def list_my_jobs(
 async def get_my_job(
     job_id: uuid.UUID,
     current_user: User = Depends(require_recruiter),
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     service: JobService = Depends(_get_job_service),
 ) -> JobRead:
     try:
-        job = await service.get_recruiter_job_by_id(current_user, job_id)
+        job = await service.get_recruiter_job_by_id(
+            current_user,
+            job_id,
+            company_id=workspace.company_id if workspace else None,
+        )
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -187,6 +196,7 @@ async def update_my_job(
     job_id: uuid.UUID,
     data: JobUpdate,
     current_user: User = Depends(require_recruiter),
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     service: JobService = Depends(_get_job_service),
 ) -> JobRead:
     try:
@@ -217,10 +227,15 @@ async def update_my_job_status(
     job_id: uuid.UUID,
     data: JobStatusUpdate,
     current_user: User = Depends(require_recruiter),
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     service: JobService = Depends(_get_job_service),
 ) -> JobRead:
     try:
-        await service.get_recruiter_job_by_id(current_user, job_id)
+        await service.get_recruiter_job_by_id(
+            current_user,
+            job_id,
+            company_id=workspace.company_id if workspace else None,
+        )
         job = await service.update_job_status(
             job_id,
             data.status,
@@ -252,6 +267,7 @@ async def update_my_job_status(
 async def delete_my_job(
     job_id: uuid.UUID,
     current_user: User = Depends(require_recruiter),
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     service: JobService = Depends(_get_job_service),
 ) -> None:
     try:
@@ -302,14 +318,13 @@ async def get_job(
 async def _is_own_company_view(
     db: AsyncSession, current_user: User | None, job: Job
 ) -> bool:
-    """True when a recruiter is viewing a job owned by their own company.
-
-    The company comes from the authoritative ``RecruiterProfile.company_id``
-    rather than from request data. Candidates, admins, anonymous visitors and
-    recruiters viewing another company's job all still count as views.
-    """
+    """True when a recruiter is viewing a job owned by one of their companies."""
     if current_user is None or current_user.role != UserRole.RECRUITER:
         return False
-    user = await UserService(db).get_user_with_profile(current_user.id)
-    profile = user.recruiter_profile if user is not None else None
-    return profile is not None and profile.company_id == job.company_id
+    memberships = await CompanyMembershipRepository(
+        db, CompanyMembership
+    ).list_active_for_user(current_user.id)
+    return any(
+        membership.company_id == job.company_id
+        for membership in memberships
+    )

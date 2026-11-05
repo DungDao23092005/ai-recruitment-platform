@@ -166,6 +166,9 @@ def make_mock_session():
         def all(self):
             return self.items
 
+        def unique(self):
+            return self
+
     class MockResult:
         def __init__(self, items):
             self._items = items

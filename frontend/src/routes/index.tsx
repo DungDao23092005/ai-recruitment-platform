@@ -38,6 +38,8 @@ import { JobApplicantsPage } from '@/features/recruiter/pages/JobApplicantsPage'
 import { JobRecommendationsPage } from '@/features/recruiter/pages/JobRecommendationsPage'
 import { InterviewGeneratorPage } from '@/features/recruiter/pages/InterviewGeneratorPage'
 import { SemanticCandidateSearchPage } from '@/features/recruiter/pages/SemanticCandidateSearchPage'
+import { WorkspaceMembersPage } from '@/features/recruiter/pages/WorkspaceMembersPage'
+import { InvitationAcceptPage } from '@/pages/invitations/InvitationAcceptPage'
 import { AIChatPage } from '@/pages/ai/AIChatPage'
 import { NotificationsPage } from '@/pages/notifications/NotificationsPage'
 import { PlansPage } from '@/pages/plans/PlansPage'
@@ -76,6 +78,10 @@ export function AppRouter() {
         <Route path="/health" element={<HealthCheckPage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/jobs/:id" element={<JobDetailPage />} />
+        <Route
+          path="/invitations/accept"
+          element={<InvitationAcceptPage />}
+        />
       </Route>
 
       <Route element={<AuthLayout />}>
@@ -197,6 +203,14 @@ export function AppRouter() {
             element={
               <ProtectedByRole allowedRoles={['recruiter']}>
                 <RecruiterAnalyticsPage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/recruiter/workspace"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                <WorkspaceMembersPage />
               </ProtectedByRole>
             }
           />

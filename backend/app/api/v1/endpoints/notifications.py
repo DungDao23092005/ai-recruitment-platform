@@ -5,14 +5,19 @@ import logging
 import uuid
 import secrets
 import asyncio
-from typing import AsyncGenerator
+from typing import Annotated, AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, get_current_active_user
-from app.core.exceptions import EntityNotFoundException
+from app.core.exceptions import (
+    EntityNotFoundException,
+    ForbiddenException,
+    WorkspaceRequiredException,
+    WorkspaceSelectionRequiredException,
+)
 from app.core.pubsub import get_pubsub_manager, PubSubManager
 from app.domain.enums import UserRole
 from app.models import User
@@ -35,7 +40,10 @@ from app.services.pipeline_realtime import (
     is_company_pipeline_message,
     parse_pipeline_payload,
 )
-from app.services.user_service import UserService
+from app.database.session import async_session_factory
+from app.models import CompanyMembership
+from app.repositories import CompanyMembershipRepository
+from app.services.workspace_service import WorkspaceService
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -46,9 +54,11 @@ TICKET_TTL_SECONDS = 10
 # Bound the stream lifetime so long-lived connections periodically re-authenticate
 # through a fresh ticket, re-checking the user's role for admin-channel access.
 STREAM_MAX_SECONDS = 1800
+STREAM_HEARTBEAT_SECONDS = 30.0
 
 # Default SSE event for a personal-channel message.
 NOTIFICATION_CREATED_EVENT = "notification.created"
+WORKSPACE_REVOKED_EVENT = "workspace.revoked"
 
 
 def _personal_event_name(raw_data: object) -> str:
@@ -142,6 +152,7 @@ async def create_stream_ticket(
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
     pubsub: PubSubManager = Depends(get_pubsub_manager),
+    x_company_id: Annotated[str | None, Header(alias="X-Company-ID")] = None,
 ) -> dict:
     """Create a short-lived ticket for SSE stream authentication.
 
@@ -151,13 +162,24 @@ async def create_stream_ticket(
     """
     is_admin = current_user.role == UserRole.ADMIN
     company_id = None
-    if current_user.role == UserRole.RECRUITER:
+    if current_user.role == UserRole.RECRUITER or (
+        is_admin and x_company_id
+    ):
         try:
-            user = await UserService(db).get_user_with_profile(current_user.id)
-            profile = user.recruiter_profile if user is not None else None
-            company_id = profile.company_id if profile is not None else None
-        except Exception as exc:  # pragma: no cover - defensive boundary
-            logger.warning("Failed to resolve recruiter company for SSE: %s", exc)
+            workspace = await WorkspaceService(db).resolve(
+                current_user, x_company_id
+            )
+            company_id = workspace.company_id
+        except WorkspaceSelectionRequiredException as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        except (WorkspaceRequiredException, ForbiddenException) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=str(exc),
+            ) from exc
 
     ticket = secrets.token_urlsafe(32)
     ticket_key = f"notification:stream_ticket:{ticket}"
@@ -170,6 +192,22 @@ async def create_stream_ticket(
     payload = json.dumps(ticket_payload)
     await pubsub._redis.setex(ticket_key, TICKET_TTL_SECONDS, payload)
     return {"ticket": ticket}
+
+
+async def _workspace_stream_is_authorized(
+    user_id: uuid.UUID,
+    company_id: uuid.UUID | None,
+    is_admin: bool,
+) -> bool:
+    if is_admin:
+        return True
+    if company_id is None:
+        return False
+    async with async_session_factory() as session:
+        membership = await CompanyMembershipRepository(
+            session, CompanyMembership
+        ).get_active(user_id, company_id)
+        return membership is not None
 
 
 @router.get(
@@ -229,6 +267,7 @@ async def notification_stream(
 
             started_at = asyncio.get_event_loop().time()
             last_heartbeat = started_at
+            last_authorization_check = started_at
 
             try:
                 while True:
@@ -246,6 +285,7 @@ async def notification_stream(
                             data = message["data"]
                             channel = message.get("channel")
                             event_name: str | None
+                            workspace_revoked = False
                             if channel == ADMIN_SUBSCRIPTIONS_CHANNEL:
                                 event_name = ADMIN_SUBSCRIPTION_CHANGED_EVENT
                             elif channel == ADMIN_EMAILS_CHANNEL:
@@ -264,14 +304,61 @@ async def notification_stream(
                                         "Ignoring malformed company pipeline event"
                                     )
                             else:
-                                event_name = _personal_event_name(data)
+                                payload = parse_pipeline_payload(data)
+                                if (
+                                    payload is not None
+                                    and payload.get("type")
+                                    == WORKSPACE_REVOKED_EVENT
+                                ):
+                                    if company_id is None or payload.get(
+                                        "company_id"
+                                    ) == str(company_id):
+                                        event_name = WORKSPACE_REVOKED_EVENT
+                                        workspace_revoked = True
+                                    else:
+                                        # Never let another tenant's
+                                        # revocation terminate this stream.
+                                        event_name = None
+                                else:
+                                    event_name = _personal_event_name(data)
                             if event_name is not None:
                                 yield f"event: {event_name}\ndata: {data}\n\n"
+                            if workspace_revoked:
+                                break
                         except Exception as e:
                             logger.warning("Failed to process SSE message: %s", e)
 
+                    # Membership is revalidated on the heartbeat boundary with
+                    # a short-lived session; revocation fails closed.
+                    if current_time - last_authorization_check >= STREAM_HEARTBEAT_SECONDS:
+                        try:
+                            still_authorized = (
+                                await _workspace_stream_is_authorized(
+                                    user_id, company_id, is_admin
+                                )
+                            )
+                        except Exception:
+                            still_authorized = False
+                        if not still_authorized:
+                            revoked_payload = json.dumps(
+                                {
+                                    "type": WORKSPACE_REVOKED_EVENT,
+                                    "company_id": (
+                                        str(company_id)
+                                        if company_id is not None
+                                        else None
+                                    ),
+                                }
+                            )
+                            yield (
+                                f"event: {WORKSPACE_REVOKED_EVENT}\n"
+                                f"data: {revoked_payload}\n\n"
+                            )
+                            break
+                        last_authorization_check = current_time
+
                     # Independent heartbeat check - runs every iteration
-                    if current_time - last_heartbeat >= 30.0:
+                    if current_time - last_heartbeat >= STREAM_HEARTBEAT_SECONDS:
                         yield ": keepalive\n\n"
                         last_heartbeat = current_time
 

@@ -19,7 +19,7 @@ _ALEMBIC_DIR = _BACKEND_DIR / "alembic"
 
 _MAX_REVISION_LENGTH = 32
 _EXPECTED_BASE = "0001_initial_schema"
-_EXPECTED_HEAD = "add_admin_audit_logs"
+_EXPECTED_HEAD = "add_company_memberships"
 
 
 def _parents(down_revision) -> tuple[str, ...]:
@@ -78,7 +78,13 @@ def test_graph_has_single_root_and_expected_head():
 
     head = script.get_revision(_EXPECTED_HEAD)
     assert head is not None
-    assert _parents(head.down_revision) == ("add_recruitment_analytics",)
+    assert _parents(head.down_revision) == ("add_admin_audit_logs",)
+
+    admin_audit_logs = script.get_revision("add_admin_audit_logs")
+    assert admin_audit_logs is not None
+    assert _parents(admin_audit_logs.down_revision) == (
+        "add_recruitment_analytics",
+    )
 
     analytics = script.get_revision("add_recruitment_analytics")
     assert analytics is not None

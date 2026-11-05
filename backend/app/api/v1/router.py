@@ -17,6 +17,7 @@ from app.api.v1.endpoints import (
     plans,
     subscriptions,
     users,
+    workspaces,
 )
 
 api_router = APIRouter()
@@ -44,3 +45,4 @@ api_router.include_router(plans.router)
 api_router.include_router(subscriptions.router)
 api_router.include_router(admin_plans.router)
 api_router.include_router(admin_subscriptions.router)
+api_router.include_router(workspaces.router, tags=["Workspaces"])

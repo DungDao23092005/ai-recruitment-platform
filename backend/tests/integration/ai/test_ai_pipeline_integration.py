@@ -16,9 +16,25 @@ from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 from app.api.v1.endpoints.ai import _get_ai_service
 from app.core.config import settings
 from app.database.session import async_session_factory
-from app.domain.enums import CompanySize, JobStatus, JobType, UserRole, WorkplaceType
+from app.domain.enums import (
+    CompanySize,
+    JobStatus,
+    JobType,
+    MembershipRole,
+    MembershipStatus,
+    UserRole,
+    WorkplaceType,
+)
 from app.main import app
-from app.models import CandidateProfile, Company, Job, RecruiterProfile, Resume, User
+from app.models import (
+    CandidateProfile,
+    Company,
+    CompanyMembership,
+    Job,
+    RecruiterProfile,
+    Resume,
+    User,
+)
 from app.schemas.ai_job import ParsedJobSchema
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.ai_matching_service import AIMatchingService
@@ -129,6 +145,14 @@ async def _create_recruiter_profile(session, user_id: uuid.UUID, company_id: uui
         position="Hiring Manager",
     )
     session.add(profile)
+    session.add(
+        CompanyMembership(
+            company_id=company_id,
+            user_id=user_id,
+            role=MembershipRole.ADMIN,
+            status=MembershipStatus.ACTIVE,
+        )
+    )
     await session.commit()
     return profile
 

@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     LOG_LEVEL: str = "INFO"
     API_V1_STR: str = "/api/v1"
+    FRONTEND_URL: str = "http://localhost:5173"
+
+    COMPANY_INVITATION_EXPIRY_DAYS: int = 7
 
     BACKEND_CORS_ORIGINS: Annotated[list[str], NoDecode] = [
         "http://localhost:5173",

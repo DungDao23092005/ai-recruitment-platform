@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_optional_workspace
 from app.api.v1.endpoints.companies import _get_company_service
 from app.core.exceptions import (
     ConflictException,
@@ -43,6 +44,9 @@ def mock_service():
 @pytest.fixture
 def client(mock_service):
     app.dependency_overrides[_get_company_service] = lambda: mock_service
+    app.dependency_overrides[get_optional_workspace] = lambda: SimpleNamespace(
+        company_id=uuid.uuid4()
+    )
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

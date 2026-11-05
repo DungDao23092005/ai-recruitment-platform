@@ -8,7 +8,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_optional_workspace
 from app.core.exceptions import AIError, EntityNotFoundException
 from app.domain.enums import UserRole
 from app.main import app
@@ -51,6 +51,11 @@ def client(mock_service):
     app.dependency_overrides[get_current_user] = _override_user(
         UserRole.RECRUITER
     )
+
+    async def _override_workspace():
+        return SimpleNamespace(company_id=uuid.uuid4())
+
+    app.dependency_overrides[get_optional_workspace] = _override_workspace
     with patch(
         "app.api.v1.endpoints.applications.ApplicationService",
         return_value=mock_service,

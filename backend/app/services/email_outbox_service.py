@@ -43,6 +43,10 @@ from app.services.email_outbox_realtime import (
 
 logger = logging.getLogger(__name__)
 
+SENSITIVE_BODY_EVENT_TYPES = frozenset({"company_invitation"})
+REDACTED_BODY_PLACEHOLDER = "[redacted after successful delivery]"
+SENSITIVE_BODY_EVENT_TYPE = "company_invitation"
+
 # The claim query takes an update lock on each candidate row and skips rows that
 # another worker already holds. ``READPAST`` + ``UPDLOCK`` is the canonical
 # queue pattern; ``READCOMMITTEDLOCK`` is added when the database runs with
@@ -255,7 +259,13 @@ async def mark_sent(
     message_id: uuid.UUID,
     now: Optional[datetime] = None,
 ) -> None:
-    """Mark a claimed message as delivered (terminal success)."""
+    """Mark a claimed message as delivered and scrub sensitive bodies.
+
+    The status transition and the redaction are one SQL statement, so a failed
+    commit rolls both back together. Until the SENT state is durable the
+    original body remains available for retry; after it is durable, an
+    invitation token can never be read back from the outbox.
+    """
     moment = now or utc_now()
     await session.execute(
         text(
@@ -265,11 +275,25 @@ async def mark_sent(
                 sent_at = :now,
                 processing_started_at = NULL,
                 last_error = NULL,
+                html_body = CASE
+                    WHEN event_type = :sensitive_event THEN :redacted_body
+                    ELSE html_body
+                END,
+                text_body = CASE
+                    WHEN event_type = :sensitive_event THEN :redacted_body
+                    ELSE text_body
+                END,
                 updated_at = :now
             WHERE id = :id
             """
         ),
-        {"sent": OutboxStatus.SENT.value, "now": moment, "id": message_id},
+        {
+            "sent": OutboxStatus.SENT.value,
+            "now": moment,
+            "id": message_id,
+            "sensitive_event": SENSITIVE_BODY_EVENT_TYPE,
+            "redacted_body": REDACTED_BODY_PLACEHOLDER,
+        },
     )
 
 
@@ -393,9 +417,11 @@ class EmailOutboxService:
     async def retry_message(self, message_id: uuid.UUID) -> EmailOutbox:
         """Requeue a message that is not currently being processed.
 
-        Refuses only PROCESSING rows, which would risk a duplicate delivery
-        racing the in-flight worker. On success the attempt budget is reset so a
-        previously exhausted message can be delivered again.
+        Refuses PROCESSING rows, which would risk a duplicate delivery racing
+        the in-flight worker, and delivered invitation rows whose bodies were
+        redacted (retrying those would send the placeholder). On success the
+        attempt budget is reset so a previously exhausted message can be
+        delivered again.
         """
         message = await self.session.get(EmailOutbox, message_id)
         if message is None:
@@ -403,6 +429,13 @@ class EmailOutboxService:
         if message.status == OutboxStatus.PROCESSING.value:
             raise InvalidTransitionException(
                 "Message is currently being processed and cannot be retried"
+            )
+        if (
+            message.event_type in SENSITIVE_BODY_EVENT_TYPES
+            and message.text_body == REDACTED_BODY_PLACEHOLDER
+        ):
+            raise InvalidTransitionException(
+                "Delivered invitation content has been redacted and cannot be retried"
             )
 
         now = utc_now()

@@ -20,7 +20,12 @@ from app.ai.embeddings.embedding_service import (
 )
 from app.ai.interfaces.base_provider import BaseVectorRepository
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
-from app.api.deps import get_db, require_candidate, require_recruiter
+from app.api.deps import (
+    get_db,
+    get_optional_workspace,
+    require_candidate,
+    require_recruiter,
+)
 from app.core.exceptions import (
     AIError,
     ConflictException,
@@ -260,6 +265,7 @@ async def get_my_application(
 @router.get(
     "",
     response_model=list[ApplicationRead],
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def list_applications(
     job_id: uuid.UUID | None = None,
@@ -289,6 +295,7 @@ async def list_applications(
 @router.get(
     "/{application_id}",
     response_model=ApplicationDetailRead,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def get_application_detail(
     application_id: uuid.UUID,
@@ -358,6 +365,7 @@ async def get_application_detail(
 @router.get(
     "/{application_id}/match",
     response_model=MatchResultSchema,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def get_application_match(
     application_id: uuid.UUID,
@@ -392,6 +400,7 @@ async def get_application_match(
 @router.get(
     "/{application_id}/match-explanation",
     response_model=ApplicationMatchExplanationResponse,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def get_application_match_explanation(
     application_id: uuid.UUID,
@@ -437,7 +446,10 @@ async def get_application_match_explanation(
 @router.post(
     "/{application_id}/match-explanation/refresh",
     response_model=ApplicationMatchExplanationResponse,
-    dependencies=[Depends(explanation_refresh_rate_limit)],
+    dependencies=[
+        Depends(get_optional_workspace),
+        Depends(explanation_refresh_rate_limit),
+    ],
     openapi_extra={
         "parameters": [
             {
@@ -577,6 +589,7 @@ async def refresh_application_match_explanation(
 @router.patch(
     "/{id}/status",
     response_model=ApplicationRead,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def update_application_status(
     id: uuid.UUID,
@@ -682,6 +695,7 @@ async def respond_to_offer(
     "/{application_id}/interviews",
     response_model=InterviewRead,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def schedule_interview(
     application_id: uuid.UUID,
@@ -715,6 +729,7 @@ async def schedule_interview(
 @router.get(
     "/{application_id}/interviews",
     response_model=list[InterviewRead],
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def list_interviews(
     application_id: uuid.UUID,
@@ -740,6 +755,7 @@ async def list_interviews(
 @router.get(
     "/interviews/{interview_id}",
     response_model=InterviewRead,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def get_interview(
     interview_id: uuid.UUID,
@@ -765,6 +781,7 @@ async def get_interview(
 @router.patch(
     "/interviews/{interview_id}",
     response_model=InterviewRead,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def update_interview(
     interview_id: uuid.UUID,
@@ -797,6 +814,7 @@ async def update_interview(
 @router.delete(
     "/interviews/{interview_id}",
     response_model=InterviewRead,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def cancel_interview(
     interview_id: uuid.UUID,
@@ -874,6 +892,7 @@ _LIMIT_QUERY = Query(50, ge=1, le=_PAGE_MAX)
     "/{application_id}/notes",
     response_model=ApplicationNoteRead,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def create_application_note(
     application_id: uuid.UUID,
@@ -898,6 +917,7 @@ async def create_application_note(
 @router.get(
     "/{application_id}/notes",
     response_model=list[ApplicationNoteRead],
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def list_application_notes(
     application_id: uuid.UUID,
@@ -924,6 +944,7 @@ async def list_application_notes(
 @router.patch(
     "/{application_id}/notes/{note_id}",
     response_model=ApplicationNoteRead,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def update_application_note(
     application_id: uuid.UUID,
@@ -955,6 +976,7 @@ async def update_application_note(
 @router.delete(
     "/{application_id}/notes/{note_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def delete_application_note(
     application_id: uuid.UUID,
@@ -1002,6 +1024,7 @@ def _evaluation_http_error(exc: Exception) -> HTTPException:
     "/{application_id}/interviews/{interview_id}/evaluations",
     response_model=InterviewEvaluationRead,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def create_interview_evaluation(
     application_id: uuid.UUID,
@@ -1025,6 +1048,7 @@ async def create_interview_evaluation(
 @router.get(
     "/{application_id}/interviews/{interview_id}/evaluations",
     response_model=list[InterviewEvaluationRead],
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def list_interview_evaluations(
     application_id: uuid.UUID,
@@ -1046,6 +1070,7 @@ async def list_interview_evaluations(
 @router.get(
     "/{application_id}/evaluations",
     response_model=list[InterviewEvaluationRead],
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def list_application_evaluations(
     application_id: uuid.UUID,
@@ -1065,6 +1090,7 @@ async def list_application_evaluations(
 @router.patch(
     "/{application_id}/evaluations/{evaluation_id}",
     response_model=InterviewEvaluationRead,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def update_interview_evaluation(
     application_id: uuid.UUID,
@@ -1088,6 +1114,7 @@ async def update_interview_evaluation(
 @router.delete(
     "/{application_id}/evaluations/{evaluation_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def delete_interview_evaluation(
     application_id: uuid.UUID,
@@ -1114,6 +1141,7 @@ async def delete_interview_evaluation(
 @router.get(
     "/{application_id}/activities",
     response_model=list[ApplicationActivityRead],
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def list_application_activities(
     application_id: uuid.UUID,

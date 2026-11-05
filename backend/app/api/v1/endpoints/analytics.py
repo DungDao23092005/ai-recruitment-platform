@@ -6,7 +6,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, require_recruiter
+from app.api.deps import get_db, get_optional_workspace, require_recruiter
 from app.core.exceptions import (
     EntityNotFoundException,
     ValidationError,
@@ -22,6 +22,7 @@ router = APIRouter()
     "/recruiter-dashboard",
     response_model=RecruiterAnalyticsResponse,
     summary="Recruitment analytics for the authenticated recruiter's company",
+    dependencies=[Depends(get_optional_workspace)],
 )
 async def get_recruiter_analytics(
     current_user: User = Depends(require_recruiter),

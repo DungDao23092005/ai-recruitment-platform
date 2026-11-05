@@ -14,6 +14,7 @@ from app.domain.enums import UserRole
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from app.models.company_membership import CompanyMembership
     from app.models.notification import Notification
     from app.models.password_reset_otp import PasswordResetOTP
     from app.models.payment_order import PaymentOrder
@@ -99,4 +100,9 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     )
     payment_orders: Mapped[list["PaymentOrder"]] = relationship(
         back_populates="user",
+    )
+    company_memberships: Mapped[list["CompanyMembership"]] = relationship(
+        "CompanyMembership",
+        back_populates="user",
+        foreign_keys="CompanyMembership.user_id",
     )

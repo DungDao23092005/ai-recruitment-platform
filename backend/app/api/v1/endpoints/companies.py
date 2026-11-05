@@ -5,7 +5,12 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, require_admin, require_recruiter
+from app.api.deps import (
+    get_db,
+    get_optional_workspace,
+    require_admin,
+    require_recruiter,
+)
 from app.core.exceptions import (
     AIError,
     ConflictException,
@@ -16,7 +21,7 @@ from app.domain.enums import UserRole
 from app.models import User
 from app.schemas.company import CompanyCreate, CompanyRead, CompanyUpdate
 from app.services.company_service import CompanyService
-from app.services.user_service import UserService
+from app.services.workspace_service import WorkspaceContext
 
 router = APIRouter()
 
@@ -35,29 +40,18 @@ async def create_company(
     current_user: User = Depends(require_recruiter),
     db: AsyncSession = Depends(get_db),
 ) -> CompanyRead:
-    # Check if recruiter already has a company
-    if current_user.role == UserRole.RECRUITER:
-        user_service = UserService(db)
-        user_with_profile = await user_service.get_user_with_profile(current_user.id)
-        if user_with_profile and user_with_profile.recruiter_profile and user_with_profile.recruiter_profile.company_id is not None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Nhà tuyển dụng đã có công ty. Không thể tạo thêm công ty thứ hai."
-            )
-
     try:
-        company = await CompanyService(db).create_company(data)
+        if current_user.role == UserRole.RECRUITER:
+            company = await CompanyService(db).create_company_for_owner(
+                data, current_user
+            )
+        else:
+            company = await CompanyService(db).create_company(data)
     except ConflictException as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
-
-    if current_user.role == UserRole.RECRUITER:
-        await UserService(db).attach_recruiter_to_company(
-            user_id=current_user.id,
-            company_id=company.id,
-        )
 
     return CompanyRead.model_validate(company)
 
@@ -70,19 +64,10 @@ async def list_companies(
     current_user: User = Depends(require_recruiter),
     db: AsyncSession = Depends(get_db),
 ) -> list[CompanyRead]:
-    if current_user.role == UserRole.ADMIN:
-        companies = await CompanyService(db).list_companies()
-        return [CompanyRead.model_validate(c) for c in companies]
-
-    user = await UserService(db).get_user_with_profile(current_user.id)
-    profile = user.recruiter_profile if user is not None else None
-    if profile is None or profile.company_id is None:
-        return []
-
-    company = await CompanyService(db).get_company_by_id(profile.company_id)
-    if company is None:
-        return []
-    return [CompanyRead.model_validate(company)]
+    companies = await CompanyService(db).list_companies_for_user(
+        current_user
+    )
+    return [CompanyRead.model_validate(c) for c in companies]
 
 
 @router.patch(
@@ -93,19 +78,22 @@ async def update_company(
     company_id: uuid.UUID,
     data: CompanyUpdate,
     current_user: User = Depends(require_recruiter),
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     service: CompanyService = Depends(_get_company_service),
 ) -> CompanyRead:
-    """Update the company owned by the caller (name/slug/tax_code/size).
+    """Update the current company (name/slug/tax_code/size).
 
-    Ownership is resolved server-side through the caller's recruiter
-    profile; a foreign company yields 403. Admin, allowed by the shared
-    ``require_recruiter`` guard and the job-ownership convention, may update
-    any company. All validation/uniqueness/commit logic is reused from
-    ``CompanyService.update_company`` (via ``update_owned_company``).
+    Ownership is resolved server-side through the caller's active workspace
+    membership. A platform admin may update any company.
     """
     try:
         company = await service.update_owned_company(
-            current_user, company_id, data
+            current_user,
+            company_id,
+            data,
+            workspace_company_id=(
+                workspace.company_id if workspace is not None else None
+            ),
         )
     except ForbiddenException as exc:
         raise HTTPException(

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_optional_workspace
 from app.api.v1.endpoints.applications import (
     _get_ai_matching_service,
     _get_match_explanation_cache,
@@ -113,6 +114,11 @@ def mock_coordinator():
 @pytest.fixture
 def client(mock_service, mock_coordinator):
     app.dependency_overrides[get_current_user] = _override_user(UserRole.RECRUITER)
+
+    async def _override_workspace():
+        return SimpleNamespace(company_id=uuid.uuid4())
+
+    app.dependency_overrides[get_optional_workspace] = _override_workspace
     app.dependency_overrides[explanation_refresh_rate_limit] = (
         lambda: RateLimitResult(
             allowed=True,

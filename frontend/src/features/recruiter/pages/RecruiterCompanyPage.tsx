@@ -15,11 +15,14 @@ import {
 } from '@/components/ui/card'
 import { CompanyForm } from '@/features/recruiter/components/CompanyForm'
 import { CompanyCard } from '@/features/recruiter/components/CompanyCard'
-import { getCompanies } from '@/api/companies'
+import { getCompanies, getCompanyById } from '@/api/companies'
+import { useWorkspace } from '@/contexts/WorkspaceContext'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { Company } from '@/types/company'
 
 export function RecruiterCompanyPage() {
+  const { selectedCompanyId, refreshWorkspaces, selectWorkspace } =
+    useWorkspace()
   const [company, setCompany] = useState<Company | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -29,18 +32,28 @@ export function RecruiterCompanyPage() {
     setIsLoading(true)
     setError(null)
     try {
-      const list = await getCompanies()
-      setCompany(list[0] ?? null)
+      if (selectedCompanyId) {
+        setCompany(await getCompanyById(selectedCompanyId))
+      } else {
+        const list = await getCompanies()
+        setCompany(list[0] ?? null)
+      }
     } catch (err) {
       setError(getFriendlyErrorMessage(err))
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }, [selectedCompanyId])
 
   useEffect(() => {
     void loadCompanies()
   }, [loadCompanies])
+
+  const handleCreated = async (created: Company) => {
+    setCompany(created)
+    selectWorkspace(created.id)
+    await refreshWorkspaces()
+  }
 
   return (
     <div className="space-y-6">
@@ -80,7 +93,12 @@ export function RecruiterCompanyPage() {
                 onCancelEdit={() => setIsEditing(false)}
               />
             ) : (
-              <CompanyForm key="company-create" onCreated={setCompany} />
+              <CompanyForm
+                key="company-create"
+                onCreated={(created) => {
+                  void handleCreated(created)
+                }}
+              />
             )}
           </CardContent>
         </Card>

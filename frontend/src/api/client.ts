@@ -10,6 +10,7 @@ export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1'
 
 export const TOKEN_STORAGE_KEY = 'ai_recruitment_token'
+export const WORKSPACE_STORAGE_KEY = 'ai_recruitment_company_id'
 
 export const LOGOUT_EVENT = 'ai-recruitment:logout'
 
@@ -23,6 +24,18 @@ export function storeToken(token: string): void {
 
 export function clearToken(): void {
   localStorage.removeItem(TOKEN_STORAGE_KEY)
+}
+
+export function getStoredWorkspaceCompanyId(): string | null {
+  return localStorage.getItem(WORKSPACE_STORAGE_KEY)
+}
+
+export function storeWorkspaceCompanyId(companyId: string): void {
+  localStorage.setItem(WORKSPACE_STORAGE_KEY, companyId)
+}
+
+export function clearWorkspaceCompanyId(): void {
+  localStorage.removeItem(WORKSPACE_STORAGE_KEY)
 }
 
 export function dispatchLogoutEvent(): void {
@@ -49,6 +62,10 @@ apiClient.interceptors.request.use(
     if (token) {
       config.headers = AxiosHeaders.from(config.headers)
       config.headers.set('Authorization', `Bearer ${token}`)
+      const companyId = getStoredWorkspaceCompanyId()
+      if (companyId) {
+        config.headers.set('X-Company-ID', companyId)
+      }
     }
     // If the request body is FormData, remove Content-Type header
     // so Axios can generate the correct multipart/form-data boundary

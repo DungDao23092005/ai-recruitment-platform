@@ -8,6 +8,8 @@ from app.models.application_activity import ApplicationActivity
 from app.models.application_note import ApplicationNote
 from app.models.candidate import CandidateProfile
 from app.models.company import Company
+from app.models.company_invitation import CompanyInvitation
+from app.models.company_membership import CompanyMembership
 from app.models.email_outbox import EmailOutbox
 from app.models.interview import Interview
 from app.models.interview_evaluation import InterviewEvaluation
@@ -38,6 +40,8 @@ __all__ = [
     "ApplicationNote",
     "CandidateProfile",
     "Company",
+    "CompanyInvitation",
+    "CompanyMembership",
     "EmailOutbox",
     "Interview",
     "InterviewEvaluation",

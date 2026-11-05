@@ -16,14 +16,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import func, select, text
 
+from app.core.exceptions import InvalidTransitionException
 from app.database.base_class import utc_now
 from app.database.session import async_session_factory
 from app.domain.enums import OutboxStatus
 from app.models import EmailOutbox
 from app.services.email_outbox_service import (
+    REDACTED_BODY_PLACEHOLDER,
     EmailOutboxService,
     claim_due_messages,
     enqueue_email,
+    mark_sent,
     recover_stale_leases,
     reset_claim_hint_cache,
     resolve_claim_lock_hints,
@@ -147,6 +150,147 @@ class TestDeliveryOutcomes:
             assert subject == "Chủ đề"
             assert "Xin chào" in html
             assert "Xin chào" in text_body
+
+        run_async(_test())
+
+    def test_success_redacts_invitation_token_bodies(self, run_async, email_spy):
+        token = "super-secret-invitation-token"
+
+        async def _test():
+            async with async_session_factory() as session:
+                row = await _enqueue(
+                    session,
+                    event_type="company_invitation",
+                    html_body=(
+                        f'<a href="http://localhost/invitations/accept#token={token}">'
+                        "Accept</a>"
+                    ),
+                    text_body=(
+                        "Accept invitation: "
+                        f"http://localhost/invitations/accept#token={token}"
+                    ),
+                )
+                await session.commit()
+                message_id = row.id
+
+            await _worker().process_due_messages()
+
+            async with async_session_factory() as session:
+                row = await _get(session, message_id)
+                assert row.status == OutboxStatus.SENT.value
+                assert row.html_body == REDACTED_BODY_PLACEHOLDER
+                assert row.text_body == REDACTED_BODY_PLACEHOLDER
+                assert token not in (row.html_body or "")
+                assert token not in (row.text_body or "")
+
+            _, _, html, text_body = email_spy.await_args.args
+            assert token in html
+            assert token in text_body
+
+        run_async(_test())
+
+    def test_success_keeps_non_sensitive_bodies(self, run_async, email_spy):
+        async def _test():
+            async with async_session_factory() as session:
+                row = await _enqueue(
+                    session,
+                    event_type="subscription_activated",
+                    html_body="<p>Your plan is active</p>",
+                    text_body="Your plan is active",
+                )
+                await session.commit()
+                message_id = row.id
+
+            await _worker().process_due_messages()
+
+            async with async_session_factory() as session:
+                row = await _get(session, message_id)
+                assert row.status == OutboxStatus.SENT.value
+                assert row.html_body == "<p>Your plan is active</p>"
+                assert row.text_body == "Your plan is active"
+
+        run_async(_test())
+
+    def test_failure_preserves_invitation_token_for_retry(
+        self, run_async, email_spy
+    ):
+        token = "retry-still-has-token"
+        email_spy.side_effect = RuntimeError("smtp exploded")
+
+        async def _test():
+            async with async_session_factory() as session:
+                row = await _enqueue(
+                    session,
+                    event_type="company_invitation",
+                    html_body=f"<p>#token={token}</p>",
+                    text_body=f"Accept: #token={token}",
+                )
+                await session.commit()
+                message_id = row.id
+
+            await _worker().process_due_messages()
+
+            async with async_session_factory() as session:
+                row = await _get(session, message_id)
+                assert row.status == OutboxStatus.PENDING.value
+                assert token in row.html_body
+                assert token in row.text_body
+
+        run_async(_test())
+
+    def test_redaction_rolls_back_with_sent_state(self, run_async):
+        token = "must-survive-rollback"
+
+        async def _test():
+            async with async_session_factory() as session:
+                row = await _enqueue(
+                    session,
+                    event_type="company_invitation",
+                    html_body=f"<p>#token={token}</p>",
+                    text_body=f"Accept: #token={token}",
+                )
+                await session.commit()
+                message_id = row.id
+
+            async with async_session_factory() as session:
+                await session.execute(
+                    text(
+                        "UPDATE email_outbox SET status='processing', "
+                        "processing_started_at=:now WHERE id=:id"
+                    ),
+                    {"now": utc_now(), "id": message_id},
+                )
+                await session.commit()
+
+            async with async_session_factory() as session:
+                await mark_sent(session, message_id=message_id)
+                await session.rollback()
+
+            async with async_session_factory() as session:
+                row = await _get(session, message_id)
+                assert row.status == OutboxStatus.PROCESSING.value
+                assert token in row.html_body
+                assert token in row.text_body
+
+        run_async(_test())
+
+    def test_redacted_invitation_cannot_be_retried(self, run_async, email_spy):
+        async def _test():
+            async with async_session_factory() as session:
+                row = await _enqueue(
+                    session,
+                    event_type="company_invitation",
+                    html_body="<p>#token=secret</p>",
+                    text_body="Accept: #token=secret",
+                )
+                await session.commit()
+                message_id = row.id
+
+            await _worker().process_due_messages()
+
+            async with async_session_factory() as session:
+                with pytest.raises(InvalidTransitionException):
+                    await EmailOutboxService(session).retry_message(message_id)
 
         run_async(_test())
 

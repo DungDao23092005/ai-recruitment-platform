@@ -90,6 +90,17 @@ def _fake_db_session() -> MagicMock:
         compiled = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
         if "from jobs" in compiled:
             result.scalars().unique().first.return_value = _make_db_job()
+        elif "from company_memberships" in compiled:
+            membership = SimpleNamespace(
+                company_id=KNOWN_COMPANY_ID,
+                company=SimpleNamespace(
+                    id=KNOWN_COMPANY_ID,
+                    name="TechNova AI",
+                    slug="technova-ai",
+                ),
+            )
+            result.scalar_one_or_none.return_value = membership
+            result.scalars().unique().all.return_value = [membership]
         elif "from users" in compiled:
             result.scalar_one_or_none.return_value = _make_db_user()
         return result

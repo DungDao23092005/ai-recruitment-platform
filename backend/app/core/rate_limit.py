@@ -14,8 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models import RecruiterProfile, User
+from app.models import CompanyMembership, User
 from app.api.deps import get_current_active_user, get_db, require_recruiter
+from app.repositories import CompanyMembershipRepository
+from app.core.workspace_context import get_workspace_company_id
 
 logger = logging.getLogger(__name__)
 
@@ -561,12 +563,18 @@ async def explanation_refresh_rate_limit(
         )
         return _allowed_result(limit)
 
-    company_id = await db.scalar(
-        select(RecruiterProfile.company_id).where(
-            RecruiterProfile.user_id == current_user.id,
-            RecruiterProfile.is_deleted == False,  # noqa: E712
+    memberships = CompanyMembershipRepository(db, CompanyMembership)
+    company_id = get_workspace_company_id()
+    if company_id is not None:
+        membership = await memberships.get_active(
+            current_user.id, company_id
         )
-    )
+        if membership is None:
+            company_id = None
+    else:
+        active = await memberships.list_active_for_user(current_user.id)
+        if len(active) == 1:
+            company_id = active[0].company_id
     tenant_key = (
         f"company:{company_id}"
         if company_id

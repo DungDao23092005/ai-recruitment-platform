@@ -29,6 +29,7 @@ import { Logo } from '@/components/common/Logo'
 import { USER_ROLE_LABELS } from '@/types/auth'
 import type { UserRole } from '@/types/auth'
 import { NotificationBell } from '@/components/common/NotificationBell'
+import { WorkspaceSwitcher } from '@/components/common/WorkspaceSwitcher'
 
 interface NavItem {
   to: string
@@ -88,6 +89,7 @@ function useAppNav(role?: UserRole): NavSection[] {
           { to: '/recruiter/jobs', label: 'Tin tuyển dụng', icon: Briefcase, end: true },
           { to: '/recruiter/jobs/new', label: 'Đăng tin mới', icon: PlusCircle },
           { to: '/recruiter/analytics', label: 'Phân tích', icon: BarChart3 },
+          { to: '/recruiter/workspace', label: 'Thành viên', icon: Users },
           { to: '/plans', label: 'Gói dịch vụ', icon: Sparkles },
         ],
       },
@@ -285,6 +287,7 @@ export function AppShell() {
             <Menu className="h-5 w-5" aria-hidden="true" />
           </Button>
           <div className="flex-1" />
+          <WorkspaceSwitcher className="max-w-[14rem] sm:max-w-none" />
           <Badge variant="outline-ai" className="hidden sm:inline-flex">
             {USER_ROLE_LABELS[role ?? 'candidate']}
           </Badge>

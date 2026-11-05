@@ -9,6 +9,7 @@ import {
 } from 'react'
 import {
   clearToken,
+  clearWorkspaceCompanyId,
   getStoredToken,
   LOGOUT_EVENT,
   storeToken,
@@ -36,6 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const applyLogout = useCallback(() => {
     clearToken()
+    clearWorkspaceCompanyId()
     setCurrentUser(null)
     setToken(null)
   }, [])

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Index, String, Uuid, text
 from sqlalchemy.dialects.mssql import NVARCHAR
@@ -9,6 +10,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.base_class import Base, SoftDeleteMixin, TimestampMixin
 from app.domain.enums import CompanySize
 from app.models.user import StringEnum
+
+if TYPE_CHECKING:
+    from app.models.company_invitation import CompanyInvitation
+    from app.models.company_membership import CompanyMembership
 
 
 class Company(Base, TimestampMixin, SoftDeleteMixin):
@@ -35,5 +40,13 @@ class Company(Base, TimestampMixin, SoftDeleteMixin):
         back_populates="company",
     )
     jobs: Mapped[list[Job]] = relationship(
+        back_populates="company",
+    )
+    memberships: Mapped[list[CompanyMembership]] = relationship(
+        "CompanyMembership",
+        back_populates="company",
+    )
+    invitations: Mapped[list[CompanyInvitation]] = relationship(
+        "CompanyInvitation",
         back_populates="company",
     )

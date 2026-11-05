@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_optional_workspace
 from app.core.exceptions import EntityNotFoundException, InvalidTransitionException
 from app.domain.enums import UserRole, InterviewStatus, InterviewType
 from app.main import app
@@ -55,6 +55,11 @@ def recruiter_client(mock_service):
         return user
 
     app.dependency_overrides[get_current_user] = _override_user
+
+    async def _override_workspace():
+        return SimpleNamespace(company_id=uuid.uuid4())
+
+    app.dependency_overrides[get_optional_workspace] = _override_workspace
     with patch(
         "app.api.v1.endpoints.applications.InterviewService",
         return_value=mock_service,

@@ -2,17 +2,31 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncGenerator
+from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.exceptions import (
+    EntityNotFoundException,
+    ForbiddenException,
+    ValidationError,
+    WorkspaceRequiredException,
+    WorkspaceSelectionRequiredException,
+)
 from app.core.security import decode_access_token, is_token_valid_after_password_reset
 from app.database.session import get_db_session
 from app.domain.enums import UserRole
 from app.models import User
 from app.services import UserService, AuthService
+from app.services.workspace_service import (
+    WorkspaceContext,
+    WorkspaceService,
+    reset_workspace_company_id,
+    set_workspace_company_id,
+)
 
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/auth/login"
@@ -149,3 +163,99 @@ require_candidate = require_role([UserRole.CANDIDATE, UserRole.ADMIN])
 require_candidate_recruiter_admin = require_role(
     [UserRole.CANDIDATE, UserRole.RECRUITER, UserRole.ADMIN]
 )
+
+
+async def get_current_workspace(
+    x_company_id: Annotated[str | None, Header(alias="X-Company-ID")] = None,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> AsyncGenerator[WorkspaceContext, None]:
+    """Resolve and expose the caller's company workspace for this request."""
+    try:
+        context = await WorkspaceService(db).resolve(
+            current_user, x_company_id
+        )
+    except WorkspaceSelectionRequiredException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except (WorkspaceRequiredException, ForbiddenException) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    token = set_workspace_company_id(context.company_id)
+    try:
+        yield context
+    finally:
+        reset_workspace_company_id(token)
+
+
+async def get_optional_workspace(
+    x_company_id: Annotated[str | None, Header(alias="X-Company-ID")] = None,
+    current_user: User = Depends(require_recruiter),
+    db: AsyncSession = Depends(get_db),
+) -> AsyncGenerator[WorkspaceContext | None, None]:
+    """Resolve a workspace, allowing platform admins to act globally.
+
+    Platform admins without an explicit ``X-Company-ID`` keep access to
+    admin-wide views. A recruiter without any active membership and without an
+    explicit header is left unresolved, preserving the legacy empty/not-found
+    responses for company-scoped reads. An explicit ``X-Company-ID`` is always
+    verified, so selecting a workspace the caller does not belong to fails
+    closed.
+    """
+    if current_user.role == UserRole.ADMIN and not x_company_id:
+        yield None
+        return
+
+    try:
+        context = await WorkspaceService(db).resolve(
+            current_user, x_company_id
+        )
+    except WorkspaceSelectionRequiredException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except WorkspaceRequiredException as exc:
+        if x_company_id is None:
+            yield None
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+
+    token = set_workspace_company_id(context.company_id)
+    try:
+        yield context
+    finally:
+        reset_workspace_company_id(token)

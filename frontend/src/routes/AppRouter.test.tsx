@@ -4,6 +4,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { AppRouter } from './index'
 import { AuthProvider } from '@/contexts/AuthContext'
+import { WorkspaceProvider } from '@/contexts/WorkspaceContext'
 import * as authApi from '@/api/auth'
 import * as jobsApi from '@/api/jobs'
 import * as aiApi from '@/api/ai'
@@ -104,7 +105,19 @@ vi.mock('@/api/applications', () => ({
 
 vi.mock('@/api/companies', () => ({
   createCompany: vi.fn(),
+  getCompanies: vi.fn().mockResolvedValue([]),
   getCompanyById: vi.fn(),
+}))
+
+vi.mock('@/api/workspaces', () => ({
+  getWorkspaces: vi.fn().mockResolvedValue([]),
+  getWorkspaceMembers: vi.fn().mockResolvedValue([]),
+  getWorkspaceInvitations: vi.fn().mockResolvedValue([]),
+  createWorkspaceInvitation: vi.fn(),
+  revokeWorkspaceInvitation: vi.fn(),
+  revokeWorkspaceMember: vi.fn(),
+  previewInvitation: vi.fn(),
+  acceptInvitation: vi.fn(),
 }))
 
 vi.mock('@/api/admin', () => ({
@@ -191,7 +204,9 @@ function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <AuthProvider>
-        <AppRouter />
+        <WorkspaceProvider>
+          <AppRouter />
+        </WorkspaceProvider>
       </AuthProvider>
     </MemoryRouter>,
   )
@@ -204,6 +219,11 @@ beforeEach(async () => {
   const mockedNotifications = vi.mocked(await import('@/api/notifications'))
   mockedNotifications.getUnreadNotificationCount.mockResolvedValue({ unread_count: 0 })
   mockedNotifications.getStreamTicket.mockResolvedValue({ ticket: 'test-ticket' })
+
+  const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
+  mockedWorkspaces.getWorkspaces.mockResolvedValue([])
+  const mockedCompanies = vi.mocked(await import('@/api/companies'))
+  mockedCompanies.getCompanies.mockResolvedValue([])
 
   mockedGetJobs.mockResolvedValue({ items: [mockJob], total: 1 })
   mockedGetJobById.mockResolvedValue(mockJob)

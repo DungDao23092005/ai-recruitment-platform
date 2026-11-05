@@ -6,7 +6,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, require_candidate, require_recruiter
+from app.api.deps import (
+    get_db,
+    get_optional_workspace,
+    require_candidate,
+    require_recruiter,
+)
 from app.core.exceptions import (
     ConflictException,
     EntityNotFoundException,
@@ -30,6 +35,7 @@ from app.schemas.user import (
 )
 from app.services.resume_service import ResumeService
 from app.services.user_service import UserService
+from app.services.workspace_service import WorkspaceContext
 
 router = APIRouter()
 
@@ -334,27 +340,19 @@ async def confirm_my_resume(
 )
 async def get_recruiter_metrics(
     current_user: User = Depends(require_recruiter),
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     db: AsyncSession = Depends(get_db),
 ) -> RecruiterMetricsResponse:
-    """Return aggregated recruiter metrics for the authenticated recruiter's company.
-
-    Returns zero metrics if the recruiter has no associated company.
-    """
-    user = await UserService(db).get_user_with_profile(current_user.id)
-    if user is None or user.recruiter_profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Recruiter profile not found",
-        )
-
-    company_id = user.recruiter_profile.company_id
-    if company_id is None:
+    """Return aggregated metrics for the caller's selected workspace."""
+    if workspace is None:
         return RecruiterMetricsResponse(
             total_jobs=0,
             total_applications=0,
             jobs_by_status=[],
             applications_by_status=[],
         )
+
+    company_id = workspace.company_id
 
     job_counts = await JobRepository(db, Job).get_job_counts_by_status(company_id)
     application_counts = (

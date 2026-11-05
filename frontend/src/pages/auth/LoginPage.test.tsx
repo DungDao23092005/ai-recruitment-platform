@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { LoginPage } from './LoginPage'
@@ -27,6 +27,11 @@ vi.mock('@/api/auth', () => ({
 const mockedLogin = vi.mocked(authApi.login)
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
 
+function InvitationProbe() {
+  const location = useLocation()
+  return <div data-testid="invitation-state">{JSON.stringify(location.state)}</div>
+}
+
 function renderLoginPage() {
   return render(
     <MemoryRouter initialEntries={['/login']}>
@@ -34,6 +39,7 @@ function renderLoginPage() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/candidate/portal" element={<div>Candidate Portal Page</div>} />
+          <Route path="/invitations/accept" element={<InvitationProbe />} />
         </Routes>
       </AuthProvider>
     </MemoryRouter>,
@@ -153,6 +159,49 @@ describe('LoginPage', () => {
       expect(
         screen.getByText('Candidate Portal Page'),
       ).toBeInTheDocument()
+    })
+  })
+
+  it('returns to the invitation with the token in router state', async () => {
+    mockedLogin.mockResolvedValue({
+      access_token: 'token-abc',
+      token_type: 'bearer',
+    })
+    mockedGetCurrentUser.mockResolvedValue(mockUser)
+
+    const { container } = render(
+      <MemoryRouter
+        initialEntries={[
+          {
+            pathname: '/login',
+            state: {
+              from: '/invitations/accept',
+              invitationToken: 'invite-token',
+            },
+          },
+        ]}
+      >
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/invitations/accept" element={<InvitationProbe />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+
+    fireEvent.change(screen.getByLabelText('Email'), {
+      target: { value: 'candidate@example.com' },
+    })
+    fireEvent.change(container.querySelector('input[name="password"]')!, {
+      target: { value: 'password1' },
+    })
+    fireEvent.click(container.querySelector('button[type="submit"]')!)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('invitation-state')).toHaveTextContent(
+        '"invitationToken":"invite-token"',
+      )
     })
   })
 })

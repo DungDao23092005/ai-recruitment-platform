@@ -5,6 +5,12 @@ from app.repositories.application_activity_repository import (
 from app.repositories.application_note_repository import ApplicationNoteRepository
 from app.repositories.application_repository import ApplicationRepository
 from app.repositories.base import BaseRepository
+from app.repositories.company_invitation_repository import (
+    CompanyInvitationRepository,
+)
+from app.repositories.company_membership_repository import (
+    CompanyMembershipRepository,
+)
 from app.repositories.company_repository import CompanyRepository
 from app.repositories.interview_evaluation_repository import (
     InterviewEvaluationRepository,
@@ -26,6 +32,8 @@ __all__ = [
     "BaseRepositoryInterface",
     "UserRepository",
     "CompanyRepository",
+    "CompanyMembershipRepository",
+    "CompanyInvitationRepository",
     "JobRepository",
     "ApplicationRepository",
     "ApplicationNoteRepository",
