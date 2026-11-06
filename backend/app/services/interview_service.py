@@ -13,16 +13,35 @@ from app.domain import hiring
 from app.domain.enums import ApplicationStatus, InterviewStatus, InterviewType
 from app.domain.models import Application as DomainApplication
 from app.domain.models.base import DomainException
-from app.models import Application, Interview, Job, User
-from app.repositories import ApplicationRepository, InterviewRepository
+from app.models import (
+    Application,
+    Interview,
+    InterviewAssignment,
+    Job,
+    Resume,
+    User,
+)
+from app.repositories import (
+    ApplicationRepository,
+    InterviewAssignmentRepository,
+    InterviewRepository,
+    ResumeRepository,
+)
 from app.schemas.interview import (
+    AssignedInterviewRead,
     CandidateInterviewRead,
     InterviewActionRequest,
     InterviewCreate,
+    InterviewerApplicationRead,
+    InterviewerCandidateRead,
+    InterviewerInterviewRead,
+    InterviewerResumeRead,
     InterviewRead,
     InterviewUpdate,
 )
+from app.services.pii_masking import mask_email, mask_parsed_resume, mask_phone
 from app.services.application_activity_service import record_activity
+from app.services.interview_access import require_workspace_interview
 from app.services.job_service import JobService
 from app.services.notification_service import NotificationService
 from app.services.pipeline_email_service import schedule_interview_email
@@ -35,6 +54,7 @@ from app.services.pipeline_realtime import (
     schedule_application_pipeline_event,
 )
 from app.services.user_service import UserService
+from app.services.workspace_service import WorkspaceContext
 
 # An interview in any of these states still requires the application to remain
 # in the INTERVIEWING stage. Declined/cancelled outcomes are terminal, while
@@ -64,6 +84,7 @@ class InterviewService:
         self.session = session
         self.interviews = InterviewRepository(session, Interview)
         self.applications = ApplicationRepository(session, Application)
+        self.assignments = InterviewAssignmentRepository(session)
 
     @staticmethod
     def _as_utc(value: datetime) -> datetime:
@@ -748,3 +769,137 @@ class InterviewService:
             ) from None
 
         return InterviewRead.model_validate(interview)
+
+    async def list_assigned_for_user(
+        self,
+        context: WorkspaceContext,
+    ) -> list[AssignedInterviewRead]:
+        """List interviews explicitly assigned to the current workspace user."""
+        assignments = await self.assignments.list_active_by_user(
+            context.user.id
+        )
+        results: list[AssignedInterviewRead] = []
+        for assignment in assignments:
+            interview = await self.interviews.get_by_id_with_application(
+                assignment.interview_id
+            )
+            if interview is None:
+                continue
+            application = await self.applications.get_by_id_with_candidate_job_company_and_recruiters(
+                interview.application_id
+            )
+            if (
+                application is None
+                or application.job is None
+                or application.job.company is None
+                or application.job.company_id != context.company_id
+            ):
+                continue
+            results.append(
+                self._assigned_interview_read(interview, application)
+            )
+        results.sort(
+            key=lambda item: (item.scheduled_at, str(item.id)),
+        )
+        return results
+
+    async def get_interview_for_workspace_member(
+        self,
+        context: WorkspaceContext,
+        interview_id: uuid.UUID,
+    ) -> InterviewerInterviewRead:
+        access = await require_workspace_interview(
+            self.session, context, interview_id
+        )
+        return InterviewerInterviewRead.model_validate(access.interview)
+
+    async def get_application_for_workspace_member(
+        self,
+        context: WorkspaceContext,
+        interview_id: uuid.UUID,
+    ) -> InterviewerApplicationRead:
+        access = await require_workspace_interview(
+            self.session, context, interview_id
+        )
+        application = access.application
+        resume = await ResumeRepository(
+            self.session, Resume
+        ).get_primary_by_candidate(application.candidate_id)
+        candidate = application.candidate
+        candidate_email = (
+            candidate.user.email
+            if candidate is not None and candidate.user is not None
+            else None
+        )
+        return InterviewerApplicationRead(
+            id=application.id,
+            job_id=application.job_id,
+            job_title=application.job.title if application.job else "",
+            company_name=(
+                application.job.company.name
+                if application.job is not None
+                and application.job.company is not None
+                else None
+            ),
+            status=application.status,
+            created_at=application.created_at,
+            updated_at=application.updated_at,
+            candidate=(
+                InterviewerCandidateRead(
+                    id=candidate.id,
+                    full_name=candidate.full_name,
+                    title=candidate.title,
+                    email=mask_email(candidate_email),
+                    phone=mask_phone(candidate.phone),
+                )
+                if candidate is not None
+                else None
+            ),
+            resume=(
+                InterviewerResumeRead(
+                    id=resume.id,
+                    title=resume.title,
+                    is_primary=resume.is_primary,
+                    is_confirmed=resume.is_confirmed,
+                    parsed_data=mask_parsed_resume(resume.parsed_data),
+                )
+                if resume is not None
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _assigned_interview_read(
+        interview: Interview,
+        application: Application,
+    ) -> AssignedInterviewRead:
+        company_name = (
+            application.job.company.name
+            if application.job is not None
+            and application.job.company is not None
+            else ""
+        )
+        candidate_name = (
+            application.candidate.full_name
+            if application.candidate is not None
+            else None
+        )
+        return AssignedInterviewRead(
+            id=interview.id,
+            application_id=interview.application_id,
+            scheduled_at=interview.scheduled_at,
+            duration_minutes=interview.duration_minutes,
+            interview_type=interview.interview_type.value,
+            meeting_url=interview.meeting_url,
+            location=interview.location,
+            status=interview.status.value,
+            created_at=interview.created_at,
+            updated_at=interview.updated_at,
+            job_id=application.job_id,
+            job_title=(
+                application.job.title if application.job is not None else ""
+            ),
+            company_name=company_name,
+            candidate_name=candidate_name,
+            application_status=application.status.value,
+        )

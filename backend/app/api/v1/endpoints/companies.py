@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
+    ensure_not_interviewer,
     get_db,
     get_optional_workspace,
     require_admin,
@@ -86,6 +87,7 @@ async def update_company(
     Ownership is resolved server-side through the caller's active workspace
     membership. A platform admin may update any company.
     """
+    ensure_not_interviewer(workspace)
     try:
         company = await service.update_owned_company(
             current_user,

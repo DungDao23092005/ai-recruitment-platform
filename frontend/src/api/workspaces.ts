@@ -18,6 +18,16 @@ export async function getWorkspaceMembers(): Promise<WorkspaceMember[]> {
   )
 }
 
+export async function updateWorkspaceMemberRole(
+  membershipId: string,
+  role: MembershipRole,
+): Promise<WorkspaceMember> {
+  return apiClient.patch<WorkspaceMember, WorkspaceMember>(
+    `/workspaces/members/${membershipId}/role`,
+    { role },
+  )
+}
+
 export async function revokeWorkspaceMember(
   membershipId: string,
 ): Promise<void> {

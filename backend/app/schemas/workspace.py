@@ -27,6 +27,10 @@ class MembershipRead(BaseModel):
     updated_at: datetime
 
 
+class MembershipRoleUpdate(BaseModel):
+    role: MembershipRole
+
+
 class MemberRead(BaseModel):
     membership_id: uuid.UUID
     user_id: uuid.UUID
@@ -49,9 +53,11 @@ class WorkspaceRead(BaseModel):
 
 class InvitationCreate(BaseModel):
     email: EmailStr
-    role: Literal[MembershipRole.ADMIN, MembershipRole.RECRUITER] = (
-        MembershipRole.RECRUITER
-    )
+    role: Literal[
+        MembershipRole.ADMIN,
+        MembershipRole.RECRUITER,
+        MembershipRole.INTERVIEWER,
+    ] = MembershipRole.RECRUITER
 
     @field_validator("email")
     @classmethod

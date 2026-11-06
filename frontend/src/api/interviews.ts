@@ -1,5 +1,34 @@
 import apiClient from '@/api/client'
-import type { Interview, InterviewCreate, InterviewUpdate } from '@/types/application'
+import type {
+  AssignedInterview,
+  Interview,
+  InterviewCreate,
+  InterviewUpdate,
+  InterviewerApplication,
+  InterviewerInterview,
+} from '@/types/application'
+
+export async function listMyAssignedInterviews(): Promise<AssignedInterview[]> {
+  return apiClient.get<AssignedInterview[], AssignedInterview[]>(
+    '/interviews/mine',
+  )
+}
+
+export async function getAssignedInterview(
+  interviewId: string,
+): Promise<InterviewerInterview> {
+  return apiClient.get<InterviewerInterview, InterviewerInterview>(
+    `/interviews/${interviewId}`,
+  )
+}
+
+export async function getInterviewerApplication(
+  interviewId: string,
+): Promise<InterviewerApplication> {
+  return apiClient.get<InterviewerApplication, InterviewerApplication>(
+    `/interviews/${interviewId}/application`,
+  )
+}
 
 export async function scheduleInterview(
   applicationId: string,

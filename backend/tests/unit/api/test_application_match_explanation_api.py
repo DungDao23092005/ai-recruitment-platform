@@ -26,7 +26,7 @@ from app.core.rate_limit import (
     RateLimitResult,
     explanation_refresh_rate_limit,
 )
-from app.domain.enums import UserRole
+from app.domain.enums import MembershipRole, UserRole
 from app.main import app
 
 
@@ -116,7 +116,11 @@ def client(mock_service, mock_coordinator):
     app.dependency_overrides[get_current_user] = _override_user(UserRole.RECRUITER)
 
     async def _override_workspace():
-        return SimpleNamespace(company_id=uuid.uuid4())
+        return SimpleNamespace(
+            company_id=uuid.uuid4(),
+            role=MembershipRole.ADMIN,
+            is_platform_admin=False,
+        )
 
     app.dependency_overrides[get_optional_workspace] = _override_workspace
     app.dependency_overrides[explanation_refresh_rate_limit] = (

@@ -10,6 +10,7 @@ class UserRole(str, Enum):
 class MembershipRole(str, Enum):
     ADMIN = "admin"
     RECRUITER = "recruiter"
+    INTERVIEWER = "interviewer"
 
 
 class MembershipStatus(str, Enum):

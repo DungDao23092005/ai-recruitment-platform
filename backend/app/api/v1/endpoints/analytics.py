@@ -6,7 +6,12 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_optional_workspace, require_recruiter
+from app.api.deps import (
+    ensure_not_interviewer,
+    get_db,
+    get_optional_workspace,
+    require_recruiter,
+)
 from app.core.exceptions import (
     EntityNotFoundException,
     ValidationError,
@@ -14,6 +19,7 @@ from app.core.exceptions import (
 from app.models import User
 from app.schemas.analytics import RecruiterAnalyticsResponse
 from app.services.analytics_service import AnalyticsService
+from app.services.workspace_service import WorkspaceContext
 
 router = APIRouter()
 
@@ -22,10 +28,10 @@ router = APIRouter()
     "/recruiter-dashboard",
     response_model=RecruiterAnalyticsResponse,
     summary="Recruitment analytics for the authenticated recruiter's company",
-    dependencies=[Depends(get_optional_workspace)],
 )
 async def get_recruiter_analytics(
     current_user: User = Depends(require_recruiter),
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     db: AsyncSession = Depends(get_db),
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
@@ -38,6 +44,7 @@ async def get_recruiter_analytics(
     against that company and returns 404 when it belongs to another tenant.
     Dates are Vietnam-local calendar dates.
     """
+    ensure_not_interviewer(workspace)
     try:
         return await AnalyticsService(db).get_recruiter_dashboard(
             current_user,

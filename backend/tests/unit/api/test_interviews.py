@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user, get_optional_workspace
 from app.core.exceptions import EntityNotFoundException, InvalidTransitionException
-from app.domain.enums import UserRole, InterviewStatus, InterviewType
+from app.domain.enums import MembershipRole, UserRole, InterviewStatus, InterviewType
 from app.main import app
 
 
@@ -57,7 +57,11 @@ def recruiter_client(mock_service):
     app.dependency_overrides[get_current_user] = _override_user
 
     async def _override_workspace():
-        return SimpleNamespace(company_id=uuid.uuid4())
+        return SimpleNamespace(
+            company_id=uuid.uuid4(),
+            role=MembershipRole.ADMIN,
+            is_platform_admin=False,
+        )
 
     app.dependency_overrides[get_optional_workspace] = _override_workspace
     with patch(

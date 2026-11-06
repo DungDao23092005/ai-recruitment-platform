@@ -158,6 +158,72 @@ class TestWorkspaceInvitationFlow:
         assert last_admin.status_code == 409
         run_async(invitee.aclose())
 
+    def test_admin_can_change_member_role_and_guards_last_admin(
+        self, client, recruiter_client, run_async
+    ):
+        company = _create_company(recruiter_client, run_async)
+        invitee_email = f"interviewer-{uuid.uuid4()}@example.com"
+        invitee = _register_and_login(client, run_async, invitee_email)
+
+        created = run_async(
+            recruiter_client.post(
+                f"{API_V1}/workspaces/invitations",
+                json={"email": invitee_email, "role": "interviewer"},
+            )
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["role"] == "interviewer"
+        token = _invitation_token(run_async, invitee_email)
+        accepted = run_async(
+            invitee.post(
+                f"{API_V1}/invitations/accept", json={"token": token}
+            )
+        )
+        assert accepted.status_code == 200, accepted.text
+
+        members = run_async(
+            recruiter_client.get(
+                f"{API_V1}/workspaces/members",
+                headers={"X-Company-ID": company["id"]},
+            )
+        )
+        assert members.status_code == 200, members.text
+        interviewer = next(
+            member
+            for member in members.json()
+            if member["email"] == invitee_email
+        )
+
+        promoted = run_async(
+            recruiter_client.patch(
+                f"{API_V1}/workspaces/members/{interviewer['membership_id']}/role",
+                headers={"X-Company-ID": company["id"]},
+                json={"role": "admin"},
+            )
+        )
+        assert promoted.status_code == 200, promoted.text
+        assert promoted.json()["role"] == "admin"
+
+        demoted = run_async(
+            recruiter_client.patch(
+                f"{API_V1}/workspaces/members/{interviewer['membership_id']}/role",
+                headers={"X-Company-ID": company["id"]},
+                json={"role": "interviewer"},
+            )
+        )
+        assert demoted.status_code == 200, demoted.text
+        assert demoted.json()["role"] == "interviewer"
+
+        non_admin_attempt = run_async(
+            invitee.patch(
+                f"{API_V1}/workspaces/members/{interviewer['membership_id']}/role",
+                headers={"X-Company-ID": company["id"]},
+                json={"role": "admin"},
+            )
+        )
+        assert non_admin_attempt.status_code == 403
+        run_async(invitee.aclose())
+
     def test_revoked_invitation_cannot_be_accepted(
         self, client, recruiter_client, run_async
     ):

@@ -18,6 +18,13 @@ EVALUATION_RECOMMENDATION_VALUES = (
     "no_hire",
     "strong_no_hire",
 )
+EVALUATION_STATUS_DRAFT = "draft"
+EVALUATION_STATUS_SUBMITTED = "submitted"
+EVALUATION_STATUS_VALUES = (
+    EVALUATION_STATUS_DRAFT,
+    EVALUATION_STATUS_SUBMITTED,
+)
+EVALUATION_STATUS_MAX_LENGTH = 20
 
 _RATING_FIELD = Field(ge=EVALUATION_MIN_RATING, le=EVALUATION_MAX_RATING)
 
@@ -87,5 +94,7 @@ class InterviewEvaluationRead(BaseModel):
     weaknesses: str | None = None
     recommendation: str | None = None
     notes: str | None = None
+    status: str
+    submitted_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

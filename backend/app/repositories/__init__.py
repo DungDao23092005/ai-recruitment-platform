@@ -12,6 +12,9 @@ from app.repositories.company_membership_repository import (
     CompanyMembershipRepository,
 )
 from app.repositories.company_repository import CompanyRepository
+from app.repositories.interview_assignment_repository import (
+    InterviewAssignmentRepository,
+)
 from app.repositories.interview_evaluation_repository import (
     InterviewEvaluationRepository,
 )
@@ -40,6 +43,7 @@ __all__ = [
     "ApplicationActivityRepository",
     "ResumeRepository",
     "InterviewRepository",
+    "InterviewAssignmentRepository",
     "InterviewEvaluationRepository",
     "NotificationRepository",
     "RecruitmentPlanRepository",

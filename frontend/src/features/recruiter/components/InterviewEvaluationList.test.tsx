@@ -15,10 +15,12 @@ vi.mock('@/api/applications', () => ({
   createInterviewEvaluation: vi.fn(),
   updateInterviewEvaluation: vi.fn(),
   deleteInterviewEvaluation: vi.fn(),
+  submitInterviewEvaluation: vi.fn(),
 }))
 
 const mockedList = vi.mocked(applicationsApi.listApplicationEvaluations)
 const mockedCreate = vi.mocked(applicationsApi.createInterviewEvaluation)
+const mockedSubmit = vi.mocked(applicationsApi.submitInterviewEvaluation)
 const mockedUseAuth = vi.mocked(useAuth)
 
 function mockUser(id = 'user-1', role: 'recruiter' | 'admin' = 'recruiter') {
@@ -65,6 +67,8 @@ const myEvaluation: InterviewEvaluation = {
   weaknesses: 'Thiếu kinh nghiệm hệ thống',
   recommendation: 'hire',
   notes: 'Nên mời vòng tiếp theo',
+  status: 'draft',
+  submitted_at: null,
   created_at: '2026-02-11T00:00:00Z',
   updated_at: '2026-02-11T00:00:00Z',
 }
@@ -120,7 +124,7 @@ describe('InterviewEvaluationList', () => {
     fireEvent.change(screen.getByLabelText('Đề xuất'), {
       target: { value: 'hire' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Gửi đánh giá' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu nháp' }))
 
     await waitFor(() => {
       expect(mockedCreate).toHaveBeenCalledWith('app-1', 'interview-1', {
@@ -131,6 +135,63 @@ describe('InterviewEvaluationList', () => {
         notes: null,
       })
     })
+  })
+
+  it('submits a draft explicitly and reflects the locked state', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const submitted: InterviewEvaluation = {
+      ...myEvaluation,
+      status: 'submitted',
+      submitted_at: '2026-02-12T00:00:00Z',
+    }
+    mockedList.mockResolvedValue([myEvaluation])
+    mockedSubmit.mockResolvedValue(submitted)
+
+    render(
+      <InterviewEvaluationList applicationId="app-1" interviews={[interview]} />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Bản nháp')).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Gửi' }))
+
+    await waitFor(() => {
+      expect(mockedSubmit).toHaveBeenCalledWith('app-1', 'eval-1')
+    })
+    expect(screen.getByText('Đã gửi')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Sửa đánh giá' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Xóa đánh giá' }),
+    ).not.toBeInTheDocument()
+    confirmSpy.mockRestore()
+  })
+
+  it('never offers edit or delete actions for a submitted review', async () => {
+    mockedList.mockResolvedValue([
+      {
+        ...myEvaluation,
+        status: 'submitted',
+        submitted_at: '2026-02-12T00:00:00Z',
+      },
+    ])
+
+    render(
+      <InterviewEvaluationList applicationId="app-1" interviews={[interview]} />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Đã gửi')).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('button', { name: 'Sửa đánh giá' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Xóa đánh giá' }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Gửi' })).not.toBeInTheDocument()
   })
 
   it('shows a conflict message when a scorecard already exists', async () => {
@@ -150,7 +211,7 @@ describe('InterviewEvaluationList', () => {
     })
 
     fireEvent.click(screen.getByRole('button', { name: 'Thêm đánh giá' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Gửi đánh giá' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu nháp' }))
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent(

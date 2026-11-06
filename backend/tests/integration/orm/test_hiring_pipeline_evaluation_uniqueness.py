@@ -14,6 +14,7 @@ an operations context so the shipped DDL is what gets validated.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +34,9 @@ from app.domain.enums import (
     JobType,
     UserRole,
     WorkplaceType,
+)
+from app.repositories.interview_evaluation_repository import (
+    InterviewEvaluationRepository,
 )
 from app.models import (
     Application,
@@ -352,5 +356,219 @@ class TestEvaluationUniquenessBehaviour:
                     )
                 )
                 await session.commit()
+
+        run_async(_test())
+
+
+class TestEvaluationSubmitConcurrency:
+    def test_only_one_concurrent_submit_wins(self, run_async):
+        async def _test():
+            async with async_session_factory() as session:
+                _, interview, evaluator_a, _ = await _seed_interview(session)
+                session.add(
+                    InterviewEvaluation(
+                        interview_id=interview.id,
+                        application_id=interview.application_id,
+                        evaluator_id=evaluator_a,
+                        rating=4,
+                    )
+                )
+                await session.commit()
+                interview_id = interview.id
+                application_id = interview.application_id
+
+            async with async_session_factory() as session:
+                row = (
+                    await session.execute(
+                        sa.select(InterviewEvaluation).where(
+                            InterviewEvaluation.interview_id == interview_id,
+                            InterviewEvaluation.application_id == application_id,
+                            InterviewEvaluation.evaluator_id == evaluator_a,
+                        )
+                    )
+                ).scalar_one()
+                evaluation_id = row.id
+
+            async def attempt() -> bool:
+                async with async_session_factory() as session:
+                    repo = InterviewEvaluationRepository(session)
+                    won = await repo.try_submit(
+                        evaluation_id,
+                        evaluator_a,
+                        datetime.now(timezone.utc),
+                    )
+                    await session.commit()
+                    return won
+
+            results = await asyncio.gather(attempt(), attempt())
+            assert sorted(results) == [False, True]
+
+            async with async_session_factory() as session:
+                row = await session.get(InterviewEvaluation, evaluation_id)
+                assert row.status == "submitted"
+                assert row.submitted_at is not None
+
+        run_async(_test())
+
+
+_WORKFLOW_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "alembic"
+    / "versions"
+    / "add_interview_assignments.py"
+)
+_STATUS_CONSTRAINT = "ck_interview_evaluations_status"
+
+
+def _load_workflow_migration():
+    spec = importlib.util.spec_from_file_location(
+        "add_interview_assignments", _WORKFLOW_MIGRATION_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _drop_workflow_schema(connection) -> None:
+    connection.exec_driver_sql(
+        "IF OBJECT_ID('interview_assignments', 'U') IS NOT NULL "
+        "DROP TABLE interview_assignments"
+    )
+    connection.exec_driver_sql(
+        f"IF EXISTS (SELECT 1 FROM sys.check_constraints "
+        f"WHERE name = '{_STATUS_CONSTRAINT}' "
+        "AND parent_object_id = OBJECT_ID('interview_evaluations')) "
+        f"ALTER TABLE interview_evaluations DROP CONSTRAINT {_STATUS_CONSTRAINT}"
+    )
+    connection.exec_driver_sql(
+        """
+        DECLARE @constraint sysname;
+        SELECT @constraint = dc.name
+        FROM sys.default_constraints AS dc
+        JOIN sys.columns AS c
+          ON c.object_id = dc.parent_object_id
+         AND c.column_id = dc.parent_column_id
+        WHERE dc.parent_object_id = OBJECT_ID('interview_evaluations')
+          AND c.name = 'status';
+        IF @constraint IS NOT NULL
+        BEGIN
+            DECLARE @sql nvarchar(max);
+            SET @sql = N'ALTER TABLE interview_evaluations DROP CONSTRAINT '
+                + QUOTENAME(@constraint);
+            EXEC sp_executesql @sql;
+        END
+        """
+    )
+    for column in ("status", "submitted_at"):
+        connection.exec_driver_sql(
+            "IF COL_LENGTH('interview_evaluations', "
+            f"'{column}') IS NOT NULL "
+            f"ALTER TABLE interview_evaluations DROP COLUMN {column}"
+        )
+
+
+def _column_length(connection, column: str):
+    return connection.execute(
+        sa.text(
+            "SELECT COL_LENGTH('interview_evaluations', :column)"
+        ),
+        {"column": column},
+    ).scalar()
+
+
+def _table_exists(connection, table: str) -> bool:
+    return bool(
+        connection.execute(
+            sa.text("SELECT OBJECT_ID(:table, 'U')"), {"table": table}
+        ).scalar()
+    )
+
+
+class TestEvaluationWorkflowMigration:
+    def test_backfill_default_constraint_and_downgrade(self, run_async):
+        async def _test():
+            migration = _load_workflow_migration()
+            async with async_session_factory() as session:
+                _, interview, evaluator_a, evaluator_b = await _seed_interview(
+                    session
+                )
+                await session.commit()
+                interview_id = interview.id
+                application_id = interview.application_id
+
+            evaluation_id = uuid.uuid4()
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            async with async_session_factory() as session:
+                conn = await session.connection()
+                await conn.run_sync(_drop_workflow_schema)
+                await session.execute(
+                    sa.text(
+                        "INSERT INTO interview_evaluations "
+                        "(id, interview_id, application_id, evaluator_id, "
+                        "rating, is_deleted, created_at, updated_at) "
+                        "VALUES (:id, :interview_id, :application_id, "
+                        ":evaluator_id, 4, 0, :now, :now)"
+                    ),
+                    {
+                        "id": evaluation_id,
+                        "interview_id": interview_id,
+                        "application_id": application_id,
+                        "evaluator_id": evaluator_a,
+                        "now": now,
+                    },
+                )
+                await session.commit()
+
+            async with async_session_factory() as session:
+                conn = await session.connection()
+                await conn.run_sync(_apply_upgrade, migration)
+                await session.commit()
+
+            async with async_session_factory() as session:
+                row = (
+                    await session.execute(
+                        sa.text(
+                            "SELECT status, submitted_at FROM interview_evaluations "
+                            "WHERE id = :id"
+                        ),
+                        {"id": evaluation_id},
+                    )
+                ).one()
+                assert row[0] == "submitted"
+                assert row[1] is None
+
+                draft = InterviewEvaluation(
+                    interview_id=interview_id,
+                    application_id=application_id,
+                    evaluator_id=evaluator_b,
+                    rating=3,
+                )
+                session.add(draft)
+                await session.flush()
+                assert draft.status == "draft"
+                assert draft.submitted_at is None
+
+                with pytest.raises(IntegrityError):
+                    await session.execute(
+                        sa.text(
+                            "UPDATE interview_evaluations SET status = 'bogus' "
+                            "WHERE id = :id"
+                        ),
+                        {"id": draft.id},
+                    )
+                    await session.commit()
+                await session.rollback()
+
+                conn = await session.connection()
+                assert await conn.run_sync(_table_exists, "interview_assignments")
+
+                await conn.run_sync(_apply_downgrade, migration)
+                await session.commit()
+                conn = await session.connection()
+                assert await conn.run_sync(_column_length, "status") is None
+                assert await conn.run_sync(_column_length, "submitted_at") is None
+                assert not await conn.run_sync(
+                    _table_exists, "interview_assignments"
+                )
 
         run_async(_test())

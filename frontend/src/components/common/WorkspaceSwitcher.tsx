@@ -46,6 +46,7 @@ export function WorkspaceSwitcher({ className }: WorkspaceSwitcherProps) {
           >
             {workspace.company_name}
             {workspace.role === 'admin' ? ' (Quản trị)' : ''}
+            {workspace.role === 'interviewer' ? ' (Người phỏng vấn)' : ''}
           </option>
         ))}
       </Select>

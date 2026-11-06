@@ -5,6 +5,9 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
+from app.domain.enums import ApplicationStatus
+from app.schemas.ai_resume import ParsedResumeSchema
+
 
 class InterviewType(str):
     TECHNICAL = "technical"
@@ -101,6 +104,65 @@ class CandidateInterviewRead(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+
+
+class InterviewerInterviewRead(BaseModel):
+    """Interviewer-facing view that never exposes internal recruiter notes."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    application_id: uuid.UUID
+    scheduled_at: datetime
+    duration_minutes: int
+    interview_type: str
+    meeting_url: str | None = None
+    location: str | None = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class AssignedInterviewRead(InterviewerInterviewRead):
+    job_id: uuid.UUID
+    job_title: str
+    company_name: str
+    candidate_name: str | None = None
+    application_status: str
+
+
+class InterviewerCandidateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    full_name: str | None = None
+    title: str | None = None
+    email: str | None = None
+    phone: str | None = None
+
+
+class InterviewerResumeRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    title: str | None = None
+    is_primary: bool
+    is_confirmed: bool
+    parsed_data: ParsedResumeSchema | None = None
+
+
+class InterviewerApplicationRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    job_id: uuid.UUID
+    job_title: str
+    company_name: str | None = None
+    status: ApplicationStatus
+    created_at: datetime
+    updated_at: datetime
+    candidate: InterviewerCandidateRead | None = None
+    resume: InterviewerResumeRead | None = None
 
 
 # Backward-compatible alias: existing recruiter-facing code paths import

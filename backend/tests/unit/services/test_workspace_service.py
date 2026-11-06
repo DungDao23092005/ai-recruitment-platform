@@ -296,14 +296,31 @@ class TestListWorkspaces:
 
 
 class TestListMembers:
-    def test_non_admin_cannot_list_members(self):
+    def test_interviewer_cannot_list_members(self):
         service = make_service(make_session())
         user = make_user()
         company = make_company()
-        context = service_context(company, user)
+        context = service_context(
+            company, user, role=MembershipRole.INTERVIEWER
+        )
 
         with pytest.raises(ForbiddenException):
             asyncio.run(service.list_members(context))
+
+    def test_recruiter_lists_members_read_only(self):
+        service = make_service(make_session())
+        user = make_user()
+        member = make_user(email="member@example.com")
+        company = make_company()
+        context = service_context(
+            company, user, role=MembershipRole.RECRUITER
+        )
+        membership = make_membership(company=company, user=member)
+        service.memberships.list_by_company.return_value = [membership]
+
+        result = asyncio.run(service.list_members(context))
+
+        assert result[0].user_id == member.id
 
     def test_admin_lists_members_with_profiles(self):
         service = make_service(make_session())
@@ -708,6 +725,40 @@ class TestRevokeMembership:
         session.commit.assert_awaited_once()
         create_task.assert_called_once()
 
+    def test_revoke_membership_soft_deletes_active_interview_assignments(self):
+        session = make_session()
+        lock_result = MagicMock()
+        lock_result.scalar_one.return_value = 0
+        session.execute.return_value = lock_result
+        service = make_service(session)
+        company = make_company()
+        admin = make_user()
+        member_user = make_user()
+        context = service_context(
+            company, admin, role=MembershipRole.ADMIN
+        )
+        target = make_membership(
+            company=company,
+            user=member_user,
+            role=MembershipRole.INTERVIEWER,
+        )
+        service.memberships.get_active.return_value = context.membership
+        service.memberships.get_by_id_with_user.return_value = target
+
+        with patch(
+            "app.services.workspace_service.asyncio.create_task"
+        ) as create_task:
+            result = asyncio.run(
+                service.revoke_membership(context, target.id)
+            )
+            coroutine = create_task.call_args.args[0]
+            coroutine.close()
+
+        assert result.status == MembershipStatus.REVOKED
+        session.commit.assert_awaited_once()
+        # session.execute is called: lock (1), RecruiterProfile update (2), InterviewAssignment update (3)
+        assert session.execute.await_count >= 3
+
     def test_stale_admin_context_is_rejected_after_lock(self):
         session = make_session()
         lock_result = MagicMock()
@@ -741,6 +792,131 @@ class TestRevokeMembership:
             asyncio.run(
                 service.revoke_membership(context, uuid.uuid4())
             )
+
+
+class TestUpdateMembershipRole:
+    def test_non_admin_cannot_change_role(self):
+        session = make_session()
+        service = make_service(session)
+        context = service_context(
+            make_company(), make_user(), role=MembershipRole.RECRUITER
+        )
+
+        with pytest.raises(ForbiddenException):
+            asyncio.run(
+                service.update_membership_role(
+                    context, uuid.uuid4(), MembershipRole.INTERVIEWER
+                )
+            )
+
+        session.execute.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    def test_last_admin_cannot_be_demoted(self):
+        session = make_session()
+        lock_result = MagicMock()
+        lock_result.scalar_one.return_value = 0
+        session.execute.return_value = lock_result
+        service = make_service(session)
+        company = make_company()
+        admin = make_user()
+        context = service_context(
+            company, admin, role=MembershipRole.ADMIN
+        )
+        target = make_membership(
+            company=company,
+            user=admin,
+            role=MembershipRole.ADMIN,
+        )
+        service.memberships.get_active.return_value = context.membership
+        service.memberships.get_by_id_with_user.return_value = target
+        service.memberships.count_active_admins.return_value = 1
+
+        with pytest.raises(ConflictException, match="last active"):
+            asyncio.run(
+                service.update_membership_role(
+                    context, target.id, MembershipRole.RECRUITER
+                )
+            )
+
+        assert target.role == MembershipRole.ADMIN
+        session.commit.assert_not_awaited()
+
+    def test_admin_can_demote_admin_when_another_remains(self):
+        session = make_session()
+        lock_result = MagicMock()
+        lock_result.scalar_one.return_value = 0
+        session.execute.return_value = lock_result
+        service = make_service(session)
+        company = make_company()
+        admin = make_user()
+        target_user = make_user(email="target@example.com")
+        context = service_context(
+            company, admin, role=MembershipRole.ADMIN
+        )
+        target = make_membership(
+            company=company,
+            user=target_user,
+            role=MembershipRole.ADMIN,
+        )
+        service.memberships.get_active.return_value = context.membership
+        service.memberships.get_by_id_with_user.return_value = target
+        service.memberships.count_active_admins.return_value = 2
+
+        result = asyncio.run(
+            service.update_membership_role(
+                context, target.id, MembershipRole.INTERVIEWER
+            )
+        )
+
+        assert result.role == MembershipRole.INTERVIEWER
+        assert target.role == MembershipRole.INTERVIEWER
+        session.commit.assert_awaited_once()
+
+    def test_cross_company_membership_is_not_found(self):
+        session = make_session()
+        lock_result = MagicMock()
+        lock_result.scalar_one.return_value = 0
+        session.execute.return_value = lock_result
+        service = make_service(session)
+        context = service_context(
+            make_company(), make_user(), role=MembershipRole.ADMIN
+        )
+        target = make_membership(
+            company=make_company(), user=make_user()
+        )
+        service.memberships.get_active.return_value = context.membership
+        service.memberships.get_by_id_with_user.return_value = target
+
+        with pytest.raises(EntityNotFoundException):
+            asyncio.run(
+                service.update_membership_role(
+                    context, target.id, MembershipRole.INTERVIEWER
+                )
+            )
+
+        session.commit.assert_not_awaited()
+
+    def test_stale_admin_context_is_rejected_after_lock(self):
+        session = make_session()
+        lock_result = MagicMock()
+        lock_result.scalar_one.return_value = 0
+        session.execute.return_value = lock_result
+        service = make_service(session)
+        context = service_context(
+            make_company(), make_user(), role=MembershipRole.ADMIN
+        )
+        service.memberships.get_active.return_value = None
+
+        with pytest.raises(ConflictException, match="no longer active"):
+            asyncio.run(
+                service.update_membership_role(
+                    context, uuid.uuid4(), MembershipRole.INTERVIEWER
+                )
+            )
+
+        service.memberships.get_by_id_with_user.assert_not_awaited()
+        session.commit.assert_not_awaited()
 
 
 def service_context(

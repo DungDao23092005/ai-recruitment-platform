@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
+    ensure_not_interviewer,
     get_current_user_optional,
     get_db,
     get_optional_workspace,
@@ -78,6 +79,7 @@ async def create_job(
             detail=f"Company {data.company_id} not found",
         )
 
+    ensure_not_interviewer(workspace)
     is_admin = current_user.role == UserRole.ADMIN
     if not is_admin:
         if workspace is None or workspace.company_id != data.company_id:
@@ -152,6 +154,7 @@ async def list_my_jobs(
     limit: int = 10,
     service: JobService = Depends(_get_job_service),
 ) -> list[JobRead]:
+    ensure_not_interviewer(workspace)
     if current_user.role == UserRole.ADMIN and workspace is None:
         jobs = await service.list_all_jobs(skip=skip, limit=limit)
     else:
@@ -174,6 +177,7 @@ async def get_my_job(
     workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     service: JobService = Depends(_get_job_service),
 ) -> JobRead:
+    ensure_not_interviewer(workspace)
     try:
         job = await service.get_recruiter_job_by_id(
             current_user,
@@ -199,6 +203,7 @@ async def update_my_job(
     workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     service: JobService = Depends(_get_job_service),
 ) -> JobRead:
+    ensure_not_interviewer(workspace)
     try:
         job = await service.update_job(current_user, job_id, data)
     except EntityNotFoundException as exc:
@@ -230,6 +235,7 @@ async def update_my_job_status(
     workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     service: JobService = Depends(_get_job_service),
 ) -> JobRead:
+    ensure_not_interviewer(workspace)
     try:
         await service.get_recruiter_job_by_id(
             current_user,
@@ -270,6 +276,7 @@ async def delete_my_job(
     workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     service: JobService = Depends(_get_job_service),
 ) -> None:
+    ensure_not_interviewer(workspace)
     try:
         await service.delete_job(current_user, job_id)
     except EntityNotFoundException as exc:

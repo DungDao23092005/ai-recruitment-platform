@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from sqlalchemy import (
     CheckConstraint,
+    DateTime,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -21,6 +23,14 @@ STRENGTHS_MAX_LENGTH = 1000
 WEAKNESSES_MAX_LENGTH = 1000
 NOTES_MAX_LENGTH = 2000
 RECOMMENDATION_MAX_LENGTH = 20
+
+EVALUATION_STATUS_DRAFT = "draft"
+EVALUATION_STATUS_SUBMITTED = "submitted"
+EVALUATION_STATUS_VALUES = (
+    EVALUATION_STATUS_DRAFT,
+    EVALUATION_STATUS_SUBMITTED,
+)
+EVALUATION_STATUS_MAX_LENGTH = 20
 
 # Bounded, explicit set of hiring recommendations (see check constraint below).
 RECOMMENDATION_VALUES = ("strong_hire", "hire", "no_hire", "strong_no_hire")
@@ -74,6 +84,18 @@ class InterviewEvaluation(Base, TimestampMixin, SoftDeleteMixin):
         String(NOTES_MAX_LENGTH).with_variant(NVARCHAR(NOTES_MAX_LENGTH), "mssql"),
         nullable=True,
     )
+    status: Mapped[str] = mapped_column(
+        String(EVALUATION_STATUS_MAX_LENGTH).with_variant(
+            NVARCHAR(EVALUATION_STATUS_MAX_LENGTH), "mssql"
+        ),
+        nullable=False,
+        default=EVALUATION_STATUS_DRAFT,
+        server_default=text("'draft'"),
+    )
+    submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     __table_args__ = (
         # Guarantees the evaluation's interview really belongs to the
@@ -91,6 +113,10 @@ class InterviewEvaluation(Base, TimestampMixin, SoftDeleteMixin):
             "recommendation IS NULL OR recommendation IN "
             "('strong_hire', 'hire', 'no_hire', 'strong_no_hire')",
             name="ck_interview_evaluations_recommendation",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'submitted')",
+            name="ck_interview_evaluations_status",
         ),
         Index("ix_interview_evaluations_interview_id", "interview_id"),
         Index("ix_interview_evaluations_application_id", "application_id"),

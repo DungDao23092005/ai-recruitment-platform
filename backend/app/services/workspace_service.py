@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import text, update
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,9 +38,13 @@ from app.domain.enums import (
 )
 from app.models import (
     AdminAuditLog,
+    Application,
     Company,
     CompanyInvitation,
     CompanyMembership,
+    Interview,
+    InterviewAssignment,
+    Job,
     RecruiterProfile,
     User,
 )
@@ -275,7 +279,7 @@ class WorkspaceService:
         ]
 
     async def list_members(self, context: WorkspaceContext) -> list[MemberRead]:
-        self._require_company_admin(context)
+        self._require_company_manager(context)
         memberships = await self.memberships.list_by_company(
             context.company_id,
             include_revoked=True,
@@ -540,6 +544,24 @@ class WorkspaceService:
             )
             .values(company_id=None)
         )
+        company_interview_ids = (
+            select(Interview.id)
+            .join(Application, Application.id == Interview.application_id)
+            .join(Job, Job.id == Application.job_id)
+            .where(
+                Job.company_id == context.company_id,
+                Interview.is_deleted == False,  # noqa: E712
+            )
+        )
+        await self.session.execute(
+            update(InterviewAssignment)
+            .where(
+                InterviewAssignment.user_id == target.user_id,
+                InterviewAssignment.is_deleted == False,  # noqa: E712
+                InterviewAssignment.interview_id.in_(company_interview_ids),
+            )
+            .values(is_deleted=True)
+        )
         try:
             await self.session.commit()
         except Exception:
@@ -570,6 +592,64 @@ class WorkspaceService:
             status=target.status,
             joined_at=target.joined_at,
             revoked_at=target.revoked_at,
+        )
+
+    async def update_membership_role(
+        self,
+        context: WorkspaceContext,
+        membership_id: uuid.UUID,
+        role: MembershipRole,
+    ) -> MemberRead:
+        self._require_company_admin(context)
+        await self._acquire_company_admin_lock(context.company_id)
+        await self._revalidate_company_admin_after_lock(context)
+
+        target = await self.memberships.get_by_id_with_user(membership_id)
+        if target is None or target.company_id != context.company_id:
+            raise EntityNotFoundException("Membership not found")
+        if target.status != MembershipStatus.ACTIVE:
+            raise InvalidTransitionException("Membership is not active")
+
+        if target.role == role:
+            return self._to_member_read(target)
+
+        if (
+            target.role == MembershipRole.ADMIN
+            and role != MembershipRole.ADMIN
+        ):
+            admin_count = await self.memberships.count_active_admins(
+                context.company_id
+            )
+            if admin_count <= 1:
+                raise ConflictException(
+                    "The last active workspace admin cannot be demoted"
+                )
+
+        target.role = role
+        try:
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+        await self.session.refresh(target)
+        return self._to_member_read(target)
+
+    @staticmethod
+    def _to_member_read(membership: CompanyMembership) -> MemberRead:
+        user = membership.user
+        return MemberRead(
+            membership_id=membership.id,
+            user_id=membership.user_id,
+            email=user.email if user is not None else "",
+            full_name=(
+                user.recruiter_profile.full_name
+                if user is not None and user.recruiter_profile is not None
+                else None
+            ),
+            role=membership.role,
+            status=membership.status,
+            joined_at=membership.joined_at,
+            revoked_at=membership.revoked_at,
         )
 
     async def _acquire_company_admin_lock(self, company_id: uuid.UUID) -> None:
@@ -614,6 +694,13 @@ class WorkspaceService:
             )
         context.membership = current
 
+    def _require_company_manager(self, context: WorkspaceContext) -> None:
+        if context.is_company_admin or context.role == MembershipRole.RECRUITER:
+            return
+        raise ForbiddenException(
+            "Only workspace admins and recruiters can perform this action"
+        )
+
     def _require_company_admin(self, context: WorkspaceContext) -> None:
         if not context.is_company_admin:
             raise ForbiddenException(
@@ -631,9 +718,11 @@ class WorkspaceService:
         invitation_url = build_invitation_url(token)
         safe_company = html.escape(company_name)
         safe_url = html.escape(invitation_url, quote=True)
-        role_label = (
-            "Admin" if invitation.role == MembershipRole.ADMIN else "Recruiter"
-        )
+        role_label = {
+            MembershipRole.ADMIN: "Admin",
+            MembershipRole.RECRUITER: "Recruiter",
+            MembershipRole.INTERVIEWER: "Interviewer",
+        }[invitation.role]
         await enqueue_email(
             self.session,
             event_type="company_invitation",

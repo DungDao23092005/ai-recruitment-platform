@@ -1,4 +1,4 @@
-export type MembershipRole = 'admin' | 'recruiter'
+export type MembershipRole = 'admin' | 'recruiter' | 'interviewer'
 export type MembershipStatus = 'active' | 'revoked'
 export type InvitationStatus = 'pending' | 'accepted' | 'revoked' | 'expired'
 
@@ -53,6 +53,7 @@ export interface InvitationAcceptResult {
 export const MEMBERSHIP_ROLE_LABELS: Record<MembershipRole, string> = {
   admin: 'Quản trị viên',
   recruiter: 'Nhà tuyển dụng',
+  interviewer: 'Người phỏng vấn',
 }
 
 export const MEMBERSHIP_STATUS_LABELS: Record<MembershipStatus, string> = {

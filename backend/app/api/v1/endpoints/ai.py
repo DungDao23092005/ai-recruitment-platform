@@ -23,6 +23,7 @@ from app.ai.embeddings.embedding_service import (
 from app.ai.interfaces.base_provider import BaseVectorRepository
 from app.ai.vector_db.qdrant_client import QdrantVectorRepository
 from app.api.deps import (
+    ensure_not_interviewer,
     get_current_active_user,
     get_db,
     get_optional_workspace,
@@ -67,6 +68,7 @@ from app.services.job_service import JobService
 from app.services.quota_enforcement_service import QuotaEnforcementService
 from app.services.rag_chat_service import RAGChatService
 from app.services.semantic_search_service import SemanticSearchService
+from app.services.workspace_service import WorkspaceContext
 
 router = APIRouter()
 
@@ -593,7 +595,6 @@ async def semantic_search_jobs(
     "/search/candidates",
     response_model=list[SemanticSearchResult],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(get_optional_workspace)],
 )
 async def semantic_search_candidates(
     q: str = Query(..., min_length=1),
@@ -601,9 +602,11 @@ async def semantic_search_candidates(
     score_threshold: float | None = Query(default=None, ge=0.0, le=1.0),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     current_user: User = Depends(require_recruiter),
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     db: AsyncSession = Depends(get_db),
     service: SemanticSearchService = Depends(_get_semantic_search_service),
 ) -> list[SemanticSearchResult]:
+    ensure_not_interviewer(workspace)
     quota_service = QuotaEnforcementService(db)
     reservation = None
     is_admin = current_user.role == UserRole.ADMIN
@@ -661,10 +664,10 @@ async def semantic_search_candidates(
     "/recommendations/candidates",
     response_model=list[CandidateMatchRecommendation],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(get_optional_workspace)],
 )
 async def recommend_candidates_for_job(
     current_user: User = Depends(require_recruiter),
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     service: AIMatchingService = Depends(_get_ai_service),
     db: AsyncSession = Depends(get_db),
     job_id: uuid.UUID = Query(...),
@@ -672,6 +675,7 @@ async def recommend_candidates_for_job(
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     _: RateLimitResult = Depends(recommendations_rate_limit),
 ) -> list[CandidateMatchRecommendation]:
+    ensure_not_interviewer(workspace)
     # Candidate recommendations consume candidate-search quota, same as search.
     # Admin (allowed via require_recruiter) bypasses quota server-side.
     quota_service = QuotaEnforcementService(db)

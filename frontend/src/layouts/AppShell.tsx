@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { Navigate, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   BarChart3,
+  Bell,
   Bot,
   Briefcase,
   Building,
+  CalendarClock,
   ClipboardList,
   CreditCard,
   FileText,
@@ -23,11 +25,13 @@ import {
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { useAuth } from '@/contexts/AuthContext'
+import { useWorkspace } from '@/contexts/WorkspaceContext'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Logo } from '@/components/common/Logo'
 import { USER_ROLE_LABELS } from '@/types/auth'
 import type { UserRole } from '@/types/auth'
+import type { MembershipRole } from '@/types/workspace'
 import { NotificationBell } from '@/components/common/NotificationBell'
 import { WorkspaceSwitcher } from '@/components/common/WorkspaceSwitcher'
 
@@ -43,7 +47,38 @@ interface NavSection {
   items: NavItem[]
 }
 
-function useAppNav(role?: UserRole): NavSection[] {
+function useAppNav(
+  role?: UserRole,
+  workspaceRole?: MembershipRole | null,
+): NavSection[] {
+  if (role === 'recruiter' && workspaceRole === 'interviewer') {
+    return [
+      {
+        items: [
+          {
+            to: '/interviewer/interviews',
+            label: 'Lịch phỏng vấn',
+            icon: CalendarClock,
+          },
+          {
+            to: '/notifications',
+            label: 'Thông báo',
+            icon: Bell,
+          },
+        ],
+      },
+      {
+        title: 'Tài khoản',
+        items: [
+          {
+            to: '/interviewer/profile',
+            label: 'Hồ sơ cá nhân',
+            icon: User,
+          },
+        ],
+      },
+    ]
+  }
   if (role === 'candidate') {
     return [
       {
@@ -76,6 +111,21 @@ function useAppNav(role?: UserRole): NavSection[] {
     ]
   }
   if (role === 'recruiter') {
+    const isCompanyAdmin = workspaceRole === 'admin'
+    const recruitmentItems: NavItem[] = [
+      ...(isCompanyAdmin
+        ? [{ to: '/recruiter/company', label: 'Công ty', icon: Building }]
+        : []),
+      { to: '/recruiter/jobs', label: 'Tin tuyển dụng', icon: Briefcase, end: true },
+      { to: '/recruiter/jobs/new', label: 'Đăng tin mới', icon: PlusCircle },
+      { to: '/recruiter/analytics', label: 'Phân tích', icon: BarChart3 },
+      { to: '/interviewer/interviews', label: 'Lịch phỏng vấn', icon: CalendarClock },
+      ...(isCompanyAdmin
+        ? [{ to: '/recruiter/workspace', label: 'Thành viên', icon: Users }]
+        : []),
+      { to: '/plans', label: 'Gói dịch vụ', icon: Sparkles },
+    ]
+
     return [
       {
         items: [
@@ -84,14 +134,7 @@ function useAppNav(role?: UserRole): NavSection[] {
       },
       {
         title: 'Tuyển dụng',
-        items: [
-          { to: '/recruiter/company', label: 'Công ty', icon: Building },
-          { to: '/recruiter/jobs', label: 'Tin tuyển dụng', icon: Briefcase, end: true },
-          { to: '/recruiter/jobs/new', label: 'Đăng tin mới', icon: PlusCircle },
-          { to: '/recruiter/analytics', label: 'Phân tích', icon: BarChart3 },
-          { to: '/recruiter/workspace', label: 'Thành viên', icon: Users },
-          { to: '/plans', label: 'Gói dịch vụ', icon: Sparkles },
-        ],
+        items: recruitmentItems,
       },
       {
         title: 'AI hỗ trợ',
@@ -122,14 +165,21 @@ function useAppNav(role?: UserRole): NavSection[] {
       items: [
         { to: '/recruiter/jobs', label: 'Quản lý tuyển dụng', icon: Briefcase, end: true },
         { to: '/admin/jobs', label: 'Tin tuyển dụng', icon: Briefcase },
+        { to: '/interviewer/interviews', label: 'Lịch phỏng vấn', icon: CalendarClock },
         { to: '/recruiter/search/candidates', label: 'Tìm ứng viên AI', icon: Search },
       ],
     },
   ]
 }
 
-function SidebarNav({ role }: { role?: UserRole }) {
-  const sections = useAppNav(role)
+function SidebarNav({
+  role,
+  workspaceRole,
+}: {
+  role?: UserRole
+  workspaceRole?: MembershipRole | null
+}) {
+  const sections = useAppNav(role, workspaceRole)
   const sectionClass = ({ isActive }: { isActive: boolean }) =>
     cn(
       'flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
@@ -180,9 +230,11 @@ function SidebarNav({ role }: { role?: UserRole }) {
 
 function SidebarUser({
   role,
+  roleLabel,
   onLogout,
 }: {
   role?: UserRole
+  roleLabel?: string
   onLogout: () => void
 }) {
   const { currentUser } = useAuth()
@@ -199,7 +251,7 @@ function SidebarUser({
             {currentUser?.email}
           </p>
           <Badge variant="outline-ai" className="mt-1">
-            {USER_ROLE_LABELS[role ?? 'candidate']}
+            {roleLabel ?? USER_ROLE_LABELS[role ?? 'candidate']}
           </Badge>
         </div>
       </div>
@@ -219,9 +271,13 @@ function SidebarUser({
 
 export function AppShell() {
   const { currentUser, logout } = useAuth()
+  const { selectedWorkspace } = useWorkspace()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const location = useLocation()
   const role = currentUser?.role
+  const workspaceRole = selectedWorkspace?.role
+  const isInterviewer =
+    role === 'recruiter' && workspaceRole === 'interviewer'
 
   useEffect(() => {
     setDrawerOpen(false)
@@ -237,13 +293,21 @@ export function AppShell() {
     return () => document.removeEventListener('keydown', onKey)
   }, [])
 
+  if (isInterviewer && location.pathname.startsWith('/recruiter')) {
+    return <Navigate to="/interviewer/interviews" replace />
+  }
+
   const sidebar = (
     <div className="flex h-full flex-col">
       <div className="flex h-16 items-center border-b px-5">
         <Logo />
       </div>
-      <SidebarNav role={role} />
-      <SidebarUser role={role} onLogout={logout} />
+      <SidebarNav role={role} workspaceRole={workspaceRole} />
+      <SidebarUser
+        role={role}
+        roleLabel={isInterviewer ? 'Người phỏng vấn' : undefined}
+        onLogout={logout}
+      />
     </div>
   )
 

@@ -6,7 +6,9 @@ import { AppShell } from './AppShell'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { WorkspaceProvider } from '@/contexts/WorkspaceContext'
 import * as authApi from '@/api/auth'
+import * as workspacesApi from '@/api/workspaces'
 import type { User, UserRole } from '@/types/auth'
+import type { MembershipRole, Workspace } from '@/types/workspace'
 
 const mockUser: User = {
   id: 'user-1',
@@ -15,6 +17,17 @@ const mockUser: User = {
   is_active: true,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
+}
+
+function makeWorkspace(role: MembershipRole): Workspace {
+  return {
+    company_id: 'company-1',
+    company_name: 'Acme Corp',
+    company_slug: 'acme-corp',
+    membership_id: 'membership-1',
+    role,
+    is_platform_admin: false,
+  }
 }
 
 vi.mock('@/api/auth', () => ({
@@ -34,9 +47,17 @@ vi.mock('@/api/workspaces', () => ({
 }))
 
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
+const mockedGetWorkspaces = vi.mocked(workspacesApi.getWorkspaces)
 
-function renderShell(role: UserRole, path: string) {
+function renderShell(
+  role: UserRole,
+  path: string,
+  workspaceRole?: MembershipRole,
+) {
   mockedGetCurrentUser.mockResolvedValue({ ...mockUser, role })
+  mockedGetWorkspaces.mockResolvedValue(
+    workspaceRole ? [makeWorkspace(workspaceRole)] : [],
+  )
   localStorage.setItem('ai_recruitment_token', 'token-abc')
 
   return render(
@@ -107,11 +128,12 @@ describe('AppShell sidebar', () => {
     )
   })
 
-  it('renders the sidebar with recruiter navigation', async () => {
-    renderShell('recruiter', '/recruiter/portal')
+  it('renders the sidebar with company admin workspace navigation', async () => {
+    renderShell('recruiter', '/recruiter/portal', 'admin')
 
     await waitFor(() => {
       expect(getAppNav()).toBeInTheDocument()
+      expect(within(getAppNav()).getByText('Công ty')).toBeInTheDocument()
     })
 
     const nav = getAppNav()
@@ -119,8 +141,51 @@ describe('AppShell sidebar', () => {
     expect(within(nav).getByText('Công ty')).toBeInTheDocument()
     expect(within(nav).getByText('Tin tuyển dụng')).toBeInTheDocument()
     expect(within(nav).getByText('Đăng tin mới')).toBeInTheDocument()
+    expect(within(nav).getByText('Phân tích')).toBeInTheDocument()
+    expect(within(nav).getByText('Lịch phỏng vấn')).toBeInTheDocument()
+    expect(within(nav).getByText('Thành viên')).toBeInTheDocument()
     expect(within(nav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
     expect(within(nav).getByText('Hồ sơ cá nhân')).toBeInTheDocument()
+  })
+
+  it('renders standard recruiter workspace navigation without company settings or member governance', async () => {
+    renderShell('recruiter', '/recruiter/portal', 'recruiter')
+
+    await waitFor(() => {
+      expect(getAppNav()).toBeInTheDocument()
+      expect(mockedGetWorkspaces).toHaveBeenCalled()
+    })
+
+    const nav = getAppNav()
+    expect(within(nav).getByText('Tổng quan')).toBeInTheDocument()
+    expect(within(nav).getByText('Tin tuyển dụng')).toBeInTheDocument()
+    expect(within(nav).getByText('Đăng tin mới')).toBeInTheDocument()
+    expect(within(nav).getByText('Phân tích')).toBeInTheDocument()
+    expect(within(nav).getByText('Lịch phỏng vấn')).toBeInTheDocument()
+    expect(within(nav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
+    expect(within(nav).getByText('Hồ sơ cá nhân')).toBeInTheDocument()
+    expect(within(nav).queryByText('Công ty')).not.toBeInTheDocument()
+    expect(within(nav).queryByText('Thành viên')).not.toBeInTheDocument()
+  })
+
+  it('renders interviewer workspace navigation with only assigned interviews, notifications and profile', async () => {
+    renderShell('recruiter', '/interviewer/interviews', 'interviewer')
+
+    await waitFor(() => {
+      expect(getAppNav()).toBeInTheDocument()
+      expect(
+        within(getAppNav()).queryByText('Tin tuyển dụng'),
+      ).not.toBeInTheDocument()
+    })
+
+    const nav = getAppNav()
+    expect(within(nav).getByText('Lịch phỏng vấn')).toBeInTheDocument()
+    expect(within(nav).getByText('Thông báo')).toBeInTheDocument()
+    expect(within(nav).getByText('Hồ sơ cá nhân')).toBeInTheDocument()
+    expect(within(nav).queryByText('Công ty')).not.toBeInTheDocument()
+    expect(within(nav).queryByText('Tin tuyển dụng')).not.toBeInTheDocument()
+    expect(within(nav).queryByText('Phân tích')).not.toBeInTheDocument()
+    expect(within(nav).queryByText('Thành viên')).not.toBeInTheDocument()
   })
 
   it('renders the sidebar with admin navigation', async () => {

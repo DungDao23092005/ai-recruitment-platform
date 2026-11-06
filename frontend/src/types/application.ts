@@ -118,6 +118,65 @@ export interface Interview {
   updated_at: string
 }
 
+export interface InterviewerInterview {
+  id: string
+  application_id: string
+  scheduled_at: string
+  duration_minutes: number
+  interview_type: InterviewType
+  meeting_url: string | null
+  location: string | null
+  status: InterviewStatus
+  created_at: string
+  updated_at: string
+}
+
+export interface AssignedInterview {
+  id: string
+  application_id: string
+  scheduled_at: string
+  duration_minutes: number
+  interview_type: InterviewType
+  meeting_url: string | null
+  location: string | null
+  status: InterviewStatus
+  created_at: string
+  updated_at: string
+  job_id: string
+  job_title: string
+  company_name: string
+  candidate_name: string | null
+  application_status: ApplicationStatus
+}
+
+export interface InterviewerCandidate {
+  id: string
+  full_name: string | null
+  title: string | null
+  email: string | null
+  phone: string | null
+}
+
+export interface InterviewerResume {
+  id: string
+  title: string | null
+  is_primary: boolean
+  is_confirmed: boolean
+  parsed_data: ParsedResume | null
+}
+
+export interface InterviewerApplication {
+  id: string
+  job_id: string
+  job_title: string
+  company_name: string | null
+  status: ApplicationStatus
+  created_at: string
+  updated_at: string
+  candidate: InterviewerCandidate | null
+  resume: InterviewerResume | null
+}
+
 export interface ApplicationDetail {
   id: string
   candidate_id: string
@@ -158,6 +217,8 @@ export interface ApplicationNote {
   updated_at: string
 }
 
+export type InterviewEvaluationStatus = 'draft' | 'submitted'
+
 export interface InterviewEvaluation {
   id: string
   interview_id: string
@@ -168,6 +229,8 @@ export interface InterviewEvaluation {
   weaknesses: string | null
   recommendation: EvaluationRecommendation | null
   notes: string | null
+  status: InterviewEvaluationStatus
+  submitted_at: string | null
   created_at: string
   updated_at: string
 }

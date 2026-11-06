@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import InterviewEvaluation
+from app.models.interview_evaluation import (
+    EVALUATION_STATUS_DRAFT,
+    EVALUATION_STATUS_SUBMITTED,
+)
 from app.repositories.base import BaseRepository
 
 
@@ -61,6 +66,17 @@ class InterviewEvaluationRepository(BaseRepository[InterviewEvaluation]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_id_active(
+        self,
+        evaluation_id: Any,
+    ) -> InterviewEvaluation | None:
+        stmt = select(InterviewEvaluation).where(
+            InterviewEvaluation.id == evaluation_id,
+            InterviewEvaluation.is_deleted == False,  # noqa: E712
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_by_id_and_application(
         self,
         evaluation_id: Any,
@@ -74,3 +90,34 @@ class InterviewEvaluationRepository(BaseRepository[InterviewEvaluation]):
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def try_submit(
+        self,
+        evaluation_id: Any,
+        evaluator_id: Any,
+        submitted_at: datetime,
+    ) -> bool:
+        """Atomically transition one draft to submitted.
+
+        The conditional ``status = 'draft'`` predicate is the concurrency guard:
+        exactly one concurrent submit can update the row. The losing request
+        observes ``rowcount == 0`` and must treat the scorecard as already
+        submitted.
+        """
+        stmt = (
+            update(InterviewEvaluation)
+            .where(
+                InterviewEvaluation.id == evaluation_id,
+                InterviewEvaluation.evaluator_id == evaluator_id,
+                InterviewEvaluation.status == EVALUATION_STATUS_DRAFT,
+                InterviewEvaluation.is_deleted == False,  # noqa: E712
+            )
+            .values(
+                status=EVALUATION_STATUS_SUBMITTED,
+                submitted_at=submitted_at,
+                updated_at=submitted_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
+        return result.rowcount == 1

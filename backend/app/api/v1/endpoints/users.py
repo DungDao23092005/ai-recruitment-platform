@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
+    ensure_not_interviewer,
     get_db,
     get_optional_workspace,
     require_candidate,
@@ -344,6 +345,7 @@ async def get_recruiter_metrics(
     db: AsyncSession = Depends(get_db),
 ) -> RecruiterMetricsResponse:
     """Return aggregated metrics for the caller's selected workspace."""
+    ensure_not_interviewer(workspace)
     if workspace is None:
         return RecruiterMetricsResponse(
             total_jobs=0,

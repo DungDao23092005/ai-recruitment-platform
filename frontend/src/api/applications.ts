@@ -236,6 +236,15 @@ export async function deleteInterviewEvaluation(
   )
 }
 
+export async function submitInterviewEvaluation(
+  applicationId: string,
+  evaluationId: string,
+): Promise<InterviewEvaluation> {
+  return apiClient.post<InterviewEvaluation, InterviewEvaluation>(
+    `/applications/${applicationId}/evaluations/${evaluationId}/submit`,
+  )
+}
+
 export async function listApplicationActivities(
   applicationId: string,
   params: PageParams = {},

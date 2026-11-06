@@ -18,7 +18,7 @@ try:
     from dotenv import load_dotenv
     env_test_path = Path(__file__).parent.parent.parent / ".env.test"
     if env_test_path.exists():
-        load_dotenv(env_test_path, override=False)
+        load_dotenv(env_test_path, encoding="utf-8-sig", override=False)
 except ImportError:
     pass  # python-dotenv not installed, rely on system environment
 

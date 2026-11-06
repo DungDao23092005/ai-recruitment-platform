@@ -14,6 +14,8 @@ from app.domain import hiring
 from app.models.application_activity import ACTION_TYPE_MAX_LENGTH
 from app.models.application_note import CONTENT_MAX_LENGTH
 from app.models.interview_evaluation import (
+    EVALUATION_STATUS_MAX_LENGTH,
+    EVALUATION_STATUS_VALUES,
     MAX_RATING,
     MIN_RATING,
     RECOMMENDATION_VALUES,
@@ -32,7 +34,10 @@ from app.schemas.interview_evaluation import (
     EVALUATION_MAX_RATING,
     EVALUATION_MIN_RATING,
     EVALUATION_RECOMMENDATION_VALUES,
+    EVALUATION_STATUS_MAX_LENGTH as SCHEMA_STATUS_MAX_LENGTH,
+    EVALUATION_STATUS_VALUES as SCHEMA_STATUS_VALUES,
     InterviewEvaluationCreate,
+    InterviewEvaluationRead,
     InterviewEvaluationUpdate,
 )
 
@@ -47,6 +52,14 @@ class TestSchemaConstantAlignment:
 
     def test_recommendation_values_match_model(self):
         assert EVALUATION_RECOMMENDATION_VALUES == RECOMMENDATION_VALUES
+
+    def test_status_values_match_model(self):
+        assert SCHEMA_STATUS_VALUES == EVALUATION_STATUS_VALUES
+        assert SCHEMA_STATUS_MAX_LENGTH == EVALUATION_STATUS_MAX_LENGTH
+
+    def test_read_projection_exposes_workflow_state(self):
+        fields = set(InterviewEvaluationRead.model_fields)
+        assert {"status", "submitted_at"} <= fields
 
 
 class TestApplicationNoteCreate:

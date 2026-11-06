@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user, get_optional_workspace
 from app.core.exceptions import ConflictException, EntityNotFoundException
-from app.domain.enums import ApplicationStatus, UserRole
+from app.domain.enums import ApplicationStatus, MembershipRole, UserRole
 from app.main import app
 
 
@@ -77,7 +77,11 @@ def client(mock_service):
     )
 
     async def _override_workspace():
-        return SimpleNamespace(company_id=uuid.uuid4())
+        return SimpleNamespace(
+            company_id=uuid.uuid4(),
+            role=MembershipRole.ADMIN,
+            is_platform_admin=False,
+        )
 
     app.dependency_overrides[get_optional_workspace] = _override_workspace
     with patch(

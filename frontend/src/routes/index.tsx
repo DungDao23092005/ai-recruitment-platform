@@ -39,6 +39,7 @@ import { JobRecommendationsPage } from '@/features/recruiter/pages/JobRecommenda
 import { InterviewGeneratorPage } from '@/features/recruiter/pages/InterviewGeneratorPage'
 import { SemanticCandidateSearchPage } from '@/features/recruiter/pages/SemanticCandidateSearchPage'
 import { WorkspaceMembersPage } from '@/features/recruiter/pages/WorkspaceMembersPage'
+import { MyInterviewsPage } from '@/features/interviewer/pages/MyInterviewsPage'
 import { InvitationAcceptPage } from '@/pages/invitations/InvitationAcceptPage'
 import { AIChatPage } from '@/pages/ai/AIChatPage'
 import { NotificationsPage } from '@/pages/notifications/NotificationsPage'
@@ -47,6 +48,7 @@ import { CheckoutPage } from '@/pages/plans/CheckoutPage'
 import { PaymentResultPage } from '@/pages/plans/PaymentResultPage'
 import { ProtectedRoute } from '@/components/common/ProtectedRoute'
 import { RoleGuard } from '@/components/common/RoleGuard'
+import { WorkspaceRoleGuard } from '@/components/common/WorkspaceRoleGuard'
 import type { UserRole } from '@/types/auth'
 
 export interface AppNavLink {
@@ -163,6 +165,26 @@ export function AppRouter() {
             element={
               <ProtectedByRole allowedRoles={['candidate']}>
                 <JobDetailPage backPath="/candidate/jobs" />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/interviewer/interviews"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                <WorkspaceRoleGuard allowedRoles={['admin', 'recruiter', 'interviewer']}>
+                  <MyInterviewsPage />
+                </WorkspaceRoleGuard>
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/interviewer/profile"
+            element={
+              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+                <WorkspaceRoleGuard allowedRoles={['admin', 'recruiter', 'interviewer']}>
+                  <ProfilePage />
+                </WorkspaceRoleGuard>
               </ProtectedByRole>
             }
           />

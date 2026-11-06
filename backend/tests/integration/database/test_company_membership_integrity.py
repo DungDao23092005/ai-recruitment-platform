@@ -297,6 +297,74 @@ class TestLastAdminProtection:
         run_async(_test())
 
 
+class TestLastAdminDemotionConcurrency:
+    def test_concurrent_admins_cannot_demote_each_other(self, run_async):
+        async def _test() -> None:
+            company = _company(f"demote-race-{uuid.uuid4().hex[:8]}")
+            admin_a = _user()
+            admin_b = _user()
+            async with async_session_factory() as setup:
+                setup.add_all([company, admin_a, admin_b])
+                await setup.flush()
+                membership_a = _membership(company, admin_a)
+                membership_b = _membership(company, admin_b)
+                membership_a.role = MembershipRole.ADMIN
+                membership_b.role = MembershipRole.ADMIN
+                setup.add_all([membership_a, membership_b])
+                await setup.commit()
+                company_id = company.id
+                a_id, b_id = admin_a.id, admin_b.id
+                ma_id, mb_id = membership_a.id, membership_b.id
+
+            barrier = asyncio.Barrier(2)
+
+            async def demote_as(
+                actor_id: uuid.UUID,
+                actor_membership_id: uuid.UUID,
+                target_membership_id: uuid.UUID,
+            ) -> str:
+                async with async_session_factory() as session:
+                    actor = await session.get(User, actor_id)
+                    company_row = await session.get(Company, company_id)
+                    actor_membership = await session.get(
+                        CompanyMembership, actor_membership_id
+                    )
+                    assert actor is not None
+                    assert company_row is not None
+                    assert actor_membership is not None
+                    context = WorkspaceContext(
+                        user=actor,
+                        company=company_row,
+                        membership=actor_membership,
+                    )
+                    service = WorkspaceService(session)
+                    await barrier.wait()
+                    try:
+                        await service.update_membership_role(
+                            context,
+                            target_membership_id,
+                            MembershipRole.RECRUITER,
+                        )
+                    except ConflictException:
+                        return "conflict"
+                    return "success"
+
+            outcomes = await asyncio.gather(
+                demote_as(a_id, ma_id, mb_id),
+                demote_as(b_id, mb_id, ma_id),
+            )
+
+            assert sorted(outcomes) == ["conflict", "success"]
+
+            async with async_session_factory() as verify:
+                admins = await CompanyMembershipRepository(
+                    verify, CompanyMembership
+                ).count_active_admins(company_id)
+                assert admins == 1
+
+        run_async(_test())
+
+
 class TestInvitationAcceptance:
     def test_accept_marks_invitation_and_creates_membership(
         self, session, run_async

@@ -18,7 +18,7 @@ from app.core.exceptions import (
 )
 from app.core.security import decode_access_token, is_token_valid_after_password_reset
 from app.database.session import get_db_session
-from app.domain.enums import UserRole
+from app.domain.enums import MembershipRole, UserRole
 from app.models import User
 from app.services import UserService, AuthService
 from app.services.workspace_service import (
@@ -259,3 +259,55 @@ async def get_optional_workspace(
         yield context
     finally:
         reset_workspace_company_id(token)
+
+
+async def require_workspace_manager(
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
+    current_user: User = Depends(get_current_active_user),
+) -> WorkspaceContext | None:
+    """Allow company admins/recruiters and platform admins only."""
+    if workspace is None:
+        if current_user.role == UserRole.ADMIN:
+            return None
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions",
+        )
+    if workspace.is_platform_admin or workspace.role in {
+        MembershipRole.ADMIN,
+        MembershipRole.RECRUITER,
+    }:
+        return workspace
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Not enough permissions",
+    )
+
+
+def ensure_not_interviewer(workspace: WorkspaceContext | None) -> None:
+    """Reject interviewer workspaces from manager-scoped routes.
+
+    The workspace is optional because legacy platform recruiters may not have
+    a company membership yet. Those callers keep their existing behavior; an
+    interviewer always resolves to an active membership and is rejected.
+    """
+    if workspace is None or getattr(workspace, "is_platform_admin", False):
+        return
+    if getattr(workspace, "role", None) == MembershipRole.INTERVIEWER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions",
+        )
+
+
+async def require_non_interviewer_workspace(
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
+) -> WorkspaceContext | None:
+    """Gate legacy application routes without breaking recruiters.
+
+    Interviewers are rejected, while platform admins and legacy recruiters
+    without a company membership keep their previous service-level behavior
+    (including non-enumerating 404s for foreign applications).
+    """
+    ensure_not_interviewer(workspace)
+    return workspace

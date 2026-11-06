@@ -1,8 +1,10 @@
 """API coverage for private interview scorecards.
 
 Each evaluator has at most one active scorecard per interview (duplicate create
-is a 409, re-submission is a PATCH). Evaluations are recruiter/admin only, scoped
-to an application, and never visible to candidates.
+is a 409). New scorecards are drafts; edits/deletes are author-only and only
+while still a draft. Submission is an explicit atomic transition, after which
+the scorecard is immutable even for admins. Evaluations are scoped to an
+application, blind to other evaluators' drafts, and never visible to candidates.
 """
 
 from __future__ import annotations
@@ -95,6 +97,14 @@ def _eval_url(application_id, interview_id):
     )
 
 
+def _evaluation_url(application_id, evaluation_id):
+    return f"{API_V1}/applications/{application_id}/evaluations/{evaluation_id}"
+
+
+def _submit_url(application_id, evaluation_id):
+    return f"{_evaluation_url(application_id, evaluation_id)}/submit"
+
+
 class TestEvaluationCreateAndUpdate:
     def test_create_then_duplicate_conflicts(self, evaluated, run_async):
         app_id = evaluated["application"]["id"]
@@ -112,6 +122,8 @@ class TestEvaluationCreateAndUpdate:
         assert evaluation["rating"] == 5
         assert evaluation["interview_id"] == interview_id
         assert evaluation["application_id"] == app_id
+        assert evaluation["status"] == "draft"
+        assert evaluation["submitted_at"] is None
 
         duplicate = run_async(
             client.post(
@@ -274,4 +286,160 @@ class TestEvaluationIsolation:
                 json={"rating": 1},
             )
         )
+        assert resp.status_code == 404, resp.text
+
+
+class TestEvaluationDraftWorkflow:
+    def test_author_submits_then_everything_is_immutable(
+        self, evaluated, run_async
+    ):
+        app_id = evaluated["application"]["id"]
+        interview_id = evaluated["interview"]["id"]
+        client = evaluated["recruiter_client"]
+
+        evaluation = run_async(
+            client.post(_eval_url(app_id, interview_id), json={"rating": 2})
+        ).json()
+
+        submitted = run_async(client.post(_submit_url(app_id, evaluation["id"])))
+        assert submitted.status_code == 200, submitted.text
+        body = submitted.json()
+        assert body["status"] == "submitted"
+        assert body["submitted_at"] is not None
+        assert body["rating"] == 2
+
+        update = run_async(
+            client.patch(
+                _evaluation_url(app_id, evaluation["id"]),
+                json={"rating": 5},
+            )
+        )
+        assert update.status_code == 409, update.text
+
+        delete = run_async(
+            client.delete(_evaluation_url(app_id, evaluation["id"]))
+        )
+        assert delete.status_code == 409, delete.text
+
+        duplicate = run_async(
+            client.post(_eval_url(app_id, interview_id), json={"rating": 5})
+        )
+        assert duplicate.status_code == 409, duplicate.text
+
+    def test_second_submit_is_conflict(self, evaluated, run_async):
+        app_id = evaluated["application"]["id"]
+        interview_id = evaluated["interview"]["id"]
+        client = evaluated["recruiter_client"]
+
+        evaluation = run_async(
+            client.post(_eval_url(app_id, interview_id), json={"rating": 3})
+        ).json()
+
+        first = run_async(client.post(_submit_url(app_id, evaluation["id"])))
+        assert first.status_code == 200, first.text
+        second = run_async(client.post(_submit_url(app_id, evaluation["id"])))
+        assert second.status_code == 409, second.text
+
+    def test_admin_can_edit_own_draft_but_not_own_submitted(
+        self, evaluated, admin_client, run_async
+    ):
+        app_id = evaluated["application"]["id"]
+        interview_id = evaluated["interview"]["id"]
+
+        created = run_async(
+            admin_client.post(
+                _eval_url(app_id, interview_id), json={"rating": 4}
+            )
+        )
+        assert created.status_code == 201, created.text
+        evaluation = created.json()
+
+        draft_update = run_async(
+            admin_client.patch(
+                _evaluation_url(app_id, evaluation["id"]),
+                json={"rating": 5},
+            )
+        )
+        assert draft_update.status_code == 200, draft_update.text
+
+        submitted = run_async(
+            admin_client.post(_submit_url(app_id, evaluation["id"]))
+        )
+        assert submitted.status_code == 200, submitted.text
+
+        update = run_async(
+            admin_client.patch(
+                _evaluation_url(app_id, evaluation["id"]),
+                json={"rating": 1},
+            )
+        )
+        assert update.status_code == 409, update.text
+
+    def test_non_author_cannot_edit_or_delete_draft(
+        self, evaluated, admin_client, run_async
+    ):
+        app_id = evaluated["application"]["id"]
+        interview_id = evaluated["interview"]["id"]
+        client = evaluated["recruiter_client"]
+
+        evaluation = run_async(
+            client.post(_eval_url(app_id, interview_id), json={"rating": 4})
+        ).json()
+
+        update = run_async(
+            admin_client.patch(
+                _evaluation_url(app_id, evaluation["id"]),
+                json={"rating": 1},
+            )
+        )
+        assert update.status_code == 403, update.text
+
+        delete = run_async(
+            admin_client.delete(_evaluation_url(app_id, evaluation["id"]))
+        )
+        assert delete.status_code == 403, delete.text
+
+    def test_manager_list_is_blind_to_other_drafts(
+        self, evaluated, admin_client, run_async
+    ):
+        app_id = evaluated["application"]["id"]
+        interview_id = evaluated["interview"]["id"]
+        client = evaluated["recruiter_client"]
+
+        own = run_async(
+            client.post(_eval_url(app_id, interview_id), json={"rating": 3})
+        ).json()
+        admin_draft = run_async(
+            admin_client.post(
+                _eval_url(app_id, interview_id), json={"rating": 5}
+            )
+        ).json()
+
+        recruiter_view = run_async(
+            client.get(f"{API_V1}/applications/{app_id}/evaluations")
+        )
+        assert recruiter_view.status_code == 200, recruiter_view.text
+        assert [row["id"] for row in recruiter_view.json()] == [own["id"]]
+
+        submitted = run_async(
+            admin_client.post(_submit_url(app_id, admin_draft["id"]))
+        )
+        assert submitted.status_code == 200, submitted.text
+
+        recruiter_view = run_async(
+            client.get(f"{API_V1}/applications/{app_id}/evaluations")
+        )
+        visible_ids = {row["id"] for row in recruiter_view.json()}
+        assert visible_ids == {own["id"], admin_draft["id"]}
+        assert all(
+            row["status"] == "submitted"
+            for row in recruiter_view.json()
+            if row["id"] == admin_draft["id"]
+        )
+
+    def test_unknown_submit_target_is_404(self, evaluated, run_async):
+        app_id = evaluated["application"]["id"]
+        client = evaluated["recruiter_client"]
+
+        resp = run_async(client.post(_submit_url(app_id, uuid.uuid4())))
         assert resp.status_code == 404, resp.text

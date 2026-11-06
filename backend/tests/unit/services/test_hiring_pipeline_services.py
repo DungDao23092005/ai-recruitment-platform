@@ -201,18 +201,30 @@ class TestEvaluationAuthorization:
     def test_rejects_non_evaluator(self):
         evaluation = MagicMock(evaluator_id=uuid.uuid4())
         with pytest.raises(ForbiddenException):
-            InterviewEvaluationService._authorize_mutation(make_user(), evaluation)
+            InterviewEvaluationService._authorize_author(
+                uuid.uuid4(), evaluation
+            )
 
     def test_accepts_evaluator(self):
         user = make_user()
-        InterviewEvaluationService._authorize_mutation(
-            user, MagicMock(evaluator_id=user.id)
+        InterviewEvaluationService._authorize_author(
+            user.id, MagicMock(evaluator_id=user.id)
         )
 
-    def test_admin_bypasses_ownership(self):
-        InterviewEvaluationService._authorize_mutation(
-            make_user(UserRole.ADMIN), MagicMock(evaluator_id=uuid.uuid4())
-        )
+    def test_admin_does_not_bypass_ownership(self):
+        with pytest.raises(ForbiddenException):
+            InterviewEvaluationService._authorize_author(
+                uuid.uuid4(), MagicMock(evaluator_id=uuid.uuid4())
+            )
+
+    def test_submitted_evaluation_is_immutable(self):
+        with pytest.raises(ConflictException):
+            InterviewEvaluationService._ensure_draft(
+                MagicMock(status="submitted")
+            )
+
+    def test_draft_evaluation_is_mutable(self):
+        InterviewEvaluationService._ensure_draft(MagicMock(status="draft"))
 
     @pytest.mark.asyncio
     async def test_duplicate_active_scorecard_conflicts(self, monkeypatch):
@@ -278,7 +290,9 @@ class TestEvaluationAuthorization:
         application_id = uuid.uuid4()
         interview_id = uuid.uuid4()
         service.interviews.get_by_id_with_application = AsyncMock(
-            return_value=MagicMock(application_id=application_id)
+            return_value=MagicMock(
+                application_id=application_id, id=interview_id
+            )
         )
         service.evaluations.get_by_interview_and_evaluator = AsyncMock(
             return_value=None
@@ -293,3 +307,45 @@ class TestEvaluationAuthorization:
 
         assert recorded["action_type"] == hiring.EVALUATION_ADDED
         assert recorded["metadata"]["interview_id"] == str(interview_id)
+
+    def test_visible_evaluations_hides_own_draft_when_not_actively_assigned(self):
+        viewer_id = uuid.uuid4()
+        peer_id = uuid.uuid4()
+        interview_id = uuid.uuid4()
+        own_draft = MagicMock(
+            id=uuid.uuid4(),
+            interview_id=interview_id,
+            evaluator_id=viewer_id,
+            status="draft",
+        )
+        peer_draft = MagicMock(
+            id=uuid.uuid4(),
+            interview_id=interview_id,
+            evaluator_id=peer_id,
+            status="draft",
+        )
+        peer_submitted = MagicMock(
+            id=uuid.uuid4(),
+            interview_id=interview_id,
+            evaluator_id=peer_id,
+            status="submitted",
+        )
+        rows = [own_draft, peer_draft, peer_submitted]
+
+        visible_while_assigned = InterviewEvaluationService._visible_evaluations(
+            rows,
+            viewer_id,
+            blind=False,
+            active_interview_ids={interview_id},
+        )
+        assert visible_while_assigned == [own_draft, peer_submitted]
+
+        visible_after_unassignment = (
+            InterviewEvaluationService._visible_evaluations(
+                rows,
+                viewer_id,
+                blind=False,
+                active_interview_ids=set(),
+            )
+        )
+        assert visible_after_unassignment == [peer_submitted]

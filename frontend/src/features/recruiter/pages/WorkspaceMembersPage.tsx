@@ -21,6 +21,7 @@ import {
   getWorkspaceMembers,
   revokeWorkspaceInvitation,
   revokeWorkspaceMember,
+  updateWorkspaceMemberRole,
 } from '@/api/workspaces'
 import { useAuth } from '@/contexts/AuthContext'
 import { useWorkspace } from '@/contexts/WorkspaceContext'
@@ -54,8 +55,17 @@ export function WorkspaceMembersPage() {
     )
   }, [selectedWorkspace])
 
+  const isCompanyManager = useMemo(() => {
+    if (!selectedWorkspace) return false
+    return (
+      selectedWorkspace.is_platform_admin ||
+      selectedWorkspace.role === 'admin' ||
+      selectedWorkspace.role === 'recruiter'
+    )
+  }, [selectedWorkspace])
+
   const loadWorkspaceData = useCallback(async () => {
-    if (!selectedWorkspace || !isCompanyAdmin) {
+    if (!selectedWorkspace || !isCompanyManager) {
       setMembers([])
       setInvitations([])
       return
@@ -65,7 +75,9 @@ export function WorkspaceMembersPage() {
     try {
       const [memberList, invitationList] = await Promise.all([
         getWorkspaceMembers(),
-        getWorkspaceInvitations(),
+        isCompanyAdmin
+          ? getWorkspaceInvitations()
+          : Promise.resolve<WorkspaceInvitation[]>([]),
       ])
       setMembers(memberList)
       setInvitations(invitationList)
@@ -74,7 +86,7 @@ export function WorkspaceMembersPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [isCompanyAdmin, selectedWorkspace])
+  }, [isCompanyAdmin, isCompanyManager, selectedWorkspace])
 
   useEffect(() => {
     void loadWorkspaceData()
@@ -115,6 +127,27 @@ export function WorkspaceMembersPage() {
     }
   }
 
+  const handleRoleChange = async (
+    member: WorkspaceMember,
+    nextRole: MembershipRole,
+  ) => {
+    if (!isCompanyAdmin || nextRole === member.role) {
+      return
+    }
+    setError(null)
+    setSuccessMessage(null)
+    try {
+      await updateWorkspaceMemberRole(member.membership_id, nextRole)
+      setSuccessMessage(
+        `Đã cập nhật vai trò của ${member.email} thành ${MEMBERSHIP_ROLE_LABELS[nextRole]}.`,
+      )
+      await loadWorkspaceData()
+      await refreshWorkspaces()
+    } catch (updateError) {
+      setError(getFriendlyErrorMessage(updateError))
+    }
+  }
+
   const handleRevokeInvitation = async (invitation: WorkspaceInvitation) => {
     if (!window.confirm(`Thu hồi lời mời của ${invitation.email}?`)) {
       return
@@ -145,18 +178,18 @@ export function WorkspaceMembersPage() {
     )
   }
 
-  if (!isCompanyAdmin) {
+  if (!isCompanyManager) {
     return (
       <div className="space-y-6">
         <PageHeader
           eyebrow={selectedWorkspace.company_name}
           title="Thành viên công ty"
-          description="Chỉ quản trị viên của công ty mới có thể quản lý thành viên."
+          description="Chỉ quản trị viên và nhà tuyển dụng của công ty mới có thể xem thành viên."
         />
         <EmptyState
           icon={<ShieldCheck className="h-6 w-6" aria-hidden="true" />}
           title="Không đủ quyền"
-          description="Bạn cần quyền quản trị viên của công ty này."
+          description="Bạn cần quyền quản trị viên hoặc nhà tuyển dụng của công ty này."
         />
       </div>
     )
@@ -185,6 +218,17 @@ export function WorkspaceMembersPage() {
         </p>
       ) : null}
 
+      {!isCompanyAdmin ? (
+        <p
+          role="status"
+          className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground"
+        >
+          Bạn có quyền xem thành viên. Chỉ quản trị viên mới có thể mời, đổi
+          vai trò hoặc thu hồi quyền truy cập.
+        </p>
+      ) : null}
+
+      {isCompanyAdmin ? (
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -218,6 +262,7 @@ export function WorkspaceMembersPage() {
               }
             >
               <option value="recruiter">Nhà tuyển dụng</option>
+              <option value="interviewer">Người phỏng vấn</option>
               <option value="admin">Quản trị viên</option>
             </Select>
             <Button type="submit" isLoading={isInviting}>
@@ -226,6 +271,7 @@ export function WorkspaceMembersPage() {
           </form>
         </CardContent>
       </Card>
+      ) : null}
 
       <Card>
         <CardHeader>
@@ -261,13 +307,33 @@ export function WorkspaceMembersPage() {
                         {member.email}
                       </p>
                     </div>
-                    <Badge
-                      variant={
-                        member.role === 'admin' ? 'outline-ai' : 'neutral'
-                      }
-                    >
-                      {MEMBERSHIP_ROLE_LABELS[member.role]}
-                    </Badge>
+                    {isCompanyAdmin &&
+                    member.status === 'active' &&
+                    !isSelf ? (
+                      <Select
+                        aria-label={`Vai trò của ${member.email}`}
+                        value={member.role}
+                        onChange={(event) =>
+                          void handleRoleChange(
+                            member,
+                            event.target.value as MembershipRole,
+                          )
+                        }
+                        className="h-8 w-36"
+                      >
+                        <option value="admin">Quản trị viên</option>
+                        <option value="recruiter">Nhà tuyển dụng</option>
+                        <option value="interviewer">Người phỏng vấn</option>
+                      </Select>
+                    ) : (
+                      <Badge
+                        variant={
+                          member.role === 'admin' ? 'outline-ai' : 'neutral'
+                        }
+                      >
+                        {MEMBERSHIP_ROLE_LABELS[member.role]}
+                      </Badge>
+                    )}
                     <Badge
                       variant={
                         member.status === 'active' ? 'success' : 'neutral'
@@ -275,7 +341,9 @@ export function WorkspaceMembersPage() {
                     >
                       {MEMBERSHIP_STATUS_LABELS[member.status]}
                     </Badge>
-                    {member.status === 'active' && !isSelf ? (
+                    {isCompanyAdmin &&
+                    member.status === 'active' &&
+                    !isSelf ? (
                       <Button
                         type="button"
                         variant="ghost"
@@ -297,6 +365,7 @@ export function WorkspaceMembersPage() {
         </CardContent>
       </Card>
 
+      {isCompanyAdmin ? (
       <Card>
         <CardHeader>
           <CardTitle>Lời mời đã gửi</CardTitle>
@@ -348,6 +417,7 @@ export function WorkspaceMembersPage() {
           )}
         </CardContent>
       </Card>
+      ) : null}
     </div>
   )
 }

@@ -11,6 +11,7 @@ from app.api.v1.endpoints import (
     auth,
     companies,
     health,
+    interviews,
     jobs,
     notifications,
     payments,
@@ -30,6 +31,9 @@ api_router.include_router(
 api_router.include_router(jobs.router, prefix="/jobs", tags=["Jobs"])
 api_router.include_router(
     applications.router, prefix="/applications", tags=["Applications"]
+)
+api_router.include_router(
+    interviews.router, prefix="/interviews", tags=["Interviews"]
 )
 api_router.include_router(
     notifications.router, prefix="/notifications", tags=["Notifications"]

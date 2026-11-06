@@ -30,6 +30,7 @@ from app.schemas.workspace import (
     InvitationPreviewRequest,
     InvitationRead,
     MemberRead,
+    MembershipRoleUpdate,
     WorkspaceRead,
 )
 from app.services.workspace_service import WorkspaceContext, WorkspaceService
@@ -93,6 +94,24 @@ async def list_workspace_members(
 ) -> list[MemberRead]:
     try:
         return await WorkspaceService(db).list_members(workspace)
+    except ServiceException as exc:
+        raise _service_error(exc) from exc
+
+
+@router.patch(
+    "/workspaces/members/{membership_id}/role",
+    response_model=MemberRead,
+)
+async def update_workspace_membership_role(
+    membership_id: uuid.UUID,
+    data: MembershipRoleUpdate,
+    workspace: WorkspaceContext = Depends(get_current_workspace),
+    db: AsyncSession = Depends(get_db),
+) -> MemberRead:
+    try:
+        return await WorkspaceService(db).update_membership_role(
+            workspace, membership_id, data.role
+        )
     except ServiceException as exc:
         raise _service_error(exc) from exc
 

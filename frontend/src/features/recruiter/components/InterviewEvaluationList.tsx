@@ -4,6 +4,7 @@ import {
   Lock,
   Pencil,
   RefreshCw,
+  Send,
   Star,
   Trash2,
 } from 'lucide-react'
@@ -18,6 +19,7 @@ import {
   createInterviewEvaluation,
   deleteInterviewEvaluation,
   listApplicationEvaluations,
+  submitInterviewEvaluation,
   updateInterviewEvaluation,
 } from '@/api/applications'
 import { getErrorStatus, getFriendlyErrorMessage } from '@/utils/errors'
@@ -270,8 +272,8 @@ export function InterviewEvaluationList({
     )
 
   const canManage = (evaluation: InterviewEvaluation) =>
-    currentUser?.role === 'admin' ||
-    evaluation.evaluator_id === currentUser?.id
+    evaluation.evaluator_id === currentUser?.id &&
+    evaluation.status === 'draft'
 
   const handleCreate = async (
     interviewId: string,
@@ -342,8 +344,10 @@ export function InterviewEvaluationList({
     } catch (err) {
       setError(
         getErrorStatus(err) === 403
-          ? 'Chỉ người đánh giá hoặc quản trị viên mới có thể sửa đánh giá này.'
-          : getFriendlyErrorMessage(err),
+          ? 'Chỉ người đánh giá mới có thể sửa đánh giá này.'
+          : getErrorStatus(err) === 409
+            ? 'Đánh giá đã gửi không thể sửa.'
+            : getFriendlyErrorMessage(err),
       )
     } finally {
       setSubmitting(false)
@@ -369,8 +373,49 @@ export function InterviewEvaluationList({
     } catch (err) {
       setError(
         getErrorStatus(err) === 403
-          ? 'Chỉ người đánh giá hoặc quản trị viên mới có thể xóa đánh giá này.'
-          : getFriendlyErrorMessage(err),
+          ? 'Chỉ người đánh giá mới có thể xóa đánh giá này.'
+          : getErrorStatus(err) === 409
+            ? 'Đánh giá đã gửi không thể xóa.'
+            : getFriendlyErrorMessage(err),
+      )
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleSubmit = async (evaluation: InterviewEvaluation) => {
+    if (
+      !window.confirm(
+        'Gửi đánh giá này? Sau khi gửi, đánh giá sẽ không thể sửa hoặc xóa.',
+      )
+    ) {
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    try {
+      const submitted = await submitInterviewEvaluation(
+        applicationId,
+        evaluation.id,
+      )
+      setState((prev) =>
+        prev.kind === 'success'
+          ? {
+              kind: 'success',
+              evaluations: prev.evaluations.map((item) =>
+                item.id === submitted.id ? submitted : item,
+              ),
+            }
+          : prev,
+      )
+      setEditingId(null)
+    } catch (err) {
+      setError(
+        getErrorStatus(err) === 403
+          ? 'Chỉ người đánh giá mới có thể gửi đánh giá này.'
+          : getErrorStatus(err) === 409
+            ? 'Đánh giá đã được gửi trước đó.'
+            : getFriendlyErrorMessage(err),
       )
     } finally {
       setSubmitting(false)
@@ -452,7 +497,7 @@ export function InterviewEvaluationList({
 
                 {creatingFor === interview.id ? (
                   <EvaluationForm
-                    submitLabel="Gửi đánh giá"
+                    submitLabel="Lưu nháp"
                     submitting={submitting}
                     onCancel={() => setCreatingFor(null)}
                     onSubmit={(values) => handleCreate(interview.id, values)}
@@ -487,6 +532,17 @@ export function InterviewEvaluationList({
                               ? 'Bạn'
                               : 'Đồng nghiệp'}
                           </Badge>
+                          <Badge
+                            variant={
+                              evaluation.status === 'draft'
+                                ? 'warning'
+                                : 'success'
+                            }
+                          >
+                            {evaluation.status === 'draft'
+                              ? 'Bản nháp'
+                              : 'Đã gửi'}
+                          </Badge>
                           <RatingStars value={evaluation.rating} />
                           {evaluation.recommendation ? (
                             <Badge variant="info">
@@ -500,6 +556,17 @@ export function InterviewEvaluationList({
                         </div>
                         {canManage(evaluation) ? (
                           <div className="flex items-center gap-1">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 gap-1 px-2 text-xs"
+                              onClick={() => handleSubmit(evaluation)}
+                              disabled={submitting}
+                            >
+                              <Send className="h-3.5 w-3.5" aria-hidden="true" />
+                              Gửi
+                            </Button>
                             <Button
                               type="button"
                               variant="ghost"
@@ -564,8 +631,11 @@ export function InterviewEvaluationList({
                       </dl>
 
                       <p className="mt-2 text-xs text-muted-foreground">
-                        {formatDateTime(evaluation.created_at)}
-                        {evaluation.updated_at !== evaluation.created_at
+                        {evaluation.submitted_at
+                          ? `Đã gửi ${formatDateTime(evaluation.submitted_at)}`
+                          : `Tạo ${formatDateTime(evaluation.created_at)}`}
+                        {!evaluation.submitted_at &&
+                        evaluation.updated_at !== evaluation.created_at
                           ? ' · đã chỉnh sửa'
                           : ''}
                       </p>

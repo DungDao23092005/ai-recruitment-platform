@@ -12,6 +12,7 @@ from app.models.company_invitation import CompanyInvitation
 from app.models.company_membership import CompanyMembership
 from app.models.email_outbox import EmailOutbox
 from app.models.interview import Interview
+from app.models.interview_assignment import InterviewAssignment
 from app.models.interview_evaluation import InterviewEvaluation
 from app.models.job import Job
 from app.models.job_view_daily_aggregate import JobViewDailyAggregate
@@ -44,6 +45,7 @@ __all__ = [
     "CompanyMembership",
     "EmailOutbox",
     "Interview",
+    "InterviewAssignment",
     "InterviewEvaluation",
     "Job",
     "JobSkill",

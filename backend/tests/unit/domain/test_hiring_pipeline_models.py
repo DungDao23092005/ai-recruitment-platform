@@ -87,10 +87,19 @@ class TestInterviewEvaluationModel:
             "weaknesses",
             "recommendation",
             "notes",
+            "status",
+            "submitted_at",
             "created_at",
             "updated_at",
             "is_deleted",
         }
+
+    def test_workflow_columns(self):
+        status = InterviewEvaluation.__table__.c.status
+        submitted_at = InterviewEvaluation.__table__.c.submitted_at
+        assert status.nullable is False
+        assert "draft" in str(status.server_default.arg)
+        assert submitted_at.nullable is True
 
     def test_rating_is_required(self):
         assert InterviewEvaluation.__table__.c.rating.nullable is False
@@ -139,6 +148,7 @@ class TestInterviewEvaluationModel:
         assert _check_constraint_names(InterviewEvaluation) == {
             "ck_interview_evaluations_rating_range",
             "ck_interview_evaluations_recommendation",
+            "ck_interview_evaluations_status",
         }
 
     def test_indexes(self):
