@@ -14,7 +14,9 @@ from app.database.session import async_session_factory
 from app.domain.enums import (
     PaymentOrderStatus,
     PaymentProvider,
+    PlanAudience,
     SubscriptionAuditAction,
+    SubscriptionScope,
     SubscriptionStatus,
     UserRole,
 )
@@ -530,6 +532,103 @@ async def _create_recruiter_user(email_prefix: str, suffix: str = "") -> str:
         return str(user.id)
 
 
+async def _create_candidate_user(email_prefix: str, suffix: str = "") -> str:
+    async with async_session_factory() as session:
+        user = User(
+            email=f"{email_prefix}{suffix}@example.com",
+            password_hash=get_password_hash("password123"),
+            role=UserRole.CANDIDATE,
+            is_active=True,
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        return str(user.id)
+
+
+async def _create_candidate_free_and_paid_plans() -> tuple[dict, dict]:
+    async with async_session_factory() as session:
+        free_plan = RecruitmentPlan(
+            name=f"Candidate Free {uuid.uuid4().hex[:8]}",
+            description="Candidate free tier",
+            price=0,
+            currency="VND",
+            duration_days=30,
+            max_job_posts=0,
+            max_candidate_searches=0,
+            max_ai_features=3,
+            plan_audience=PlanAudience.CANDIDATE,
+            is_free=True,
+            is_active=True,
+            display_order=0,
+        )
+        paid_plan = RecruitmentPlan(
+            name=f"Candidate Pro {uuid.uuid4().hex[:8]}",
+            description="Candidate paid tier",
+            price=199000,
+            currency="VND",
+            duration_days=30,
+            max_job_posts=0,
+            max_candidate_searches=0,
+            max_ai_features=30,
+            plan_audience=PlanAudience.CANDIDATE,
+            is_free=False,
+            is_active=True,
+            display_order=1,
+        )
+        session.add_all([free_plan, paid_plan])
+        await session.commit()
+        await session.refresh(free_plan)
+        await session.refresh(paid_plan)
+        return (
+            {
+                "id": str(free_plan.id),
+                "name": free_plan.name,
+                "is_free": free_plan.is_free,
+                "max_job_posts": free_plan.max_job_posts,
+                "max_candidate_searches": free_plan.max_candidate_searches or 0,
+                "max_ai_features": free_plan.max_ai_features or 0,
+            },
+            {
+                "id": str(paid_plan.id),
+                "name": paid_plan.name,
+                "is_free": paid_plan.is_free,
+                "max_job_posts": paid_plan.max_job_posts,
+                "max_candidate_searches": paid_plan.max_candidate_searches or 0,
+                "max_ai_features": paid_plan.max_ai_features or 0,
+            },
+        )
+
+
+async def _active_candidate_subscription(
+    user_id: str,
+    plan_snapshot: dict,
+    *,
+    created_at=None,
+    days: int = 30,
+) -> str:
+    now = utc_now()
+    stamp = created_at or now
+    async with async_session_factory() as session:
+        sub = Subscription(
+            user_id=uuid.UUID(user_id),
+            plan_id=uuid.UUID(plan_snapshot["id"]),
+            scope=SubscriptionScope.CANDIDATE_PERSONAL,
+            is_free=bool(plan_snapshot["is_free"]),
+            status=SubscriptionStatus.ACTIVE,
+            created_at=stamp,
+            started_at=stamp,
+            expires_at=now + timedelta(days=days),
+            max_job_posts=plan_snapshot["max_job_posts"],
+            max_candidate_searches=plan_snapshot["max_candidate_searches"],
+            max_ai_features=plan_snapshot["max_ai_features"],
+        )
+        session.add(sub)
+        await session.commit()
+        await session.refresh(sub)
+        return str(sub.id)
+
+
 async def _insert_subscription(
     user_id: str,
     plan_id: str,
@@ -910,13 +1009,17 @@ class TestOneRowPerUserRanking:
 
     def test_two_active_picks_newest_and_flags_multiple(self, admin_client, run_async):
         prefix = f"onerow-i-{uuid.uuid4().hex[:8]}"
-        plan = _create_plan(admin_client, run_async)
-        user_id = run(_create_recruiter_user(prefix))
+        free_plan, paid_plan = run(_create_candidate_free_and_paid_plans())
+        user_id = run(_create_candidate_user(prefix))
         now = utc_now()
         older = run(
-            _active_subscription(user_id, plan["id"], created_at=now - timedelta(days=5))
+            _active_candidate_subscription(
+                user_id, free_plan, created_at=now - timedelta(days=5)
+            )
         )
-        newer = run(_active_subscription(user_id, plan["id"], created_at=now))
+        newer = run(
+            _active_candidate_subscription(user_id, paid_plan, created_at=now)
+        )
 
         body = _list(admin_client, run_async, prefix)
         item = body["items"][0]
@@ -1068,12 +1171,16 @@ class TestOneRowPerUserRanking:
 
     def test_equal_created_at_tie_breaker_is_stable(self, admin_client, run_async):
         prefix = f"onerow-n-{uuid.uuid4().hex[:8]}"
-        plan = _create_plan(admin_client, run_async)
-        user_id = run(_create_recruiter_user(prefix))
+        free_plan, paid_plan = run(_create_candidate_free_and_paid_plans())
+        user_id = run(_create_candidate_user(prefix))
         stamp = utc_now()
         ids = [
-            run(_active_subscription(user_id, plan["id"], created_at=stamp))
-            for _ in range(2)
+            run(
+                _active_candidate_subscription(
+                    user_id, plan_snapshot, created_at=stamp
+                )
+            )
+            for plan_snapshot in (free_plan, paid_plan)
         ]
 
         first = _list(admin_client, run_async, prefix)

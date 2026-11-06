@@ -14,6 +14,9 @@ from app.models.user import StringEnum
 if TYPE_CHECKING:
     from app.models.company_invitation import CompanyInvitation
     from app.models.company_membership import CompanyMembership
+    from app.models.payment_order import PaymentOrder
+    from app.models.subscription import Subscription
+    from app.models.subscription_usage import SubscriptionUsage
 
 
 class Company(Base, TimestampMixin, SoftDeleteMixin):
@@ -48,5 +51,17 @@ class Company(Base, TimestampMixin, SoftDeleteMixin):
     )
     invitations: Mapped[list[CompanyInvitation]] = relationship(
         "CompanyInvitation",
+        back_populates="company",
+    )
+    subscriptions: Mapped[list[Subscription]] = relationship(
+        "Subscription",
+        back_populates="company",
+    )
+    payment_orders: Mapped[list[PaymentOrder]] = relationship(
+        "PaymentOrder",
+        back_populates="company",
+    )
+    subscription_usages: Mapped[list[SubscriptionUsage]] = relationship(
+        "SubscriptionUsage",
         back_populates="company",
     )

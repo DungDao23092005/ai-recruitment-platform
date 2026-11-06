@@ -19,12 +19,19 @@ from app.services.subscription_service import SubscriptionService
 pytestmark = pytest.mark.integration
 
 
-async def _seed_user_plan(session) -> tuple[User, RecruitmentPlan]:
+async def _seed_user(session) -> User:
     user = User(
         email=f"exp-{uuid.uuid4().hex[:10]}@example.com",
         password_hash="hash",
         role=UserRole.CANDIDATE,
     )
+    session.add(user)
+    await session.flush()
+    return user
+
+
+async def _seed_user_plan(session) -> tuple[User, RecruitmentPlan]:
+    user = await _seed_user(session)
     plan = RecruitmentPlan(
         name=f"Expiration Plan {uuid.uuid4().hex[:6]}",
         price=1000,
@@ -36,7 +43,7 @@ async def _seed_user_plan(session) -> tuple[User, RecruitmentPlan]:
         is_active=True,
         display_order=0,
     )
-    session.add_all([user, plan])
+    session.add(plan)
     await session.flush()
     return user, plan
 
@@ -68,6 +75,10 @@ def test_expiration_predicates_limit_and_order_against_sql_server(run_async):
         now = utc_now()
         async with async_session_factory() as setup:
             user, plan = await _seed_user_plan(setup)
+            user_newer = await _seed_user(setup)
+            user_third = await _seed_user(setup)
+            user_future = await _seed_user(setup)
+            user_no_expiry = await _seed_user(setup)
             oldest = await _add_subscription(
                 setup,
                 user_id=user.id,
@@ -77,28 +88,28 @@ def test_expiration_predicates_limit_and_order_against_sql_server(run_async):
             )
             newer = await _add_subscription(
                 setup,
-                user_id=user.id,
+                user_id=user_newer.id,
                 plan_id=plan.id,
                 status=SubscriptionStatus.ACTIVE,
                 expires_at=now - timedelta(hours=2),
             )
             third = await _add_subscription(
                 setup,
-                user_id=user.id,
+                user_id=user_third.id,
                 plan_id=plan.id,
                 status=SubscriptionStatus.ACTIVE,
                 expires_at=now - timedelta(seconds=1),
             )
             future = await _add_subscription(
                 setup,
-                user_id=user.id,
+                user_id=user_future.id,
                 plan_id=plan.id,
                 status=SubscriptionStatus.ACTIVE,
                 expires_at=now + timedelta(days=1),
             )
             no_expiry = await _add_subscription(
                 setup,
-                user_id=user.id,
+                user_id=user_no_expiry.id,
                 plan_id=plan.id,
                 status=SubscriptionStatus.ACTIVE,
                 expires_at=None,

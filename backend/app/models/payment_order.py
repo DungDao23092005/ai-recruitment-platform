@@ -4,14 +4,15 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid, Index, text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base_class import Base, SoftDeleteMixin, TimestampMixin
-from app.domain.enums import PaymentOrderStatus, PaymentProvider
+from app.domain.enums import PaymentOrderStatus, PaymentProvider, SubscriptionScope
 from app.models.user import StringEnum
 
 if TYPE_CHECKING:
+    from app.models.company import Company
     from app.models.payment_transaction import PaymentTransaction
     from app.models.recruitment_plan import RecruitmentPlan
     from app.models.subscription import Subscription
@@ -21,6 +22,15 @@ if TYPE_CHECKING:
 class PaymentOrder(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "payment_orders"
     __table_args__ = (
+        CheckConstraint(
+            "scope IN ('company_recruiting', 'candidate_personal', 'legacy_recruiter_personal')",
+            name="ck_payment_orders_scope_valid",
+        ),
+        CheckConstraint(
+            "(scope = 'company_recruiting' AND company_id IS NOT NULL) OR "
+            "(scope IN ('candidate_personal', 'legacy_recruiter_personal') AND company_id IS NULL)",
+            name="ck_payment_orders_scope_company_pairing",
+        ),
         Index("ix_payment_orders_provider_order_id_unique", "provider_order_id", unique=True, mssql_where=text("provider_order_id IS NOT NULL")),
         Index("ix_payment_orders_provider_request_id_unique", "provider_request_id", unique=True, mssql_where=text("provider_request_id IS NOT NULL")),
         Index(
@@ -29,17 +39,39 @@ class PaymentOrder(Base, TimestampMixin, SoftDeleteMixin):
             "status",
             mssql_include=["expired_at", "provider", "is_deleted"],
         ),
+        Index(
+            "ix_payment_orders_company_id_status",
+            "company_id",
+            "status",
+            mssql_where=text("company_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_payment_orders_user_id_scope",
+            "user_id",
+            "scope",
+            "status",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id"), nullable=False
     )
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("companies.id", name="fk_payment_orders_company_id_companies"),
+        nullable=True,
+    )
     plan_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("recruitment_plans.id"), nullable=False
     )
     subscription_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("subscriptions.id"), nullable=True
+    )
+    scope: Mapped[SubscriptionScope] = mapped_column(
+        StringEnum(SubscriptionScope),
+        default=SubscriptionScope.LEGACY_RECRUITER_PERSONAL,
+        server_default="legacy_recruiter_personal",
+        nullable=False,
     )
     amount: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="VND", nullable=False)
@@ -70,6 +102,7 @@ class PaymentOrder(Base, TimestampMixin, SoftDeleteMixin):
     )
 
     user: Mapped[User] = relationship()
+    company: Mapped[Company | None] = relationship(back_populates="payment_orders")
     plan: Mapped[RecruitmentPlan] = relationship()
     subscription: Mapped[Subscription | None] = relationship(back_populates="payment_orders")
     transactions: Mapped[list[PaymentTransaction]] = relationship(

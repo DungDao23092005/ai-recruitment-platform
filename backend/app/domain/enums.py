@@ -124,6 +124,17 @@ class RecruitmentPlanStatus(str, Enum):
     INACTIVE = "inactive"
 
 
+class SubscriptionScope(str, Enum):
+    COMPANY_RECRUITING = "company_recruiting"
+    CANDIDATE_PERSONAL = "candidate_personal"
+    LEGACY_RECRUITER_PERSONAL = "legacy_recruiter_personal"
+
+
+class PlanAudience(str, Enum):
+    COMPANY = "company"
+    CANDIDATE = "candidate"
+
+
 class SubscriptionStatus(str, Enum):
     ACTIVE = "active"
     EXPIRED = "expired"
@@ -164,9 +175,16 @@ class AdminAuditAction(str, Enum):
 
 
 class SubscriptionUsageFeatureType(str, Enum):
+    # Legacy / Company recruiting feature types
     JOB_POST = "job_post"
     CANDIDATE_SEARCH = "candidate_search"
-    AI_FEATURE = "ai_feature"
+    AI_FEATURE = "ai_feature"  # Preserved for backward compatibility
+    RECRUITING_AI = "recruiting_ai"
+
+    # Candidate AI feature types
+    CANDIDATE_PARSE_RESUME = "candidate_parse_resume"
+    CANDIDATE_JOB_RECOMMENDATIONS = "candidate_job_recommendations"
+    CANDIDATE_CHAT = "candidate_chat"
 
 
 class SubscriptionUsageStatus(str, Enum):
