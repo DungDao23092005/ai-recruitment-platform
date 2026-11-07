@@ -15,8 +15,12 @@ from app.core.exceptions import (
 )
 from app.domain.enums import SubscriptionStatus, UserRole
 from app.domain.models.base import utc_now
-from app.models import RecruitmentPlan, RecruiterProfile, Subscription, User
-from app.repositories import RecruitmentPlanRepository, SubscriptionRepository
+from app.models import PaymentOrder, RecruitmentPlan, RecruiterProfile, Subscription, User
+from app.repositories import (
+    PaymentOrderRepository,
+    RecruitmentPlanRepository,
+    SubscriptionRepository,
+)
 from app.schemas.subscription import SubscriptionCreate
 from app.services.notification_service import NotificationService
 from app.services.recruiter_access import ensure_recruiter_access
@@ -32,6 +36,7 @@ class SubscriptionService:
         self.session = session
         self.subscriptions = SubscriptionRepository(session)
         self.plans = RecruitmentPlanRepository(session)
+        self.payment_orders = PaymentOrderRepository(session)
 
     async def get_current_active_subscription(
         self,
@@ -41,6 +46,27 @@ class SubscriptionService:
         if now is None:
             now = utc_now()
         return await self.subscriptions.get_active_by_user_id(user_id, now)
+
+    async def get_current_active_company_subscription(
+        self,
+        company_id: uuid.UUID,
+        now: Optional[datetime] = None,
+    ) -> Optional[Subscription]:
+        if now is None:
+            now = utc_now()
+        return await self.subscriptions.get_active_by_company_id(
+            company_id, now
+        )
+
+    async def list_company_payment_orders(
+        self,
+        company_id: uuid.UUID,
+        user_id: Optional[uuid.UUID] = None,
+    ) -> list[PaymentOrder]:
+        return await self.payment_orders.get_by_company_id(
+            company_id=company_id,
+            user_id=user_id,
+        )
 
     async def get_subscription_by_id(
         self,

@@ -401,3 +401,239 @@ class TestApplicationMatchExplanation:
             )
         )
         assert detail.json()["status"] == "applied"
+
+
+# ============================================================================
+# Wave 1.4 Phase 2: Application Match Explanation AI Metering & Release (P80-P81)
+# ============================================================================
+
+import asyncio
+from unittest.mock import patch
+from sqlalchemy import func, select
+from app.core.exceptions import AIError
+from app.domain.enums import (
+    ApplicationStatus,
+    JobStatus,
+    JobType,
+    MembershipRole,
+    SubscriptionUsageStatus,
+    UserRole,
+    WorkplaceType,
+)
+from app.domain.models.base import utc_now
+from app.models import (
+    Application,
+    CandidateProfile,
+    Job,
+    Resume,
+    Subscription,
+    SubscriptionUsage,
+)
+from app.models.ai_match_explanation import AIMatchExplanationIdempotency
+from tests.integration.company_billing_helpers import (
+    _create_company,
+    _create_company_subscription,
+    _create_membership,
+    _create_plan,
+    _create_user,
+    _make_jwt_client_for_user,
+)
+
+
+def test_p80_refresh_match_explanation_provider_failure_commits_release(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await _create_user(session)
+            cand_user = await _create_user(session, role=UserRole.CANDIDATE)
+            comp = await _create_company(session)
+            await _create_membership(
+                session,
+                company_id=comp.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await _create_plan(session, max_ai_features=10)
+            sub = await _create_company_subscription(
+                session,
+                company_id=comp.id,
+                user_id=user.id,
+                plan_id=plan.id,
+            )
+            job = Job(
+                company_id=comp.id,
+                title="Job Expl",
+                description="Desc",
+                job_type=JobType.FULL_TIME,
+                workplace_type=WorkplaceType.REMOTE,
+                status=JobStatus.PUBLISHED,
+            )
+            cand_profile = CandidateProfile(
+                user_id=cand_user.id, full_name="Candidate 1"
+            )
+            session.add_all([job, cand_profile])
+            await session.flush()
+            resume = Resume(
+                candidate_id=cand_profile.id,
+                title="cv.pdf",
+                file_path="http://example.com/cv.pdf",
+                parsed_data={"full_name": "Candidate 1", "skills": ["Python"]},
+                is_primary=True,
+                is_confirmed=True,
+                confirmed_at=utc_now(),
+            )
+            session.add(resume)
+            await session.flush()
+            app_record = Application(
+                job_id=job.id,
+                candidate_id=cand_profile.id,
+                status=ApplicationStatus.APPLIED,
+            )
+            session.add(app_record)
+            await session.commit()
+            sub_id = sub.id
+            app_id = app_record.id
+
+        client = await _make_jwt_client_for_user(user)
+        try:
+            with patch(
+                "app.services.match_explanation_service.MatchExplanationService.build_refresh_explanation",
+                side_effect=AIError("LLM provider unavailable"),
+            ):
+                resp = await client.post(
+                    f"{API_V1}/applications/{app_id}/match-explanation/refresh",
+                    headers={
+                        "X-Company-ID": str(comp.id),
+                        "Idempotency-Key": f"ref-{uuid.uuid4()}",
+                    },
+                )
+                assert resp.status_code in (500, 502)
+        finally:
+            await client.aclose()
+
+        async with async_session_factory() as check:
+            sub_chk = await check.get(Subscription, sub_id)
+            assert sub_chk.ai_features_used == 0
+            usage = await check.scalar(
+                select(SubscriptionUsage).where(
+                    SubscriptionUsage.subscription_id == sub_id
+                )
+            )
+            assert usage.status == SubscriptionUsageStatus.FAILED
+            assert usage.finalized_at is not None
+            # Verify uncommitted explanation state was rolled back (no completed explanation record)
+            comp_rec = await check.scalar(
+                select(AIMatchExplanationIdempotency).where(
+                    AIMatchExplanationIdempotency.application_id == app_id,
+                    AIMatchExplanationIdempotency.status == "completed",
+                )
+            )
+            assert comp_rec is None
+            count = await check.scalar(
+                select(func.count())
+                .select_from(SubscriptionUsage)
+                .where(SubscriptionUsage.subscription_id == sub_id)
+            )
+            assert count == 1
+
+    run_async(_run())
+
+def test_p81_refresh_match_explanation_cancellation_performs_safe_release(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await _create_user(session)
+            cand_user = await _create_user(session, role=UserRole.CANDIDATE)
+            comp = await _create_company(session)
+            await _create_membership(
+                session,
+                company_id=comp.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await _create_plan(session, max_ai_features=10)
+            sub = await _create_company_subscription(
+                session,
+                company_id=comp.id,
+                user_id=user.id,
+                plan_id=plan.id,
+            )
+            job = Job(
+                company_id=comp.id,
+                title="Job Expl",
+                description="Desc",
+                job_type=JobType.FULL_TIME,
+                workplace_type=WorkplaceType.REMOTE,
+                status=JobStatus.PUBLISHED,
+            )
+            cand_profile = CandidateProfile(
+                user_id=cand_user.id, full_name="Candidate 1"
+            )
+            session.add_all([job, cand_profile])
+            await session.flush()
+            resume = Resume(
+                candidate_id=cand_profile.id,
+                title="cv.pdf",
+                file_path="http://example.com/cv.pdf",
+                parsed_data={"full_name": "Candidate 1", "skills": ["Python"]},
+                is_primary=True,
+                is_confirmed=True,
+                confirmed_at=utc_now(),
+            )
+            session.add(resume)
+            await session.flush()
+            app_record = Application(
+                job_id=job.id,
+                candidate_id=cand_profile.id,
+                status=ApplicationStatus.APPLIED,
+            )
+            session.add(app_record)
+            await session.commit()
+            sub_id = sub.id
+            app_id = app_record.id
+
+        client = await _make_jwt_client_for_user(user)
+        try:
+            with patch(
+                "app.services.match_explanation_service.MatchExplanationService.build_refresh_explanation",
+                side_effect=asyncio.CancelledError(),
+            ):
+                with pytest.raises((asyncio.CancelledError, RuntimeError)):
+                    await client.post(
+                        f"{API_V1}/applications/{app_id}/match-explanation/refresh",
+                        headers={
+                            "X-Company-ID": str(comp.id),
+                            "Idempotency-Key": f"ref-{uuid.uuid4()}",
+                        },
+                    )
+        finally:
+            await client.aclose()
+
+        async with async_session_factory() as check:
+            sub_chk = await check.get(Subscription, sub_id)
+            assert sub_chk.ai_features_used == 0
+            usage = await check.scalar(
+                select(SubscriptionUsage).where(
+                    SubscriptionUsage.subscription_id == sub_id
+                )
+            )
+            assert usage.status == SubscriptionUsageStatus.FAILED
+            assert usage.finalized_at is not None
+            # Verify uncommitted explanation state was rolled back
+            comp_rec = await check.scalar(
+                select(AIMatchExplanationIdempotency).where(
+                    AIMatchExplanationIdempotency.application_id == app_id,
+                    AIMatchExplanationIdempotency.status == "completed",
+                )
+            )
+            assert comp_rec is None
+            count = await check.scalar(
+                select(func.count())
+                .select_from(SubscriptionUsage)
+                .where(SubscriptionUsage.subscription_id == sub_id)
+            )
+            assert count == 1
+
+    run_async(_run())

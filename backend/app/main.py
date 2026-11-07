@@ -230,9 +230,15 @@ async def workspace_header_context(request: Request, call_next):
     """
     raw_company_id = request.headers.get("X-Company-ID")
     token = None
-    if raw_company_id:
+    if raw_company_id is not None:
+        stripped_company_id = raw_company_id.strip()
+        if not stripped_company_id:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "X-Company-ID must be a valid UUID"},
+            )
         try:
-            token = set_workspace_company_id(uuid.UUID(raw_company_id))
+            token = set_workspace_company_id(uuid.UUID(stripped_company_id))
         except (TypeError, ValueError):
             return JSONResponse(
                 status_code=400,

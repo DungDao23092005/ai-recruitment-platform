@@ -1,4 +1,4 @@
-"""Wave 1.4 Phase 1 schema, constraint, index, and migration verification tests.
+"""Subscription schema, constraint, index, and migration verification tests.
 
 Runs strictly against the isolated test database (``ai_recruitment_platform_test``).
 """
@@ -40,9 +40,9 @@ from app.models import (
 from tests.integration.conftest import _assert_not_development_database
 
 
-def _load_wave1_4_migration_module():
+def _load_subscription_migration_module():
     migration_path = (
-        Path(__file__).resolve().parents[2]
+        Path(__file__).resolve().parents[3]
         / "alembic"
         / "versions"
         / "wave1_4_subscriptions.py"
@@ -568,7 +568,7 @@ def test_subscription_filtered_unique_indexes_and_candidate_free_plus_paid_coexi
 def test_migration_upgrade_downgrade_backfill_and_preflight_guards(run_async):
     """Verify wave1_4_subscriptions downgrade/upgrade, historical usage backfill, and preflight aborts."""
     _assert_not_development_database()
-    migration = _load_wave1_4_migration_module()
+    migration = _load_subscription_migration_module()
 
     def _run_migration_step(sync_conn, fn):
         ctx = MigrationContext.configure(sync_conn)

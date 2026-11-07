@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import inspect
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import EntityNotFoundException, ValidationError
-from app.domain.enums import ApplicationStatus, SubscriptionStatus, UserRole
+from app.domain.enums import (
+    ApplicationStatus,
+    SubscriptionScope,
+    SubscriptionStatus,
+    UserRole,
+)
 from app.models import (
     CompanyMembership,
     RecruitmentPlan,
@@ -122,18 +128,53 @@ class AnalyticsService:
                 raise EntityNotFoundException(f"Job {job_id} not found")
         return company_id
 
-    async def _quota_status(self, user_id: uuid.UUID) -> AnalyticsQuotaStatus:
-        subscription = await self.session.scalar(
-            select(Subscription)
-            .where(
-                Subscription.user_id == user_id,
-                Subscription.is_deleted == False,  # noqa: E712
-                Subscription.status == SubscriptionStatus.ACTIVE,
-                Subscription.expires_at > datetime.now(timezone.utc),
+    async def _quota_status(
+        self,
+        user_id: uuid.UUID,
+        company_id: uuid.UUID | None = None,
+    ) -> AnalyticsQuotaStatus:
+        now = datetime.now(timezone.utc)
+        if company_id is not None:
+            stmt = (
+                select(Subscription)
+                .where(
+                    Subscription.company_id == company_id,
+                    Subscription.scope == SubscriptionScope.COMPANY_RECRUITING,
+                    Subscription.is_deleted == False,  # noqa: E712
+                    Subscription.status == SubscriptionStatus.ACTIVE,
+                    or_(
+                        Subscription.expires_at.is_(None),
+                        Subscription.expires_at > now,
+                    ),
+                )
+                .order_by(
+                    Subscription.created_at.desc(),
+                    Subscription.id.desc(),
+                )
+                .limit(1)
             )
-            .order_by(Subscription.expires_at.desc())
-            .limit(1)
-        )
+        else:
+            stmt = (
+                select(Subscription)
+                .where(
+                    Subscription.user_id == user_id,
+                    Subscription.company_id.is_(None),
+                    Subscription.scope
+                    == SubscriptionScope.LEGACY_RECRUITER_PERSONAL,
+                    Subscription.is_deleted == False,  # noqa: E712
+                    Subscription.status == SubscriptionStatus.ACTIVE,
+                    or_(
+                        Subscription.expires_at.is_(None),
+                        Subscription.expires_at > now,
+                    ),
+                )
+                .order_by(
+                    Subscription.created_at.desc(),
+                    Subscription.id.desc(),
+                )
+                .limit(1)
+            )
+        subscription = await self.session.scalar(stmt)
         if subscription is None:
             return AnalyticsQuotaStatus()
 
@@ -316,7 +357,12 @@ class AnalyticsService:
             else 0.0
         )
 
-        quota = await self._quota_status(current_user.id)
+        if "company_id" in inspect.signature(self._quota_status).parameters:
+            quota = await self._quota_status(
+                current_user.id, company_id=company_id
+            )
+        else:
+            quota = await self._quota_status(current_user.id)
 
         return RecruiterAnalyticsResponse(
             timezone=ANALYTICS_TIMEZONE,

@@ -10,6 +10,7 @@ from app.domain.enums import (
     PaymentOrderStatus,
     PaymentProvider,
     SubscriptionAuditAction,
+    SubscriptionScope,
     SubscriptionStatus,
 )
 from app.schemas.recruitment_plan import RecruitmentPlanRead
@@ -20,7 +21,9 @@ class SubscriptionRead(BaseModel):
 
     id: uuid.UUID
     user_id: uuid.UUID
+    company_id: Optional[uuid.UUID] = None
     plan_id: uuid.UUID
+    scope: Optional[SubscriptionScope] = None
     status: SubscriptionStatus
     started_at: Optional[datetime]
     expires_at: Optional[datetime]

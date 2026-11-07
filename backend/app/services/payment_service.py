@@ -1,22 +1,32 @@
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import (
     ConflictException,
     EntityNotFoundException,
+    ForbiddenException,
     InvalidTransitionException,
     ValidationError,
 )
-from app.domain.enums import PaymentOrderStatus, PaymentProvider, PaymentTransactionStatus, SubscriptionStatus, UserRole
+from app.domain.enums import (
+    PaymentOrderStatus,
+    PaymentProvider,
+    PaymentTransactionStatus,
+    PlanAudience,
+    SubscriptionScope,
+    SubscriptionStatus,
+    UserRole,
+)
 from app.domain.models.base import utc_now
 from app.models import PaymentOrder, PaymentTransaction, RecruitmentPlan, RecruiterProfile, Subscription, User
 from app.repositories import (
@@ -39,6 +49,8 @@ from app.services.subscription_realtime import (
     ACTION_ORDER_CREATED,
     schedule_admin_subscription_event,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Lightweight, in-process throttle for server-to-server QueryDr reconciliation.
@@ -364,6 +376,238 @@ class PaymentService:
 
         return payment_url, internal_order_id, subscription.id
 
+    async def _acquire_company_applock(self, company_id: uuid.UUID) -> None:
+        """Acquire transaction-scoped SQL Server application lock for company billing."""
+        result = await self.session.execute(
+            text(
+                """
+                DECLARE @applock_result int;
+                EXEC @applock_result = sp_getapplock
+                    @Resource = :resource,
+                    @LockMode = 'Exclusive',
+                    @LockOwner = 'Transaction',
+                    @LockTimeout = 10000;
+                SELECT @applock_result AS result;
+                """
+            ),
+            {"resource": f"company-subscription:{company_id}"},
+        )
+        code = (
+            result.scalar_one_or_none()
+            if hasattr(result, "scalar_one_or_none")
+            else None
+        )
+        if isinstance(code, int) and not isinstance(code, bool) and code < 0:
+            raise ConflictException(
+                "Could not safely acquire company subscription lock; retry"
+            )
+        if code is None and isinstance(self.session, AsyncSession):
+            raise ConflictException(
+                "Could not safely acquire company subscription lock; retry"
+            )
+
+    async def _lock_subscription(
+        self,
+        subscription_id: uuid.UUID | None,
+    ) -> Subscription | None:
+        """Re-load and lock the Subscription row within the current transaction."""
+        if subscription_id is None:
+            return None
+        stmt = (
+            select(Subscription)
+            .where(Subscription.id == subscription_id)
+            .where(Subscription.is_deleted == False)  # noqa: E712
+            .with_hint(Subscription, "WITH (UPDLOCK, ROWLOCK)")
+            .execution_options(populate_existing=True)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def create_company_vnpay_payment(
+        self,
+        company_id: uuid.UUID,
+        user_id: uuid.UUID,
+        plan_id: uuid.UUID,
+        client_ip: str = "127.0.0.1",
+        return_url: str | None = None,
+    ) -> tuple[str, str, uuid.UUID]:
+        """Create or reuse a Company VNPAY checkout in two locked transactions.
+
+        Transaction 1:
+        - Acquires ``company-subscription:{company_id}`` applock.
+        - Marks stale pending company orders (``expired_at <= now``) as EXPIRED
+          and their related pending subscriptions as CANCELLED.
+        - Retires stale active company subscriptions (``expires_at <= now``) as EXPIRED.
+        - Commits Transaction 1 to release the applock and row locks.
+
+        Transaction 2:
+        - Begins a new transaction and reacquires ``company-subscription:{company_id}``.
+        - Re-reads the company's effective active subscription; rejects with 409 if present.
+        - Re-reads unexpired pending orders:
+          * 1 pending order with same plan -> reuses it.
+          * 1 pending order with different plan -> raises 409 ConflictException.
+          * >1 unexpired pending orders -> raises RuntimeError (server-side integrity error).
+          * 0 pending orders -> creates PENDING Subscription + PaymentOrder with
+            ``scope=SubscriptionScope.COMPANY_RECRUITING`` and ``user_id=user_id``.
+        - Commits Transaction 2.
+        """
+        if company_id is None or user_id is None:
+            raise ValidationError(
+                "company_id and user_id are required for company checkout"
+            )
+
+        plan = await self.plans.get_active_by_id(plan_id)
+        if plan is None:
+            raise EntityNotFoundException(
+                f"Plan {plan_id} not found or inactive"
+            )
+
+        plan_audience = getattr(plan, "plan_audience", PlanAudience.COMPANY)
+        if (
+            isinstance(plan_audience, PlanAudience)
+            and plan_audience != PlanAudience.COMPANY
+        ):
+            raise ForbiddenException(
+                "Selected plan is not a company recruiting plan"
+            )
+        if bool(getattr(plan, "is_free", False)) is True:
+            raise ForbiddenException(
+                "Company checkout requires a paid company plan"
+            )
+
+        # Transaction 1 — stale pending cleanup
+        await self._acquire_company_applock(company_id)
+        cleanup_now = utc_now()
+        stale_orders = await self.payment_orders.get_stale_pending_for_company(
+            company_id, cleanup_now
+        )
+        for stale_order in stale_orders:
+            stale_order.status = PaymentOrderStatus.EXPIRED
+            if stale_order.subscription_id is not None:
+                stale_sub = (
+                    await self.subscriptions.get_by_id_including_deleted(
+                        stale_order.subscription_id
+                    )
+                )
+                if (
+                    stale_sub is not None
+                    and stale_sub.status == SubscriptionStatus.PENDING
+                ):
+                    stale_sub.status = SubscriptionStatus.CANCELLED
+        await self.subscriptions.expire_stale_active_for_company(
+            company_id, cleanup_now
+        )
+        try:
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+
+        # Transaction 2 — checkout creation/reuse
+        await self._acquire_company_applock(company_id)
+        now_utc = utc_now()
+
+        existing_active = await self.subscriptions.get_active_by_company_id(
+            company_id, now_utc
+        )
+        if existing_active is not None:
+            await self.session.rollback()
+            raise ConflictException(
+                f"Company already has an active subscription (id: {existing_active.id})"
+            )
+
+        pending_orders = (
+            await self.payment_orders.get_active_pending_for_company(
+                company_id, now_utc
+            )
+        )
+        if len(pending_orders) > 1:
+            await self.session.rollback()
+            raise RuntimeError(
+                f"Integrity error: multiple unexpired pending payment orders ({len(pending_orders)}) found for company {company_id}"
+            )
+        if len(pending_orders) == 1:
+            existing_order = pending_orders[0]
+            if existing_order.plan_id != plan_id:
+                await self.session.rollback()
+                raise ConflictException(
+                    "Company already has an unexpired pending payment order for a different plan."
+                )
+            if existing_order.subscription_id is None:
+                await self.session.rollback()
+                raise RuntimeError(
+                    f"Integrity error: pending company order {existing_order.id} has no bound subscription"
+                )
+            payment_url = self._rebuild_payment_url(
+                existing_order, plan, client_ip, return_url
+            )
+            try:
+                await self.session.commit()
+            except Exception:
+                await self.session.rollback()
+                raise
+            return (
+                payment_url,
+                existing_order.internal_order_id,
+                existing_order.subscription_id,
+            )
+
+        amount = plan.price
+        subscription = Subscription(
+            company_id=company_id,
+            user_id=user_id,
+            plan_id=plan_id,
+            scope=SubscriptionScope.COMPANY_RECRUITING,
+            is_free=False,
+            status=SubscriptionStatus.PENDING,
+        )
+        self.session.add(subscription)
+        await self.session.flush()
+
+        internal_order_id = self._generate_internal_order_id()
+        timeout = self.vnpay.timeout
+        currency = (
+            plan.currency
+            if isinstance(getattr(plan, "currency", None), str)
+            and plan.currency.strip()
+            else "VND"
+        )
+        payment_order = PaymentOrder(
+            company_id=company_id,
+            user_id=user_id,
+            plan_id=plan_id,
+            subscription_id=subscription.id,
+            scope=SubscriptionScope.COMPANY_RECRUITING,
+            amount=amount,
+            currency=currency,
+            provider=PaymentProvider.VNPAY,
+            internal_order_id=internal_order_id,
+            status=PaymentOrderStatus.PENDING,
+            created_at=now_utc,
+            expired_at=now_utc + timedelta(minutes=timeout),
+        )
+        self.session.add(payment_order)
+        try:
+            await self.session.commit()
+            await self.session.refresh(payment_order)
+            await self.session.refresh(subscription)
+        except Exception:
+            await self.session.rollback()
+            raise
+
+        order_info = f"Thanh toan goi tuyen dung {plan.name}"
+        params = self.vnpay.build_payment_params(
+            amount=amount,
+            order_id=internal_order_id,
+            order_info=order_info,
+            client_ip=client_ip,
+            return_url=return_url,
+            expire_minutes=timeout,
+            create_time=now_utc,
+        )
+        payment_url = self.vnpay.build_payment_url(params)
+        return payment_url, internal_order_id, subscription.id
+
     def _rebuild_payment_url(
         self,
         order: PaymentOrder,
@@ -405,16 +649,16 @@ class PaymentService:
     async def process_vnpay_ipn(
         self,
         params: dict[str, str],
-        client_ip: str,
+        client_ip: str = "127.0.0.1",
     ) -> dict[str, str]:
         """Process VNPAY IPN (Instant Payment Notification).
 
         Flow:
         1. Verify signature
         2. Lookup PaymentOrder by vnp_TxnRef (internal_order_id)
-        3. Validate merchant/order correlation
-        4. Validate amount
-        5. Read current backend payment state
+        3. Branch based on order scope (COMPANY_RECRUITING vs legacy personal)
+        4. Validate merchant/order correlation and amount/currency
+        5. Read current backend payment state under appropriate lock
         6. Idempotent processing
         7. Create PaymentTransaction
         8. Activate subscription when appropriate
@@ -431,12 +675,7 @@ class PaymentService:
         if not self.vnpay.verify_signature(params):
             return {"RspCode": "97", "Message": "Invalid signature"}
 
-        # 2. Discover the owning user from an UNLOCKED read so the per-user lock
-        # can be acquired before any PaymentOrder row lock. This preserves the
-        # single lock hierarchy (User -> PaymentOrder) shared with the checkout
-        # path and prevents a User <-> PaymentOrder lock inversion. The read is
-        # only used to resolve the user and to validate immutable fields; the
-        # authoritative state is read again under lock below.
+        # 2. Discover the order by vnp_TxnRef (internal_order_id).
         txn_ref = params.get("vnp_TxnRef")
         if not txn_ref:
             return {"RspCode": "01", "Message": "Missing transaction reference"}
@@ -444,6 +683,27 @@ class PaymentService:
         discovered = await self.payment_orders.get_by_internal_order_id(txn_ref)
         if discovered is None:
             return {"RspCode": "01", "Message": "Order not found"}
+
+        is_company_order = (
+            getattr(discovered, "scope", None)
+            == SubscriptionScope.COMPANY_RECRUITING
+            or getattr(discovered, "company_id", None) is not None
+        )
+        if not is_company_order and discovered.subscription_id is not None:
+            sub_probe = await self.subscriptions.get_by_id_including_deleted(
+                discovered.subscription_id
+            )
+            if sub_probe is not None and (
+                getattr(sub_probe, "scope", None)
+                == SubscriptionScope.COMPANY_RECRUITING
+                or getattr(sub_probe, "company_id", None) is not None
+            ):
+                is_company_order = True
+
+        if is_company_order:
+            return await self._process_company_vnpay_ipn(
+                discovered, params, client_ip
+            )
 
         # 3. Validate merchant correlation (TNmnCode)
         tmn_code = params.get("vnp_TmnCode")
@@ -542,6 +802,313 @@ class PaymentService:
             return {"RspCode": "99", "Message": "Internal processing error"}
 
         return {"RspCode": "00", "Message": "Confirm Success"}
+
+    async def _process_company_vnpay_ipn(
+        self,
+        discovered: PaymentOrder,
+        params: dict[str, str],
+        client_ip: str = "127.0.0.1",
+    ) -> dict[str, str]:
+        """Process VNPAY IPN for a Company recruiting payment order."""
+        tmn_code = params.get("vnp_TmnCode")
+        if tmn_code is not None and tmn_code != settings.VNPAY_TMN_CODE:
+            return {"RspCode": "02", "Message": "Invalid merchant"}
+
+        lock_company_id = discovered.company_id
+        if lock_company_id is None and discovered.subscription_id is not None:
+            sub_probe = await self.subscriptions.get_by_id_including_deleted(
+                discovered.subscription_id
+            )
+            lock_company_id = (
+                sub_probe.company_id if sub_probe is not None else None
+            )
+        if lock_company_id is None:
+            logger.error(
+                "Company IPN rejected: order %s has no company_id",
+                discovered.internal_order_id,
+            )
+            return {"RspCode": "02", "Message": "Invalid company relationship"}
+
+        # 1. Acquire company application lock
+        await self._acquire_company_applock(lock_company_id)
+
+        # 2. Lock PaymentOrder and Subscription using SQL Server UPDLOCK, ROWLOCK
+        payment_order = await self._lock_payment_order(
+            discovered.internal_order_id
+        )
+        if payment_order is None:
+            await self.session.rollback()
+            return {"RspCode": "01", "Message": "Order not found"}
+
+        subscription = await self._lock_subscription(
+            payment_order.subscription_id
+        )
+        if subscription is None:
+            logger.error(
+                "Company IPN rejected: subscription %s not found for order %s",
+                payment_order.subscription_id,
+                payment_order.internal_order_id,
+            )
+            await self.session.rollback()
+            return {"RspCode": "02", "Message": "Subscription not found"}
+
+        # 3. Validate all relationships (P30-P33)
+        if payment_order.subscription_id != subscription.id:
+            logger.error(
+                "Company IPN rejected: subscription_id mismatch on order %s",
+                payment_order.internal_order_id,
+            )
+            await self.session.rollback()
+            return {"RspCode": "02", "Message": "Order subscription mismatch"}
+
+        if (
+            payment_order.company_id is None
+            or subscription.company_id is None
+            or payment_order.company_id != subscription.company_id
+        ):
+            logger.error(
+                "Company IPN rejected: company_id mismatch on order %s (order=%s, subscription=%s)",
+                payment_order.internal_order_id,
+                payment_order.company_id,
+                subscription.company_id,
+            )
+            await self.session.rollback()
+            return {"RspCode": "02", "Message": "Order company mismatch"}
+
+        if payment_order.plan_id != subscription.plan_id:
+            logger.error(
+                "Company IPN rejected: plan_id mismatch on order %s (order=%s, subscription=%s)",
+                payment_order.internal_order_id,
+                payment_order.plan_id,
+                subscription.plan_id,
+            )
+            await self.session.rollback()
+            return {"RspCode": "02", "Message": "Order plan mismatch"}
+
+        if (
+            payment_order.scope != SubscriptionScope.COMPANY_RECRUITING
+            or subscription.scope != SubscriptionScope.COMPANY_RECRUITING
+        ):
+            logger.error(
+                "Company IPN rejected: scope mismatch on order %s (order=%s, subscription=%s)",
+                payment_order.internal_order_id,
+                payment_order.scope,
+                subscription.scope,
+            )
+            await self.session.rollback()
+            return {"RspCode": "02", "Message": "Invalid subscription scope"}
+
+        # 4. Validate currency and amount (P34)
+        order_currency = self._normalize_currency(payment_order.currency)
+        param_currency = (
+            self._normalize_currency(params.get("vnp_CurrCode"))
+            if params.get("vnp_CurrCode") is not None
+            else "VND"
+        )
+        if order_currency != "VND" or param_currency != "VND":
+            logger.error(
+                "Company IPN rejected: invalid currency on order %s (order=%s, param=%s)",
+                payment_order.internal_order_id,
+                payment_order.currency,
+                params.get("vnp_CurrCode"),
+            )
+            await self.session.rollback()
+            return {"RspCode": "04", "Message": "Invalid currency"}
+
+        vnp_amount_str = params.get("vnp_Amount")
+        try:
+            vnp_amount = int(str(vnp_amount_str))
+        except (TypeError, ValueError):
+            await self.session.rollback()
+            return {"RspCode": "04", "Message": "Invalid amount"}
+
+        if vnp_amount != payment_order.amount * 100:
+            await self.session.rollback()
+            return {"RspCode": "04", "Message": "Invalid amount"}
+
+        # 6. Duplicate IPN handling (P36, P37)
+        if payment_order.status == PaymentOrderStatus.PAID:
+            await self.session.rollback()
+            return {"RspCode": "00", "Message": "Confirm Success"}
+
+        # 7. Late IPN handling (P38)
+        if payment_order.status in (
+            PaymentOrderStatus.EXPIRED,
+            PaymentOrderStatus.CANCELLED,
+            PaymentOrderStatus.FAILED,
+        ) or subscription.status in (
+            SubscriptionStatus.CANCELLED,
+            SubscriptionStatus.EXPIRED,
+        ):
+            order_ref = payment_order.internal_order_id
+            order_comp_id = payment_order.company_id
+            order_stat = payment_order.status
+            sub_id = subscription.id
+            sub_stat = subscription.status
+            logger.error(
+                "Late payment IPN received for company order %s (company_id=%s, order_status=%s, subscription_id=%s, subscription_status=%s)",
+                order_ref,
+                order_comp_id,
+                order_stat,
+                sub_id,
+                sub_stat,
+            )
+            await self.session.rollback()
+            return {
+                "RspCode": "02",
+                "Message": "Order already expired or cancelled",
+            }
+
+        response_code = params.get("vnp_ResponseCode", "")
+        transaction_status = params.get("vnp_TransactionStatus", "")
+        vnp_transaction_no = params.get("vnp_TransactionNo")
+
+        response_success, response_msg = self.vnpay.parse_response_code(
+            response_code
+        )
+        transaction_success, transaction_msg = (
+            self.vnpay.parse_transaction_status(transaction_status)
+        )
+        is_successful = (
+            response_code == "00"
+            and transaction_status == "00"
+            and response_success
+            and transaction_success
+        )
+
+        if vnp_transaction_no and await self.payment_transactions.exists_by_provider_transaction_id(
+            vnp_transaction_no
+        ):
+            existing_txn = await self.payment_transactions.get_by_provider_transaction_id(
+                vnp_transaction_no
+            )
+            await self.session.rollback()
+            if existing_txn and existing_txn.payment_order_id == payment_order.id:
+                return {"RspCode": "00", "Message": "Confirm Success"}
+            return {
+                "RspCode": "02",
+                "Message": "Duplicate transaction for different order",
+            }
+
+        # 5. Gateway failure branch (P35)
+        if not is_successful:
+            payment_order.status = PaymentOrderStatus.FAILED
+            payment_order.provider_order_id = vnp_transaction_no
+            subscription.status = SubscriptionStatus.CANCELLED
+            transaction = PaymentTransaction(
+                payment_order_id=payment_order.id,
+                provider_transaction_id=vnp_transaction_no,
+                provider_result_code=response_code,
+                provider_message=response_msg,
+                provider_response_metadata=str(params),
+                status=PaymentTransactionStatus.FAILED,
+                responded_at=utc_now(),
+            )
+            self.session.add(transaction)
+            try:
+                await self.session.commit()
+            except Exception:
+                await self.session.rollback()
+                return {"RspCode": "99", "Message": "Internal processing error"}
+            return {"RspCode": "00", "Message": "Confirm Success"}
+
+        # 8. Atomic Company activation (P25, P39)
+        await self._activate_company_subscription_for_payment(
+            payment_order=payment_order,
+            subscription=subscription,
+            provider_transaction_id=vnp_transaction_no,
+            provider_result_code=response_code,
+            provider_message=transaction_msg,
+            provider_request_id=params.get("vnp_BankTranNo"),
+            provider_response_metadata=str(params),
+        )
+        return {"RspCode": "00", "Message": "Confirm Success"}
+
+    async def _activate_company_subscription_for_payment(
+        self,
+        *,
+        payment_order: PaymentOrder,
+        subscription: Subscription,
+        provider_transaction_id: str | None,
+        provider_result_code: str,
+        provider_message: str,
+        provider_request_id: str | None,
+        provider_response_metadata: str,
+    ) -> Subscription:
+        """Atomically mark Company order PAID, activate Company subscription, and record transaction.
+
+        Company activation MUST NOT:
+        - Call ensure_recruiter_access.
+        - Change User.role or promote the purchaser to Recruiter.
+        - Change CompanyMembership.role.
+        - Create any personal Recruiter entitlement as a side effect.
+        """
+        sub_status_val = subscription.status.value
+        if subscription.status != SubscriptionStatus.PENDING:
+            await self.session.rollback()
+            raise InvalidTransitionException(
+                f"Cannot activate company subscription in status {sub_status_val}"
+            )
+
+        now = utc_now()
+        company_id = payment_order.company_id
+        await self.subscriptions.expire_stale_active_for_company(
+            company_id, now
+        )
+
+        existing_active = await self.subscriptions.get_active_by_company_id(
+            company_id, now
+        )
+        if existing_active is not None and existing_active.id != subscription.id:
+            active_id = existing_active.id
+            await self.session.rollback()
+            raise ConflictException(
+                f"Company {company_id} already has an active subscription (id: {active_id})"
+            )
+
+        plan_id = subscription.plan_id
+        plan = await self.plans.get_active_by_id(plan_id)
+        if plan is None:
+            await self.session.rollback()
+            raise EntityNotFoundException(
+                f"Plan {plan_id} not found or inactive"
+            )
+
+        try:
+            payment_order.status = PaymentOrderStatus.PAID
+            payment_order.paid_at = now
+            payment_order.provider_order_id = provider_transaction_id
+            payment_order.provider_request_id = provider_request_id
+
+            subscription.status = SubscriptionStatus.ACTIVE
+            subscription.started_at = now
+            subscription.expires_at = now + timedelta(days=plan.duration_days)
+            subscription.max_job_posts = plan.max_job_posts
+            subscription.max_candidate_searches = (
+                plan.max_candidate_searches or 0
+            )
+            subscription.max_ai_features = plan.max_ai_features or 0
+            subscription.job_posts_used = 0
+            subscription.candidate_searches_used = 0
+            subscription.ai_features_used = 0
+
+            transaction = PaymentTransaction(
+                payment_order_id=payment_order.id,
+                provider_transaction_id=provider_transaction_id,
+                provider_result_code=provider_result_code,
+                provider_message=provider_message,
+                provider_response_metadata=provider_response_metadata,
+                status=PaymentTransactionStatus.SUCCESS,
+                responded_at=now,
+            )
+            self.session.add(transaction)
+
+            await self.session.commit()
+            await self.session.refresh(subscription)
+            return subscription
+        except Exception:
+            await self.session.rollback()
+            raise
 
     async def _record_success_and_activate(
         self,

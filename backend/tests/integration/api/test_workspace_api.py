@@ -282,3 +282,89 @@ class TestWorkspaceInvitationFlow:
         )
         assert response.status_code == 403
         run_async(wrong_user.aclose())
+
+
+# ============================================================================
+# Wave 1.4 Phase 2: Workspace Authorization & Header Validation (P71)
+# ============================================================================
+
+from app.domain.enums import MembershipRole, MembershipStatus
+from app.models import Subscription
+from tests.integration import company_billing_helpers as cbh
+
+
+def test_p71_invalid_or_unauthorized_supplied_x_company_id_returns_400_or_403(
+    run_async,
+):
+    """P71: Supplied invalid, unknown, revoked, or unauthorized X-Company-ID returns 400/403 and never falls back to personal quota."""
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            comp_unauth = await cbh._create_company(session)
+            comp_revoked = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=comp_revoked.id,
+                user_id=user.id,
+                role=MembershipRole.RECRUITER,
+                status=MembershipStatus.REVOKED,
+            )
+            plan = await cbh._create_plan(session, max_job_posts=5)
+            sub = await cbh._create_personal_subscription(
+                session, user_id=user.id, plan_id=plan.id
+            )
+            await session.commit()
+            sub_id = sub.id
+            comp_unauth_id = comp_unauth.id
+            comp_revoked_id = comp_revoked.id
+            unknown_company_id = uuid.uuid4()
+
+        client = await cbh._make_jwt_client_for_user(user)
+        try:
+            job_payload = {
+                "title": "Header Validation Job",
+                "description": "Desc",
+                "job_type": "full_time",
+                "workplace_type": "remote",
+                "status": "draft",
+            }
+            # 1. Non-UUID malformed header -> 400
+            resp_inv = await client.post(
+                f"{API_V1}/jobs",
+                headers={"X-Company-ID": "invalid-uuid-string"},
+                json=job_payload,
+            )
+            assert resp_inv.status_code == 400
+
+            # 2. Unknown / nonexistent company UUID header -> 403 or 404
+            resp_unk = await client.post(
+                f"{API_V1}/jobs",
+                headers={"X-Company-ID": str(unknown_company_id)},
+                json=job_payload,
+            )
+            assert resp_unk.status_code in (400, 403, 404)
+
+            # 3. Unauthorized company UUID header (no membership) -> 403
+            resp_unauth = await client.post(
+                f"{API_V1}/jobs",
+                headers={"X-Company-ID": str(comp_unauth_id)},
+                json=job_payload,
+            )
+            assert resp_unauth.status_code == 403
+
+            # 4. Revoked company membership UUID header -> 403
+            resp_rev = await client.post(
+                f"{API_V1}/jobs",
+                headers={"X-Company-ID": str(comp_revoked_id)},
+                json=job_payload,
+            )
+            assert resp_rev.status_code == 403
+        finally:
+            await client.aclose()
+
+        # In all cases, never fall back to consuming personal quota
+        async with async_session_factory() as check:
+            s = await check.get(Subscription, sub_id)
+            assert s.job_posts_used == 0
+
+    run_async(_run())

@@ -73,8 +73,10 @@ class PaymentOrderRead(BaseModel):
 
     id: uuid.UUID
     user_id: uuid.UUID
+    company_id: Optional[uuid.UUID] = None
     plan_id: uuid.UUID
     subscription_id: Optional[uuid.UUID]
+    scope: Optional[str] = None
     amount: int
     currency: str
     provider: str

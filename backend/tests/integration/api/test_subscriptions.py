@@ -9,8 +9,18 @@ from app.api.v1.endpoints import subscriptions as subs_endpoints
 from app.main import app
 from app.services.subscription_service import SubscriptionService
 from app.core.security import get_password_hash, decode_access_token
-from app.domain.enums import SubscriptionAuditAction, UserRole
-from app.models import SubscriptionAuditLog, User, RecruiterProfile
+from app.domain.enums import (
+    SubscriptionAuditAction,
+    UserRole,
+    MembershipRole,
+    SubscriptionScope,
+    SubscriptionStatus,
+    PaymentProvider,
+    PaymentOrderStatus,
+)
+from app.models import SubscriptionAuditLog, User, RecruiterProfile, PaymentOrder
+from app.services.analytics_service import AnalyticsService
+from tests.integration import company_billing_helpers as cbh
 from app.database.session import async_session_factory
 from tests.integration.api.conftest import API_V1, run
 
@@ -649,3 +659,563 @@ class TestSubscriptionOwnership:
         # candidate_client (different user) tries to access candidate_b_user's subscription
         resp = run_async(candidate_client.get(f"{API_V1}/subscriptions/{sub_id}"))
         assert resp.status_code == 404
+
+
+# ============================================================================
+# Company Subscription & Workspace Billing Tests (P01 - P11, P56)
+# ============================================================================
+
+
+def test_p01_get_company_subscription_allows_workspace_admin(run_async):
+    async def _run():
+        async with async_session_factory() as session:
+            admin_user = await cbh._create_user(session, role=UserRole.RECRUITER)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=admin_user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await cbh._create_plan(session)
+            sub = await cbh._create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=admin_user.id,
+                plan_id=plan.id,
+            )
+            await session.commit()
+            company_id, sub_id = company.id, sub.id
+
+        client = await cbh._make_jwt_client_for_user(admin_user)
+        try:
+            resp = await client.get(
+                f"{API_V1}/subscriptions/company",
+                headers={"X-Company-ID": str(company_id)},
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["id"] == str(sub_id)
+            assert body["company_id"] == str(company_id)
+            assert body["scope"] == "company_recruiting"
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p02_get_company_subscription_allows_workspace_recruiter(run_async):
+    async def _run():
+        async with async_session_factory() as session:
+            admin_user = await cbh._create_user(session, role=UserRole.RECRUITER)
+            rec_user = await cbh._create_user(session, role=UserRole.RECRUITER)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=admin_user.id,
+                role=MembershipRole.ADMIN,
+            )
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=rec_user.id,
+                role=MembershipRole.RECRUITER,
+            )
+            plan = await cbh._create_plan(session)
+            sub = await cbh._create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=admin_user.id,
+                plan_id=plan.id,
+            )
+            await session.commit()
+            company_id, sub_id = company.id, sub.id
+
+        client = await cbh._make_jwt_client_for_user(rec_user)
+        try:
+            resp = await client.get(
+                f"{API_V1}/subscriptions/company",
+                headers={"X-Company-ID": str(company_id)},
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["id"] == str(sub_id)
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p03_get_company_subscription_denies_workspace_interviewer_403(run_async):
+    async def _run():
+        async with async_session_factory() as session:
+            interviewer = await cbh._create_user(session, role=UserRole.RECRUITER)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=interviewer.id,
+                role=MembershipRole.INTERVIEWER,
+            )
+            await session.commit()
+            company_id = company.id
+
+        client = await cbh._make_jwt_client_for_user(interviewer)
+        try:
+            resp = await client.get(
+                f"{API_V1}/subscriptions/company",
+                headers={"X-Company-ID": str(company_id)},
+            )
+            assert resp.status_code == 403
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p04_get_company_subscription_denies_platform_admin_403(run_async):
+    async def _run():
+        async with async_session_factory() as session:
+            platform_admin = await cbh._create_user(session, role=UserRole.ADMIN)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=platform_admin.id,
+                role=MembershipRole.ADMIN,
+            )
+            await session.commit()
+            company_id = company.id
+
+        client = await cbh._make_jwt_client_for_user(platform_admin)
+        try:
+            resp = await client.get(
+                f"{API_V1}/subscriptions/company",
+                headers={"X-Company-ID": str(company_id)},
+            )
+            assert resp.status_code == 403
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p05_get_company_subscription_denies_candidate_403(run_async):
+    async def _run():
+        async with async_session_factory() as session:
+            candidate = await cbh._create_user(session, role=UserRole.CANDIDATE)
+            await session.commit()
+            company = await cbh._create_company(session)
+            await session.commit()
+            company_id = company.id
+
+        client = await cbh._make_jwt_client_for_user(candidate)
+        try:
+            resp = await client.get(
+                f"{API_V1}/subscriptions/company",
+                headers={"X-Company-ID": str(company_id)},
+            )
+            assert resp.status_code == 403
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p06_company_history_allows_workspace_admin_all_orders(run_async):
+    async def _run():
+        async with async_session_factory() as session:
+            admin_user = await cbh._create_user(session, role=UserRole.RECRUITER)
+            rec_user = await cbh._create_user(session, role=UserRole.RECRUITER)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=admin_user.id,
+                role=MembershipRole.ADMIN,
+            )
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=rec_user.id,
+                role=MembershipRole.RECRUITER,
+            )
+            plan = await cbh._create_plan(session)
+            sub1 = await cbh._create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=admin_user.id,
+                plan_id=plan.id,
+                status=SubscriptionStatus.CANCELLED,
+            )
+            sub2 = await cbh._create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=rec_user.id,
+                plan_id=plan.id,
+                status=SubscriptionStatus.ACTIVE,
+            )
+            o1 = PaymentOrder(
+                user_id=admin_user.id,
+                company_id=company.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan.id,
+                subscription_id=sub1.id,
+                amount=plan.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"ORD-{uuid.uuid4().hex[:8]}",
+                status=PaymentOrderStatus.FAILED,
+            )
+            o2 = PaymentOrder(
+                user_id=rec_user.id,
+                company_id=company.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan.id,
+                subscription_id=sub2.id,
+                amount=plan.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"ORD-{uuid.uuid4().hex[:8]}",
+                status=PaymentOrderStatus.PAID,
+            )
+            session.add_all([o1, o2])
+            await session.commit()
+            company_id, o1_id, o2_id = company.id, o1.id, o2.id
+
+        client = await cbh._make_jwt_client_for_user(admin_user)
+        try:
+            resp = await client.get(
+                f"{API_V1}/subscriptions/company/history",
+                headers={"X-Company-ID": str(company_id)},
+            )
+            assert resp.status_code == 200, resp.text
+            ids = {row["id"] for row in resp.json()}
+            assert ids == {str(o1_id), str(o2_id)}
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p07_company_history_allows_workspace_recruiter_only_own_orders(run_async):
+    async def _run():
+        async with async_session_factory() as session:
+            admin_user = await cbh._create_user(session, role=UserRole.RECRUITER)
+            rec_user = await cbh._create_user(session, role=UserRole.RECRUITER)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=admin_user.id,
+                role=MembershipRole.ADMIN,
+            )
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=rec_user.id,
+                role=MembershipRole.RECRUITER,
+            )
+            plan = await cbh._create_plan(session)
+            sub1 = await cbh._create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=admin_user.id,
+                plan_id=plan.id,
+                status=SubscriptionStatus.CANCELLED,
+            )
+            sub2 = await cbh._create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=rec_user.id,
+                plan_id=plan.id,
+                status=SubscriptionStatus.ACTIVE,
+            )
+            o_admin = PaymentOrder(
+                user_id=admin_user.id,
+                company_id=company.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan.id,
+                subscription_id=sub1.id,
+                amount=plan.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"ORD-{uuid.uuid4().hex[:8]}",
+                status=PaymentOrderStatus.FAILED,
+            )
+            o_rec = PaymentOrder(
+                user_id=rec_user.id,
+                company_id=company.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan.id,
+                subscription_id=sub2.id,
+                amount=plan.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"ORD-{uuid.uuid4().hex[:8]}",
+                status=PaymentOrderStatus.PAID,
+            )
+            session.add_all([o_admin, o_rec])
+            await session.commit()
+            company_id, o_rec_id = company.id, o_rec.id
+
+        client = await cbh._make_jwt_client_for_user(rec_user)
+        try:
+            resp = await client.get(
+                f"{API_V1}/subscriptions/company/history",
+                headers={"X-Company-ID": str(company_id)},
+            )
+            assert resp.status_code == 200, resp.text
+            ids = [row["id"] for row in resp.json()]
+            assert ids == [str(o_rec_id)]
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p08_company_history_denies_interviewer_403(run_async):
+    async def _run():
+        async with async_session_factory() as session:
+            interviewer = await cbh._create_user(session, role=UserRole.RECRUITER)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=interviewer.id,
+                role=MembershipRole.INTERVIEWER,
+            )
+            await session.commit()
+            company_id = company.id
+
+        client = await cbh._make_jwt_client_for_user(interviewer)
+        try:
+            resp = await client.get(
+                f"{API_V1}/subscriptions/company/history",
+                headers={"X-Company-ID": str(company_id)},
+            )
+            assert resp.status_code == 403
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p09_company_history_denies_platform_admin_and_candidate_403(run_async):
+    async def _run():
+        async with async_session_factory() as session:
+            platform_admin = await cbh._create_user(session, role=UserRole.ADMIN)
+            candidate = await cbh._create_user(session, role=UserRole.CANDIDATE)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=platform_admin.id,
+                role=MembershipRole.ADMIN,
+            )
+            await session.commit()
+            company_id = company.id
+
+        for u in (platform_admin, candidate):
+            client = await cbh._make_jwt_client_for_user(u)
+            try:
+                resp = await client.get(
+                    f"{API_V1}/subscriptions/company/history",
+                    headers={"X-Company-ID": str(company_id)},
+                )
+                assert resp.status_code == 403
+            finally:
+                await client.aclose()
+
+    run_async(_run())
+
+
+def test_p10_multi_company_recruiter_sees_billing_only_for_selected_workspace(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session, role=UserRole.RECRUITER)
+            comp_a = await cbh._create_company(session, name="Co A")
+            comp_b = await cbh._create_company(session, name="Co B")
+            await cbh._create_membership(
+                session,
+                company_id=comp_a.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            await cbh._create_membership(
+                session,
+                company_id=comp_b.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await cbh._create_plan(session)
+            sub_a = await cbh._create_company_subscription(
+                session, company_id=comp_a.id, user_id=user.id, plan_id=plan.id
+            )
+            sub_b = await cbh._create_company_subscription(
+                session, company_id=comp_b.id, user_id=user.id, plan_id=plan.id
+            )
+            o_a = PaymentOrder(
+                user_id=user.id,
+                company_id=comp_a.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan.id,
+                subscription_id=sub_a.id,
+                amount=plan.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"ORD-A-{uuid.uuid4().hex[:6]}",
+                status=PaymentOrderStatus.PAID,
+            )
+            o_b = PaymentOrder(
+                user_id=user.id,
+                company_id=comp_b.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan.id,
+                subscription_id=sub_b.id,
+                amount=plan.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"ORD-B-{uuid.uuid4().hex[:6]}",
+                status=PaymentOrderStatus.PAID,
+            )
+            session.add_all([o_a, o_b])
+            await session.commit()
+            comp_a_id, comp_b_id = comp_a.id, comp_b.id
+            sub_a_id, sub_b_id = sub_a.id, sub_b.id
+            o_a_id, o_b_id = o_a.id, o_b.id
+
+        client = await cbh._make_jwt_client_for_user(user)
+        try:
+            r_sub_a = await client.get(
+                f"{API_V1}/subscriptions/company",
+                headers={"X-Company-ID": str(comp_a_id)},
+            )
+            assert r_sub_a.status_code == 200
+            assert r_sub_a.json()["id"] == str(sub_a_id)
+
+            r_hist_a = await client.get(
+                f"{API_V1}/subscriptions/company/history",
+                headers={"X-Company-ID": str(comp_a_id)},
+            )
+            assert [r["id"] for r in r_hist_a.json()] == [str(o_a_id)]
+
+            r_sub_b = await client.get(
+                f"{API_V1}/subscriptions/company",
+                headers={"X-Company-ID": str(comp_b_id)},
+            )
+            assert r_sub_b.status_code == 200
+            assert r_sub_b.json()["id"] == str(sub_b_id)
+
+            r_hist_b = await client.get(
+                f"{API_V1}/subscriptions/company/history",
+                headers={"X-Company-ID": str(comp_b_id)},
+            )
+            assert [r["id"] for r in r_hist_b.json()] == [str(o_b_id)]
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p11_forged_or_unauthorized_x_company_id_cannot_access_other_company_billing(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user_a = await cbh._create_user(session, role=UserRole.RECRUITER)
+            user_b = await cbh._create_user(session, role=UserRole.RECRUITER)
+            comp_a = await cbh._create_company(session)
+            comp_b = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=comp_a.id,
+                user_id=user_a.id,
+                role=MembershipRole.ADMIN,
+            )
+            await cbh._create_membership(
+                session,
+                company_id=comp_b.id,
+                user_id=user_b.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await cbh._create_plan(session)
+            await cbh._create_company_subscription(
+                session,
+                company_id=comp_b.id,
+                user_id=user_b.id,
+                plan_id=plan.id,
+            )
+            await session.commit()
+            comp_b_id = comp_b.id
+
+        client = await cbh._make_jwt_client_for_user(user_a)
+        try:
+            r1 = await client.get(
+                f"{API_V1}/subscriptions/company",
+                headers={"X-Company-ID": str(comp_b_id)},
+            )
+            assert r1.status_code == 403
+
+            r2 = await client.get(
+                f"{API_V1}/subscriptions/company/history",
+                headers={"X-Company-ID": str(comp_b_id)},
+            )
+            assert r2.status_code == 403
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p56_analytics_service_quota_status_reads_pooled_company_quota(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await cbh._create_plan(
+                session,
+                max_job_posts=10,
+                max_candidate_searches=20,
+                max_ai_features=15,
+            )
+            sub = await cbh._create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                plan_id=plan.id,
+                job_posts_used=3,
+                candidate_searches_used=7,
+                ai_features_used=5,
+            )
+            await session.commit()
+            user_id, company_id = user.id, company.id
+
+        async with async_session_factory() as session:
+            analytics = AnalyticsService(session)
+            status = await analytics._quota_status(
+                user_id=user_id,
+                company_id=company_id,
+            )
+            assert status.subscription_status == "active"
+            assert status.job_posts.limit == 10
+            assert status.job_posts.used == 3
+            assert status.job_posts.remaining == 7
+            assert status.candidate_searches.limit == 20
+            assert status.candidate_searches.used == 7
+            assert status.candidate_searches.remaining == 13
+            assert status.ai_features.limit == 15
+            assert status.ai_features.used == 5
+            assert status.ai_features.remaining == 10
+
+    run_async(_run())

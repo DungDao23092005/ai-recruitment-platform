@@ -1447,3 +1447,572 @@ class TestDeleteJobApi:
         assert any(
             item["job_id"] == job["id"] for item in history.json()
         )
+
+
+# ============================================================================
+# Wave 1.4 Phase 2: Jobs Workspace Context, Quotas & Tenant Isolation (P59-P70)
+# ============================================================================
+
+from app.domain.enums import (
+    JobStatus,
+    JobType,
+    MembershipRole,
+    WorkplaceType,
+)
+from app.models import (
+    Job,
+    RecruiterProfile,
+    Subscription,
+)
+from tests.integration import company_billing_helpers as cbh
+
+
+def test_p59_jobs_api_creation_resolves_workspace_context_and_passes_to_job_service(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await cbh._create_plan(session, max_job_posts=10)
+            await cbh._create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                plan_id=plan.id,
+            )
+            await session.commit()
+            company_id = company.id
+
+        client = await cbh._make_jwt_client_for_user(user)
+        try:
+            resp = await client.post(
+                f"{API_V1}/jobs",
+                headers={"X-Company-ID": str(company_id)},
+                json={
+                    "title": "Backend Dev",
+                    "description": "FastAPI Job",
+                    "job_type": "full_time",
+                    "workplace_type": "remote",
+                    "status": "draft",
+                },
+            )
+            assert resp.status_code == 201, resp.text
+            body = resp.json()
+            assert body["company_id"] == str(company_id)
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p60_creating_published_job_in_workspace_a_debits_company_a_only(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            comp_a = await cbh._create_company(session)
+            comp_b = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=comp_a.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            await cbh._create_membership(
+                session,
+                company_id=comp_b.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await cbh._create_plan(session, max_job_posts=10)
+            sub_a = await cbh._create_company_subscription(
+                session, company_id=comp_a.id, user_id=user.id, plan_id=plan.id
+            )
+            sub_b = await cbh._create_company_subscription(
+                session, company_id=comp_b.id, user_id=user.id, plan_id=plan.id
+            )
+            await session.commit()
+            comp_a_id, sub_a_id, sub_b_id = comp_a.id, sub_a.id, sub_b.id
+
+        client = await cbh._make_jwt_client_for_user(user)
+        try:
+            resp = await client.post(
+                f"{API_V1}/jobs",
+                headers={"X-Company-ID": str(comp_a_id)},
+                json={
+                    "title": "Software Engineer",
+                    "description": "Python developer",
+                    "job_type": "full_time",
+                    "workplace_type": "remote",
+                    "status": "published",
+                },
+            )
+            assert resp.status_code == 201, resp.text
+        finally:
+            await client.aclose()
+
+        async with async_session_factory() as check:
+            sa = await check.get(Subscription, sub_a_id)
+            sb = await check.get(Subscription, sub_b_id)
+            assert sa.job_posts_used == 1
+            assert sb.job_posts_used == 0
+
+    run_async(_run())
+
+
+def test_p61_updating_company_b_job_while_workspace_a_selected_returns_403(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            comp_a = await cbh._create_company(session, name="Co A")
+            comp_b = await cbh._create_company(session, name="Co B")
+            await cbh._create_membership(
+                session,
+                company_id=comp_a.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            await cbh._create_membership(
+                session,
+                company_id=comp_b.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            job_b = Job(
+                company_id=comp_b.id,
+                title="Job in B",
+                description="Desc B",
+                job_type=JobType.FULL_TIME,
+                workplace_type=WorkplaceType.REMOTE,
+                status=JobStatus.DRAFT,
+            )
+            session.add(job_b)
+            await session.commit()
+            comp_a_id, job_b_id = comp_a.id, job_b.id
+
+        client = await cbh._make_jwt_client_for_user(user)
+        try:
+            resp = await client.patch(
+                f"{API_V1}/jobs/mine/{job_b_id}",
+                headers={"X-Company-ID": str(comp_a_id)},
+                json={"title": "Hacked Title"},
+            )
+            assert resp.status_code == 403
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p62_updating_job_cannot_mutate_company_id_through_request_payload(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            comp_a = await cbh._create_company(session, name="Co A")
+            comp_b = await cbh._create_company(session, name="Co B")
+            await cbh._create_membership(
+                session,
+                company_id=comp_a.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            job_a = Job(
+                company_id=comp_a.id,
+                title="Job A",
+                description="Desc A",
+                job_type=JobType.FULL_TIME,
+                workplace_type=WorkplaceType.REMOTE,
+                status=JobStatus.DRAFT,
+            )
+            session.add(job_a)
+            await session.commit()
+            comp_a_id, comp_b_id, job_a_id = comp_a.id, comp_b.id, job_a.id
+
+        client = await cbh._make_jwt_client_for_user(user)
+        try:
+            resp = await client.patch(
+                f"{API_V1}/jobs/mine/{job_a_id}",
+                headers={"X-Company-ID": str(comp_a_id)},
+                json={"title": "Updated A", "company_id": str(comp_b_id)},
+            )
+            assert resp.status_code == 200
+        finally:
+            await client.aclose()
+
+        async with async_session_factory() as check:
+            j = await check.get(Job, job_a_id)
+            assert j.company_id == comp_a_id
+
+    run_async(_run())
+
+
+def test_p63_multi_company_recruiter_selecting_workspace_a_cannot_debit_company_b(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            comp_a = await cbh._create_company(session, name="Co A")
+            comp_b = await cbh._create_company(session, name="Co B")
+            await cbh._create_membership(
+                session,
+                company_id=comp_a.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            await cbh._create_membership(
+                session,
+                company_id=comp_b.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await cbh._create_plan(session, max_job_posts=10)
+            sub_a = await cbh._create_company_subscription(
+                session, company_id=comp_a.id, user_id=user.id, plan_id=plan.id
+            )
+            sub_b = await cbh._create_company_subscription(
+                session, company_id=comp_b.id, user_id=user.id, plan_id=plan.id
+            )
+            await session.commit()
+            comp_a_id, comp_b_id = comp_a.id, comp_b.id
+            sub_a_id, sub_b_id = sub_a.id, sub_b.id
+
+        client = await cbh._make_jwt_client_for_user(user)
+        try:
+            resp = await client.post(
+                f"{API_V1}/jobs",
+                headers={"X-Company-ID": str(comp_a_id)},
+                json={
+                    "company_id": str(comp_b_id),
+                    "title": "Cross Co Post",
+                    "description": "Desc",
+                    "job_type": "full_time",
+                    "workplace_type": "remote",
+                    "status": "published",
+                },
+            )
+            if resp.status_code == 201:
+                assert resp.json()["company_id"] == str(comp_a_id)
+        finally:
+            await client.aclose()
+
+        async with async_session_factory() as check:
+            sb = await check.get(Subscription, sub_b_id)
+            assert sb.job_posts_used == 0
+
+    run_async(_run())
+
+
+def test_p64_legacy_recruiter_without_workspace_context_can_create_published_job_with_personal_quota(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            comp = await cbh._create_company(session)
+            rec_profile = RecruiterProfile(
+                user_id=user.id,
+                company_id=comp.id,
+                full_name="Legacy Recruiter",
+            )
+            plan = await cbh._create_plan(session, max_job_posts=5)
+            sub = await cbh._create_personal_subscription(
+                session, user_id=user.id, plan_id=plan.id
+            )
+            session.add(rec_profile)
+            await session.commit()
+            sub_id = sub.id
+
+        client = await cbh._make_jwt_client_for_user(user)
+        try:
+            resp = await client.post(
+                f"{API_V1}/jobs",
+                json={
+                    "title": "Legacy Job",
+                    "description": "Desc",
+                    "job_type": "full_time",
+                    "workplace_type": "remote",
+                    "status": "published",
+                },
+            )
+            assert resp.status_code == 201, resp.text
+        finally:
+            await client.aclose()
+
+        async with async_session_factory() as check:
+            s = await check.get(Subscription, sub_id)
+            assert s.job_posts_used == 1
+
+    run_async(_run())
+
+
+def test_p65_legacy_recruiter_without_workspace_context_can_update_eligible_legacy_job(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            comp = await cbh._create_company(session)
+            rec_profile = RecruiterProfile(
+                user_id=user.id,
+                company_id=comp.id,
+                full_name="Legacy Recruiter",
+            )
+            job = Job(
+                company_id=comp.id,
+                title="Legacy Job",
+                description="Desc",
+                job_type=JobType.FULL_TIME,
+                workplace_type=WorkplaceType.REMOTE,
+                status=JobStatus.DRAFT,
+            )
+            session.add_all([rec_profile, job])
+            await session.commit()
+            job_id = job.id
+
+        client = await cbh._make_jwt_client_for_user(user)
+        try:
+            resp = await client.patch(
+                f"{API_V1}/jobs/mine/{job_id}",
+                json={"title": "Updated Legacy Job"},
+            )
+            assert resp.status_code == 200
+            assert resp.json()["title"] == "Updated Legacy Job"
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p66_company_workspace_request_with_exhausted_company_quota_fails_closed(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            comp = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=comp.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await cbh._create_plan(session, max_job_posts=2)
+            sub_co = await cbh._create_company_subscription(
+                session,
+                company_id=comp.id,
+                user_id=user.id,
+                plan_id=plan.id,
+                max_job_posts=2,
+                job_posts_used=2,
+            )
+            sub_personal = await cbh._create_personal_subscription(
+                session,
+                user_id=user.id,
+                plan_id=plan.id,
+                max_job_posts=5,
+            )
+            await session.commit()
+            comp_id = comp.id
+            sub_co_id = sub_co.id
+            sub_pers_id = sub_personal.id
+
+        client = await cbh._make_jwt_client_for_user(user)
+        try:
+            resp = await client.post(
+                f"{API_V1}/jobs",
+                headers={"X-Company-ID": str(comp_id)},
+                json={
+                    "title": "Exhausted Job Post",
+                    "description": "Desc",
+                    "job_type": "full_time",
+                    "workplace_type": "remote",
+                    "status": "published",
+                },
+            )
+            assert resp.status_code == 403
+        finally:
+            await client.aclose()
+
+        async with async_session_factory() as check:
+            sco = await check.get(Subscription, sub_co_id)
+            spers = await check.get(Subscription, sub_pers_id)
+            assert sco.job_posts_used == 2
+            assert spers.job_posts_used == 0
+
+    run_async(_run())
+
+
+def test_p67_omitting_x_company_id_cannot_bypass_tenant_isolation_to_access_company_owned_job(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            comp_a = await cbh._create_company(session, name="Tenant A")
+            comp_b = await cbh._create_company(session, name="Tenant B")
+            await cbh._create_membership(
+                session,
+                company_id=comp_a.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            job = Job(
+                company_id=comp_b.id,
+                title="Workspace Owned Job in Tenant B",
+                description="Desc",
+                job_type=JobType.FULL_TIME,
+                workplace_type=WorkplaceType.REMOTE,
+                status=JobStatus.DRAFT,
+            )
+            session.add(job)
+            await session.commit()
+            job_id = job.id
+
+        client = await cbh._make_jwt_client_for_user(user)
+        try:
+            resp = await client.patch(
+                f"{API_V1}/jobs/mine/{job_id}",
+                json={"title": "Hacked Update"},
+            )
+            assert resp.status_code == 403
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p68_legacy_recruiter_without_x_company_id_cannot_create_job_for_workspace_company(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            admin_user = await cbh._create_user(session)
+            legacy_user = await cbh._create_user(session)
+            comp = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=comp.id,
+                user_id=admin_user.id,
+                role=MembershipRole.ADMIN,
+            )
+            rec_profile = RecruiterProfile(
+                user_id=legacy_user.id,
+                company_id=comp.id,
+                full_name="Legacy Recruiter",
+            )
+            session.add(rec_profile)
+            await session.commit()
+
+        client = await cbh._make_jwt_client_for_user(legacy_user)
+        try:
+            resp = await client.post(
+                f"{API_V1}/jobs",
+                json={
+                    "title": "Bypass Post",
+                    "description": "Desc",
+                    "job_type": "full_time",
+                    "workplace_type": "remote",
+                    "status": "draft",
+                },
+            )
+            assert resp.status_code == 403
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p69_legacy_recruiter_without_x_company_id_cannot_update_workspace_company_job(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            admin_user = await cbh._create_user(session)
+            legacy_user = await cbh._create_user(session)
+            comp = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=comp.id,
+                user_id=admin_user.id,
+                role=MembershipRole.ADMIN,
+            )
+            rec_profile = RecruiterProfile(
+                user_id=legacy_user.id,
+                company_id=comp.id,
+                full_name="Legacy Recruiter",
+            )
+            job = Job(
+                company_id=comp.id,
+                title="Admin Job",
+                description="Desc",
+                job_type=JobType.FULL_TIME,
+                workplace_type=WorkplaceType.REMOTE,
+                status=JobStatus.DRAFT,
+            )
+            session.add_all([rec_profile, job])
+            await session.commit()
+            job_id = job.id
+
+        client = await cbh._make_jwt_client_for_user(legacy_user)
+        try:
+            resp = await client.patch(
+                f"{API_V1}/jobs/mine/{job_id}",
+                json={"title": "Unauthorized Modification"},
+            )
+            assert resp.status_code == 403
+        finally:
+            await client.aclose()
+
+    run_async(_run())
+
+
+def test_p70_legacy_job_creation_derives_company_id_from_recruiter_profile(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            comp_real = await cbh._create_company(session, name="Real Legacy Co")
+            comp_tamper = await cbh._create_company(session, name="Tampered Co")
+            rec_profile = RecruiterProfile(
+                user_id=user.id,
+                company_id=comp_real.id,
+                full_name="Legacy Recruiter",
+            )
+            session.add(rec_profile)
+            await session.commit()
+            comp_real_id = comp_real.id
+            comp_tamper_id = comp_tamper.id
+
+        client = await cbh._make_jwt_client_for_user(user)
+        try:
+            resp = await client.post(
+                f"{API_V1}/jobs",
+                json={
+                    "company_id": str(comp_tamper_id),
+                    "title": "Tampered Job",
+                    "description": "Desc",
+                    "job_type": "full_time",
+                    "workplace_type": "remote",
+                    "status": "draft",
+                },
+            )
+            assert resp.status_code == 201
+            assert resp.json()["company_id"] == str(comp_real_id)
+        finally:
+            await client.aclose()
+
+    run_async(_run())

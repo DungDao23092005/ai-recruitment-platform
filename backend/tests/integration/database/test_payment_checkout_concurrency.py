@@ -296,3 +296,363 @@ def test_concurrent_checkout_and_ipn_no_deadlock_consistent_state():
     assert sub_status == SubscriptionStatus.ACTIVE
     assert order_count == 1, f"expected 1 PaymentOrder, got {order_count}"
     assert active_count == 1, f"expected 1 ACTIVE Subscription, got {active_count}"
+
+
+# ============================================================================
+# Wave 1.4 Phase 2: Company Checkout Concurrency & Locking (P23-P28, P40)
+# ============================================================================
+
+from unittest.mock import patch
+from app.domain.enums import MembershipRole, SubscriptionScope
+from app.domain.models.base import utc_now
+from tests.integration.company_billing_helpers import (
+    _build_signed_ipn,
+    _create_company,
+    _create_company_subscription,
+    _create_membership,
+    _create_plan,
+    _create_user,
+)
+
+
+def test_p23_stale_cleanup_commits_and_releases_lock_before_tx2_reacquires(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await _create_user(session)
+            company = await _create_company(session)
+            await _create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan_old = await _create_plan(session, price=300_000)
+            plan_new = await _create_plan(session, price=600_000)
+            now = utc_now()
+            stale_sub = await _create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                plan_id=plan_old.id,
+                status=SubscriptionStatus.PENDING,
+            )
+            stale_order = PaymentOrder(
+                user_id=user.id,
+                company_id=company.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan_old.id,
+                subscription_id=stale_sub.id,
+                amount=plan_old.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"STALE-{uuid4().hex[:8]}",
+                status=PaymentOrderStatus.PENDING,
+                created_at=now - timedelta(minutes=30),
+                expired_at=now - timedelta(minutes=15),
+            )
+            session.add(stale_order)
+            await session.commit()
+            user_id, company_id, plan_new_id = user.id, company.id, plan_new.id
+            stale_order_id, stale_sub_id = stale_order.id, stale_sub.id
+
+        async with async_session_factory() as session:
+            _, ref_new, sub_new_id = await PaymentService(
+                session
+            ).create_company_vnpay_payment(
+                user_id=user_id,
+                company_id=company_id,
+                plan_id=plan_new_id,
+                client_ip="127.0.0.1",
+            )
+
+        async with async_session_factory() as check:
+            so = await check.get(PaymentOrder, stale_order_id)
+            ss = await check.get(Subscription, stale_sub_id)
+            no = await check.scalar(
+                select(PaymentOrder).where(
+                    PaymentOrder.internal_order_id == ref_new
+                )
+            )
+            assert so.status == PaymentOrderStatus.EXPIRED
+            assert ss.status == SubscriptionStatus.CANCELLED
+            assert no.status == PaymentOrderStatus.PENDING
+
+    run_async(_run())
+
+
+def test_p24_concurrent_company_checkout_interleaving_creates_single_order(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await _create_user(session)
+            company = await _create_company(session)
+            await _create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await _create_plan(session)
+            await session.commit()
+            user_id, company_id, plan_id = user.id, company.id, plan.id
+
+        async def _checkout():
+            async with async_session_factory() as s:
+                return await PaymentService(s).create_company_vnpay_payment(
+                    user_id=user_id,
+                    company_id=company_id,
+                    plan_id=plan_id,
+                    client_ip="127.0.0.1",
+                )
+
+        res_a, res_b = await asyncio.gather(_checkout(), _checkout())
+        assert res_a[1] == res_b[1]
+        assert res_a[2] == res_b[2]
+
+        async with async_session_factory() as check:
+            count = await check.scalar(
+                select(func.count())
+                .select_from(PaymentOrder)
+                .where(PaymentOrder.company_id == company_id)
+            )
+            assert count == 1
+
+    run_async(_run())
+
+
+def test_p25_concurrent_ipn_activation_conflict_returns_409_or_serializes(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await _create_user(session)
+            company = await _create_company(session)
+            await _create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await _create_plan(session)
+            await session.commit()
+            user_id, company_id, plan_id = user.id, company.id, plan.id
+
+        async with async_session_factory() as session:
+            _, internal_order_id, _ = await PaymentService(
+                session
+            ).create_company_vnpay_payment(
+                user_id=user_id,
+                company_id=company_id,
+                plan_id=plan_id,
+                client_ip="127.0.0.1",
+            )
+
+        # Now seed an already-ACTIVE subscription for the same company to force a conflict on activation
+        async with async_session_factory() as session:
+            await _create_company_subscription(
+                session,
+                company_id=company_id,
+                user_id=user_id,
+                plan_id=plan_id,
+                status=SubscriptionStatus.ACTIVE,
+            )
+            await session.commit()
+
+        ipn_params = _build_signed_ipn(
+            internal_order_id=internal_order_id, amount_vnd=500_000
+        )
+        async with async_session_factory() as s_ipn:
+            with pytest.raises(ConflictException):
+                await PaymentService(s_ipn).process_vnpay_ipn(
+                    ipn_params, "127.0.0.1"
+                )
+
+    run_async(_run())
+
+
+def test_p26_same_company_same_plan_reuses_single_unexpired_pending_order(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await _create_user(session)
+            company = await _create_company(session)
+            await _create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await _create_plan(session)
+            await session.commit()
+            user_id, company_id, plan_id = user.id, company.id, plan.id
+
+        async with async_session_factory() as s1:
+            _, ref1, id1 = await PaymentService(
+                s1
+            ).create_company_vnpay_payment(
+                user_id=user_id,
+                company_id=company_id,
+                plan_id=plan_id,
+                client_ip="127.0.0.1",
+            )
+        async with async_session_factory() as s2:
+            _, ref2, id2 = await PaymentService(
+                s2
+            ).create_company_vnpay_payment(
+                user_id=user_id,
+                company_id=company_id,
+                plan_id=plan_id,
+                client_ip="127.0.0.1",
+            )
+        assert ref1 == ref2
+        assert id1 == id2
+
+    run_async(_run())
+
+
+def test_p27_same_company_different_plan_rejects_with_409_conflict(run_async):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await _create_user(session)
+            company = await _create_company(session)
+            await _create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan_a = await _create_plan(session, price=300_000)
+            plan_b = await _create_plan(session, price=600_000)
+            await session.commit()
+            user_id, company_id = user.id, company.id
+            plan_a_id, plan_b_id = plan_a.id, plan_b.id
+
+        async with async_session_factory() as s1:
+            await PaymentService(s1).create_company_vnpay_payment(
+                user_id=user_id,
+                company_id=company_id,
+                plan_id=plan_a_id,
+                client_ip="127.0.0.1",
+            )
+        async with async_session_factory() as s2:
+            with pytest.raises(ConflictException):
+                await PaymentService(s2).create_company_vnpay_payment(
+                    user_id=user_id,
+                    company_id=company_id,
+                    plan_id=plan_b_id,
+                    client_ip="127.0.0.1",
+                )
+
+    run_async(_run())
+
+
+def test_p28_multiple_unexpired_pending_orders_trigger_integrity_error(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await _create_user(session)
+            company = await _create_company(session)
+            await _create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await _create_plan(session)
+            now = utc_now()
+            sub1 = await _create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                plan_id=plan.id,
+                status=SubscriptionStatus.PENDING,
+            )
+            sub2 = await _create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                plan_id=plan.id,
+                status=SubscriptionStatus.PENDING,
+            )
+            for idx, s in enumerate((sub1, sub2)):
+                session.add(
+                    PaymentOrder(
+                        user_id=user.id,
+                        company_id=company.id,
+                        scope=SubscriptionScope.COMPANY_RECRUITING,
+                        plan_id=plan.id,
+                        subscription_id=s.id,
+                        amount=plan.price,
+                        currency="VND",
+                        provider=PaymentProvider.VNPAY,
+                        internal_order_id=f"DUP-{idx}-{uuid4().hex[:6]}",
+                        status=PaymentOrderStatus.PENDING,
+                        created_at=now,
+                        expired_at=now + timedelta(minutes=15),
+                    )
+                )
+            await session.commit()
+            user_id, company_id, plan_id = user.id, company.id, plan.id
+
+        async with async_session_factory() as s:
+            with pytest.raises(RuntimeError, match="Integrity error"):
+                await PaymentService(s).create_company_vnpay_payment(
+                    user_id=user_id,
+                    company_id=company_id,
+                    plan_id=plan_id,
+                    client_ip="127.0.0.1",
+                )
+
+    run_async(_run())
+
+
+def test_p40_company_checkout_uses_applock_and_legacy_checkout_preserves_user_lock(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await _create_user(session)
+            company = await _create_company(session)
+            await _create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await _create_plan(session, price=500_000)
+            await session.commit()
+            user_id, company_id, plan_id = user.id, company.id, plan.id
+
+        async with async_session_factory() as s_co:
+            svc_co = PaymentService(s_co)
+            with patch.object(
+                svc_co,
+                "_acquire_company_applock",
+                wraps=svc_co._acquire_company_applock,
+            ) as spy_applock:
+                await svc_co.create_company_vnpay_payment(
+                    user_id=user_id,
+                    company_id=company_id,
+                    plan_id=plan_id,
+                    client_ip="127.0.0.1",
+                )
+                assert spy_applock.await_count >= 1
+
+        async with async_session_factory() as s_leg:
+            svc_leg = PaymentService(s_leg)
+            with patch.object(
+                svc_leg, "_lock_user", wraps=svc_leg._lock_user
+            ) as spy_user_lock:
+                await svc_leg.create_vnpay_payment(
+                    user_id=user_id,
+                    plan_id=plan_id,
+                    client_ip="127.0.0.1",
+                )
+                assert spy_user_lock.await_count >= 1
+
+    run_async(_run())

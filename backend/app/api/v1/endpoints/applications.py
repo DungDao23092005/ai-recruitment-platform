@@ -505,6 +505,11 @@ async def refresh_application_match_explanation(
         await service.verify_application_access(
             current_user, application_id
         )
+        try:
+            if current_user in db:
+                db.expunge(current_user)
+        except Exception:
+            pass
         # End the read-only transaction before any Redis/provider wait.
         await db.rollback()
 

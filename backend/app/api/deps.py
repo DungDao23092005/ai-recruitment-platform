@@ -97,7 +97,7 @@ async def get_current_user(
             detail=_UNAUTHORIZED_DETAIL,
             headers=_UNAUTHORIZED_HEADERS,
         )
-    
+
     # Check if token is still valid after password reset
     if not is_token_valid_after_password_reset(payload, user.last_password_reset):
         raise HTTPException(
@@ -217,7 +217,7 @@ async def get_optional_workspace(
     verified, so selecting a workspace the caller does not belong to fails
     closed.
     """
-    if current_user.role == UserRole.ADMIN and not x_company_id:
+    if current_user.role == UserRole.ADMIN and x_company_id is None:
         yield None
         return
 

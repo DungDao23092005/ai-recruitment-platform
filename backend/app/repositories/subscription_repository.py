@@ -8,7 +8,12 @@ from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.domain.enums import PaymentOrderStatus, PaymentProvider, SubscriptionStatus
+from app.domain.enums import (
+    PaymentOrderStatus,
+    PaymentProvider,
+    SubscriptionScope,
+    SubscriptionStatus,
+)
 from app.models import PaymentOrder, Subscription
 from app.repositories.base import BaseRepository
 
@@ -45,9 +50,34 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             .options(selectinload(Subscription.plan))
             .where(
                 Subscription.user_id == user_id,
+                Subscription.company_id.is_(None),
+                Subscription.scope == SubscriptionScope.LEGACY_RECRUITER_PERSONAL,
                 Subscription.is_deleted == False,  # noqa: E712
                 Subscription.status == SubscriptionStatus.ACTIVE,
-                Subscription.expires_at > now,
+                or_(Subscription.expires_at.is_(None), Subscription.expires_at > now),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_active_by_company_id(
+        self,
+        company_id: Any,
+        now: Optional[datetime] = None,
+    ) -> Subscription | None:
+        if now is None:
+            from app.domain.models.base import utc_now
+            now = utc_now()
+
+        stmt = (
+            select(Subscription)
+            .options(selectinload(Subscription.plan))
+            .where(
+                Subscription.company_id == company_id,
+                Subscription.scope == SubscriptionScope.COMPANY_RECRUITING,
+                Subscription.is_deleted == False,  # noqa: E712
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                or_(Subscription.expires_at.is_(None), Subscription.expires_at > now),
             )
         )
         result = await self.session.execute(stmt)
@@ -77,6 +107,26 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             update(Subscription)
             .where(
                 Subscription.user_id == user_id,
+                Subscription.company_id.is_(None),
+                self._stale_active_condition(now),
+            )
+            .values(status=SubscriptionStatus.EXPIRED)
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
+        return max(0, result.rowcount or 0)
+
+    async def expire_stale_active_for_company(
+        self,
+        company_id: Any,
+        now: datetime,
+    ) -> int:
+        """Persist ``ACTIVE -> EXPIRED`` for one company's stale rows."""
+        stmt = (
+            update(Subscription)
+            .where(
+                Subscription.company_id == company_id,
+                Subscription.scope == SubscriptionScope.COMPANY_RECRUITING,
                 self._stale_active_condition(now),
             )
             .values(status=SubscriptionStatus.EXPIRED)
@@ -139,6 +189,24 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             .options(selectinload(Subscription.plan))
             .where(
                 Subscription.user_id == user_id,
+                Subscription.company_id.is_(None),
+                Subscription.is_deleted == False,  # noqa: E712
+            )
+            .order_by(Subscription.created_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_by_company_id(
+        self,
+        company_id: Any,
+    ) -> list[Subscription]:
+        stmt = (
+            select(Subscription)
+            .options(selectinload(Subscription.plan))
+            .where(
+                Subscription.company_id == company_id,
+                Subscription.scope == SubscriptionScope.COMPANY_RECRUITING,
                 Subscription.is_deleted == False,  # noqa: E712
             )
             .order_by(Subscription.created_at.desc())
@@ -445,6 +513,22 @@ class SubscriptionRepository(BaseRepository[Subscription]):
     ) -> Subscription | None:
         stmt = select(Subscription).where(
             Subscription.user_id == user_id,
+            Subscription.company_id.is_(None),
+            Subscription.plan_id == plan_id,
+            Subscription.is_deleted == False,  # noqa: E712
+            Subscription.status == SubscriptionStatus.PENDING,
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_pending_by_company_and_plan(
+        self,
+        company_id: Any,
+        plan_id: Any,
+    ) -> Subscription | None:
+        stmt = select(Subscription).where(
+            Subscription.company_id == company_id,
+            Subscription.scope == SubscriptionScope.COMPANY_RECRUITING,
             Subscription.plan_id == plan_id,
             Subscription.is_deleted == False,  # noqa: E712
             Subscription.status == SubscriptionStatus.PENDING,

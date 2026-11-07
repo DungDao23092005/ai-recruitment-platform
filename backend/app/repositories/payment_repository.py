@@ -4,10 +4,15 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import PaymentOrderStatus, PaymentProvider, SubscriptionStatus
+from app.domain.enums import (
+    PaymentOrderStatus,
+    PaymentProvider,
+    SubscriptionScope,
+    SubscriptionStatus,
+)
 from app.models import PaymentOrder, PaymentTransaction, Subscription
 from app.repositories.base import BaseRepository
 
@@ -75,6 +80,7 @@ class PaymentOrderRepository(BaseRepository[PaymentOrder]):
             select(PaymentOrder)
             .where(
                 PaymentOrder.user_id == user_id,
+                PaymentOrder.company_id.is_(None),
                 PaymentOrder.status == PaymentOrderStatus.PENDING,
                 PaymentOrder.provider == provider,
                 PaymentOrder.is_deleted == False,  # noqa: E712
@@ -82,6 +88,79 @@ class PaymentOrderRepository(BaseRepository[PaymentOrder]):
                 PaymentOrder.expired_at > now,
             )
             .order_by(PaymentOrder.created_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_stale_pending_for_company(
+        self,
+        company_id: Any,
+        now: datetime,
+        provider: PaymentProvider | None = None,
+    ) -> list[PaymentOrder]:
+        """Return stale PENDING company orders whose expired_at <= now."""
+        filters = [
+            PaymentOrder.company_id == company_id,
+            PaymentOrder.scope == SubscriptionScope.COMPANY_RECRUITING,
+            PaymentOrder.status == PaymentOrderStatus.PENDING,
+            PaymentOrder.is_deleted == False,  # noqa: E712
+            PaymentOrder.expired_at.is_not(None),
+            PaymentOrder.expired_at <= now,
+        ]
+        if provider is not None:
+            filters.append(PaymentOrder.provider == provider)
+        stmt = (
+            select(PaymentOrder)
+            .where(*filters)
+            .order_by(PaymentOrder.created_at.asc(), PaymentOrder.id.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_active_pending_for_company(
+        self,
+        company_id: Any,
+        now: datetime,
+        provider: PaymentProvider | None = None,
+    ) -> list[PaymentOrder]:
+        """Return all unexpired PENDING company orders (expired_at IS NULL OR expired_at > now)."""
+        filters = [
+            PaymentOrder.company_id == company_id,
+            PaymentOrder.scope == SubscriptionScope.COMPANY_RECRUITING,
+            PaymentOrder.status == PaymentOrderStatus.PENDING,
+            PaymentOrder.is_deleted == False,  # noqa: E712
+            or_(
+                PaymentOrder.expired_at.is_(None),
+                PaymentOrder.expired_at > now,
+            ),
+        ]
+        if provider is not None:
+            filters.append(PaymentOrder.provider == provider)
+        stmt = (
+            select(PaymentOrder)
+            .where(*filters)
+            .order_by(PaymentOrder.created_at.desc(), PaymentOrder.id.desc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_by_company_id(
+        self,
+        company_id: Any,
+        user_id: Any | None = None,
+    ) -> list[PaymentOrder]:
+        """Return non-deleted company payment orders, optionally filtered by purchaser user_id."""
+        filters = [
+            PaymentOrder.company_id == company_id,
+            PaymentOrder.scope == SubscriptionScope.COMPANY_RECRUITING,
+            PaymentOrder.is_deleted == False,  # noqa: E712
+        ]
+        if user_id is not None:
+            filters.append(PaymentOrder.user_id == user_id)
+        stmt = (
+            select(PaymentOrder)
+            .where(*filters)
+            .order_by(PaymentOrder.created_at.desc(), PaymentOrder.id.desc())
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
@@ -102,6 +181,7 @@ class PaymentOrderRepository(BaseRepository[PaymentOrder]):
             .join(Subscription, PaymentOrder.subscription_id == Subscription.id)
             .where(
                 PaymentOrder.user_id == user_id,
+                PaymentOrder.company_id.is_(None),
                 PaymentOrder.status == PaymentOrderStatus.PAID,
                 PaymentOrder.is_deleted == False,  # noqa: E712
                 Subscription.status == SubscriptionStatus.PENDING,

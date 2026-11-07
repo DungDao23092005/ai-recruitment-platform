@@ -66,23 +66,31 @@ def _get_job_service(db: AsyncSession = Depends(get_db)) -> JobService:
 )
 async def create_job(
     data: JobCreate,
+    request: Request,
     current_user: User = Depends(require_recruiter),
     workspace: WorkspaceContext | None = Depends(get_optional_workspace),
     service: JobService = Depends(_get_job_service),
 ) -> JobRead:
-    company = await CompanyService(service.session).get_company_by_id(
-        data.company_id
-    )
-    if company is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Company {data.company_id} not found",
-        )
-
     ensure_not_interviewer(workspace)
     is_admin = current_user.role == UserRole.ADMIN
-    if not is_admin:
-        if workspace is None or workspace.company_id != data.company_id:
+
+    if data.company_id is not None and (
+        workspace is None or request.headers.get("X-Company-ID") is None
+    ):
+        company = await CompanyService(service.session).get_company_by_id(
+            data.company_id
+        )
+        if company is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Company {data.company_id} not found",
+            )
+        if (
+            not is_admin
+            and workspace is not None
+            and request.headers.get("X-Company-ID") is None
+            and workspace.company_id != data.company_id
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=(
@@ -94,8 +102,8 @@ async def create_job(
     try:
         job = await service.create_job(
             data,
-            user_id=current_user.id,
-            is_admin=is_admin,
+            current_user=current_user,
+            workspace=workspace,
         )
     except EntityNotFoundException as exc:
         raise HTTPException(
@@ -205,10 +213,17 @@ async def update_my_job(
 ) -> JobRead:
     ensure_not_interviewer(workspace)
     try:
-        job = await service.update_job(current_user, job_id, data)
+        job = await service.update_job(
+            current_user, job_id, data, workspace=workspace
+        )
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
             detail=str(exc),
         ) from exc
     except ValidationError as exc:
@@ -237,16 +252,13 @@ async def update_my_job_status(
 ) -> JobRead:
     ensure_not_interviewer(workspace)
     try:
-        await service.get_recruiter_job_by_id(
-            current_user,
-            job_id,
-            company_id=workspace.company_id if workspace else None,
-        )
         job = await service.update_job_status(
             job_id,
             data.status,
             user_id=current_user.id,
             is_admin=current_user.role == UserRole.ADMIN,
+            current_user=current_user,
+            workspace=workspace,
         )
     except EntityNotFoundException as exc:
         raise HTTPException(

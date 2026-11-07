@@ -11,7 +11,7 @@ from app.domain.enums import JobStatus, JobType, WorkplaceType
 class JobCreate(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
-    company_id: uuid.UUID
+    company_id: uuid.UUID | None = None
     title: str
     description: str
     job_type: JobType
@@ -52,11 +52,15 @@ class JobRead(BaseModel):
 
 
 class JobUpdate(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    company_id: uuid.UUID | None = None
     title: str | None = None
     description: str | None = None
     job_type: JobType | None = None
     workplace_type: WorkplaceType | None = None
     location: str | None = None
+    status: JobStatus | None = None
     required_skills: list[str] | None = None
     preferred_skills: list[str] | None = None
     minimum_years_experience: float | None = None

@@ -14,6 +14,7 @@ from app.core.exceptions import (
     AIError,
     ConflictException,
     EntityNotFoundException,
+    ForbiddenException,
     InvalidTransitionException,
     MatchExplanationRefreshError,
     MatchExplanationRefreshInputError,
@@ -69,6 +70,10 @@ from app.services.quota_enforcement_service import (
     ReservationResult,
 )
 from app.services.user_service import UserService
+from app.services.workspace_service import (
+    WorkspaceContext,
+    get_workspace_company_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -717,6 +722,9 @@ class ApplicationService:
             city=job.location,
         )
 
+        if getattr(application, "job", None) is None:
+            application.job = job
+
         inputs = _ApplicationMatchInputs(
             application=application,
             job=job,
@@ -729,6 +737,44 @@ class ApplicationService:
         if resolve_vectors:
             await self._resolve_match_vectors(inputs, matching_service)
         return inputs
+
+    async def _resolve_refresh_quota_company_id(
+        self,
+        current_user: User,
+        inputs: _ApplicationMatchInputs,
+        workspace: WorkspaceContext | None = None,
+    ) -> uuid.UUID | None:
+        job_company_id = getattr(
+            getattr(inputs.application, "job", None),
+            "company_id",
+            getattr(inputs.job, "company_id", None),
+        )
+        if workspace is not None:
+            if job_company_id != workspace.company_id:
+                raise ForbiddenException(
+                    "Application does not belong to the active company workspace."
+                )
+            return workspace.company_id
+
+        ctx_company_id = get_workspace_company_id()
+        if ctx_company_id is not None:
+            if job_company_id != ctx_company_id:
+                raise ForbiddenException(
+                    "Application does not belong to the active company workspace."
+                )
+            return ctx_company_id
+
+        if (
+            isinstance(self.session, AsyncSession)
+            and current_user.role != UserRole.ADMIN
+            and job_company_id is not None
+        ):
+            if await JobService(self.session)._company_has_active_workspace(
+                job_company_id
+            ):
+                return job_company_id
+
+        return None
 
     async def _resolve_match_vectors(
         self,
@@ -859,6 +905,7 @@ class ApplicationService:
         cache_service: MatchExplanationCache,
         quota_service: QuotaEnforcementService | None = None,
         coordinator: MatchExplanationCoordinator | None = None,
+        workspace: WorkspaceContext | None = None,
     ) -> ApplicationMatchExplanationResponse:
         """Run the quota-controlled AI refresh for one application.
 
@@ -893,6 +940,7 @@ class ApplicationService:
                 cache_service=cache_service,
                 quota_service=quota_service,
                 coordinator=coordinator,
+                workspace=workspace,
             )
 
         inputs = await self._resolve_match_inputs(
@@ -900,6 +948,9 @@ class ApplicationService:
             application_id,
             matching_service,
             resolve_vectors=False,
+        )
+        quota_company_id = await self._resolve_refresh_quota_company_id(
+            current_user, inputs, workspace=workspace
         )
         if inputs.parsed_resume is None:
             if inputs.resume is None or not inputs.resume.parsed_data:
@@ -934,12 +985,15 @@ class ApplicationService:
         )
 
         quota = quota_service or QuotaEnforcementService(self.session)
-        reservation = await quota.reserve_ai_quota(
-            user_id=current_user.id,
-            idempotency_key=idempotency_key,
-            reference_id=inputs.application.id,
-            is_admin=current_user.role == UserRole.ADMIN,
-        )
+        reserve_kwargs: dict[str, object] = {
+            "user_id": current_user.id,
+            "idempotency_key": idempotency_key,
+            "reference_id": inputs.application.id,
+            "is_admin": current_user.role == UserRole.ADMIN,
+        }
+        if quota_company_id is not None:
+            reserve_kwargs["company_id"] = quota_company_id
+        reservation = await quota.reserve_ai_quota(**reserve_kwargs)
         await self._commit_refresh()
 
         try:
@@ -980,7 +1034,6 @@ class ApplicationService:
             )
             raise
         except Exception as exc:
-            await self._rollback_refresh()
             try:
                 await self._release_refresh_reservation(quota, reservation)
             except MatchExplanationRefreshError as release_exc:
@@ -1008,6 +1061,8 @@ class ApplicationService:
             return response.model_copy(update={"cache_state": "cached"})
         return response
 
+    refresh_match_explanation = refresh_application_match_explanation
+
     async def _refresh_application_match_explanation_2c2(
         self,
         *,
@@ -1019,12 +1074,16 @@ class ApplicationService:
         cache_service: MatchExplanationCache,
         quota_service: QuotaEnforcementService | None,
         coordinator: MatchExplanationCoordinator,
+        workspace: WorkspaceContext | None = None,
     ) -> ApplicationMatchExplanationResponse:
         inputs = await self._resolve_match_inputs(
             current_user,
             application_id,
             matching_service,
             resolve_vectors=False,
+        )
+        quota_company_id = await self._resolve_refresh_quota_company_id(
+            current_user, inputs, workspace=workspace
         )
         if inputs.parsed_resume is None:
             if inputs.resume is None or not inputs.resume.parsed_data:
@@ -1111,12 +1170,15 @@ class ApplicationService:
                 )
             )
 
-            reservation = await quota.reserve_ai_quota(
-                user_id=current_user.id,
-                idempotency_key=idempotency_key,
-                reference_id=inputs.application.id,
-                is_admin=current_user.role == UserRole.ADMIN,
-            )
+            reserve_kwargs: dict[str, object] = {
+                "user_id": current_user.id,
+                "idempotency_key": idempotency_key,
+                "reference_id": inputs.application.id,
+                "is_admin": current_user.role == UserRole.ADMIN,
+            }
+            if quota_company_id is not None:
+                reserve_kwargs["company_id"] = quota_company_id
+            reservation = await quota.reserve_ai_quota(**reserve_kwargs)
             await self._commit_refresh()
 
             await self._assert_active_ownership(
@@ -1162,7 +1224,7 @@ class ApplicationService:
             finalized = True
 
             await coordinator.publish_fenced_cache(
-                application_id=inputs.application.id,
+                application_id=application_id,
                 content_key=cache_key,
                 user_id=current_user.id,
                 key_hash=key_hash,
@@ -1175,20 +1237,27 @@ class ApplicationService:
             return response
         except asyncio.CancelledError:
             if record_id is not None and not finalized:
-                try:
-                    await self._fenced_release_reservation(
+                cleanup_task = asyncio.create_task(
+                    self._fenced_release_reservation(
                         record_id=record_id,
-                        application_id=inputs.application.id,
+                        application_id=application_id,
                         owner_token=owner_token,
                         reservation=reservation,
                         quota=quota,
                     )
-                except Exception:  # noqa: BLE001 - preserve cancellation
-                    logger.error(
-                        "match_explanation_refresh_cancel_cleanup_failed "
-                        "application_id=%s",
-                        inputs.application.id,
-                    )
+                )
+                while not cleanup_task.done():
+                    try:
+                        await asyncio.shield(cleanup_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:  # noqa: BLE001 - preserve cancellation
+                        logger.error(
+                            "match_explanation_refresh_cancel_cleanup_failed "
+                            "application_id=%s",
+                            application_id,
+                        )
+                        break
             elif record_id is None:
                 await self._rollback_refresh()
             raise
@@ -1196,7 +1265,7 @@ class ApplicationService:
             if record_id is not None and not finalized:
                 await self._fenced_release_reservation(
                     record_id=record_id,
-                    application_id=inputs.application.id,
+                    application_id=application_id,
                     owner_token=owner_token,
                     reservation=reservation,
                     quota=quota,
@@ -1207,7 +1276,7 @@ class ApplicationService:
         finally:
             await self._stop_heartbeat(heartbeat_task)
             await coordinator.release_lock(
-                inputs.application.id, owner_token
+                application_id, owner_token
             )
 
     async def _assert_active_ownership(
@@ -1419,45 +1488,79 @@ class ApplicationService:
         except Exception:  # noqa: BLE001 - preserve the original failure
             logger.error("match_explanation_refresh_rollback_failed")
 
-    async def _release_refresh_reservation(
+    async def _release_refresh_reservation_safe(
         self,
         quota_service: QuotaEnforcementService,
-        reservation: ReservationResult,
+        reservation: ReservationResult | None,
+        *,
+        suppress_errors: bool = False,
     ) -> None:
-        try:
-            await quota_service.release_reservation(reservation.usage_id)
-            await self.session.commit()
-        except asyncio.CancelledError:
+        usage_id = (
+            getattr(reservation, "usage_id", None)
+            if reservation is not None
+            else None
+        )
+
+        async def _do_release() -> None:
             await self._rollback_refresh()
+            if reservation is None or usage_id is None:
+                return
+            await quota_service.release_reservation(usage_id)
+            await self._commit_refresh()
+
+        if suppress_errors:
+            cleanup_task = asyncio.create_task(_do_release())
+            while not cleanup_task.done():
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException as exc:  # noqa: BLE001 - preserve cancellation
+                    logger.error(
+                        "match_explanation_refresh_quota_release_failed_on_cancel "
+                        "usage_id=%s error=%s",
+                        usage_id,
+                        type(exc).__name__,
+                    )
+                    return
+            return
+
+        try:
+            await _do_release()
+        except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - surface a controlled error
-            await self._rollback_refresh()
             logger.error(
                 "match_explanation_refresh_quota_release_failed "
                 "usage_id=%s error=%s",
-                reservation.usage_id,
+                usage_id,
                 type(exc).__name__,
             )
             raise MatchExplanationRefreshError(
                 "quota_release_failed", http_status=503
             ) from exc
 
+    async def _release_refresh_reservation(
+        self,
+        quota_service: QuotaEnforcementService,
+        reservation: ReservationResult | None,
+    ) -> None:
+        await self._release_refresh_reservation_safe(
+            quota_service,
+            reservation,
+            suppress_errors=False,
+        )
+
     async def _release_refresh_reservation_on_cancellation(
         self,
         quota_service: QuotaEnforcementService,
-        reservation: ReservationResult,
+        reservation: ReservationResult | None,
     ) -> None:
-        try:
-            await self._release_refresh_reservation(
-                quota_service, reservation
-            )
-        except BaseException as exc:  # noqa: BLE001 - preserve cancellation
-            logger.error(
-                "match_explanation_refresh_quota_release_failed_on_cancel "
-                "usage_id=%s error=%s",
-                reservation.usage_id,
-                type(exc).__name__,
-            )
+        await self._release_refresh_reservation_safe(
+            quota_service,
+            reservation,
+            suppress_errors=True,
+        )
 
     @staticmethod
     async def _resolve_vector(

@@ -18,6 +18,19 @@ import pytest
 from fastapi import status
 
 from app.models.payment_order import PaymentOrder
+from app.domain.models.base import utc_now
+from app.database.session import async_session_factory
+from app.domain.enums import (
+    UserRole,
+    MembershipRole,
+    SubscriptionScope,
+    SubscriptionStatus,
+    PaymentProvider,
+    PaymentOrderStatus,
+)
+from app.models import Subscription, User
+from app.services.payment_service import PaymentService
+from tests.integration import company_billing_helpers as cbh
 from app.schemas.payment import (
     VNPayCreatePaymentRequest,
     VNPayCreatePaymentResponse,
@@ -1190,3 +1203,515 @@ class TestPaymentAPIReturnNeverActivates:
         # The key invariant: return is informational only, follows browser redirect behavior
         assert response.status_code == status.HTTP_302_FOUND
         assert "payment-result" in response.headers.get("location", "")
+
+
+# ============================================================================
+# VNPay IPN Validation & Company Subscription Activation Tests (P29 - P39)
+# ============================================================================
+
+
+def test_p29_vnp_txnref_matches_payment_order_internal_order_id(run_async):
+    async def _run():
+        ipn_params = cbh._build_signed_ipn(
+            internal_order_id="NONEXISTENT_TXN_REF", amount_vnd=500_000
+        )
+        async with async_session_factory() as session:
+            res = await PaymentService(session).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert res["RspCode"] == "01"
+
+    run_async(_run())
+
+
+def test_p30_ipn_validates_order_subscription_id_matches_subscription(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            company = await cbh._create_company(session)
+            plan = await cbh._create_plan(session)
+            order = PaymentOrder(
+                user_id=user.id,
+                company_id=company.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan.id,
+                subscription_id=None,
+                amount=plan.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"NOSUB-{uuid.uuid4().hex[:8]}",
+                status=PaymentOrderStatus.PENDING,
+                expired_at=utc_now() + timedelta(minutes=15),
+            )
+            session.add(order)
+            await session.commit()
+            ref = order.internal_order_id
+
+        ipn_params = cbh._build_signed_ipn(internal_order_id=ref, amount_vnd=500_000)
+        async with async_session_factory() as session:
+            res = await PaymentService(session).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert res["RspCode"] == "02"
+
+    run_async(_run())
+
+
+def test_p31_ipn_validates_order_company_id_matches_subscription_company_id(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            comp_a = await cbh._create_company(session)
+            comp_b = await cbh._create_company(session)
+            plan = await cbh._create_plan(session)
+            sub = await cbh._create_company_subscription(
+                session,
+                company_id=comp_b.id,
+                user_id=user.id,
+                plan_id=plan.id,
+                status=SubscriptionStatus.PENDING,
+            )
+            order = PaymentOrder(
+                user_id=user.id,
+                company_id=comp_a.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan.id,
+                subscription_id=sub.id,
+                amount=plan.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"MISMATCH-CO-{uuid.uuid4().hex[:8]}",
+                status=PaymentOrderStatus.PENDING,
+                expired_at=utc_now() + timedelta(minutes=15),
+            )
+            session.add(order)
+            await session.commit()
+            ref = order.internal_order_id
+
+        ipn_params = cbh._build_signed_ipn(internal_order_id=ref, amount_vnd=500_000)
+        async with async_session_factory() as session:
+            res = await PaymentService(session).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert res["RspCode"] == "02"
+
+    run_async(_run())
+
+
+def test_p32_ipn_validates_order_plan_id_matches_subscription_plan_id(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            company = await cbh._create_company(session)
+            plan_a = await cbh._create_plan(session, price=500_000)
+            plan_b = await cbh._create_plan(session, price=500_000)
+            sub = await cbh._create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                plan_id=plan_b.id,
+                status=SubscriptionStatus.PENDING,
+            )
+            order = PaymentOrder(
+                user_id=user.id,
+                company_id=company.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan_a.id,
+                subscription_id=sub.id,
+                amount=plan_a.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"MISMATCH-PL-{uuid.uuid4().hex[:8]}",
+                status=PaymentOrderStatus.PENDING,
+                expired_at=utc_now() + timedelta(minutes=15),
+            )
+            session.add(order)
+            await session.commit()
+            ref = order.internal_order_id
+
+        ipn_params = cbh._build_signed_ipn(internal_order_id=ref, amount_vnd=500_000)
+        async with async_session_factory() as session:
+            res = await PaymentService(session).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert res["RspCode"] == "02"
+
+    run_async(_run())
+
+
+def test_p33_ipn_validates_order_and_subscription_scope_are_company_recruiting(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            company = await cbh._create_company(session)
+            plan = await cbh._create_plan(session, price=500_000)
+            sub = await cbh._create_personal_subscription(
+                session,
+                user_id=user.id,
+                plan_id=plan.id,
+                status=SubscriptionStatus.PENDING,
+            )
+            order = PaymentOrder(
+                user_id=user.id,
+                company_id=company.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan.id,
+                subscription_id=sub.id,
+                amount=plan.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"MISMATCH-SC-{uuid.uuid4().hex[:8]}",
+                status=PaymentOrderStatus.PENDING,
+                expired_at=utc_now() + timedelta(minutes=15),
+            )
+            session.add(order)
+            await session.commit()
+            ref = order.internal_order_id
+
+        ipn_params = cbh._build_signed_ipn(internal_order_id=ref, amount_vnd=500_000)
+        async with async_session_factory() as session:
+            res = await PaymentService(session).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert res["RspCode"] == "02"
+
+    run_async(_run())
+
+
+def test_p34_ipn_validates_order_currency_vnd_and_scaled_amount(run_async):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            company = await cbh._create_company(session)
+            plan = await cbh._create_plan(session, price=500_000)
+            sub = await cbh._create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                plan_id=plan.id,
+                status=SubscriptionStatus.PENDING,
+            )
+            order = PaymentOrder(
+                user_id=user.id,
+                company_id=company.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan.id,
+                subscription_id=sub.id,
+                amount=plan.price,
+                currency="USD",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"BAD-CURR-{uuid.uuid4().hex[:8]}",
+                status=PaymentOrderStatus.PENDING,
+                expired_at=utc_now() + timedelta(minutes=15),
+            )
+            session.add(order)
+            await session.commit()
+            ref = order.internal_order_id
+
+        ipn_params = cbh._build_signed_ipn(internal_order_id=ref, amount_vnd=500_000)
+        async with async_session_factory() as session:
+            res = await PaymentService(session).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert res["RspCode"] == "04"
+
+    run_async(_run())
+
+
+def test_p35_gateway_failure_marks_order_failed_and_subscription_cancelled(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await cbh._create_plan(session, price=500_000)
+            await session.commit()
+            user_id, company_id, plan_id = user.id, company.id, plan.id
+
+        async with async_session_factory() as session:
+            _, ref, sub_id = await PaymentService(
+                session
+            ).create_company_vnpay_payment(
+                user_id=user_id,
+                company_id=company_id,
+                plan_id=plan_id,
+                client_ip="127.0.0.1",
+            )
+
+        ipn_params = cbh._build_signed_ipn(
+            internal_order_id=ref,
+            amount_vnd=500_000,
+            response_code="24",
+            transaction_status="02",
+        )
+        async with async_session_factory() as session:
+            res = await PaymentService(session).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert res["RspCode"] == "00"
+
+        async with async_session_factory() as check:
+            order = await check.scalar(
+                select(PaymentOrder).where(
+                    PaymentOrder.internal_order_id == ref
+                )
+            )
+            sub = await check.get(Subscription, sub_id)
+            assert order.status == PaymentOrderStatus.FAILED
+            assert sub.status == SubscriptionStatus.CANCELLED
+
+    run_async(_run())
+
+
+def test_p36_duplicate_ipn_for_paid_and_active_acknowledges_without_changing_counters(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await cbh._create_plan(session, price=500_000)
+            await session.commit()
+            user_id, company_id, plan_id = user.id, company.id, plan.id
+
+        async with async_session_factory() as session:
+            _, ref, sub_id = await PaymentService(
+                session
+            ).create_company_vnpay_payment(
+                user_id=user_id,
+                company_id=company_id,
+                plan_id=plan_id,
+                client_ip="127.0.0.1",
+            )
+
+        ipn_params = cbh._build_signed_ipn(internal_order_id=ref, amount_vnd=500_000)
+        async with async_session_factory() as s1:
+            r1 = await PaymentService(s1).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert r1["RspCode"] == "00"
+
+        async with async_session_factory() as s_use:
+            sub = await s_use.get(Subscription, sub_id)
+            sub.job_posts_used = 3
+            await s_use.commit()
+
+        async with async_session_factory() as s2:
+            r2 = await PaymentService(s2).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert r2 == {"RspCode": "00", "Message": "Confirm Success"}
+
+        async with async_session_factory() as check:
+            sub = await check.get(Subscription, sub_id)
+            assert sub.status == SubscriptionStatus.ACTIVE
+            assert sub.job_posts_used == 3
+
+    run_async(_run())
+
+
+def test_p37_duplicate_ipn_for_paid_and_naturally_expired_subscription_does_not_reactivate(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            company = await cbh._create_company(session)
+            plan = await cbh._create_plan(session, price=500_000)
+            sub = await cbh._create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                plan_id=plan.id,
+                status=SubscriptionStatus.EXPIRED,
+                expires_at=utc_now() - timedelta(days=1),
+            )
+            order = PaymentOrder(
+                user_id=user.id,
+                company_id=company.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan.id,
+                subscription_id=sub.id,
+                amount=plan.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"EXP-{uuid.uuid4().hex[:8]}",
+                status=PaymentOrderStatus.PAID,
+                paid_at=utc_now() - timedelta(days=31),
+            )
+            session.add(order)
+            await session.commit()
+            ref, sub_id = order.internal_order_id, sub.id
+
+        ipn_params = cbh._build_signed_ipn(internal_order_id=ref, amount_vnd=500_000)
+        async with async_session_factory() as s:
+            res = await PaymentService(s).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert res == {"RspCode": "00", "Message": "Confirm Success"}
+
+        async with async_session_factory() as check:
+            sub = await check.get(Subscription, sub_id)
+            assert sub.status == SubscriptionStatus.EXPIRED
+
+    run_async(_run())
+
+
+def test_p38_late_ipn_for_expired_order_cancelled_subscription_logs_incident_and_denies_entitlement(
+    caplog, run_async
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            company = await cbh._create_company(session)
+            plan = await cbh._create_plan(session, price=500_000)
+            sub = await cbh._create_company_subscription(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                plan_id=plan.id,
+                status=SubscriptionStatus.CANCELLED,
+            )
+            order = PaymentOrder(
+                user_id=user.id,
+                company_id=company.id,
+                scope=SubscriptionScope.COMPANY_RECRUITING,
+                plan_id=plan.id,
+                subscription_id=sub.id,
+                amount=plan.price,
+                currency="VND",
+                provider=PaymentProvider.VNPAY,
+                internal_order_id=f"LATE-{uuid.uuid4().hex[:8]}",
+                status=PaymentOrderStatus.EXPIRED,
+                expired_at=utc_now() - timedelta(minutes=10),
+            )
+            session.add(order)
+            await session.commit()
+            ref, sub_id, order_id = order.internal_order_id, sub.id, order.id
+
+        ipn_params = cbh._build_signed_ipn(internal_order_id=ref, amount_vnd=500_000)
+        async with async_session_factory() as s:
+            res = await PaymentService(s).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert res["RspCode"] == "02"
+
+        async with async_session_factory() as check:
+            o = await check.get(PaymentOrder, order_id)
+            s_row = await check.get(Subscription, sub_id)
+            assert o.status == PaymentOrderStatus.EXPIRED
+            assert s_row.status == SubscriptionStatus.CANCELLED
+        assert any(
+            "Late payment IPN received" in rec.message for rec in caplog.records
+        )
+
+    run_async(_run())
+
+
+def test_p39_database_error_during_company_activation_rolls_back_all_changes(
+    run_async,
+):
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await cbh._create_plan(session, price=500_000)
+            await session.commit()
+            user_id, company_id, plan_id = user.id, company.id, plan.id
+
+        async with async_session_factory() as session:
+            _, ref, sub_id = await PaymentService(
+                session
+            ).create_company_vnpay_payment(
+                user_id=user_id,
+                company_id=company_id,
+                plan_id=plan_id,
+                client_ip="127.0.0.1",
+            )
+
+        ipn_params = cbh._build_signed_ipn(internal_order_id=ref, amount_vnd=500_000)
+        async with async_session_factory() as s:
+            async def failing_commit():
+                raise RuntimeError("simulated db failure")
+
+            s.commit = failing_commit
+            with pytest.raises(RuntimeError, match="simulated db failure"):
+                await PaymentService(s).process_vnpay_ipn(
+                    ipn_params, "127.0.0.1"
+                )
+
+        async with async_session_factory() as check:
+            order = await check.scalar(
+                select(PaymentOrder).where(
+                    PaymentOrder.internal_order_id == ref
+                )
+            )
+            sub = await check.get(Subscription, sub_id)
+            assert order.status == PaymentOrderStatus.PENDING
+            assert sub.status == SubscriptionStatus.PENDING
+
+    run_async(_run())
+
+
+def test_a02_company_activation_never_changes_user_role(run_async):
+    """A02: Company subscription activation must never mutate User.role."""
+    async def _run():
+        async with async_session_factory() as session:
+            user = await cbh._create_user(session, role=UserRole.RECRUITER)
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=user.id,
+                role=MembershipRole.ADMIN,
+            )
+            plan = await cbh._create_plan(session, price=500_000)
+            await session.commit()
+            user_id, company_id, plan_id = user.id, company.id, plan.id
+
+        async with async_session_factory() as session:
+            _, ref, order_id = await PaymentService(
+                session
+            ).create_company_vnpay_payment(
+                user_id=user_id,
+                company_id=company_id,
+                plan_id=plan_id,
+                client_ip="127.0.0.1",
+            )
+
+        ipn_params = cbh._build_signed_ipn(internal_order_id=ref, amount_vnd=500_000)
+        async with async_session_factory() as session:
+            await PaymentService(session).process_vnpay_ipn(ipn_params, "127.0.0.1")
+
+        async with async_session_factory() as check:
+            u = await check.get(User, user_id)
+            assert u.role == UserRole.RECRUITER
+
+    run_async(_run())

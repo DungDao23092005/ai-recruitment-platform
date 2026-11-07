@@ -8,9 +8,13 @@ class ServiceException(Exception):
 class EntityNotFoundException(ServiceException):
     """Raised when a requested entity does not exist."""
 
+    status_code: int = 404
+
 
 class ConflictException(ServiceException):
     """Raised when an operation conflicts with existing state (e.g. duplicates)."""
+
+    status_code: int = 409
 
 
 class InvalidTransitionException(ServiceException):
@@ -19,6 +23,8 @@ class InvalidTransitionException(ServiceException):
 
 class ForbiddenException(ServiceException):
     """Raised when an operation is not permitted for the caller."""
+
+    status_code: int = 403
 
 
 class LockedAccountException(ForbiddenException):

@@ -138,9 +138,12 @@ class WorkspaceService:
         company_id_header: str | None,
     ) -> WorkspaceContext:
         selected_id: uuid.UUID | None = None
-        if company_id_header:
+        if company_id_header is not None:
+            stripped_header = str(company_id_header).strip()
+            if not stripped_header:
+                raise ValidationError("X-Company-ID must be a valid UUID")
             try:
-                selected_id = uuid.UUID(company_id_header)
+                selected_id = uuid.UUID(stripped_header)
             except (TypeError, ValueError):
                 raise ValidationError("X-Company-ID must be a valid UUID") from None
 

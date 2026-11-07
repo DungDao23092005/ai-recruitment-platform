@@ -64,6 +64,13 @@ class SubscriptionUsage(Base, TimestampMixin):
             "feature_type",
             "status",
         ),
+        Index(
+            "uq_subscription_usages_subscription_idempotency",
+            "subscription_id",
+            "idempotency_key",
+            unique=True,
+            mssql_where=text("[idempotency_key] IS NOT NULL"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -102,3 +109,7 @@ class SubscriptionUsage(Base, TimestampMixin):
     subscription: Mapped[Subscription] = relationship(back_populates="usages")
     user: Mapped[User] = relationship()
     company: Mapped[Company | None] = relationship(back_populates="subscription_usages")
+
+    @property
+    def usage_id(self) -> uuid.UUID:
+        return self.id
