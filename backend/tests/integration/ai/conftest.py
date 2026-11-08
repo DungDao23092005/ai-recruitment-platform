@@ -202,6 +202,7 @@ def _make_authenticated_client(role: str, setup_subscription: bool = False) -> h
     )
 
     if setup_subscription and role == "recruiter":
+        seeded_ids: dict[str, uuid.UUID] = {}
 
         async def setup_subscription_db():
             async with async_session_factory() as session:
@@ -250,8 +251,71 @@ def _make_authenticated_client(role: str, setup_subscription: bool = False) -> h
                 )
                 session.add(subscription)
                 await session.commit()
+                seeded_ids["user_id"] = user.id
+                seeded_ids["plan_id"] = plan.id
 
         run(setup_subscription_db())
+
+        async def _seed_company_subscription_on_create(
+            response: httpx.Response,
+        ) -> None:
+            if (
+                response.request.method == "POST"
+                and response.request.url.path.rstrip("/")
+                == f"{settings.API_V1_STR}/companies"
+                and response.status_code == 201
+                and "user_id" in seeded_ids
+                and "plan_id" in seeded_ids
+            ):
+                await response.aread()
+                try:
+                    payload = response.json()
+                    company_id = uuid.UUID(str(payload["id"]))
+                except Exception:
+                    return
+
+                from datetime import timedelta
+                from app.domain.enums import (
+                    SubscriptionScope,
+                    SubscriptionStatus,
+                )
+                from app.domain.models.base import utc_now
+                from app.models import Subscription
+
+                async with async_session_factory() as session:
+                    existing = await session.scalar(
+                        select(Subscription).where(
+                            Subscription.company_id == company_id,
+                            Subscription.scope
+                            == SubscriptionScope.COMPANY_RECRUITING,
+                            Subscription.is_deleted == False,  # noqa: E712
+                        )
+                    )
+                    if existing is None:
+                        now = utc_now()
+                        session.add(
+                            Subscription(
+                                user_id=seeded_ids["user_id"],
+                                company_id=company_id,
+                                plan_id=seeded_ids["plan_id"],
+                                scope=SubscriptionScope.COMPANY_RECRUITING,
+                                is_free=False,
+                                status=SubscriptionStatus.ACTIVE,
+                                started_at=now,
+                                expires_at=now + timedelta(days=30),
+                                max_job_posts=10,
+                                max_candidate_searches=10,
+                                max_ai_features=10,
+                                job_posts_used=0,
+                                candidate_searches_used=0,
+                                ai_features_used=0,
+                            )
+                        )
+                        await session.commit()
+
+        client.event_hooks["response"].append(
+            _seed_company_subscription_on_create
+        )
 
     return client
 
