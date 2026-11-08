@@ -184,6 +184,10 @@ class TestParseJD:
     def test_parse_jd_indexes(self, mock_parse_job, recruiter_client, run_async):
         mock_parse_job.return_value = _fake_parsed_job()
 
+        TestRecommendationsCandidatesOwnership.create_company(
+            recruiter_client, run_async, "acme-parse-jd", "444444444"
+        )
+
         resp = run_async(
             recruiter_client.post(
                 f"{API_V1}/ai/parse-jd",
@@ -277,10 +281,17 @@ class TestRecommendationsCandidates:
     def test_recommends_candidates_for_job(
         self, recruiter_client, run_async
     ):
+        company = TestRecommendationsCandidatesOwnership.create_company(
+            recruiter_client, run_async, "acme-recommend", "555555555"
+        )
+        job = TestRecommendationsCandidatesOwnership.create_job(
+            recruiter_client, run_async, company["id"], "Job Recommend"
+        )
+
         resp = run_async(
             recruiter_client.get(
                 f"{API_V1}/ai/recommendations/candidates",
-                params={"job_id": str(uuid.uuid4())},
+                params={"job_id": job["id"]},
             )
         )
 
@@ -348,6 +359,9 @@ class TestRecommendationsCandidatesOwnership:
     def test_recruiter_a_cannot_query_recruiter_b_job(
         self, recruiter_a_client, recruiter_b_client, run_async
     ):
+        self.create_company(
+            recruiter_a_client, run_async, "acme-a", "111111111"
+        )
         company_b = self.create_company(
             recruiter_b_client, run_async, "acme-b", "222222222"
         )
@@ -362,8 +376,8 @@ class TestRecommendationsCandidatesOwnership:
             )
         )
 
-        assert resp.status_code == 404
-        assert "not found" in resp.json()["detail"]
+        assert resp.status_code == 403
+        assert "does not belong" in resp.json()["detail"]
 
     def test_anonymous_gets_401(self, client, run_async):
         resp = run_async(
