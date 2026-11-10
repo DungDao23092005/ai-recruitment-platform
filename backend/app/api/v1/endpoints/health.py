@@ -13,6 +13,9 @@ from app.database.session import get_db_session
 from app.services.analytics_rollup_worker import (
     default_worker_health as analytics_worker_health,
 )
+from app.services.candidate_quota_reset_worker import (
+    default_worker_health as candidate_quota_reset_worker_health,
+)
 from app.services.email_outbox_worker import (
     default_worker_health as email_outbox_worker_health,
 )
@@ -112,7 +115,12 @@ def _worker_status(entry: dict[str, Any], now: datetime) -> str:
 
 
 def _sanitize_worker_snapshot(
-    snapshot: object, *, now: datetime, include_cleanup: bool
+    snapshot: object,
+    *,
+    now: datetime,
+    include_cleanup: bool,
+    include_analytics: bool = False,
+    include_reset: bool = False,
 ) -> dict[str, Any]:
     source = snapshot if isinstance(snapshot, dict) else {}
     entry: dict[str, Any] = {
@@ -145,13 +153,15 @@ def _sanitize_worker_snapshot(
             source.get("delivery_failures_total")
         )
         entry["cleanup"] = _sanitize_cleanup(source.get("cleanup"))
-    else:
+    elif include_analytics:
         entry["last_processed_days"] = _sanitize_count(
             source.get("last_processed_days")
         )
         entry["last_pruned_events"] = _sanitize_count(
             source.get("last_pruned_events")
         )
+    if include_reset:
+        entry["last_reset"] = _sanitize_count(source.get("last_reset"))
     entry["status"] = _worker_status(entry, now)
     return entry
 
@@ -168,6 +178,13 @@ def build_workers_health() -> dict[str, Any]:
             analytics_worker_health(),
             now=now,
             include_cleanup=False,
+            include_analytics=True,
+        ),
+        "candidate_quota_reset": _sanitize_worker_snapshot(
+            candidate_quota_reset_worker_health(),
+            now=now,
+            include_cleanup=False,
+            include_reset=True,
         ),
     }
 

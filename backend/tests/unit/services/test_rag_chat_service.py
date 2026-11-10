@@ -6147,13 +6147,18 @@ class Test503ErrorMapping:
         service.chat = AsyncMock(side_effect=AIProviderUnavailableError("AI provider temporarily unavailable", retry_after=60))
 
         current_user = MagicMock()
-        current_user.role = UserRole.CANDIDATE
+        current_user.role = UserRole.RECRUITER
 
         request = ChatRequest(message="test message", history=[])
 
         # The endpoint should catch AIProviderUnavailableError and return 503
         try:
-            await ai_chat(request, current_user, service)
+            await ai_chat(
+                request,
+                current_user,
+                db=MagicMock(),
+                service=service,
+            )
         except HTTPException as exc:
             assert exc.status_code == 503
             assert "temporarily unavailable" in exc.detail.lower()
@@ -6174,12 +6179,17 @@ class Test503ErrorMapping:
         service.chat = AsyncMock(side_effect=AIProviderQuotaExceededError("AI provider quota exceeded", retry_after=60))
 
         current_user = MagicMock()
-        current_user.role = UserRole.CANDIDATE
+        current_user.role = UserRole.RECRUITER
 
         request = ChatRequest(message="test message", history=[])
 
         try:
-            await ai_chat(request, current_user, service)
+            await ai_chat(
+                request,
+                current_user,
+                db=MagicMock(),
+                service=service,
+            )
         except HTTPException as exc:
             assert exc.status_code == 429
             assert "quota exceeded" in exc.detail.lower()
@@ -6200,12 +6210,17 @@ class Test503ErrorMapping:
         service.chat = AsyncMock(side_effect=InvalidDocumentError("Invalid document"))
 
         current_user = MagicMock()
-        current_user.role = UserRole.CANDIDATE
+        current_user.role = UserRole.RECRUITER
 
         request = ChatRequest(message="test message", history=[])
 
         try:
-            await ai_chat(request, current_user, service)
+            await ai_chat(
+                request,
+                current_user,
+                db=MagicMock(),
+                service=service,
+            )
         except HTTPException as exc:
             assert exc.status_code == 400
         else:

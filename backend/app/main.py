@@ -153,9 +153,30 @@ async def lifespan(app: FastAPI):
             "Failed to start subscription expiration worker: %s", exc
         )
 
+    try:
+        from app.services.candidate_quota_reset_worker import (
+            start_default_worker as start_candidate_quota_reset_worker,
+        )
+
+        await start_candidate_quota_reset_worker()
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to start candidate quota reset worker: %s", exc
+        )
+
     yield
 
     # Shutdown
+    try:
+        from app.services.candidate_quota_reset_worker import (
+            stop_default_worker as stop_candidate_quota_reset_worker,
+        )
+
+        await stop_candidate_quota_reset_worker()
+    except Exception:
+        pass
+
     try:
         from app.services.subscription_expiration_worker import (
             stop_default_worker as stop_subscription_expiration_worker,

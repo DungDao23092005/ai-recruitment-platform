@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+from app.services.candidate_quota_reset_worker import CandidateQuotaResetWorker
+from app.services.quota_enforcement_service import QuotaEnforcementService
+
+
+class FakeSession:
+    def __init__(self, *, lock_result: int = 0) -> None:
+        self.lock_result = lock_result
+        self.commits = 0
+        self.rollbacks = 0
+        self.scalar_calls: list[tuple[str, dict | None]] = []
+
+    async def scalar(self, statement, params=None):
+        self.scalar_calls.append((str(statement), params))
+        return self.lock_result
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+class FakeFactory:
+    def __init__(self, session: FakeSession) -> None:
+        self.session = session
+
+    def __call__(self):
+        session = self.session
+
+        class Context:
+            async def __aenter__(self):
+                return session
+
+            async def __aexit__(self, *args):
+                return False
+
+        return Context()
+
+
+def _worker(session: FakeSession) -> CandidateQuotaResetWorker:
+    return CandidateQuotaResetWorker(
+        session_factory=FakeFactory(session),
+        interval_seconds=1,
+        batch_size=10,
+    )
+
+
+@pytest.mark.asyncio
+async def test_lock_denied_skips_without_resetting(monkeypatch):
+    called = False
+
+    async def reset(self, **kwargs):
+        nonlocal called
+        called = True
+        return 0
+
+    monkeypatch.setattr(
+        QuotaEnforcementService, "reset_candidate_free_periods", reset
+    )
+    session = FakeSession(lock_result=-1)
+
+    result = await _worker(session).run_once()
+
+    assert result == {"skipped": True, "reset": 0}
+    assert called is False
+    assert session.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_successful_pass_resets_and_commits(monkeypatch):
+    calls = {}
+
+    async def reset(self, **kwargs):
+        calls.update(kwargs)
+        return 3
+
+    monkeypatch.setattr(
+        QuotaEnforcementService, "reset_candidate_free_periods", reset
+    )
+    session = FakeSession()
+    worker = _worker(session)
+    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    result = await worker.run_once(now=now)
+
+    assert result == {"skipped": False, "reset": 3}
+    assert calls == {"period_key": "2026-06", "limit": 10}
+    assert session.commits >= 2
+    assert any(
+        "sp_releaseapplock" in statement for statement, _ in session.scalar_calls
+    )
+    snapshot = worker.health_snapshot()
+    assert snapshot["last_outcome"] == "success"
+    assert snapshot["last_reset"] == 3
+
+
+@pytest.mark.asyncio
+async def test_failure_rolls_back_and_records_failure(monkeypatch):
+    async def reset(self, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(
+        QuotaEnforcementService, "reset_candidate_free_periods", reset
+    )
+    session = FakeSession()
+    worker = _worker(session)
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await worker.run_once()
+
+    assert session.rollbacks >= 2
+    snapshot = worker.health_snapshot()
+    assert snapshot["last_outcome"] == "failure"
+    assert snapshot["consecutive_failures"] == 1
+    assert snapshot["last_error_type"] == "RuntimeError"
+    assert "database unavailable" not in str(snapshot)

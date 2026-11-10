@@ -4,6 +4,7 @@ import io
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException, UploadFile
@@ -12,6 +13,7 @@ from app.api.v1.endpoints import ai as ai_endpoint
 from app.ai.extractors.pdf_extractor import PDF_MAGIC_HEADER
 from app.core.exceptions import PDFWorkerUnavailableError
 from app.core.request_limits import UploadConcurrencyGuard
+from app.services.quota_enforcement_service import ReservationResult
 
 VALID_PDF = PDF_MAGIC_HEADER + b"-1.7\n%test"
 
@@ -29,10 +31,39 @@ class AwaitableValue:
 
 class FakeUser:
     def __init__(self) -> None:
+        self.id = uuid.uuid4()
         profile = SimpleNamespace(id=uuid.uuid4())
         self.awaitable_attrs = SimpleNamespace(
             candidate_profile=AwaitableValue(profile)
         )
+
+
+def _fake_db():
+    return SimpleNamespace(
+        commit=AsyncMock(),
+        rollback=AsyncMock(),
+    )
+
+
+def _quota_patch():
+    quota_service = MagicMock()
+    quota_service.finalize_reservation = AsyncMock()
+    quota_service.release_reservation = AsyncMock()
+    reservation = ReservationResult(
+        usage_id=uuid.uuid4(),
+        remaining=2,
+        limit=3,
+        used=1,
+        bypassed=False,
+    )
+    return (
+        patch.object(
+            ai_endpoint,
+            "_reserve_candidate_ai_quota",
+            new=AsyncMock(return_value=(quota_service, reservation)),
+        ),
+        quota_service,
+    )
 
 
 class FakeService:
@@ -85,15 +116,17 @@ async def _acquire():
 async def test_permit_is_released_before_ai_work():
     guard, permit = await _acquire()
     service = FakeService(permit=permit)
+    quota_patch, _ = _quota_patch()
 
-    result = await ai_endpoint.parse_resume(
-        file=_upload(),
-        request=_request_with_permit(permit),
-        current_user=FakeUser(),
-        db=SimpleNamespace(),
-        service=service,
-        _=SimpleNamespace(),
-    )
+    with quota_patch:
+        result = await ai_endpoint.parse_resume(
+            file=_upload(),
+            request=_request_with_permit(permit),
+            current_user=FakeUser(),
+            db=_fake_db(),
+            service=service,
+            _=SimpleNamespace(),
+        )
 
     assert result.id is not None
     assert service.called is True
@@ -111,12 +144,14 @@ async def test_worker_unavailable_maps_to_503_with_retry_after():
         error=PDFWorkerUnavailableError("worker down", retry_after=7),
     )
 
-    with pytest.raises(HTTPException) as excinfo:
+    quota_patch, _ = _quota_patch()
+
+    with quota_patch, pytest.raises(HTTPException) as excinfo:
         await ai_endpoint.parse_resume(
             file=_upload(),
             request=_request_with_permit(permit),
             current_user=FakeUser(),
-            db=SimpleNamespace(),
+            db=_fake_db(),
             service=service,
             _=SimpleNamespace(),
         )

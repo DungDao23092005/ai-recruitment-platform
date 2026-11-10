@@ -132,6 +132,29 @@ class ConfigurationError(ServiceException):
     status_code: int = 500
 
 
+class CandidateQuotaExhaustedException(ForbiddenException):
+    """Raised when the effective Candidate AI entitlement is exhausted.
+
+    Carries the tier, subscription and (for Free) period so the API boundary
+    can create a period-scoped notification without re-deriving quota state.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        subscription_id,
+        is_free: bool,
+        period_key: str | None = None,
+        plan_name: str | None = None,
+    ) -> None:
+        self.subscription_id = subscription_id
+        self.is_free = is_free
+        self.period_key = period_key
+        self.plan_name = plan_name
+        super().__init__(message)
+
+
 class ValidationError(ServiceException):
     """Raised when input validation fails (maps to HTTP 422)."""
 

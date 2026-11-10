@@ -137,6 +137,86 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             user_id, is_free=False, now=now
         )
 
+    async def get_stale_candidate_paid(
+        self,
+        now: datetime,
+        limit: Optional[int] = None,
+    ) -> list[Subscription]:
+        """Return Candidate Paid rows that are about to expire.
+
+        Used only to notify the candidate after the bulk expiration update has
+        durably transitioned the row to ``EXPIRED``.
+        """
+        stmt = (
+            select(Subscription)
+            .options(selectinload(Subscription.plan))
+            .where(
+                Subscription.company_id.is_(None),
+                Subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+                Subscription.is_free == False,  # noqa: E712
+                self._stale_active_condition(now),
+            )
+            .order_by(Subscription.expires_at.asc(), Subscription.id.asc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(max(1, int(limit)))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def reset_stale_candidate_free_periods(
+        self,
+        period_key: str,
+        now: datetime,
+        limit: Optional[int] = None,
+    ) -> int:
+        """Reset stale Candidate Free counters to the current Vietnam month.
+
+        The outer UPDATE re-checks every predicate, including the stale period
+        key, so a concurrent lazy reset or an already-reset row is never
+        decremented or reset twice.
+        """
+        stale_ids = (
+            select(Subscription.id)
+            .where(
+                Subscription.company_id.is_(None),
+                Subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+                Subscription.is_free == True,  # noqa: E712
+                Subscription.is_deleted == False,  # noqa: E712
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                or_(
+                    Subscription.current_period_key.is_(None),
+                    Subscription.current_period_key != period_key,
+                ),
+            )
+            .order_by(Subscription.started_at.asc(), Subscription.id.asc())
+        )
+        if limit is not None:
+            stale_ids = stale_ids.limit(max(1, int(limit)))
+
+        stmt = (
+            update(Subscription)
+            .where(
+                Subscription.id.in_(stale_ids),
+                Subscription.company_id.is_(None),
+                Subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+                Subscription.is_free == True,  # noqa: E712
+                Subscription.is_deleted == False,  # noqa: E712
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                or_(
+                    Subscription.current_period_key.is_(None),
+                    Subscription.current_period_key != period_key,
+                ),
+            )
+            .values(
+                ai_features_used=0,
+                current_period_key=period_key,
+                updated_at=now,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
+        return max(0, result.rowcount or 0)
+
     @staticmethod
     def _stale_active_condition(now: datetime):
         return and_(

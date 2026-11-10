@@ -44,6 +44,7 @@ os.environ["SUBSCRIPTION_EXPIRATION_ENABLED"] = "false"
 # Keep the lifespan quota reconciliation worker from querying the real
 # database (and outliving a TestClient event loop) during unit tests.
 os.environ["QUOTA_RECONCILIATION_ENABLED"] = "false"
+os.environ["CANDIDATE_QUOTA_RESET_ENABLED"] = "false"
 
 # Service-level tests exercise the in-process extractor path (and patch it).
 # Process isolation has dedicated tests that construct IsolatedPDFProcessor.

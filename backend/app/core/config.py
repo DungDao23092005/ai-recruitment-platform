@@ -118,6 +118,11 @@ class Settings(BaseSettings):
     SUBSCRIPTION_EXPIRATION_INTERVAL_SECONDS: float = 300.0
     SUBSCRIPTION_EXPIRATION_BATCH_SIZE: int = 500
 
+    # Monthly Candidate Free AI quota reset (Asia/Ho_Chi_Minh calendar).
+    CANDIDATE_QUOTA_RESET_ENABLED: bool = True
+    CANDIDATE_QUOTA_RESET_INTERVAL_SECONDS: float = 300.0
+    CANDIDATE_QUOTA_RESET_BATCH_SIZE: int = 500
+
     # Recruitment analytics rollup and retention.
     ANALYTICS_ROLLUP_ENABLED: bool = True
     ANALYTICS_ROLLUP_INTERVAL_SECONDS: float = 300.0

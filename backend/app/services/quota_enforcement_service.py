@@ -11,7 +11,12 @@ from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictException, EntityNotFoundException, ForbiddenException
+from app.core.exceptions import (
+    CandidateQuotaExhaustedException,
+    ConflictException,
+    EntityNotFoundException,
+    ForbiddenException,
+)
 from app.domain.enums import (
     MembershipRole,
     MembershipStatus,
@@ -24,8 +29,17 @@ from app.domain.enums import (
 from app.domain.models.base import utc_now
 from app.models import Subscription, SubscriptionUsage, User
 from app.repositories import SubscriptionRepository
+from app.services.candidate_entitlement_service import CandidateEntitlementService
 
 logger = logging.getLogger(__name__)
+
+CANDIDATE_AI_FEATURES = frozenset(
+    {
+        SubscriptionUsageFeatureType.CANDIDATE_PARSE_RESUME,
+        SubscriptionUsageFeatureType.CANDIDATE_JOB_RECOMMENDATIONS,
+        SubscriptionUsageFeatureType.CANDIDATE_CHAT,
+    }
+)
 
 
 @dataclass
@@ -251,6 +265,9 @@ class QuotaEnforcementService:
         elif feature_type == SubscriptionUsageFeatureType.CANDIDATE_SEARCH:
             limit = subscription.max_candidate_searches
             used = subscription.candidate_searches_used
+        elif feature_type in CANDIDATE_AI_FEATURES:
+            limit = subscription.max_ai_features
+            used = subscription.ai_features_used
         elif feature_type == SubscriptionUsageFeatureType.AI_FEATURE:
             limit = subscription.max_ai_features
             used = subscription.ai_features_used
@@ -265,6 +282,8 @@ class QuotaEnforcementService:
             return "job_posts_used"
         elif feature_type == SubscriptionUsageFeatureType.CANDIDATE_SEARCH:
             return "candidate_searches_used"
+        elif feature_type in CANDIDATE_AI_FEATURES:
+            return "ai_features_used"
         elif feature_type == SubscriptionUsageFeatureType.AI_FEATURE:
             return "ai_features_used"
         raise ValueError(f"Unknown feature type: {feature_type}")
@@ -274,6 +293,8 @@ class QuotaEnforcementService:
             return "max_job_posts"
         elif feature_type == SubscriptionUsageFeatureType.CANDIDATE_SEARCH:
             return "max_candidate_searches"
+        elif feature_type in CANDIDATE_AI_FEATURES:
+            return "max_ai_features"
         elif feature_type == SubscriptionUsageFeatureType.AI_FEATURE:
             return "max_ai_features"
         raise ValueError(f"Unknown feature type: {feature_type}")
@@ -1114,6 +1135,309 @@ class QuotaEnforcementService:
             usage=usage,
         )
 
+    async def _get_candidate_subscription_for_update(
+        self,
+        candidate_id: uuid.UUID,
+        is_free: bool,
+        now: datetime,
+    ) -> Subscription | None:
+        """Lock the effective Candidate tier for the duration of the request.
+
+        Paid is resolved before Free so an active Paid entitlement always wins.
+        ``UPDLOCK, HOLDLOCK`` serializes concurrent reservations and the lazy
+        monthly reset on the same row.
+        """
+        from sqlalchemy.orm import selectinload
+
+        stmt = (
+            select(Subscription)
+            .options(selectinload(Subscription.plan))
+            .where(
+                Subscription.user_id == candidate_id,
+                Subscription.company_id.is_(None),
+                Subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+                Subscription.is_free == is_free,
+                Subscription.is_deleted == False,  # noqa: E712
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                or_(
+                    Subscription.expires_at.is_(None),
+                    Subscription.expires_at > now,
+                ),
+            )
+        )
+        if self._is_real_async_session():
+            stmt = stmt.with_hint(Subscription, "WITH (UPDLOCK, HOLDLOCK)")
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    def _candidate_exhausted_message(
+        self,
+        subscription: Subscription,
+        used: int,
+        limit: int,
+    ) -> str:
+        if subscription.is_free:
+            return (
+                "Bạn đã sử dụng hết hạn mức AI của gói miễn phí trong tháng này "
+                f"(đã dùng {used}/{limit}). Hạn mức sẽ được làm mới vào tháng sau."
+            )
+        return (
+            "Bạn đã sử dụng hết hạn mức AI của gói trả phí "
+            f"(đã dùng {used}/{limit}). Vui lòng gia hạn gói để tiếp tục sử dụng."
+        )
+
+    async def reserve_candidate_ai_quota(
+        self,
+        candidate_id: uuid.UUID,
+        feature_type: SubscriptionUsageFeatureType,
+        amount: int = 1,
+        idempotency_key: str | None = None,
+        reference_id: uuid.UUID | None = None,
+        now: datetime | None = None,
+    ) -> ReservationResult:
+        """Reserve Candidate AI quota, preferring an active Paid entitlement.
+
+        Free and Paid are separate tiers. If Paid is active and exhausted the
+        request fails closed and never falls back to Free. Free reservations are
+        period-scoped so the monthly reset worker and lazy reset can advance the
+        period without losing fixed-period Paid usage.
+        """
+        if amount < 1:
+            raise ValueError("amount must be >= 1")
+        if feature_type not in CANDIDATE_AI_FEATURES:
+            raise ValueError(f"Unsupported candidate AI feature: {feature_type}")
+
+        now = now or utc_now()
+        user = await self.session.get(User, candidate_id)
+        if user is None:
+            raise EntityNotFoundException(f"User {candidate_id} not found")
+        if getattr(user, "is_deleted", False) or not getattr(
+            user, "is_active", True
+        ):
+            raise ForbiddenException("Candidate account is not active.")
+        if user.role != UserRole.CANDIDATE:
+            raise ForbiddenException(
+                "Candidate AI quota is only available to candidate accounts."
+            )
+
+        paid = await self._get_candidate_subscription_for_update(
+            candidate_id, False, now
+        )
+        if paid is not None:
+            return await self._reserve_candidate_tier(
+                subscription=paid,
+                candidate_id=candidate_id,
+                feature_type=feature_type,
+                amount=amount,
+                idempotency_key=idempotency_key,
+                reference_id=reference_id,
+                period_key=None,
+                is_free=False,
+                now=now,
+            )
+
+        entitlement_service = CandidateEntitlementService(self.session)
+        await entitlement_service.provision_free_entitlement(candidate_id, now)
+        free = await self._get_candidate_subscription_for_update(
+            candidate_id, True, now
+        )
+        if free is None:
+            raise ForbiddenException(
+                "Candidate Free entitlement is not available."
+            )
+
+        period_key = entitlement_service.candidate_period_key(now)
+        if free.current_period_key != period_key:
+            free.ai_features_used = 0
+            free.current_period_key = period_key
+            await self.session.flush()
+
+        return await self._reserve_candidate_tier(
+            subscription=free,
+            candidate_id=candidate_id,
+            feature_type=feature_type,
+            amount=amount,
+            idempotency_key=idempotency_key,
+            reference_id=reference_id,
+            period_key=period_key,
+            is_free=True,
+            now=now,
+        )
+
+    async def _reserve_candidate_tier(
+        self,
+        *,
+        subscription: Subscription,
+        candidate_id: uuid.UUID,
+        feature_type: SubscriptionUsageFeatureType,
+        amount: int,
+        idempotency_key: str | None,
+        reference_id: uuid.UUID | None,
+        period_key: str | None,
+        is_free: bool,
+        now: datetime,
+    ) -> ReservationResult:
+        limit, used, remaining = self._get_quota_info(subscription, feature_type)
+
+        if idempotency_key:
+            existing = await self._get_usage_by_subscription_and_idempotency(
+                subscription.id, idempotency_key
+            )
+            if existing is not None:
+                if existing.status == SubscriptionUsageStatus.FAILED:
+                    raise ConflictException(
+                        "Xung đột idempotency_key: giao dịch trước đó đã thất bại."
+                    )
+                return self._validate_and_build_idempotent_result(
+                    existing=existing,
+                    subscription=subscription,
+                    feature_type=feature_type,
+                    amount=amount,
+                    reference_id=reference_id,
+                    user_id=candidate_id,
+                    company_id=None,
+                )
+
+        if limit == 0:
+            raise CandidateQuotaExhaustedException(
+                self._feature_zero_limit_message(feature_type),
+                subscription_id=subscription.id,
+                is_free=is_free,
+                period_key=period_key,
+                plan_name=getattr(getattr(subscription, "plan", None), "name", None),
+            )
+        if remaining <= 0:
+            raise CandidateQuotaExhaustedException(
+                self._candidate_exhausted_message(subscription, used, limit),
+                subscription_id=subscription.id,
+                is_free=is_free,
+                period_key=period_key,
+                plan_name=getattr(getattr(subscription, "plan", None), "name", None),
+            )
+
+        counter_col = self._get_counter_column(feature_type)
+        limit_col = self._get_max_column(feature_type)
+
+        try:
+            async with self._maybe_begin_nested():
+                predicates = [
+                    Subscription.id == subscription.id,
+                    Subscription.user_id == candidate_id,
+                    Subscription.company_id.is_(None),
+                    Subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+                    Subscription.is_free == is_free,
+                    Subscription.is_deleted == False,  # noqa: E712
+                    Subscription.status == SubscriptionStatus.ACTIVE,
+                ]
+                if period_key is not None:
+                    predicates.append(
+                        Subscription.current_period_key == period_key
+                    )
+                else:
+                    predicates.append(
+                        or_(
+                            Subscription.expires_at.is_(None),
+                            Subscription.expires_at > now,
+                        )
+                    )
+
+                cas_stmt = (
+                    update(Subscription)
+                    .where(
+                        *predicates,
+                        getattr(Subscription, counter_col) == used,
+                        getattr(Subscription, limit_col) >= used + amount,
+                    )
+                    .values(
+                        {counter_col: getattr(Subscription, counter_col) + amount}
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                cas_result = await self.session.execute(cas_stmt)
+                if cas_result.rowcount == 0:
+                    if idempotency_key:
+                        existing = await self._get_usage_by_subscription_and_idempotency(
+                            subscription.id, idempotency_key
+                        )
+                        if existing is not None:
+                            return self._validate_and_build_idempotent_result(
+                                existing=existing,
+                                subscription=subscription,
+                                feature_type=feature_type,
+                                amount=amount,
+                                reference_id=reference_id,
+                                user_id=candidate_id,
+                                company_id=None,
+                            )
+                    raise CandidateQuotaExhaustedException(
+                        self._candidate_exhausted_message(
+                            subscription, used, limit
+                        ),
+                        subscription_id=subscription.id,
+                        is_free=is_free,
+                        period_key=period_key,
+                        plan_name=getattr(
+                            getattr(subscription, "plan", None), "name", None
+                        ),
+                    )
+
+                usage = SubscriptionUsage(
+                    subscription_id=subscription.id,
+                    user_id=candidate_id,
+                    company_id=None,
+                    scope=SubscriptionScope.CANDIDATE_PERSONAL,
+                    period_key=period_key,
+                    feature_type=feature_type,
+                    status=SubscriptionUsageStatus.RESERVED,
+                    reference_id=reference_id,
+                    idempotency_key=idempotency_key,
+                    amount=amount,
+                )
+                self.session.add(usage)
+                await self.session.flush()
+        except IntegrityError:
+            if not idempotency_key:
+                raise
+            existing = await self._get_usage_by_subscription_and_idempotency(
+                subscription.id, idempotency_key
+            )
+            if existing is None:
+                raise
+            if self._is_real_async_session():
+                await self.session.refresh(subscription)
+            return self._validate_and_build_idempotent_result(
+                existing=existing,
+                subscription=subscription,
+                feature_type=feature_type,
+                amount=amount,
+                reference_id=reference_id,
+                user_id=candidate_id,
+                company_id=None,
+            )
+
+        if self._is_real_async_session():
+            await self.session.refresh(subscription)
+            limit_new, used_new, remaining_new = self._get_quota_info(
+                subscription, feature_type
+            )
+        else:
+            limit_new = limit
+            used_new = used + amount
+            remaining_new = max(0, limit - used_new)
+
+        usage.remaining = remaining_new
+        usage.limit = limit_new
+        usage.used = used_new
+        usage.bypassed = False
+        return ReservationResult(
+            usage_id=usage.id,
+            remaining=remaining_new,
+            limit=limit_new,
+            used=used_new,
+            bypassed=False,
+            usage=usage,
+        )
+
     async def finalize_reservation(
         self,
         usage_id: uuid.UUID | None,
@@ -1177,7 +1501,8 @@ class QuotaEnforcementService:
                 OUTPUT
                     inserted.subscription_id,
                     inserted.feature_type,
-                    inserted.amount
+                    inserted.amount,
+                    inserted.period_key
                 WHERE
                     id = :usage_id
                     AND status = :reserved_status
@@ -1206,17 +1531,63 @@ class QuotaEnforcementService:
                 else SubscriptionUsageFeatureType(str(raw_feature))
             )
             amount = int(row[2])
+            usage_period_key = row[3]
 
             counter_col = self._get_counter_column(feature_type)
-            dec_stmt = (
-                update(Subscription)
-                .where(
-                    Subscription.id == subscription_id,
-                    getattr(Subscription, counter_col) >= amount,
+
+            # A Free reservation belongs to the month it was created in. Never
+            # decrement the new month's counter after a rollover reset it.
+            if (
+                feature_type in CANDIDATE_AI_FEATURES
+                and usage_period_key is not None
+            ):
+                current_period_key = await self.session.scalar(
+                    text(
+                        """
+                        SELECT current_period_key
+                        FROM subscriptions WITH (UPDLOCK, HOLDLOCK)
+                        WHERE id = :subscription_id
+                        """
+                    ),
+                    {"subscription_id": subscription_id},
                 )
-                .values({counter_col: getattr(Subscription, counter_col) - amount})
-                .execution_options(synchronize_session=False)
-            )
+                if current_period_key != usage_period_key:
+                    usage_obj = self.session.identity_map.get(
+                        self.session.identity_key(
+                            SubscriptionUsage, (usage_id,)
+                        )
+                    )
+                    if usage_obj is not None:
+                        usage_obj.status = SubscriptionUsageStatus.FAILED
+                        usage_obj.finalized_at = now
+                        usage_obj.updated_at = now
+                    return True
+
+                dec_stmt = (
+                    update(Subscription)
+                    .where(
+                        Subscription.id == subscription_id,
+                        Subscription.current_period_key == usage_period_key,
+                        getattr(Subscription, counter_col) >= amount,
+                    )
+                    .values(
+                        {counter_col: getattr(Subscription, counter_col) - amount}
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+            else:
+                dec_stmt = (
+                    update(Subscription)
+                    .where(
+                        Subscription.id == subscription_id,
+                        getattr(Subscription, counter_col) >= amount,
+                    )
+                    .values(
+                        {counter_col: getattr(Subscription, counter_col) - amount}
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+
             dec_result = await self.session.execute(dec_stmt)
             if dec_result.rowcount == 0:
                 await self.session.rollback()
@@ -1246,10 +1617,38 @@ class QuotaEnforcementService:
         if usage is None or usage.status != SubscriptionUsageStatus.RESERVED:
             return False
 
+        period_key = getattr(usage, "period_key", None)
+        if (
+            getattr(usage, "feature_type", None) in CANDIDATE_AI_FEATURES
+            and period_key is not None
+        ):
+            subscription = await self.session.get(
+                Subscription, usage.subscription_id
+            )
+            if (
+                subscription is not None
+                and subscription.current_period_key != period_key
+            ):
+                usage.status = SubscriptionUsageStatus.FAILED
+                usage.finalized_at = now
+                return True
+
         usage.status = SubscriptionUsageStatus.FAILED
         usage.finalized_at = now
         await self._release_counter(usage)
         return True
+
+    async def reset_candidate_free_periods(
+        self,
+        period_key: str,
+        limit: int = 100,
+    ) -> int:
+        """Advance stale Candidate Free rows to the current Vietnam month."""
+        return await self.subscriptions.reset_stale_candidate_free_periods(
+            period_key=period_key,
+            now=utc_now(),
+            limit=limit,
+        )
 
     async def reconcile_stale_reservations(
         self,

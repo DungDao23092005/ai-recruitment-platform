@@ -38,6 +38,7 @@ from app.core.exceptions import (
     AIError,
     AIProviderQuotaExceededError,
     AIProviderUnavailableError,
+    CandidateQuotaExhaustedException,
     ConflictException,
     EmptyDocumentError,
     EntityNotFoundException,
@@ -54,7 +55,12 @@ from app.core.rate_limit import (
     recommendations_rate_limit,
 )
 from app.core.request_limits import release_upload_permit
-from app.domain.enums import MembershipRole, MembershipStatus, UserRole
+from app.domain.enums import (
+    MembershipRole,
+    MembershipStatus,
+    SubscriptionUsageFeatureType,
+    UserRole,
+)
 from app.models import CompanyMembership, User
 from app.schemas.ai_chat import ChatRequest, ChatResponse
 from app.schemas.ai_explanation import ExplainMatchRequest
@@ -80,6 +86,7 @@ from app.services.ai_matching_service import AIMatchingService
 from app.services.explainable_ai_service import ExplainableAIService
 from app.services.interview_generator_service import InterviewGeneratorService
 from app.services.job_service import JobService
+from app.services.notification_service import NotificationService
 from app.services.quota_enforcement_service import (
     QuotaEnforcementService,
     ReservationResult,
@@ -251,6 +258,72 @@ async def _release_ai_reservation_safe(
             return
 
 
+async def _notify_candidate_quota_exhausted(
+    db: AsyncSession,
+    user: User,
+    exc: CandidateQuotaExhaustedException,
+) -> None:
+    """Best-effort period/tier-scoped notification for an exhausted quota.
+
+    Notification persistence must never turn a quota rejection into a server
+    error, so failures are rolled back and logged. The quota decision itself is
+    already final when this helper runs.
+    """
+    try:
+        notifications = NotificationService(db)
+        if exc.is_free:
+            if exc.period_key is None:
+                return
+            await notifications.notify_candidate_free_quota_exhausted(
+                user_id=user.id,
+                subscription_id=exc.subscription_id,
+                period_key=exc.period_key,
+            )
+        else:
+            await notifications.notify_candidate_paid_quota_exhausted(
+                user_id=user.id,
+                subscription_id=exc.subscription_id,
+                plan_name=exc.plan_name,
+            )
+        await db.commit()
+    except Exception as notify_exc:  # noqa: BLE001
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        logger.warning(
+            "candidate_quota_notification_failed user_id=%s error=%s",
+            user.id,
+            type(notify_exc).__name__,
+        )
+
+
+async def _reserve_candidate_ai_quota(
+    db: AsyncSession,
+    user: User,
+    feature_type: SubscriptionUsageFeatureType,
+    idempotency_key: str | None,
+    reference_id: uuid.UUID | None = None,
+) -> tuple[QuotaEnforcementService, ReservationResult]:
+    quota_service = QuotaEnforcementService(db)
+    try:
+        reservation = await quota_service.reserve_candidate_ai_quota(
+            candidate_id=user.id,
+            feature_type=feature_type,
+            amount=1,
+            idempotency_key=idempotency_key,
+            reference_id=reference_id,
+        )
+        await db.commit()
+    except CandidateQuotaExhaustedException as exc:
+        await _notify_candidate_quota_exhausted(db, user, exc)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    return quota_service, reservation
+
+
 @router.post(
     "/parse-resume",
     response_model=ResumeRead,
@@ -262,6 +335,7 @@ async def parse_resume(
     current_user: User = Depends(require_candidate),
     db: AsyncSession = Depends(get_db),
     service: AIMatchingService = Depends(_get_ai_service),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     _: RateLimitResult = Depends(parse_resume_rate_limit),
 ) -> ResumeRead:
     # Filename validation
@@ -318,13 +392,35 @@ async def parse_resume(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Candidate profile required",
         )
+
+    quota_service, reservation = await _reserve_candidate_ai_quota(
+        db,
+        current_user,
+        SubscriptionUsageFeatureType.CANDIDATE_PARSE_RESUME,
+        idempotency_key,
+    )
     try:
-        draft = await service.parse_and_save_resume_draft(
-            candidate_id=candidate_profile.id,
-            pdf_source=pdf_bytes,
-            session=db,
-            source_name=file.filename,
-        )
+        try:
+            draft = await service.parse_and_save_resume_draft(
+                candidate_id=candidate_profile.id,
+                pdf_source=pdf_bytes,
+                session=db,
+                source_name=file.filename,
+            )
+        except (Exception, asyncio.CancelledError):
+            await _release_ai_reservation_safe(
+                db, quota_service, reservation
+            )
+            raise
+
+        try:
+            await quota_service.finalize_reservation(reservation.usage_id)
+            await db.commit()
+        except (Exception, asyncio.CancelledError):
+            await _release_ai_reservation_safe(
+                db, quota_service, reservation
+            )
+            raise
         return ResumeRead.model_validate(draft)
     except EmptyDocumentError as exc:
         raise HTTPException(
@@ -693,6 +789,7 @@ async def recommend_jobs_for_candidate(
     db: AsyncSession = Depends(get_db),
     service: AIMatchingService = Depends(_get_ai_service),
     limit: int = Query(default=10, ge=1, le=100),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     _: RateLimitResult = Depends(recommendations_rate_limit),
 ) -> list[JobMatchRecommendation]:
     candidate_profile = await current_user.awaitable_attrs.candidate_profile
@@ -702,13 +799,35 @@ async def recommend_jobs_for_candidate(
             detail="Candidate profile required",
         )
 
+    quota_service, reservation = await _reserve_candidate_ai_quota(
+        db,
+        current_user,
+        SubscriptionUsageFeatureType.CANDIDATE_JOB_RECOMMENDATIONS,
+        idempotency_key,
+    )
     try:
-        return await service.recommend_jobs_for_candidate(
-            candidate_id=candidate_profile.id,
-            limit=limit,
-            session=db,
-            actor_user=current_user,
-        )
+        try:
+            recommendations = await service.recommend_jobs_for_candidate(
+                candidate_id=candidate_profile.id,
+                limit=limit,
+                session=db,
+                actor_user=current_user,
+            )
+        except (Exception, asyncio.CancelledError):
+            await _release_ai_reservation_safe(
+                db, quota_service, reservation
+            )
+            raise
+
+        try:
+            await quota_service.finalize_reservation(reservation.usage_id)
+            await db.commit()
+        except (Exception, asyncio.CancelledError):
+            await _release_ai_reservation_safe(
+                db, quota_service, reservation
+            )
+            raise
+        return recommendations
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -724,15 +843,47 @@ async def recommend_jobs_for_candidate(
 async def ai_chat(
     data: ChatRequest,
     current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
     service: RAGChatService = Depends(_get_rag_chat_service),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
     _: RateLimitResult = Depends(ai_chat_rate_limit),
 ) -> ChatResponse:
-    try:
-        return await service.chat(
-            message=data.message,
-            actor_user=current_user,
-            history=data.history,
+    quota_service: QuotaEnforcementService | None = None
+    reservation: ReservationResult | None = None
+    if current_user.role == UserRole.CANDIDATE:
+        quota_service, reservation = await _reserve_candidate_ai_quota(
+            db,
+            current_user,
+            SubscriptionUsageFeatureType.CANDIDATE_CHAT,
+            idempotency_key,
         )
+
+    try:
+        try:
+            response = await service.chat(
+                message=data.message,
+                actor_user=current_user,
+                history=data.history,
+            )
+        except (Exception, asyncio.CancelledError):
+            if quota_service is not None and reservation is not None:
+                await _release_ai_reservation_safe(
+                    db, quota_service, reservation
+                )
+            raise
+
+        if quota_service is not None and reservation is not None:
+            try:
+                await quota_service.finalize_reservation(
+                    reservation.usage_id
+                )
+                await db.commit()
+            except (Exception, asyncio.CancelledError):
+                await _release_ai_reservation_safe(
+                    db, quota_service, reservation
+                )
+                raise
+        return response
     except EmptyDocumentError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

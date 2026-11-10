@@ -26,6 +26,14 @@ SUBSCRIPTION_PLAN_CHANGED_TITLE = "Thay đổi gói dịch vụ"
 SUBSCRIPTION_REVOKED_TYPE = "subscription_revoked"
 SUBSCRIPTION_REVOKED_TITLE = "Thu hồi gói dịch vụ"
 
+CANDIDATE_QUOTA_ENTITY_TYPE = "candidate_quota"
+CANDIDATE_PAID_QUOTA_EXHAUSTED_TYPE = "candidate_paid_quota_exhausted"
+CANDIDATE_PAID_QUOTA_EXHAUSTED_TITLE = "Đã hết hạn mức AI của gói trả phí"
+CANDIDATE_FREE_QUOTA_EXHAUSTED_TYPE = "candidate_free_quota_exhausted"
+CANDIDATE_FREE_QUOTA_EXHAUSTED_TITLE = "Đã hết hạn mức AI miễn phí"
+CANDIDATE_RETURNED_TO_FREE_TYPE = "candidate_returned_to_free"
+CANDIDATE_RETURNED_TO_FREE_TITLE = "Tài khoản đã quay lại gói miễn phí"
+
 
 def _format_expiry_date(expires_at: datetime | None) -> str:
     """Render an activation expiry date in Vietnam local time (dd/mm/yyyy).
@@ -176,6 +184,118 @@ class NotificationService:
             notification_type=SUBSCRIPTION_REVOKED_TYPE,
             entity_type=SUBSCRIPTION_ENTITY_TYPE,
             entity_id=subscription_id,
+        )
+
+    @staticmethod
+    def _candidate_free_period_entity_id(
+        subscription_id: uuid.UUID,
+        period_key: str,
+    ) -> uuid.UUID:
+        """Stable entity id so a Free exhaustion notice is unique per period."""
+        return uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"candidate-free-quota:{subscription_id}:{period_key}",
+        )
+
+    async def notify_candidate_paid_quota_exhausted(
+        self,
+        user_id: uuid.UUID,
+        subscription_id: uuid.UUID,
+        plan_name: str | None = None,
+    ) -> NotificationRead | None:
+        """Notify once that an active Paid entitlement has no AI quota left.
+
+        Paid stays active, so this is a fixed-period exhaustion notice. Repeated
+        rejected requests for the same subscription are suppressed.
+        """
+        already_notified = await self.notifications.exists_by_entity(
+            user_id=user_id,
+            entity_type=CANDIDATE_QUOTA_ENTITY_TYPE,
+            entity_id=subscription_id,
+            notification_type=CANDIDATE_PAID_QUOTA_EXHAUSTED_TYPE,
+        )
+        if already_notified:
+            return None
+
+        subject = f'Gói "{plan_name}"' if plan_name else "Gói trả phí của bạn"
+        return await self.create_notification(
+            user_id=user_id,
+            title=CANDIDATE_PAID_QUOTA_EXHAUSTED_TITLE,
+            content=(
+                f"{subject} đã sử dụng hết hạn mức AI. "
+                "Gói vẫn còn hiệu lực nhưng bạn không thể dùng thêm tính năng AI "
+                "cho đến khi gói được gia hạn."
+            ),
+            notification_type=CANDIDATE_PAID_QUOTA_EXHAUSTED_TYPE,
+            entity_type=CANDIDATE_QUOTA_ENTITY_TYPE,
+            entity_id=subscription_id,
+        )
+
+    async def notify_candidate_free_quota_exhausted(
+        self,
+        user_id: uuid.UUID,
+        subscription_id: uuid.UUID,
+        period_key: str,
+    ) -> NotificationRead | None:
+        """Notify once per Vietnam calendar month for Free exhaustion."""
+        entity_id = self._candidate_free_period_entity_id(
+            subscription_id, period_key
+        )
+        already_notified = await self.notifications.exists_by_entity(
+            user_id=user_id,
+            entity_type=CANDIDATE_QUOTA_ENTITY_TYPE,
+            entity_id=entity_id,
+            notification_type=CANDIDATE_FREE_QUOTA_EXHAUSTED_TYPE,
+        )
+        if already_notified:
+            return None
+
+        return await self.create_notification(
+            user_id=user_id,
+            title=CANDIDATE_FREE_QUOTA_EXHAUSTED_TITLE,
+            content=(
+                f"Bạn đã sử dụng hết hạn mức AI miễn phí trong tháng {period_key}. "
+                "Hạn mức sẽ được làm mới vào tháng sau."
+            ),
+            notification_type=CANDIDATE_FREE_QUOTA_EXHAUSTED_TYPE,
+            entity_type=CANDIDATE_QUOTA_ENTITY_TYPE,
+            entity_id=entity_id,
+        )
+
+    async def notify_candidate_returned_to_free(
+        self,
+        user_id: uuid.UUID,
+        paid_subscription_id: uuid.UUID,
+        reason: str,
+    ) -> NotificationRead | None:
+        """Notify once that a Candidate Paid entitlement ended.
+
+        ``reason`` is only used in the message. Deduplication is keyed on the
+        Paid subscription id so expiration/cancellation retries do not flood the
+        candidate.
+        """
+        already_notified = await self.notifications.exists_by_entity(
+            user_id=user_id,
+            entity_type=CANDIDATE_QUOTA_ENTITY_TYPE,
+            entity_id=paid_subscription_id,
+            notification_type=CANDIDATE_RETURNED_TO_FREE_TYPE,
+        )
+        if already_notified:
+            return None
+
+        reason_text = (
+            "đã hết hạn" if reason == "expired" else "đã bị hủy"
+        )
+        return await self.create_notification(
+            user_id=user_id,
+            title=CANDIDATE_RETURNED_TO_FREE_TITLE,
+            content=(
+                f"Gói trả phí của bạn {reason_text}. "
+                "Tài khoản đã tự động quay lại gói miễn phí."
+            ),
+            notification_type=CANDIDATE_RETURNED_TO_FREE_TYPE,
+            entity_type=CANDIDATE_QUOTA_ENTITY_TYPE,
+            entity_id=paid_subscription_id,
         )
 
     async def list_notifications(

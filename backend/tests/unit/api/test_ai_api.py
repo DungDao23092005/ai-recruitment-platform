@@ -18,6 +18,7 @@ from app.api.v1.endpoints.ai import (
 )
 from app.core.exceptions import (
     AIError,
+    CandidateQuotaExhaustedException,
     EmptyDocumentError,
     EntityNotFoundException,
     ForbiddenException,
@@ -175,6 +176,9 @@ def mock_quota_service():
         )
         service.reserve_ai_quota = AsyncMock(return_value=reservation_result)
         service.reserve_search_quota = AsyncMock(return_value=reservation_result)
+        service.reserve_candidate_ai_quota = AsyncMock(
+            return_value=reservation_result
+        )
         service.finalize_reservation = AsyncMock()
         service.release_reservation = AsyncMock()
         mock_class.return_value = service
@@ -288,7 +292,7 @@ def _parsed_job():
 
 class TestParseResume:
     def test_parse_resume_returns_unconfirmed_draft(
-        self, candidate_client, mock_service
+        self, candidate_client, mock_service, mock_quota_service
     ):
         draft = _resume_draft()
         mock_service.parse_and_save_resume_draft.return_value = draft
@@ -312,6 +316,11 @@ class TestParseResume:
         assert call_kwargs["candidate_id"]
         assert call_kwargs["pdf_source"] == b"%PDF-1.7 fake"
         assert call_kwargs["source_name"] == "resume.pdf"
+        quota_kwargs = (
+            mock_quota_service.reserve_candidate_ai_quota.call_args.kwargs
+        )
+        assert quota_kwargs["feature_type"].value == "candidate_parse_resume"
+        mock_quota_service.finalize_reservation.assert_awaited_once()
 
     def test_parse_resume_unauthorized(self, unauthorized_client, mock_service):
         resp = unauthorized_client.post(
@@ -323,7 +332,7 @@ class TestParseResume:
         mock_service.parse_and_save_resume_draft.assert_not_called()
 
     def test_parse_resume_ai_error_maps_to_502(
-        self, candidate_client, mock_service
+        self, candidate_client, mock_service, mock_quota_service
     ):
         mock_service.parse_and_save_resume_draft.side_effect = AIError(
             "Failed to embed resume"
@@ -337,6 +346,8 @@ class TestParseResume:
         assert resp.status_code == status.HTTP_502_BAD_GATEWAY
         assert "Failed to embed resume" in resp.json()["detail"]
         mock_service.parse_and_save_resume_draft.assert_called_once()
+        mock_quota_service.release_reservation.assert_awaited_once()
+        mock_quota_service.finalize_reservation.assert_not_awaited()
 
 
 class TestParseJD:
@@ -442,7 +453,9 @@ class TestMatch:
 
 
 class TestRecommendJobs:
-    def test_recommendations_jobs_success(self, candidate_client, mock_service):
+    def test_recommendations_jobs_success(
+        self, candidate_client, mock_service, mock_quota_service
+    ):
         job_id = uuid.uuid4()
         mock_service.recommend_jobs_for_candidate.return_value = [
             {
@@ -462,6 +475,13 @@ class TestRecommendJobs:
         assert resp.status_code == 200
         assert resp.json()[0]["job_id"] == str(job_id)
         mock_service.recommend_jobs_for_candidate.assert_called_once()
+        quota_kwargs = (
+            mock_quota_service.reserve_candidate_ai_quota.call_args.kwargs
+        )
+        assert quota_kwargs["feature_type"].value == (
+            "candidate_job_recommendations"
+        )
+        mock_quota_service.finalize_reservation.assert_awaited_once()
 
     def test_recommendations_jobs_invalid_limit(
         self, candidate_client, mock_service
@@ -1107,7 +1127,7 @@ class TestChat:
         assert resp.status_code == status.HTTP_502_BAD_GATEWAY
 
     def test_chat_accepts_candidate_role(
-        self, candidate_client, mock_rag_chat_service
+        self, candidate_client, mock_rag_chat_service, mock_quota_service
     ):
         mock_rag_chat_service.chat.return_value = _chat_response_payload()
 
@@ -1116,9 +1136,41 @@ class TestChat:
         )
 
         assert resp.status_code == 200
+        quota_kwargs = (
+            mock_quota_service.reserve_candidate_ai_quota.call_args.kwargs
+        )
+        assert quota_kwargs["feature_type"].value == "candidate_chat"
+        mock_quota_service.finalize_reservation.assert_awaited_once()
+
+    def test_chat_candidate_free_exhaustion_returns_403_and_notifies(
+        self,
+        candidate_client,
+        mock_rag_chat_service,
+        mock_quota_service,
+    ):
+        exc = CandidateQuotaExhaustedException(
+            "quota exhausted",
+            subscription_id=uuid.uuid4(),
+            is_free=True,
+            period_key="2026-06",
+        )
+        mock_quota_service.reserve_candidate_ai_quota.side_effect = exc
+
+        with patch(
+            "app.api.v1.endpoints.ai.NotificationService"
+        ) as notification_class:
+            notifications = notification_class.return_value
+            notifications.notify_candidate_free_quota_exhausted = AsyncMock()
+            resp = candidate_client.post(
+                "/api/v1/ai/chat", json={"message": "Xin chao"}
+            )
+
+        assert resp.status_code == status.HTTP_403_FORBIDDEN
+        mock_rag_chat_service.chat.assert_not_called()
+        notifications.notify_candidate_free_quota_exhausted.assert_awaited_once()
 
     def test_chat_accepts_recruiter_role(
-        self, recruiter_client, mock_rag_chat_service
+        self, recruiter_client, mock_rag_chat_service, mock_quota_service
     ):
         mock_rag_chat_service.chat.return_value = _chat_response_payload()
 
@@ -1127,6 +1179,7 @@ class TestChat:
         )
 
         assert resp.status_code == 200
+        mock_quota_service.reserve_candidate_ai_quota.assert_not_awaited()
 
     def test_chat_quota_exceeded_returns_429(
         self, active_client, mock_rag_chat_service

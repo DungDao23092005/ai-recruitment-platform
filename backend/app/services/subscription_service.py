@@ -13,7 +13,12 @@ from app.core.exceptions import (
     InvalidTransitionException,
     ValidationError,
 )
-from app.domain.enums import PlanAudience, SubscriptionStatus, UserRole
+from app.domain.enums import (
+    PlanAudience,
+    SubscriptionScope,
+    SubscriptionStatus,
+    UserRole,
+)
 from app.domain.models.base import utc_now
 from app.models import PaymentOrder, RecruitmentPlan, RecruiterProfile, Subscription, User
 from app.repositories import (
@@ -320,6 +325,17 @@ class SubscriptionService:
             )
 
         sub.status = SubscriptionStatus.CANCELLED
+        if (
+            sub.scope == SubscriptionScope.CANDIDATE_PERSONAL
+            and not sub.is_free
+        ):
+            await NotificationService(
+                self.session
+            ).notify_candidate_returned_to_free(
+                user_id=sub.user_id,
+                paid_subscription_id=sub.id,
+                reason="cancelled",
+            )
         try:
             await self.session.commit()
             await self.session.refresh(sub)
@@ -343,9 +359,23 @@ class SubscriptionService:
         if now is None:
             now = utc_now()
 
+        expiring_candidate_paid = await self.subscriptions.get_stale_candidate_paid(
+            now, limit=limit
+        )
         count = await self.subscriptions.expire_stale_active(now, limit=limit)
 
         if count > 0:
+            if expiring_candidate_paid:
+                notifications = NotificationService(self.session)
+                for candidate_paid in expiring_candidate_paid:
+                    await self.session.refresh(candidate_paid)
+                    if candidate_paid.status != SubscriptionStatus.EXPIRED:
+                        continue
+                    await notifications.notify_candidate_returned_to_free(
+                        user_id=candidate_paid.user_id,
+                        paid_subscription_id=candidate_paid.id,
+                        reason="expired",
+                    )
             try:
                 await self.session.commit()
             except Exception:
