@@ -23,6 +23,7 @@ from app.database.session import async_session_factory
 from app.domain.enums import (
     UserRole,
     MembershipRole,
+    PlanAudience,
     SubscriptionScope,
     SubscriptionStatus,
     PaymentProvider,
@@ -57,12 +58,16 @@ def test_plan(run_async):
 
         plan = RecruitmentPlan(
             id=uuid.uuid4(),
-            name="Test Plan",
-            description="Test plan",
+            name="Test Candidate Plan",
+            description="Test candidate paid plan",
             price=1500000,
             currency="VND",
             duration_days=30,
-            max_job_posts=10,
+            max_job_posts=0,
+            max_candidate_searches=10,
+            max_ai_features=25,
+            plan_audience=PlanAudience.CANDIDATE,
+            is_free=False,
             is_active=True,
             display_order=1,
         )
@@ -87,12 +92,15 @@ def inactive_plan(run_async):
 
         plan = RecruitmentPlan(
             id=uuid.uuid4(),
-            name="Inactive Plan",
-            description="Inactive plan",
+            name="Inactive Candidate Plan",
+            description="Inactive candidate plan",
             price=1000000,
             currency="VND",
             duration_days=15,
-            max_job_posts=5,
+            max_job_posts=0,
+            max_ai_features=10,
+            plan_audience=PlanAudience.CANDIDATE,
+            is_free=False,
             is_active=False,
             display_order=0,
         )
@@ -139,6 +147,7 @@ def test_payment_order(run_async, test_plan, candidate_client):
                 id=uuid.uuid4(),
                 user_id=candidate_user.id,
                 plan_id=test_plan.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
                 amount=test_plan.price,
                 currency="VND",
                 provider=PaymentProvider.VNPAY,
@@ -186,6 +195,8 @@ def test_payment_order_and_pending_sub(run_async, test_plan, candidate_client):
                 id=uuid.uuid4(),
                 user_id=user.id,
                 plan_id=test_plan.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
+                is_free=False,
                 status=SubscriptionStatus.PENDING,
             )
             session.add(subscription)
@@ -196,6 +207,7 @@ def test_payment_order_and_pending_sub(run_async, test_plan, candidate_client):
                 user_id=user.id,
                 plan_id=test_plan.id,
                 subscription_id=subscription.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
                 amount=test_plan.price,
                 provider=PaymentProvider.VNPAY,
                 internal_order_id=(
@@ -243,6 +255,7 @@ def test_payment_order_pending(run_async, test_plan, candidate_client):
                 id=uuid.uuid4(),
                 user_id=user.id,
                 plan_id=test_plan.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
                 amount=test_plan.price,
                 currency="VND",
                 provider=PaymentProvider.VNPAY,
@@ -290,6 +303,8 @@ def test_subscription_pending(run_async, test_plan, candidate_client):
                 id=uuid.uuid4(),
                 user_id=user.id,
                 plan_id=test_plan.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
+                is_free=False,
                 status=SubscriptionStatus.PENDING,
             )
             session.add(subscription)
@@ -335,6 +350,7 @@ def another_user_payment_order(run_async, test_plan):
                 id=uuid.uuid4(),
                 user_id=other_user.id,  # type: ignore
                 plan_id=test_plan.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
                 amount=test_plan.price,
                 currency="VND",
                 provider=PaymentProvider.VNPAY,
@@ -475,12 +491,16 @@ def active_subscription_factory(run_async, candidate_client):
                 assert user is not None
                 plan = RecruitmentPlan(
                     id=uuid.uuid4(),
-                    name=f"Active Plan {price}",
-                    description="active plan",
+                    name=f"Active Candidate Plan {price}",
+                    description="active candidate plan",
                     price=price,
                     currency=currency,
                     duration_days=30,
-                    max_job_posts=1,
+                    max_job_posts=0,
+                    max_candidate_searches=10,
+                    max_ai_features=25,
+                    plan_audience=PlanAudience.CANDIDATE,
+                    is_free=False,
                     is_active=True,
                     display_order=0,
                 )
@@ -490,6 +510,8 @@ def active_subscription_factory(run_async, candidate_client):
                     id=uuid.uuid4(),
                     user_id=user.id,
                     plan_id=plan.id,
+                    scope=SubscriptionScope.CANDIDATE_PERSONAL,
+                    is_free=False,
                     status=SubscriptionStatus.ACTIVE,
                     started_at=datetime.now(timezone.utc),
                     expires_at=datetime.now(timezone.utc) + timedelta(days=30),
@@ -505,14 +527,12 @@ def active_subscription_factory(run_async, candidate_client):
 
 
 class TestPaymentAPICreateUpgradePolicy:
-    """P0: a user with an ACTIVE subscription may only buy a higher-priced plan."""
+    """Candidate Free does not block Paid; an active Paid tier does."""
 
-    def test_create_allowed_for_strict_upgrade(
-        self, candidate_client, test_plan, active_subscription_factory,
+    def test_candidate_free_does_not_block_paid_checkout(
+        self, candidate_client, test_plan,
     ):
-        """An active cheaper plan does not block a higher-priced checkout."""
-        active_subscription_factory(price=0)
-
+        """The registration-provisioned Candidate Free entitlement is independent."""
         response = _post(
             candidate_client,
             "/api/v1/payments/vnpay/create",
@@ -522,11 +542,11 @@ class TestPaymentAPICreateUpgradePolicy:
         assert response.status_code == status.HTTP_201_CREATED
         assert response.json()["internal_order_id"].startswith("VNPAY_")
 
-    def test_create_rejected_when_current_plan_is_not_cheaper(
+    def test_active_candidate_paid_blocks_checkout(
         self, candidate_client, test_plan, active_subscription_factory,
     ):
-        """A same-or-higher-priced active plan rejects the checkout with 409."""
-        active_subscription_factory(price=test_plan.price + 1_000_000)
+        """A user cannot start a second Candidate Paid checkout."""
+        active_subscription_factory(price=test_plan.price)
 
         response = _post(
             candidate_client,
@@ -565,6 +585,8 @@ def pending_payment_order_factory(run_async, candidate_client):
                     id=uuid.uuid4(),
                     user_id=user.id,
                     plan_id=plan.id,
+                    scope=SubscriptionScope.CANDIDATE_PERSONAL,
+                    is_free=False,
                     status=SubscriptionStatus.PENDING,
                 )
                 session.add(subscription)
@@ -574,6 +596,7 @@ def pending_payment_order_factory(run_async, candidate_client):
                     user_id=user.id,
                     plan_id=plan.id,
                     subscription_id=subscription.id,
+                    scope=SubscriptionScope.CANDIDATE_PERSONAL,
                     amount=plan.price,
                     currency=plan.currency,
                     provider=PaymentProvider.VNPAY,
@@ -662,12 +685,15 @@ class TestPaymentAPIPendingCheckoutPolicy:
             async with async_session_factory() as session:
                 plan = RecruitmentPlan(
                     id=uuid.uuid4(),
-                    name="Other Plan",
-                    description="other",
+                    name="Other Candidate Plan",
+                    description="other candidate plan",
                     price=500000,
                     currency="VND",
                     duration_days=30,
-                    max_job_posts=1,
+                    max_job_posts=0,
+                    max_ai_features=10,
+                    plan_audience=PlanAudience.CANDIDATE,
+                    is_free=False,
                     is_active=True,
                     display_order=0,
                 )

@@ -213,6 +213,150 @@ class PaymentService:
 
         return target_price > current_price
 
+    async def _create_candidate_vnpay_payment(
+        self,
+        *,
+        user: User,
+        plan: RecruitmentPlan,
+        plan_id: uuid.UUID,
+        client_ip: str,
+        return_url: str | None,
+        now_utc: datetime,
+    ) -> tuple[str, uuid.UUID, uuid.UUID]:
+        """Create or reuse a Candidate personal VNPAY checkout.
+
+        The caller already holds the per-user lock and has loaded the active
+        plan. Candidate checkout is a separate domain: it never inspects or
+        mutates RecruiterProfiles, CompanyMemberships, company subscriptions, or
+        the Candidate Free entitlement.
+        """
+        if user.role != UserRole.CANDIDATE:
+            raise ForbiddenException(
+                "Candidate access required for candidate plans"
+            )
+        if bool(getattr(plan, "is_free", False)) is True:
+            raise ValidationError(
+                "Candidate checkout requires a paid candidate plan"
+            )
+
+        # Candidate Paid is a single active tier. Free is a separate entitlement
+        # and intentionally does not block a Paid checkout.
+        existing_paid = (
+            await self.subscriptions.get_active_candidate_paid_by_user_id(
+                user.id, now_utc
+            )
+        )
+        if existing_paid is not None:
+            raise ConflictException(
+                f"User already has an active candidate subscription "
+                f"(id: {existing_paid.id})"
+            )
+
+        # A PAID order whose subscription is still PENDING is an entitlement
+        # incident, never an unpaid checkout.
+        if await self.payment_orders.has_paid_order_with_pending_subscription(
+            user.id
+        ):
+            raise ConflictException(
+                "Hệ thống đang ghi nhận một giao dịch đã thanh toán nhưng chưa "
+                "kích hoạt được gói dịch vụ. Vui lòng liên hệ hỗ trợ để được "
+                "xử lý trước khi thực hiện giao dịch mới."
+            )
+
+        pending_orders = await self.payment_orders.get_active_pending_for_user(
+            user.id, now_utc
+        )
+        candidate_pending = [
+            order
+            for order in pending_orders
+            if getattr(order, "scope", None)
+            == SubscriptionScope.CANDIDATE_PERSONAL
+        ]
+        if candidate_pending:
+            same_plan = [
+                order for order in candidate_pending if order.plan_id == plan_id
+            ]
+            if same_plan:
+                existing_order = same_plan[0]
+                if existing_order.subscription_id is None:
+                    raise ConflictException(
+                        "Bạn đang có một giao dịch chưa hoàn tất. Vui lòng chờ "
+                        "liên kết thanh toán hiện tại hết hạn rồi thử lại."
+                    )
+                payment_url = self._rebuild_payment_url(
+                    existing_order, plan, client_ip, return_url
+                )
+                return (
+                    payment_url,
+                    existing_order.internal_order_id,
+                    existing_order.subscription_id,
+                )
+            raise ConflictException(
+                "Bạn đang có một giao dịch chưa hoàn tất cho gói khác. Vui lòng "
+                "hoàn tất giao dịch đã tạo hoặc chờ liên kết thanh toán hết hạn "
+                "trước khi tạo giao dịch mới."
+            )
+
+        amount = plan.price
+        currency = (
+            plan.currency
+            if isinstance(getattr(plan, "currency", None), str)
+            and plan.currency.strip()
+            else "VND"
+        )
+        subscription = Subscription(
+            user_id=user.id,
+            plan_id=plan_id,
+            scope=SubscriptionScope.CANDIDATE_PERSONAL,
+            is_free=False,
+            status=SubscriptionStatus.PENDING,
+        )
+        self.session.add(subscription)
+        await self.session.flush()
+
+        internal_order_id = self._generate_internal_order_id()
+        timeout = self.vnpay.timeout
+        payment_order = PaymentOrder(
+            user_id=user.id,
+            plan_id=plan_id,
+            subscription_id=subscription.id,
+            scope=SubscriptionScope.CANDIDATE_PERSONAL,
+            amount=amount,
+            currency=currency,
+            provider=PaymentProvider.VNPAY,
+            internal_order_id=internal_order_id,
+            status=PaymentOrderStatus.PENDING,
+            created_at=now_utc,
+            expired_at=now_utc + timedelta(minutes=timeout),
+        )
+        self.session.add(payment_order)
+        schedule_admin_subscription_event(
+            self.session,
+            user_id=user.id,
+            subscription_id=subscription.id,
+            action=ACTION_ORDER_CREATED,
+        )
+        try:
+            await self.session.commit()
+            await self.session.refresh(payment_order)
+            await self.session.refresh(subscription)
+        except Exception:
+            await self.session.rollback()
+            raise
+
+        order_info = f"Thanh toan goi {plan.name}"
+        params = self.vnpay.build_payment_params(
+            amount=amount,
+            order_id=internal_order_id,
+            order_info=order_info,
+            client_ip=client_ip,
+            return_url=return_url,
+            expire_minutes=timeout,
+            create_time=now_utc,
+        )
+        payment_url = self.vnpay.build_payment_url(params)
+        return payment_url, internal_order_id, subscription.id
+
     async def create_vnpay_payment(
         self,
         user_id: uuid.UUID,
@@ -248,7 +392,7 @@ class PaymentService:
         # order creation atomic per user, and keeps a single lock hierarchy
         # (User -> PaymentOrder) shared with the IPN/QueryDr finalize paths. It
         # is never held across an outbound HTTP call (this path makes none).
-        await self._lock_user(user_id)
+        user = await self._lock_user(user_id)
 
         # Capture ONE authoritative creation instant (UTC-aware) and reuse it
         # for the persisted order timestamp, the application expiration, the
@@ -257,6 +401,26 @@ class PaymentService:
         # the PAY vnp_CreateDate, which QueryDr relies on to reference the
         # transaction.
         now_utc = utc_now()
+
+        # Candidate personal checkout is a separate entitlement domain. It must
+        # never enter the legacy recruiter upgrade logic (which can promote the
+        # purchaser to RECRUITER on activation) or the Company workspace flow.
+        if (
+            getattr(plan, "plan_audience", PlanAudience.COMPANY)
+            == PlanAudience.CANDIDATE
+        ):
+            return await self._create_candidate_vnpay_payment(
+                user=user,
+                plan=plan,
+                plan_id=plan_id,
+                client_ip=client_ip,
+                return_url=return_url,
+                now_utc=now_utc,
+            )
+        if user.role == UserRole.CANDIDATE:
+            raise ForbiddenException(
+                "Candidate accounts can only purchase Candidate plans"
+            )
 
         # 3a. Enforce the supported-purchase policy BEFORE creating any order.
         # A user with an active subscription may only start a checkout for a
@@ -739,6 +903,36 @@ class PaymentService:
             # Cannot process payment for failed/cancelled/expired order
             return {"RspCode": "02", "Message": "Order already failed or cancelled"}
 
+        # Candidate orders must remain entirely inside the Candidate Personal
+        # domain. Validate every relationship before recording any success so a
+        # malformed/mixed-scope order cannot activate or mutate recruiter data.
+        if (
+            getattr(payment_order, "scope", None)
+            == SubscriptionScope.CANDIDATE_PERSONAL
+        ):
+            candidate_sub = (
+                await self.subscriptions.get_by_id_including_deleted(
+                    payment_order.subscription_id
+                )
+                if payment_order.subscription_id is not None
+                else None
+            )
+            if candidate_sub is None:
+                return {"RspCode": "02", "Message": "Subscription not found"}
+            if (
+                candidate_sub.id != payment_order.subscription_id
+                or candidate_sub.plan_id != payment_order.plan_id
+                or candidate_sub.scope
+                != SubscriptionScope.CANDIDATE_PERSONAL
+                or candidate_sub.company_id is not None
+                or payment_order.company_id is not None
+                or candidate_sub.is_free
+            ):
+                return {
+                    "RspCode": "02",
+                    "Message": "Invalid candidate subscription relationship",
+                }
+
         # 6. Determine payment success from VNPAY response
         response_code = params.get("vnp_ResponseCode", "")
         transaction_status = params.get("vnp_TransactionStatus", "")
@@ -1216,39 +1410,94 @@ class PaymentService:
             raise EntityNotFoundException(f"User {sub.user_id} not found")
 
         now = utc_now()
+        is_candidate_subscription = (
+            sub.scope == SubscriptionScope.CANDIDATE_PERSONAL
+        )
 
         # Retire stale ACTIVE rows before overlap/upgrade checks. This shares the
         # per-user lock and transaction with the activation.
         await self.subscriptions.expire_stale_active_for_user(sub.user_id, now)
 
-        # Ensure recruiter access (role transition + profile creation)
-        await ensure_recruiter_access(self.session, user)
+        if is_candidate_subscription:
+            # Candidate Personal is isolated from recruiter provisioning. A
+            # Candidate payment must never mutate User.role, create a
+            # RecruiterProfile, or attach to a Company.
+            if sub.company_id is not None:
+                raise ConflictException(
+                    "Candidate subscription cannot belong to a company"
+                )
+            if sub.is_free:
+                raise ConflictException(
+                    "Candidate paid activation requires a non-free subscription"
+                )
+            if user.role != UserRole.CANDIDATE:
+                raise ConflictException(
+                    "Candidate subscription owner is no longer a candidate"
+                )
+        else:
+            # Ensure recruiter access (role transition + profile creation) for
+            # the preserved legacy personal checkout path only.
+            await ensure_recruiter_access(self.session, user)
 
         plan = await self.plans.get_active_by_id(sub.plan_id)
         if plan is None:
             raise EntityNotFoundException(f"Plan {sub.plan_id} not found or inactive")
 
-        # Check for an existing active subscription BEFORE activating. A
-        # supported (strictly higher-priced) upgrade retires the previous
-        # subscription as CANCELLED so exactly one ACTIVE subscription remains.
-        # Anything else (same tier renewal, downgrade, or an unresolvable
-        # current plan) is refused so a payment is never silently orphaned.
-        existing_active = await self.subscriptions.get_active_by_user_id(sub.user_id, now)
-        if existing_active is not None and existing_active.id != sub.id:
-            existing_plan = await self.plans.get_by_id(existing_active.plan_id)
-            if not self._is_supported_upgrade(plan, existing_plan):
+        if is_candidate_subscription:
+            if (
+                getattr(plan, "plan_audience", PlanAudience.COMPANY)
+                != PlanAudience.CANDIDATE
+                or bool(getattr(plan, "is_free", False))
+            ):
                 raise ConflictException(
-                    f"User already has an active subscription (id: {existing_active.id}) "
-                    "that is not a lower-tier plan; upgrade refused"
+                    "Candidate paid activation requires an active paid Candidate plan"
                 )
-            # Superseded plan: retire the old subscription. Its usage counters
-            # are preserved as historical record; only the terminal status
-            # changes. The new subscription starts fresh from the plan snapshot.
-            existing_active.status = SubscriptionStatus.CANCELLED
+            # Candidate Free and Paid are independent entitlements. Only an
+            # existing active Candidate Paid row blocks activation; Free is
+            # deliberately preserved.
+            existing_candidate_paid = (
+                await self.subscriptions.get_active_candidate_paid_by_user_id(
+                    sub.user_id, now
+                )
+            )
+            if (
+                existing_candidate_paid is not None
+                and existing_candidate_paid.id != sub.id
+            ):
+                raise ConflictException(
+                    "User already has an active candidate subscription "
+                    f"(id: {existing_candidate_paid.id}); activation refused"
+                )
+        else:
+            # Check for an existing active subscription BEFORE activating. A
+            # supported (strictly higher-priced) upgrade retires the previous
+            # subscription as CANCELLED so exactly one ACTIVE subscription
+            # remains. Anything else (same tier renewal, downgrade, or an
+            # unresolvable current plan) is refused so a payment is never
+            # silently orphaned.
+            existing_active = await self.subscriptions.get_active_by_user_id(
+                sub.user_id, now
+            )
+            if existing_active is not None and existing_active.id != sub.id:
+                existing_plan = await self.plans.get_by_id(existing_active.plan_id)
+                if not self._is_supported_upgrade(plan, existing_plan):
+                    raise ConflictException(
+                        f"User already has an active subscription (id: {existing_active.id}) "
+                        "that is not a lower-tier plan; upgrade refused"
+                    )
+                # Superseded plan: retire the old subscription. Its usage
+                # counters are preserved as historical record; only the terminal
+                # status changes. The new subscription starts fresh from the
+                # plan snapshot.
+                existing_active.status = SubscriptionStatus.CANCELLED
 
         sub.status = SubscriptionStatus.ACTIVE
         sub.started_at = now
         sub.expires_at = now + timedelta(days=plan.duration_days)
+        if is_candidate_subscription:
+            # Candidate Paid is a fixed plan period, not a monthly-reset Free
+            # entitlement. A Paid row must never carry a Free period key.
+            sub.current_period_key = None
 
         # Snapshot quota limits from the authoritative linked plan, mirroring
         # SubscriptionService.activate_subscription(). Usage counters are reset

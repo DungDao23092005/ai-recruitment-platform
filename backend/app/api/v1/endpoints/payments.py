@@ -164,8 +164,22 @@ async def create_vnpay_payment(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Platform admins cannot purchase subscriptions",
             )
+        plan = await service.plans.get_active_by_id(data.plan_id)
+        if current_user.role == UserRole.CANDIDATE and plan is not None:
+            if (
+                getattr(plan, "plan_audience", PlanAudience.COMPANY)
+                != PlanAudience.CANDIDATE
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Candidate accounts can only purchase Candidate plans",
+                )
+            if bool(getattr(plan, "is_free", False)):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Candidate checkout requires a paid candidate plan",
+                )
         if current_user.role == UserRole.RECRUITER:
-            plan = await service.plans.get_active_by_id(data.plan_id)
             if (
                 plan is not None
                 and getattr(plan, "plan_audience", PlanAudience.COMPANY)
@@ -174,6 +188,15 @@ async def create_vnpay_payment(
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Company plans require Workspace context via X-Company-ID",
+                )
+            if (
+                plan is not None
+                and getattr(plan, "plan_audience", PlanAudience.COMPANY)
+                == PlanAudience.CANDIDATE
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Candidate plans require a candidate account",
                 )
 
         try:
@@ -190,6 +213,11 @@ async def create_vnpay_payment(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Plan not found",
             )
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
         except ForbiddenException as exc:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

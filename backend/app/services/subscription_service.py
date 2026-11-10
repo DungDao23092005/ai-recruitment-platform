@@ -224,6 +224,10 @@ class SubscriptionService:
                 f"Cannot activate subscription in status {sub.status.value}"
             )
 
+        is_candidate_subscription = (
+            sub.scope == SubscriptionScope.CANDIDATE_PERSONAL
+        )
+
         now = utc_now()
 
         # Retire stale ACTIVE rows first so they cannot be mistaken for a live
@@ -234,6 +238,17 @@ class SubscriptionService:
         plan = await self.plans.get_active_by_id(sub.plan_id)
         if plan is None:
             raise EntityNotFoundException(f"Plan {sub.plan_id} not found or inactive")
+
+        if is_candidate_subscription:
+            if (
+                plan.plan_audience != PlanAudience.CANDIDATE
+                or bool(getattr(plan, "is_free", False))
+                or sub.is_free
+                or sub.company_id is not None
+            ):
+                raise ConflictException(
+                    "Candidate paid activation requires an active paid Candidate plan"
+                )
 
         # Check for existing active subscription BEFORE activating. The plan
         # determines which candidate tier (Free/Paid) is allowed to coexist.
@@ -252,8 +267,15 @@ class SubscriptionService:
         if user is None:
             raise EntityNotFoundException(f"User {sub.user_id} not found")
 
-        # Ensure recruiter access (role transition + profile creation)
-        await ensure_recruiter_access(self.session, user)
+        if is_candidate_subscription:
+            if user.role != UserRole.CANDIDATE:
+                raise ConflictException(
+                    "Candidate subscription owner is no longer a candidate"
+                )
+        else:
+            # Ensure recruiter access (role transition + profile creation) only
+            # for the preserved legacy personal checkout domain.
+            await ensure_recruiter_access(self.session, user)
 
         sub.status = SubscriptionStatus.ACTIVE
         sub.started_at = now
@@ -267,6 +289,10 @@ class SubscriptionService:
         sub.job_posts_used = 0
         sub.candidate_searches_used = 0
         sub.ai_features_used = 0
+        if is_candidate_subscription:
+            # Candidate Paid has a fixed period and must not carry the Candidate
+            # Free monthly period key.
+            sub.current_period_key = None
 
         # Create the activation notification in the SAME session/transaction as
         # the PENDING -> ACTIVE transition so the two commit or roll back
