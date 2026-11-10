@@ -13,7 +13,7 @@ from app.core.exceptions import (
     InvalidTransitionException,
     ValidationError,
 )
-from app.domain.enums import SubscriptionStatus, UserRole
+from app.domain.enums import PlanAudience, SubscriptionStatus, UserRole
 from app.domain.models.base import utc_now
 from app.models import PaymentOrder, RecruitmentPlan, RecruiterProfile, Subscription, User
 from app.repositories import (
@@ -107,8 +107,25 @@ class SubscriptionService:
         self,
         user_id: uuid.UUID,
         now: datetime,
+        plan: Optional[RecruitmentPlan] = None,
     ) -> Optional[Subscription]:
-        """Check for existing valid active subscription for the user."""
+        """Return the active subscription that blocks the requested plan.
+
+        Candidate tiers are independent entitlements: an active Free row blocks
+        only another Free row and an active Paid row blocks only another Paid
+        row, which lets Free and Paid coexist. Legacy recruiter plans keep their
+        existing single-active invariant. Company subscriptions never enter this
+        check, so candidate entitlements cannot interfere with company billing.
+        """
+        if plan is not None and plan.plan_audience == PlanAudience.CANDIDATE:
+            if plan.is_free:
+                return await self.subscriptions.get_active_candidate_free_by_user_id(
+                    user_id, now
+                )
+            return await self.subscriptions.get_active_candidate_paid_by_user_id(
+                user_id, now
+            )
+
         stmt = (
             select(Subscription)
             .where(
@@ -136,7 +153,7 @@ class SubscriptionService:
         now = utc_now()
 
         # Check for existing active subscription
-        existing_active = await self._check_active_overlap(user_id, now)
+        existing_active = await self._check_active_overlap(user_id, now, plan=plan)
         if existing_active is not None:
             raise ConflictException(
                 f"User already has an active subscription (id: {existing_active.id})"
@@ -209,16 +226,19 @@ class SubscriptionService:
         # activation, so the status change and new activation commit together.
         await self.subscriptions.expire_stale_active_for_user(sub.user_id, now)
 
-        # Check for existing active subscription BEFORE activating
-        existing_active = await self._check_active_overlap(sub.user_id, now)
+        plan = await self.plans.get_active_by_id(sub.plan_id)
+        if plan is None:
+            raise EntityNotFoundException(f"Plan {sub.plan_id} not found or inactive")
+
+        # Check for existing active subscription BEFORE activating. The plan
+        # determines which candidate tier (Free/Paid) is allowed to coexist.
+        existing_active = await self._check_active_overlap(
+            sub.user_id, now, plan=plan
+        )
         if existing_active is not None and existing_active.id != sub.id:
             raise ConflictException(
                 f"User already has an active subscription (id: {existing_active.id})"
             )
-
-        plan = await self.plans.get_active_by_id(sub.plan_id)
-        if plan is None:
-            raise EntityNotFoundException(f"Plan {sub.plan_id} not found or inactive")
 
         # Get the user (already locked by _lock_user_for_subscription)
         stmt = select(User).where(User.id == sub.user_id)

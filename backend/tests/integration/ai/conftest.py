@@ -56,6 +56,50 @@ SKIP_REASON_SQL = "BLOCKED BY ENVIRONMENT — SQL Server is not reachable"
 
 
 @pytest.fixture(autouse=True)
+def _ensure_candidate_free_plan(_reset_database):
+    """Candidate registration fails closed without an active Free plan."""
+    if not SQL_AVAILABLE:
+        yield
+        return
+
+    async def _seed():
+        from app.domain.enums import PlanAudience
+        from app.models import RecruitmentPlan
+
+        async with async_session_factory() as session:
+            existing = await session.scalar(
+                select(RecruitmentPlan).where(
+                    RecruitmentPlan.plan_audience == PlanAudience.CANDIDATE,
+                    RecruitmentPlan.is_free == True,  # noqa: E712
+                    RecruitmentPlan.is_active == True,  # noqa: E712
+                    RecruitmentPlan.is_deleted == False,  # noqa: E712
+                )
+            )
+            if existing is not None:
+                return
+            session.add(
+                RecruitmentPlan(
+                    name="Candidate Free AI Test Plan",
+                    description="Test-only candidate free tier",
+                    price=0,
+                    currency="VND",
+                    duration_days=30,
+                    max_job_posts=0,
+                    max_candidate_searches=0,
+                    max_ai_features=3,
+                    plan_audience=PlanAudience.CANDIDATE,
+                    is_free=True,
+                    is_active=True,
+                    display_order=0,
+                )
+            )
+            await session.commit()
+
+    run(_seed())
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _disable_rate_limiting():
     """Disable rate limiting for AI pipeline integration tests.
 

@@ -25,6 +25,7 @@ from app.domain.enums import UserRole
 from app.models import PasswordResetOTP, User
 from app.repositories import UserRepository
 from app.schemas.user import UserCreate
+from app.services.candidate_entitlement_service import CandidateEntitlementService
 from app.services.email_service import EmailService
 
 
@@ -33,6 +34,7 @@ class AuthService:
         self.session = session
         self.users = UserRepository(session, User)
         self.email_service = EmailService()
+        self.candidate_entitlements = CandidateEntitlementService(session)
 
     async def register_user(self, data: UserCreate) -> User:
         # Check for existing user with this email (including locked/inactive users)
@@ -54,6 +56,13 @@ class AuthService:
         )
         self.session.add(user)
         try:
+            # Flush the user inside the caller's transaction so the Candidate
+            # Free provisioning savepoint cannot roll back the account insert.
+            await self.session.flush()
+            if user.role == UserRole.CANDIDATE:
+                await self.candidate_entitlements.provision_free_entitlement(
+                    user.id
+                )
             await self.session.commit()
             await self.session.refresh(user)
         except Exception:

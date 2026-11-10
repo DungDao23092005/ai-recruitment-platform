@@ -19,6 +19,7 @@ def make_session() -> MagicMock:
     session = MagicMock()
     session.add = MagicMock()
     session.commit = AsyncMock()
+    session.flush = AsyncMock()
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
     return session
@@ -36,6 +37,7 @@ def make_user() -> User:
 def make_service(session) -> AuthService:
     service = AuthService(session)
     service.users = AsyncMock(spec=UserRepository)
+    service.candidate_entitlements = AsyncMock()
     return service
 
 

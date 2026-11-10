@@ -13,7 +13,7 @@ from app.core.rate_limit import set_rate_limiter, get_rate_limiter
 from app.core.rate_limit import RateLimiter
 from app.core.security import get_password_hash
 from app.database.session import async_session_factory
-from app.domain.enums import UserRole, SubscriptionStatus
+from app.domain.enums import UserRole, SubscriptionStatus, PlanAudience
 from app.domain.models.base import utc_now
 from app.main import app
 from app.models import User, RecruitmentPlan, Subscription, Resume
@@ -21,6 +21,48 @@ from redis.asyncio import Redis, ConnectionPool
 
 API_V1 = "/api/v1"
 PASSWORD = "password123"
+
+
+async def _seed_candidate_free_plan() -> None:
+    """Ensure an active Candidate Free plan exists for registration tests.
+
+    Candidate registration fails closed without this catalog row, and the
+    filtered unique index allows at most one active Candidate Free plan.
+    """
+    async with async_session_factory() as session:
+        existing = await session.scalar(
+            select(RecruitmentPlan).where(
+                RecruitmentPlan.plan_audience == PlanAudience.CANDIDATE,
+                RecruitmentPlan.is_free == True,  # noqa: E712
+                RecruitmentPlan.is_active == True,  # noqa: E712
+                RecruitmentPlan.is_deleted == False,  # noqa: E712
+            )
+        )
+        if existing is not None:
+            return
+        session.add(
+            RecruitmentPlan(
+                name="Candidate Free Test Plan",
+                description="Test-only candidate free tier",
+                price=0,
+                currency="VND",
+                duration_days=30,
+                max_job_posts=0,
+                max_candidate_searches=0,
+                max_ai_features=3,
+                plan_audience=PlanAudience.CANDIDATE,
+                is_free=True,
+                is_active=True,
+                display_order=0,
+            )
+        )
+        await session.commit()
+
+
+@pytest.fixture(autouse=True)
+def _ensure_candidate_free_plan(_reset_database):
+    run(_seed_candidate_free_plan())
+    yield
 
 
 async def seed_confirmed_resume(

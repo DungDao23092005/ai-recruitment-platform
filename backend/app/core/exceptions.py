@@ -123,6 +123,15 @@ class InvalidDocumentError(AIError):
     """Raised when a document is corrupted, invalid format, or exceeds size limits."""
 
 
+class ConfigurationError(ServiceException):
+    """Raised when required platform configuration is missing or invalid.
+
+    Fail-closed by design: callers must not substitute a fallback value.
+    """
+
+    status_code: int = 500
+
+
 class ValidationError(ServiceException):
     """Raised when input validation fails (maps to HTTP 422)."""
 

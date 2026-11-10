@@ -83,6 +83,60 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def _get_active_candidate_by_user_id(
+        self,
+        user_id: Any,
+        is_free: bool,
+        now: Optional[datetime] = None,
+    ) -> Subscription | None:
+        """Return a user's effective active Candidate subscription by tier.
+
+        Candidate entitlements are deliberately isolated from company and
+        legacy recruiter scopes: every predicate required by the candidate
+        billing contract is explicit here so neither callers nor future
+        additions can accidentally widen the query.
+        """
+        if now is None:
+            from app.domain.models.base import utc_now
+
+            now = utc_now()
+
+        stmt = (
+            select(Subscription)
+            .options(selectinload(Subscription.plan))
+            .where(
+                Subscription.user_id == user_id,
+                Subscription.company_id.is_(None),
+                Subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+                Subscription.is_free == is_free,
+                Subscription.is_deleted == False,  # noqa: E712
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                or_(Subscription.expires_at.is_(None), Subscription.expires_at > now),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_active_candidate_free_by_user_id(
+        self,
+        user_id: Any,
+        now: Optional[datetime] = None,
+    ) -> Subscription | None:
+        """Return the user's active Candidate Free entitlement, if any."""
+        return await self._get_active_candidate_by_user_id(
+            user_id, is_free=True, now=now
+        )
+
+    async def get_active_candidate_paid_by_user_id(
+        self,
+        user_id: Any,
+        now: Optional[datetime] = None,
+    ) -> Subscription | None:
+        """Return the user's active Candidate Paid entitlement, if any."""
+        return await self._get_active_candidate_by_user_id(
+            user_id, is_free=False, now=now
+        )
+
     @staticmethod
     def _stale_active_condition(now: datetime):
         return and_(

@@ -146,7 +146,11 @@ class TestAdminSubscriptionList:
         data = resp.json()
         assert data["subscription"]["id"] == sub_id
         assert data["subscription"]["plan_name"] == plan["name"]
-        assert len(data["history"]) == 1
+        history_by_id = {item["id"]: item for item in data["history"]}
+        assert history_by_id[sub_id]["plan_name"] == plan["name"]
+        assert any(
+            item["plan_name"] == "Candidate Free Test Plan" for item in data["history"]
+        )
         assert len(data["audit_logs"]) == 1
         log = data["audit_logs"][0]
         assert log["action"] == "provision"
@@ -548,20 +552,30 @@ async def _create_candidate_user(email_prefix: str, suffix: str = "") -> str:
 
 async def _create_candidate_free_and_paid_plans() -> tuple[dict, dict]:
     async with async_session_factory() as session:
-        free_plan = RecruitmentPlan(
-            name=f"Candidate Free {uuid.uuid4().hex[:8]}",
-            description="Candidate free tier",
-            price=0,
-            currency="VND",
-            duration_days=30,
-            max_job_posts=0,
-            max_candidate_searches=0,
-            max_ai_features=3,
-            plan_audience=PlanAudience.CANDIDATE,
-            is_free=True,
-            is_active=True,
-            display_order=0,
+        free_plan = await session.scalar(
+            select(RecruitmentPlan).where(
+                RecruitmentPlan.plan_audience == PlanAudience.CANDIDATE,
+                RecruitmentPlan.is_free == True,  # noqa: E712
+                RecruitmentPlan.is_active == True,  # noqa: E712
+                RecruitmentPlan.is_deleted == False,  # noqa: E712
+            )
         )
+        if free_plan is None:
+            free_plan = RecruitmentPlan(
+                name=f"Candidate Free {uuid.uuid4().hex[:8]}",
+                description="Candidate free tier",
+                price=0,
+                currency="VND",
+                duration_days=30,
+                max_job_posts=0,
+                max_candidate_searches=0,
+                max_ai_features=3,
+                plan_audience=PlanAudience.CANDIDATE,
+                is_free=True,
+                is_active=True,
+                display_order=0,
+            )
+            session.add(free_plan)
         paid_plan = RecruitmentPlan(
             name=f"Candidate Pro {uuid.uuid4().hex[:8]}",
             description="Candidate paid tier",
