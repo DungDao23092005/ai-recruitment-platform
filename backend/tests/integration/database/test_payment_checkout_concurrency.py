@@ -33,6 +33,8 @@ from app.database.session import async_session_factory
 from app.domain.enums import (
     PaymentOrderStatus,
     PaymentProvider,
+    PlanAudience,
+    SubscriptionScope,
     SubscriptionStatus,
     UserRole,
 )
@@ -45,7 +47,14 @@ from tests.integration.conftest import run
 pytestmark = pytest.mark.integration
 
 
-async def _make_plan(session, *, price: int = 299_000, name: str = "Plan") -> RecruitmentPlan:
+async def _make_plan(
+    session,
+    *,
+    price: int = 299_000,
+    name: str = "Plan",
+    plan_audience: PlanAudience = PlanAudience.CANDIDATE,
+    is_free: bool = False,
+) -> RecruitmentPlan:
     plan = RecruitmentPlan(
         id=uuid4(),
         name=name,
@@ -54,6 +63,8 @@ async def _make_plan(session, *, price: int = 299_000, name: str = "Plan") -> Re
         currency="VND",
         duration_days=30,
         max_job_posts=5,
+        plan_audience=plan_audience,
+        is_free=is_free,
         is_active=True,
         display_order=0,
     )
@@ -143,6 +154,8 @@ def test_concurrent_different_plan_checkout_cannot_both_create():
                 id=uuid4(),
                 user_id=user.id,
                 plan_id=pending_plan.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
+                is_free=False,
                 status=SubscriptionStatus.PENDING,
             )
             setup.add(subscription)
@@ -152,6 +165,7 @@ def test_concurrent_different_plan_checkout_cannot_both_create():
                 user_id=user.id,
                 plan_id=pending_plan.id,
                 subscription_id=subscription.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
                 amount=pending_plan.price,
                 currency="VND",
                 provider=PaymentProvider.VNPAY,
@@ -200,6 +214,8 @@ def test_concurrent_checkout_and_ipn_no_deadlock_consistent_state():
                 id=uuid4(),
                 user_id=user.id,
                 plan_id=plan.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
+                is_free=False,
                 status=SubscriptionStatus.PENDING,
             )
             setup.add(subscription)
@@ -210,6 +226,7 @@ def test_concurrent_checkout_and_ipn_no_deadlock_consistent_state():
                 user_id=user.id,
                 plan_id=plan.id,
                 subscription_id=subscription.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
                 amount=plan.price,
                 currency="VND",
                 provider=PaymentProvider.VNPAY,
@@ -303,7 +320,7 @@ def test_concurrent_checkout_and_ipn_no_deadlock_consistent_state():
 # ============================================================================
 
 from unittest.mock import patch
-from app.domain.enums import MembershipRole, SubscriptionScope
+from app.domain.enums import MembershipRole
 from app.domain.models.base import utc_now
 from tests.integration.company_billing_helpers import (
     _build_signed_ipn,
