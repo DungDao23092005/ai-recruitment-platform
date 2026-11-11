@@ -24,6 +24,8 @@ from app.database.session import async_session_factory  # noqa: E402
 from app.domain.enums import (  # noqa: E402
     PaymentOrderStatus,
     PaymentProvider,
+    PlanAudience,
+    SubscriptionScope,
     SubscriptionStatus,
     UserRole,
 )
@@ -61,7 +63,14 @@ async def _seed_user(session, *, role: UserRole = UserRole.CANDIDATE, tag: str =
     return user
 
 
-async def _seed_plan(session, *, price: int = 299_000, name: str = "Professional") -> RecruitmentPlan:
+async def _seed_plan(
+    session,
+    *,
+    price: int = 299_000,
+    name: str = "Professional",
+    plan_audience: PlanAudience = PlanAudience.CANDIDATE,
+    is_free: bool = False,
+) -> RecruitmentPlan:
     plan = RecruitmentPlan(
         name=name,
         price=price,
@@ -70,6 +79,8 @@ async def _seed_plan(session, *, price: int = 299_000, name: str = "Professional
         max_job_posts=10,
         max_candidate_searches=10,
         max_ai_features=10,
+        plan_audience=plan_audience,
+        is_free=is_free,
         is_active=True,
         display_order=1,
     )
@@ -114,7 +125,9 @@ def _ipn_params(order: PaymentOrder, provider: VNPAYProvider) -> dict:
 def test_provision_emails_the_subscription_owner(run_async, email_spy):
     async def _run():
         async with async_session_factory() as setup:
-            plan = await _seed_plan(setup)
+            plan = await _seed_plan(
+                setup, plan_audience=PlanAudience.COMPANY
+            )
             user = await _seed_user(setup)
             admin = await _seed_user(setup, role=UserRole.ADMIN, tag="admin")
             await setup.commit()
@@ -142,8 +155,18 @@ def test_provision_emails_the_subscription_owner(run_async, email_spy):
 def test_change_plan_emails_the_owner(run_async, email_spy):
     async def _run():
         async with async_session_factory() as setup:
-            plan = await _seed_plan(setup, name="Starter", price=99_000)
-            target = await _seed_plan(setup, name="Enterprise", price=999_000)
+            plan = await _seed_plan(
+                setup,
+                name="Starter",
+                price=99_000,
+                plan_audience=PlanAudience.COMPANY,
+            )
+            target = await _seed_plan(
+                setup,
+                name="Enterprise",
+                price=999_000,
+                plan_audience=PlanAudience.COMPANY,
+            )
             user = await _seed_user(setup)
             admin = await _seed_user(setup, role=UserRole.ADMIN, tag="admin")
             sub = await _seed_active_subscription(setup, user, plan)
@@ -171,7 +194,9 @@ def test_change_plan_emails_the_owner(run_async, email_spy):
 def test_revoke_emails_the_owner(run_async, email_spy):
     async def _run():
         async with async_session_factory() as setup:
-            plan = await _seed_plan(setup)
+            plan = await _seed_plan(
+                setup, plan_audience=PlanAudience.COMPANY
+            )
             user = await _seed_user(setup)
             admin = await _seed_user(setup, role=UserRole.ADMIN, tag="admin")
             sub = await _seed_active_subscription(setup, user, plan)
@@ -220,6 +245,8 @@ def test_vnpay_receipt_is_idempotent_across_ipn_retries(run_async, email_spy):
             sub = Subscription(
                 user_id=user.id,
                 plan_id=plan.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
+                is_free=False,
                 status=SubscriptionStatus.PENDING,
             )
             setup.add(sub)
@@ -228,6 +255,7 @@ def test_vnpay_receipt_is_idempotent_across_ipn_retries(run_async, email_spy):
                 user_id=user.id,
                 plan_id=plan.id,
                 subscription_id=sub.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
                 amount=plan.price,
                 currency="VND",
                 provider=PaymentProvider.VNPAY,
@@ -264,6 +292,8 @@ async def _seed_pending_order(session, *, tag: str) -> tuple[PaymentOrder, uuid.
     sub = Subscription(
         user_id=user.id,
         plan_id=plan.id,
+        scope=SubscriptionScope.CANDIDATE_PERSONAL,
+        is_free=False,
         status=SubscriptionStatus.PENDING,
     )
     session.add(sub)
@@ -272,6 +302,7 @@ async def _seed_pending_order(session, *, tag: str) -> tuple[PaymentOrder, uuid.
         user_id=user.id,
         plan_id=plan.id,
         subscription_id=sub.id,
+        scope=SubscriptionScope.CANDIDATE_PERSONAL,
         amount=plan.price,
         currency="VND",
         provider=PaymentProvider.VNPAY,
