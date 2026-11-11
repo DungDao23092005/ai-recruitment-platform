@@ -23,7 +23,12 @@ settings.VNPAY_HASH_SECRET = "testhashsecret123"
 
 from app.core.exceptions import ConflictException  # noqa: E402
 from app.database.session import async_session_factory  # noqa: E402
-from app.domain.enums import SubscriptionAuditAction, SubscriptionStatus, UserRole  # noqa: E402
+from app.domain.enums import (  # noqa: E402
+    PlanAudience,
+    SubscriptionAuditAction,
+    SubscriptionStatus,
+    UserRole,
+)
 from app.models import RecruitmentPlan, Subscription, User  # noqa: E402
 from app.services.admin_subscription_service import AdminSubscriptionService  # noqa: E402
 from app.services.payment_service import PaymentService  # noqa: E402
@@ -58,7 +63,14 @@ async def _seed_user(session, *, role: UserRole = UserRole.CANDIDATE) -> User:
     return user
 
 
-async def _seed_plan(session, *, price: int = 299_000, name: str = "Professional") -> RecruitmentPlan:
+async def _seed_plan(
+    session,
+    *,
+    price: int = 299_000,
+    name: str = "Professional",
+    plan_audience: PlanAudience = PlanAudience.CANDIDATE,
+    is_free: bool = False,
+) -> RecruitmentPlan:
     plan = RecruitmentPlan(
         name=name,
         price=price,
@@ -67,6 +79,8 @@ async def _seed_plan(session, *, price: int = 299_000, name: str = "Professional
         max_job_posts=10,
         max_candidate_searches=10,
         max_ai_features=10,
+        plan_audience=plan_audience,
+        is_free=is_free,
         is_active=True,
         display_order=1,
     )
@@ -99,7 +113,9 @@ def _assert_event(message: dict, *, action: str, user_id, subscription_id):
 def test_provision_publishes_activated_event_after_commit(run_async):
     async def _run():
         async with async_session_factory() as setup:
-            plan = await _seed_plan(setup)
+            plan = await _seed_plan(
+                setup, plan_audience=PlanAudience.COMPANY
+            )
             user = await _seed_user(setup)
             admin = await _seed_user(setup, role=UserRole.ADMIN)
             await setup.commit()
@@ -127,8 +143,18 @@ def test_provision_publishes_activated_event_after_commit(run_async):
 def test_change_plan_publishes_plan_changed_event(run_async):
     async def _run():
         async with async_session_factory() as setup:
-            plan = await _seed_plan(setup, name="Starter", price=99_000)
-            target = await _seed_plan(setup, name="Enterprise", price=999_000)
+            plan = await _seed_plan(
+                setup,
+                name="Starter",
+                price=99_000,
+                plan_audience=PlanAudience.COMPANY,
+            )
+            target = await _seed_plan(
+                setup,
+                name="Enterprise",
+                price=999_000,
+                plan_audience=PlanAudience.COMPANY,
+            )
             user = await _seed_user(setup)
             admin = await _seed_user(setup, role=UserRole.ADMIN)
             sub = await _seed_active_subscription(setup, user, plan)
@@ -157,7 +183,9 @@ def test_change_plan_publishes_plan_changed_event(run_async):
 def test_revoke_publishes_revoked_event(run_async):
     async def _run():
         async with async_session_factory() as setup:
-            plan = await _seed_plan(setup)
+            plan = await _seed_plan(
+                setup, plan_audience=PlanAudience.COMPANY
+            )
             user = await _seed_user(setup)
             admin = await _seed_user(setup, role=UserRole.ADMIN)
             sub = await _seed_active_subscription(setup, user, plan)
@@ -209,7 +237,9 @@ def test_checkout_publishes_order_created_event(run_async):
 def test_rolled_back_mutation_publishes_no_event(run_async):
     async def _run():
         async with async_session_factory() as setup:
-            plan = await _seed_plan(setup)
+            plan = await _seed_plan(
+                setup, plan_audience=PlanAudience.COMPANY
+            )
             user = await _seed_user(setup)
             admin = await _seed_user(setup, role=UserRole.ADMIN)
             await setup.commit()
@@ -235,7 +265,9 @@ def test_rolled_back_mutation_publishes_no_event(run_async):
 def test_publish_failure_does_not_break_committed_mutation(run_async):
     async def _run():
         async with async_session_factory() as setup:
-            plan = await _seed_plan(setup)
+            plan = await _seed_plan(
+                setup, plan_audience=PlanAudience.COMPANY
+            )
             user = await _seed_user(setup)
             admin = await _seed_user(setup, role=UserRole.ADMIN)
             await setup.commit()
