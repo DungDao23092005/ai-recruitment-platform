@@ -11,9 +11,19 @@ from app.core.exceptions import (
     EntityNotFoundException,
     ValidationError,
 )
+from app.domain.enums import PlanAudience
 from app.models import RecruitmentPlan
 from app.repositories import RecruitmentPlanRepository
 from app.schemas.recruitment_plan import RecruitmentPlanCreate, RecruitmentPlanUpdate
+
+
+def _validate_free_plan_audience(
+    plan_audience: PlanAudience,
+    is_free: bool,
+) -> None:
+    """Enforce the database constraint ``is_free = 0 OR audience = candidate``."""
+    if is_free and plan_audience != PlanAudience.CANDIDATE:
+        raise ValidationError("A free plan must target the candidate audience")
 
 
 class RecruitmentPlanService:
@@ -22,6 +32,7 @@ class RecruitmentPlanService:
         self.plans = RecruitmentPlanRepository(session)
 
     async def create_plan(self, data: RecruitmentPlanCreate) -> RecruitmentPlan:
+        _validate_free_plan_audience(data.plan_audience, data.is_free)
         plan = RecruitmentPlan(
             name=data.name,
             description=data.description,
@@ -31,6 +42,8 @@ class RecruitmentPlanService:
             max_job_posts=data.max_job_posts,
             max_candidate_searches=data.max_candidate_searches,
             max_ai_features=data.max_ai_features,
+            plan_audience=data.plan_audience,
+            is_free=data.is_free,
             display_order=data.display_order,
             is_active=True,
         )
@@ -49,8 +62,11 @@ class RecruitmentPlanService:
     async def get_plan_admin(self, plan_id: uuid.UUID) -> RecruitmentPlan | None:
         return await self.plans.get_active_by_id_admin(plan_id)
 
-    async def list_active_plans(self) -> list[RecruitmentPlan]:
-        return await self.plans.list_active()
+    async def list_active_plans(
+        self,
+        audience: Optional[PlanAudience] = None,
+    ) -> list[RecruitmentPlan]:
+        return await self.plans.list_active(audience=audience)
 
     async def list_admin(
         self,
@@ -69,6 +85,14 @@ class RecruitmentPlanService:
         if plan is None:
             raise EntityNotFoundException(f"Recruitment plan {plan_id} not found")
 
+        effective_audience = (
+            data.plan_audience
+            if data.plan_audience is not None
+            else plan.plan_audience
+        )
+        effective_is_free = data.is_free if data.is_free is not None else plan.is_free
+        _validate_free_plan_audience(effective_audience, effective_is_free)
+
         if data.name is not None:
             plan.name = data.name
         if data.description is not None:
@@ -85,6 +109,10 @@ class RecruitmentPlanService:
             plan.max_candidate_searches = data.max_candidate_searches
         if data.max_ai_features is not None:
             plan.max_ai_features = data.max_ai_features
+        if data.plan_audience is not None:
+            plan.plan_audience = data.plan_audience
+        if data.is_free is not None:
+            plan.is_free = data.is_free
         if data.is_active is not None:
             plan.is_active = data.is_active
         if data.display_order is not None:

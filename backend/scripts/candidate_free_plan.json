@@ -1,0 +1,13 @@
+{
+  "name": "Gói Ứng Viên Miễn Phí",
+  "description": "Gói miễn phí dành cho ứng viên với 6 lượt sử dụng AI mỗi tháng. Hạn mức được làm mới vào ngày 01 hằng tháng. Lượt chưa sử dụng không được cộng dồn.",
+  "price": 0,
+  "currency": "VND",
+  "duration_days": 30,
+  "max_job_posts": 0,
+  "max_candidate_searches": 0,
+  "max_ai_features": 6,
+  "plan_audience": "candidate",
+  "is_free": true,
+  "display_order": 0
+}

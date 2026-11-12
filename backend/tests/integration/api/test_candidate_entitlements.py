@@ -12,11 +12,13 @@ import uuid
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import ConfigurationError
+from app.main import app
 from app.core.security import get_password_hash
 from app.database.session import async_session_factory
 from app.domain.enums import (
@@ -156,6 +158,51 @@ class TestRegistrationProvisioning:
 
         user = run_async(_load_user())
         assert user.role == UserRole.CANDIDATE
+
+    def test_registration_without_free_plan_fails_without_orphan_user(
+        self, client, run_async
+    ):
+        async def _deactivate():
+            async with async_session_factory() as session:
+                plan = await RecruitmentPlanRepository(
+                    session
+                ).get_active_candidate_free_plan()
+                assert plan is not None
+                plan.is_active = False
+                await session.commit()
+
+        run_async(_deactivate())
+        email = f"missing-free-plan-{uuid.uuid4()}@example.com"
+
+        async def _post():
+            transport = httpx.ASGITransport(
+                app=app,
+                raise_app_exceptions=False,
+            )
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as failing_client:
+                return await failing_client.post(
+                    f"{API_V1}/auth/register",
+                    json={
+                        "email": email,
+                        "password": PASSWORD,
+                        "role": "candidate",
+                    },
+                )
+
+        response = run_async(_post())
+
+        assert response.status_code == 500
+
+        async def _load_user():
+            async with async_session_factory() as session:
+                return await session.scalar(
+                    select(User).where(User.email == email)
+                )
+
+        assert run_async(_load_user()) is None
 
 
 class TestLazyProvisioning:

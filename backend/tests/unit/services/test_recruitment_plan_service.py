@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,9 +10,15 @@ from app.core.exceptions import (
     EntityNotFoundException,
     ValidationError,
 )
+from app.domain.enums import PlanAudience
 from app.models import RecruitmentPlan
 from app.repositories import RecruitmentPlanRepository
-from app.schemas.recruitment_plan import RecruitmentPlanCreate, RecruitmentPlanUpdate
+from app.schemas.recruitment_plan import (
+    RecruitmentPlanAdminRead,
+    RecruitmentPlanCreate,
+    RecruitmentPlanRead,
+    RecruitmentPlanUpdate,
+)
 from app.services.recruitment_plan_service import RecruitmentPlanService
 
 
@@ -32,6 +39,8 @@ def make_plan(plan_id: uuid.UUID | None = None) -> RecruitmentPlan:
         currency="VND",
         duration_days=30,
         max_job_posts=5,
+        plan_audience=PlanAudience.COMPANY,
+        is_free=False,
     )
 
 
@@ -112,6 +121,54 @@ class TestCreatePlan:
         plan = asyncio.run(service.create_plan(data))
         assert plan.currency == "VND"
 
+    def test_creates_candidate_free_plan(self):
+        session = make_session()
+        service = make_service(session)
+        data = RecruitmentPlanCreate(
+            name="Candidate Free",
+            description="Candidate free plan",
+            price=0,
+            currency="vnd",
+            duration_days=30,
+            max_job_posts=0,
+            max_candidate_searches=0,
+            max_ai_features=0,
+            plan_audience=PlanAudience.CANDIDATE,
+            is_free=True,
+        )
+
+        plan = asyncio.run(service.create_plan(data))
+
+        assert plan.plan_audience == PlanAudience.CANDIDATE
+        assert plan.is_free is True
+        assert plan.currency == "VND"
+
+    def test_defaults_to_company_paid_plan(self):
+        session = make_session()
+        service = make_service(session)
+        data = RecruitmentPlanCreate(
+            name="Company Plan",
+            price=1000,
+            duration_days=30,
+            max_job_posts=5,
+        )
+
+        plan = asyncio.run(service.create_plan(data))
+
+        assert plan.plan_audience == PlanAudience.COMPANY
+        assert plan.is_free is False
+
+    def test_rejects_free_company_plan_at_schema_level(self):
+        with pytest.raises(ValueError, match="candidate audience"):
+            RecruitmentPlanCreate(
+                name="Invalid Free",
+                price=0,
+                duration_days=30,
+                max_job_posts=0,
+                plan_audience=PlanAudience.COMPANY,
+                is_free=True,
+            )
+
 
 class TestGetPlan:
     def test_returns_active_plan(self):
@@ -146,6 +203,17 @@ class TestListActivePlans:
 
         assert result == plans
         service.plans.list_active.assert_awaited_once()
+
+    def test_passes_audience_filter(self):
+        session = make_session()
+        service = make_service(session)
+        service.plans.list_active.return_value = []
+
+        asyncio.run(service.list_active_plans(audience=PlanAudience.CANDIDATE))
+
+        service.plans.list_active.assert_awaited_once_with(
+            audience=PlanAudience.CANDIDATE
+        )
 
 
 class TestListAdmin:
@@ -198,6 +266,43 @@ class TestUpdatePlan:
         asyncio.run(service.update_plan(plan.id, data))
 
         assert plan.currency == "USD"
+
+    def test_updates_audience_and_free_flag(self):
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        service.plans.get_active_by_id_admin.return_value = plan
+        data = RecruitmentPlanUpdate(
+            plan_audience=PlanAudience.CANDIDATE,
+            is_free=True,
+        )
+
+        result = asyncio.run(service.update_plan(plan.id, data))
+
+        assert result is plan
+        assert plan.plan_audience == PlanAudience.CANDIDATE
+        assert plan.is_free is True
+        session.commit.assert_awaited_once()
+
+    def test_rejects_free_update_for_company_plan(self):
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        service.plans.get_active_by_id_admin.return_value = plan
+        data = RecruitmentPlanUpdate(is_free=True)
+
+        with pytest.raises(ValidationError, match="candidate audience"):
+            asyncio.run(service.update_plan(plan.id, data))
+
+        assert plan.is_free is False
+        session.commit.assert_not_awaited()
+
+    def test_rejects_company_audience_for_free_plan_in_payload(self):
+        with pytest.raises(ValueError, match="candidate audience"):
+            RecruitmentPlanUpdate(
+                plan_audience=PlanAudience.COMPANY,
+                is_free=True,
+            )
 
     def test_rollback_on_commit_failure(self):
         session = make_session()
@@ -343,3 +448,24 @@ class TestDeletePlan:
 
         # rollback is still called by repository, but service doesn't catch it
         # (repository already rolled back internally)
+
+
+class TestRecruitmentPlanReadSchemas:
+    def test_read_schemas_include_audience_and_free_flag(self):
+        plan = make_plan()
+        plan.description = None
+        plan.max_candidate_searches = None
+        plan.max_ai_features = None
+        plan.is_active = True
+        plan.display_order = 0
+        plan.is_deleted = False
+        plan.created_at = datetime.now(timezone.utc)
+        plan.updated_at = datetime.now(timezone.utc)
+
+        public = RecruitmentPlanRead.model_validate(plan)
+        admin = RecruitmentPlanAdminRead.model_validate(plan)
+
+        assert public.plan_audience == PlanAudience.COMPANY
+        assert public.is_free is False
+        assert admin.plan_audience == PlanAudience.COMPANY
+        assert admin.is_free is False

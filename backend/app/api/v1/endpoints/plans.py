@@ -3,11 +3,12 @@ from __future__ import annotations
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, get_current_active_user
 from app.core.exceptions import ConflictException, EntityNotFoundException, ValidationError
+from app.domain.enums import PlanAudience
 from app.models import User
 from app.schemas.recruitment_plan import RecruitmentPlanRead
 from app.services.recruitment_plan_service import RecruitmentPlanService
@@ -24,11 +25,15 @@ def _get_plan_service(db: AsyncSession = Depends(get_db)) -> RecruitmentPlanServ
     response_model=list[RecruitmentPlanRead],
 )
 async def list_active_plans(
+    audience: Optional[PlanAudience] = Query(
+        default=None,
+        description="Filter by plan audience (company or candidate)",
+    ),
     current_user: User = Depends(get_current_active_user),
     service: RecruitmentPlanService = Depends(_get_plan_service),
 ) -> list[RecruitmentPlanRead]:
-    """List all active recruitment plans."""
-    plans = await service.list_active_plans()
+    """List all active recruitment plans, optionally filtered by audience."""
+    plans = await service.list_active_plans(audience=audience)
     return [RecruitmentPlanRead.model_validate(p) for p in plans]
 
 

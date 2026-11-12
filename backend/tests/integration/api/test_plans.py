@@ -3,14 +3,15 @@ import uuid
 import pytest
 from fastapi import Depends
 import httpx
+from sqlalchemy import select
 
 from app.api.v1.endpoints import admin_plans as admin_plans_endpoints
 from app.api.v1.endpoints import plans as plans_endpoints
 from app.main import app
 from app.services.recruitment_plan_service import RecruitmentPlanService
 from app.core.security import get_password_hash
-from app.domain.enums import UserRole
-from app.models import User
+from app.domain.enums import PlanAudience, UserRole
+from app.models import RecruitmentPlan, User
 from app.database.session import async_session_factory
 from tests.integration.api.conftest import API_V1, run
 
@@ -86,6 +87,36 @@ def _create_plan(admin_client, run_async, body=None):
     return resp.json()
 
 
+def _deactivate_seeded_candidate_free_plan(run_async):
+    async def _deactivate():
+        async with async_session_factory() as session:
+            plan = await session.scalar(
+                select(RecruitmentPlan).where(
+                    RecruitmentPlan.plan_audience == PlanAudience.CANDIDATE,
+                    RecruitmentPlan.is_free == True,  # noqa: E712
+                    RecruitmentPlan.is_active == True,  # noqa: E712
+                    RecruitmentPlan.is_deleted == False,  # noqa: E712
+                )
+            )
+            assert plan is not None
+            plan.is_active = False
+            await session.commit()
+            return plan.id
+
+    return run_async(_deactivate())
+
+
+def _soft_delete_plan(run_async, plan_id):
+    async def _soft_delete():
+        async with async_session_factory() as session:
+            plan = await session.get(RecruitmentPlan, uuid.UUID(plan_id))
+            assert plan is not None
+            plan.is_deleted = True
+            await session.commit()
+
+    run_async(_soft_delete())
+
+
 class TestPublicPlans:
     def test_anonymous_list_plans_401(self, client, run_async):
         """Public plan listing should require authentication."""
@@ -127,6 +158,98 @@ class TestPublicPlans:
         resp = run_async(candidate_client.get(f"{API_V1}/plans/{plan['id']}"))
         assert resp.status_code == 404
 
+    def test_filter_plans_by_candidate_audience(
+        self, candidate_client, run_async, plan_service_override
+    ):
+        resp = run_async(
+            candidate_client.get(
+                f"{API_V1}/plans",
+                params={"audience": "candidate"},
+            )
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data
+        assert all(item["plan_audience"] == "candidate" for item in data)
+        assert any(item["is_free"] is True for item in data)
+
+    def test_filter_plans_by_company_audience(
+        self, candidate_client, run_async, plan_service_override, admin_plan_client
+    ):
+        company_name = f"Company Plan {uuid.uuid4().hex[:8]}"
+        _create_plan(
+            admin_plan_client,
+            run_async,
+            body={**PLAN_BODY, "name": company_name},
+        )
+
+        resp = run_async(
+            candidate_client.get(
+                f"{API_V1}/plans",
+                params={"audience": "company"},
+            )
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data
+        assert all(item["plan_audience"] == "company" for item in data)
+        assert all(item["is_free"] is False for item in data)
+        assert any(item["name"] == company_name for item in data)
+        assert all(item["name"] != "Candidate Free Test Plan" for item in data)
+
+    def test_list_plans_without_audience_returns_both(
+        self, candidate_client, run_async, plan_service_override, admin_plan_client
+    ):
+        company_name = f"Company Plan {uuid.uuid4().hex[:8]}"
+        _create_plan(
+            admin_plan_client,
+            run_async,
+            body={**PLAN_BODY, "name": company_name},
+        )
+
+        resp = run_async(candidate_client.get(f"{API_V1}/plans"))
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        audiences = {item["plan_audience"] for item in data}
+        assert audiences == {"company", "candidate"}
+        assert any(item["name"] == company_name for item in data)
+
+    def test_inactive_and_soft_deleted_plans_are_excluded(
+        self, candidate_client, run_async, plan_service_override, admin_plan_client
+    ):
+        inactive_name = f"Inactive Plan {uuid.uuid4().hex[:8]}"
+        inactive = _create_plan(
+            admin_plan_client,
+            run_async,
+            body={**PLAN_BODY, "name": inactive_name},
+        )
+        resp = run_async(
+            admin_plan_client.patch(
+                f"{API_V1}/admin/plans/{inactive['id']}/status",
+                json={"is_active": False},
+            )
+        )
+        assert resp.status_code == 200
+
+        deleted_name = f"Deleted Plan {uuid.uuid4().hex[:8]}"
+        deleted = _create_plan(
+            admin_plan_client,
+            run_async,
+            body={**PLAN_BODY, "name": deleted_name},
+        )
+        _soft_delete_plan(run_async, deleted["id"])
+
+        resp = run_async(
+            candidate_client.get(
+                f"{API_V1}/plans",
+                params={"audience": "company"},
+            )
+        )
+        assert resp.status_code == 200, resp.text
+        names = {item["name"] for item in resp.json()}
+        assert inactive_name not in names
+        assert deleted_name not in names
+
 
 class TestAdminPlans:
     def test_anonymous_create_401(self, client, run_async):
@@ -152,6 +275,79 @@ class TestAdminPlans:
         assert data["name"] == PLAN_BODY["name"]
         assert data["price"] == PLAN_BODY["price"]
         assert data["is_active"] is True
+        assert data["plan_audience"] == "company"
+        assert data["is_free"] is False
+
+    def test_admin_can_create_candidate_free_plan(
+        self, admin_plan_client, run_async, plan_service_override
+    ):
+        _deactivate_seeded_candidate_free_plan(run_async)
+        body = {
+            **PLAN_BODY,
+            "name": f"Candidate Free API {uuid.uuid4().hex[:8]}",
+            "description": "Candidate free plan from API test",
+            "price": 0,
+            "max_job_posts": 0,
+            "plan_audience": "candidate",
+            "is_free": True,
+        }
+
+        resp = run_async(admin_plan_client.post(f"{API_V1}/admin/plans", json=body))
+
+        assert resp.status_code == 201, resp.text
+        data = resp.json()
+        assert data["plan_audience"] == "candidate"
+        assert data["is_free"] is True
+        assert data["price"] == 0
+
+    def test_admin_can_promote_candidate_plan_to_free(
+        self, admin_plan_client, run_async, plan_service_override
+    ):
+        _deactivate_seeded_candidate_free_plan(run_async)
+        plan = _create_plan(
+            admin_plan_client,
+            run_async,
+            body={
+                **PLAN_BODY,
+                "name": f"Candidate Paid {uuid.uuid4().hex[:8]}",
+                "plan_audience": "candidate",
+            },
+        )
+
+        resp = run_async(
+            admin_plan_client.patch(
+                f"{API_V1}/admin/plans/{plan['id']}",
+                json={"is_free": True},
+            )
+        )
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["plan_audience"] == "candidate"
+        assert data["is_free"] is True
+
+    def test_admin_cannot_make_company_plan_free(
+        self, admin_plan_client, run_async, plan_service_override
+    ):
+        plan = _create_plan(admin_plan_client, run_async)
+
+        resp = run_async(
+            admin_plan_client.patch(
+                f"{API_V1}/admin/plans/{plan['id']}",
+                json={"is_free": True},
+            )
+        )
+
+        assert resp.status_code == 422, resp.text
+
+    def test_admin_cannot_create_free_company_plan(
+        self, admin_plan_client, run_async, plan_service_override
+    ):
+        body = {**PLAN_BODY, "is_free": True}
+
+        resp = run_async(admin_plan_client.post(f"{API_V1}/admin/plans", json=body))
+
+        assert resp.status_code == 422, resp.text
 
     def test_admin_can_list_all_plans(self, admin_plan_client, run_async, plan_service_override):
         _create_plan(admin_plan_client, run_async)

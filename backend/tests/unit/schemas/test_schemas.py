@@ -9,6 +9,7 @@ from app.domain.enums import (
     CompanySize,
     JobStatus,
     JobType,
+    PlanAudience,
     UserRole,
     WorkplaceType,
 )
@@ -288,6 +289,8 @@ class TestSubscriptionReadSchema:
                 self.max_job_posts = 5
                 self.max_candidate_searches = 10
                 self.max_ai_features = 3
+                self.plan_audience = PlanAudience.COMPANY
+                self.is_free = False
                 self.is_active = True
                 self.display_order = 0
                 self.created_at = datetime.now(timezone.utc)

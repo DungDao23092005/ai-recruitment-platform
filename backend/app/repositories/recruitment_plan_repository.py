@@ -5,6 +5,7 @@ from typing import Any, Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.enums import PlanAudience
 from app.models import RecruitmentPlan
 from app.repositories.base import BaseRepository
 
@@ -29,8 +30,6 @@ class RecruitmentPlanRepository(BaseRepository[RecruitmentPlan]):
         guarantees at most one row, so ``scalar_one_or_none`` cannot mask a
         duplicate catalog entry.
         """
-        from app.domain.enums import PlanAudience
-
         stmt = select(RecruitmentPlan).where(
             RecruitmentPlan.plan_audience == PlanAudience.CANDIDATE,
             RecruitmentPlan.is_free == True,  # noqa: E712
@@ -56,13 +55,20 @@ class RecruitmentPlanRepository(BaseRepository[RecruitmentPlan]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def list_active(self) -> list[RecruitmentPlan]:
+    async def list_active(
+        self,
+        audience: Optional[PlanAudience] = None,
+    ) -> list[RecruitmentPlan]:
+        filters = [
+            RecruitmentPlan.is_deleted == False,  # noqa: E712
+            RecruitmentPlan.is_active == True,  # noqa: E712
+        ]
+        if audience is not None:
+            filters.append(RecruitmentPlan.plan_audience == audience)
+
         stmt = (
             select(RecruitmentPlan)
-            .where(
-                RecruitmentPlan.is_deleted == False,  # noqa: E712
-                RecruitmentPlan.is_active == True,  # noqa: E712
-            )
+            .where(*filters)
             .order_by(RecruitmentPlan.display_order, RecruitmentPlan.id)
         )
         result = await self.session.execute(stmt)

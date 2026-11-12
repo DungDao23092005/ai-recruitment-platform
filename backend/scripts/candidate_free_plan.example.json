@@ -1,0 +1,13 @@
+{
+  "name": null,
+  "description": null,
+  "price": null,
+  "currency": null,
+  "duration_days": null,
+  "max_job_posts": null,
+  "max_candidate_searches": null,
+  "max_ai_features": null,
+  "plan_audience": "candidate",
+  "is_free": true,
+  "display_order": 0
+}
