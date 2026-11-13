@@ -361,6 +361,51 @@ class TestAdminPlans:
         assert data["skip"] == 0
         assert data["limit"] == 10
 
+    def test_admin_plan_list_filters_by_audience(
+        self, admin_plan_client, run_async, plan_service_override
+    ):
+        company = _create_plan(admin_plan_client, run_async)
+        candidate = _create_plan(
+            admin_plan_client,
+            run_async,
+            body={
+                **PLAN_BODY,
+                "name": f"Candidate Plan {uuid.uuid4().hex[:8]}",
+                "price": 199000,
+                "plan_audience": "candidate",
+                "is_free": False,
+            },
+        )
+
+        candidate_resp = run_async(
+            admin_plan_client.get(
+                f"{API_V1}/admin/plans", params={"audience": "candidate"}
+            )
+        )
+        assert candidate_resp.status_code == 200, candidate_resp.text
+        candidate_items = candidate_resp.json()["items"]
+        assert candidate_items
+        assert all(item["plan_audience"] == "candidate" for item in candidate_items)
+        assert candidate["id"] in {item["id"] for item in candidate_items}
+
+        company_resp = run_async(
+            admin_plan_client.get(
+                f"{API_V1}/admin/plans", params={"audience": "company"}
+            )
+        )
+        assert company_resp.status_code == 200, company_resp.text
+        company_items = company_resp.json()["items"]
+        assert company_items
+        assert all(item["plan_audience"] == "company" for item in company_items)
+        assert company["id"] in {item["id"] for item in company_items}
+
+        invalid = run_async(
+            admin_plan_client.get(
+                f"{API_V1}/admin/plans", params={"audience": "unknown"}
+            )
+        )
+        assert invalid.status_code == 422
+
     def test_admin_plan_list_supports_search_and_pagination(
         self, admin_plan_client, run_async, plan_service_override
     ):

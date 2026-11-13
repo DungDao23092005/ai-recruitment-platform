@@ -543,12 +543,29 @@ class AdminSubscriptionService:
         if user_email is None and getattr(sub, "user", None) is not None:
             user_email = sub.user.email
         plan = getattr(sub, "plan", None)
+        company = getattr(sub, "company", None)
+        user = getattr(sub, "user", None)
+        user_full_name: Optional[str] = None
+        if user is not None:
+            candidate_profile = getattr(user, "candidate_profile", None)
+            recruiter_profile = getattr(user, "recruiter_profile", None)
+            user_full_name = (
+                getattr(candidate_profile, "full_name", None)
+                or getattr(recruiter_profile, "full_name", None)
+            )
         return AdminSubscriptionListItem(
             id=sub.id,
             user_id=sub.user_id,
             user_email=user_email,
+            user_full_name=user_full_name,
             plan_id=sub.plan_id,
             plan_name=plan.name if plan is not None else None,
+            plan_audience=plan.plan_audience if plan is not None else None,
+            scope=sub.scope,
+            is_free=sub.is_free,
+            company_id=sub.company_id,
+            company_name=company.name if company is not None else None,
+            current_period_key=sub.current_period_key,
             status=sub.status,
             effective_status=_effective_status(sub, now),
             started_at=sub.started_at,

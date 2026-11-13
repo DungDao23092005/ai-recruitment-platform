@@ -14,7 +14,7 @@ from app.domain.enums import (
     SubscriptionScope,
     SubscriptionStatus,
 )
-from app.models import PaymentOrder, Subscription
+from app.models import PaymentOrder, Subscription, User
 from app.repositories.base import BaseRepository
 
 
@@ -351,7 +351,12 @@ class SubscriptionRepository(BaseRepository[Subscription]):
     async def get_by_id_including_deleted(self, subscription_id: Any) -> Subscription | None:
         stmt = (
             select(Subscription)
-            .options(selectinload(Subscription.plan))
+            .options(
+                selectinload(Subscription.plan),
+                selectinload(Subscription.company),
+                selectinload(Subscription.user).selectinload(User.candidate_profile),
+                selectinload(Subscription.user).selectinload(User.recruiter_profile),
+            )
             .where(Subscription.id == subscription_id)
         )
         result = await self.session.execute(stmt)
@@ -562,7 +567,12 @@ class SubscriptionRepository(BaseRepository[Subscription]):
 
         subs_result = await self.session.execute(
             select(Subscription)
-            .options(selectinload(Subscription.plan), selectinload(Subscription.user))
+            .options(
+                selectinload(Subscription.plan),
+                selectinload(Subscription.company),
+                selectinload(Subscription.user).selectinload(User.candidate_profile),
+                selectinload(Subscription.user).selectinload(User.recruiter_profile),
+            )
             .where(Subscription.id.in_(sub_ids))
         )
         subs_by_id = {sub.id: sub for sub in subs_result.scalars().all()}

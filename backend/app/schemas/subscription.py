@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.domain.enums import (
     PaymentOrderStatus,
     PaymentProvider,
+    PlanAudience,
     SubscriptionAuditAction,
     SubscriptionScope,
     SubscriptionStatus,
@@ -129,8 +130,15 @@ class AdminSubscriptionListItem(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
     user_email: Optional[str] = None
+    user_full_name: Optional[str] = None
     plan_id: uuid.UUID
     plan_name: Optional[str] = None
+    plan_audience: Optional[PlanAudience] = None
+    scope: Optional[SubscriptionScope] = None
+    is_free: bool = False
+    company_id: Optional[uuid.UUID] = None
+    company_name: Optional[str] = None
+    current_period_key: Optional[str] = None
     status: SubscriptionStatus
     # Effective status for display: a DB-ACTIVE row past ``expires_at`` is shown
     # as EXPIRED without mutating the stored status.

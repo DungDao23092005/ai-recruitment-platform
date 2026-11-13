@@ -133,6 +133,38 @@ class TestAdminSubscriptionList:
         assert items[0]["user_email"] == resolved_email
         assert items[0]["plan_name"] == plan["name"]
 
+    def test_list_exposes_scope_plan_audience_and_current_period(
+        self, admin_client, run_async
+    ):
+        prefix = f"scope-{uuid.uuid4().hex[:8]}"
+        free_plan, _ = run(_create_candidate_free_and_paid_plans())
+        user_id = run(_create_candidate_user(prefix))
+        run(_active_candidate_subscription(user_id, free_plan))
+
+        async def _set_period() -> None:
+            async with async_session_factory() as session:
+                sub = await session.scalar(
+                    select(Subscription).where(
+                        Subscription.user_id == uuid.UUID(user_id)
+                    )
+                )
+                assert sub is not None
+                sub.current_period_key = "2026-11"
+                await session.commit()
+
+        run(_set_period())
+
+        body = _list(admin_client, run_async, prefix)
+        item = body["items"][0]
+        assert item["scope"] == "candidate_personal"
+        assert item["is_free"] is True
+        assert item["plan_audience"] == "candidate"
+        assert item["current_period_key"] == "2026-11"
+        assert item["company_id"] is None
+        assert item["company_name"] is None
+        assert item["user_email"].startswith(prefix)
+        assert "user_full_name" in item
+
     def test_detail_returns_history_and_audit(
         self, admin_client, candidate_client, run_async
     ):

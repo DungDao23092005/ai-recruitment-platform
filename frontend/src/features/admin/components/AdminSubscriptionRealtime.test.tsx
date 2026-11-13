@@ -20,8 +20,15 @@ function makeItem(
     id: 'sub-1',
     user_id: 'user-1',
     user_email: 'buyer@example.com',
+    user_full_name: null,
     plan_id: 'plan-1',
     plan_name: 'Gói cơ bản',
+    plan_audience: null,
+    scope: 'legacy_recruiter_personal',
+    is_free: false,
+    company_id: null,
+    company_name: null,
+    current_period_key: null,
     status: 'active',
     effective_status: 'active',
     started_at: '2026-01-01T00:00:00Z',
@@ -323,5 +330,79 @@ describe('AdminSubscriptionDetailModal realtime refresh', () => {
     })
     expect(screen.queryByText('Gói A')).not.toBeInTheDocument()
     expect(screen.getAllByText('Gói B').length).toBeGreaterThan(0)
+  })
+})
+
+describe('AdminSubscriptionList scope classification', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('renders candidate free classification and AI quota with period', async () => {
+    vi.mocked(getAdminSubscriptions).mockResolvedValue(
+      makeList([
+        makeItem({
+          scope: 'candidate_personal',
+          is_free: true,
+          plan_audience: 'candidate',
+          user_full_name: 'Nguyễn Văn A',
+          current_period_key: '2026-11',
+          max_job_posts: 0,
+          max_candidate_searches: 0,
+          max_ai_features: 6,
+          ai_features_used: 2,
+        }),
+      ]),
+    )
+
+    renderList()
+
+    await waitFor(() => {
+      expect(screen.getByText('Ứng viên — Miễn phí')).toBeInTheDocument()
+      expect(screen.getByText('Nguyễn Văn A')).toBeInTheDocument()
+      expect(screen.getByText(/AI: 2\s*\/\s*6/)).toBeInTheDocument()
+      expect(screen.getByText('Kỳ: 2026-11')).toBeInTheDocument()
+    })
+  })
+
+  it('renders company classification and full quota breakdown', async () => {
+    vi.mocked(getAdminSubscriptions).mockResolvedValue(
+      makeList([
+        makeItem({
+          scope: 'company_recruiting',
+          plan_audience: 'company',
+          company_id: 'company-1',
+          company_name: 'Acme Corp',
+          max_job_posts: 5,
+          job_posts_used: 1,
+          max_candidate_searches: 10,
+          candidate_searches_used: 3,
+          max_ai_features: 4,
+          ai_features_used: 1,
+        }),
+      ]),
+    )
+
+    renderList()
+
+    await waitFor(() => {
+      expect(screen.getByText('Doanh nghiệp')).toBeInTheDocument()
+      expect(screen.getByText('Acme Corp')).toBeInTheDocument()
+      expect(screen.getByText(/Tin: 1\s*\/\s*5/)).toBeInTheDocument()
+      expect(screen.getByText(/Tìm: 3\s*\/\s*10/)).toBeInTheDocument()
+      expect(screen.getByText(/AI: 1\s*\/\s*4/)).toBeInTheDocument()
+    })
+  })
+
+  it('falls back to legacy recruiter classification', async () => {
+    vi.mocked(getAdminSubscriptions).mockResolvedValue(makeList([makeItem()]))
+
+    renderList()
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Nhà tuyển dụng (legacy)'),
+      ).toBeInTheDocument()
+    })
   })
 })

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_admin
 from app.core.exceptions import ConflictException, EntityNotFoundException, ValidationError
+from app.domain.enums import PlanAudience
 from app.models import User
 from app.schemas.recruitment_plan import (
     PlanStatusUpdate,
@@ -35,9 +36,10 @@ async def list_admin_plans(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=10, ge=1, le=100),
     search: Optional[str] = Query(default=None, max_length=100),
+    audience: Optional[PlanAudience] = Query(default=None),
 ) -> RecruitmentPlanAdminList:
     """List all recruitment plans for admin (including inactive)."""
-    plans, total = await service.list_admin(skip, limit, search)
+    plans, total = await service.list_admin(skip, limit, search, audience)
     return RecruitmentPlanAdminList(
         items=[RecruitmentPlanAdminRead.model_validate(p) for p in plans],
         total=total,

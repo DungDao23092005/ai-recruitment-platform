@@ -226,7 +226,7 @@ class TestListAdmin:
         result = asyncio.run(service.list_admin(skip=0, limit=10, search=None))
 
         assert result == (plans, 2)
-        service.plans.list_admin.assert_awaited_once_with(0, 10, None)
+        service.plans.list_admin.assert_awaited_once_with(0, 10, None, None)
 
 
 class TestUpdatePlan:

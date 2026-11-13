@@ -26,6 +26,7 @@ import { AdminJobEditPage } from '@/features/admin/pages/AdminJobEditPage'
 import { AdminJobApplicantsPage } from '@/features/admin/pages/AdminJobApplicantsPage'
 import { AdminPlansPage } from '@/features/admin/pages/AdminPlansPage'
 import { AdminSubscriptionsPage } from '@/features/admin/pages/AdminSubscriptionsPage'
+import { AdminPaymentOrdersPage } from '@/features/admin/pages/AdminPaymentOrdersPage'
 import { AdminEmailsPage } from '@/features/admin/pages/AdminEmailsPage'
 import { AdminAuditPage } from '@/features/admin/pages/AdminAuditPage'
 import { RecruiterPortalPage } from '@/features/recruiter/pages/RecruiterPortalPage'
@@ -107,7 +108,7 @@ export function AppRouter() {
           <Route
             path="/ai/chat"
             element={
-              <RoleGuard allowedRoles={['candidate', 'recruiter', 'admin']}>
+              <RoleGuard allowedRoles={['candidate', 'recruiter']}>
                 <AIChatPage />
               </RoleGuard>
             }
@@ -171,8 +172,8 @@ export function AppRouter() {
           <Route
             path="/interviewer/interviews"
             element={
-              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
-                <WorkspaceRoleGuard allowedRoles={['admin', 'recruiter', 'interviewer']}>
+              <ProtectedByRole allowedRoles={['recruiter']}>
+                <WorkspaceRoleGuard allowedRoles={['recruiter', 'interviewer']}>
                   <MyInterviewsPage />
                 </WorkspaceRoleGuard>
               </ProtectedByRole>
@@ -181,8 +182,8 @@ export function AppRouter() {
           <Route
             path="/interviewer/profile"
             element={
-              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
-                <WorkspaceRoleGuard allowedRoles={['admin', 'recruiter', 'interviewer']}>
+              <ProtectedByRole allowedRoles={['recruiter']}>
+                <WorkspaceRoleGuard allowedRoles={['recruiter', 'interviewer']}>
                   <ProfilePage />
                 </WorkspaceRoleGuard>
               </ProtectedByRole>
@@ -279,7 +280,7 @@ export function AppRouter() {
           <Route
             path="/recruiter/search/candidates"
             element={
-              <ProtectedByRole allowedRoles={['recruiter', 'admin']}>
+              <ProtectedByRole allowedRoles={['recruiter']}>
                 <SemanticCandidateSearchPage />
               </ProtectedByRole>
             }
@@ -345,6 +346,14 @@ export function AppRouter() {
             element={
               <RoleGuard allowedRoles={['admin']}>
                 <AdminSubscriptionsPage />
+              </RoleGuard>
+            }
+          />
+          <Route
+            path="/admin/payment-orders"
+            element={
+              <RoleGuard allowedRoles={['admin']}>
+                <AdminPaymentOrdersPage />
               </RoleGuard>
             }
           />

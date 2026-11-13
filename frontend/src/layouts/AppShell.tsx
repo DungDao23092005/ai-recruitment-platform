@@ -15,6 +15,7 @@ import {
   Mail,
   Menu,
   PlusCircle,
+  ReceiptText,
   ScrollText,
   Search,
   Sparkles,
@@ -152,21 +153,29 @@ function useAppNav(
     {
       items: [
         { to: '/admin/dashboard', label: 'Tổng quan', icon: LayoutDashboard },
-        { to: '/admin/users', label: 'Quản lý người dùng', icon: Users },
-        { to: '/admin/companies', label: 'Quản lý công ty', icon: Building },
-        { to: '/admin/plans', label: 'Gói dịch vụ', icon: Sparkles },
-        { to: '/admin/subscriptions', label: 'Thuê bao người dùng', icon: CreditCard },
-        { to: '/admin/emails', label: 'Hàng đợi email', icon: Mail },
-        { to: '/admin/audit', label: 'Nhật ký quản trị', icon: ScrollText },
       ],
     },
     {
-      title: 'Tuyển dụng',
+      title: 'Quản trị nền tảng',
       items: [
-        { to: '/recruiter/jobs', label: 'Quản lý tuyển dụng', icon: Briefcase, end: true },
+        { to: '/admin/users', label: 'Người dùng', icon: Users },
+        { to: '/admin/companies', label: 'Công ty', icon: Building },
         { to: '/admin/jobs', label: 'Tin tuyển dụng', icon: Briefcase },
-        { to: '/interviewer/interviews', label: 'Lịch phỏng vấn', icon: CalendarClock },
-        { to: '/recruiter/search/candidates', label: 'Tìm ứng viên AI', icon: Search },
+      ],
+    },
+    {
+      title: 'Gói & Doanh thu',
+      items: [
+        { to: '/admin/plans', label: 'Gói dịch vụ', icon: Sparkles },
+        { to: '/admin/subscriptions', label: 'Thuê bao', icon: CreditCard },
+        { to: '/admin/payment-orders', label: 'Đơn thanh toán', icon: ReceiptText },
+      ],
+    },
+    {
+      title: 'Hệ thống',
+      items: [
+        { to: '/admin/emails', label: 'Hàng đợi email', icon: Mail },
+        { to: '/admin/audit', label: 'Nhật ký quản trị', icon: ScrollText },
       ],
     },
   ]
@@ -211,19 +220,21 @@ function SidebarNav({
           </ul>
         </div>
       ))}
-      <div>
-        <p className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Nền tảng
-        </p>
-        <ul className="space-y-1">
-          <li>
-            <NavLink to="/ai/chat" className={sectionClass}>
-              <Bot className="h-4 w-4" aria-hidden="true" />
-              Trợ lý AI
-            </NavLink>
-          </li>
-        </ul>
-      </div>
+      {role !== 'admin' ? (
+        <div>
+          <p className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Nền tảng
+          </p>
+          <ul className="space-y-1">
+            <li>
+              <NavLink to="/ai/chat" className={sectionClass}>
+                <Bot className="h-4 w-4" aria-hidden="true" />
+                Trợ lý AI
+              </NavLink>
+            </li>
+          </ul>
+        </div>
+      ) : null}
     </nav>
   )
 }

@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.v1.endpoints import (
     admin,
     admin_emails,
+    admin_payment_orders,
     admin_plans,
     admin_subscriptions,
     ai,
@@ -49,4 +50,5 @@ api_router.include_router(plans.router)
 api_router.include_router(subscriptions.router)
 api_router.include_router(admin_plans.router)
 api_router.include_router(admin_subscriptions.router)
+api_router.include_router(admin_payment_orders.router)
 api_router.include_router(workspaces.router, tags=["Workspaces"])

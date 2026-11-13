@@ -19,6 +19,8 @@ const mockPlans: AdminPlanRead[] = [
     max_ai_features: 5,
     display_order: 1,
     is_active: true,
+    plan_audience: 'company',
+    is_free: false,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
   },
@@ -34,6 +36,8 @@ const mockPlans: AdminPlanRead[] = [
     max_ai_features: 20,
     display_order: 2,
     is_active: false,
+    plan_audience: 'company',
+    is_free: false,
     created_at: '2024-01-02T00:00:00Z',
     updated_at: '2024-01-02T00:00:00Z',
   },
@@ -56,7 +60,7 @@ describe('AdminPlanList', () => {
   it('renders empty state with []', async () => {
     vi.mocked(getAdminPlans).mockResolvedValue(makeResponse([]))
 
-    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} />)
+    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} onDelete={vi.fn()} />)
 
     await waitFor(() => {
       expect(screen.getByText('Không tìm thấy gói')).toBeInTheDocument()
@@ -67,7 +71,7 @@ describe('AdminPlanList', () => {
   it('renders multiple plans', async () => {
     vi.mocked(getAdminPlans).mockResolvedValue(makeResponse())
 
-    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} />)
+    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} onDelete={vi.fn()} />)
 
     await waitFor(() => {
       expect(screen.getByText('Gói cơ bản')).toBeInTheDocument()
@@ -80,7 +84,7 @@ describe('AdminPlanList', () => {
   it('renders active/inactive status', async () => {
     vi.mocked(getAdminPlans).mockResolvedValue(makeResponse())
 
-    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} />)
+    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} onDelete={vi.fn()} />)
 
     await waitFor(() => {
       // Check for status badges (not buttons)
@@ -94,7 +98,7 @@ describe('AdminPlanList', () => {
   it('uses total from the API to render pagination', async () => {
     vi.mocked(getAdminPlans).mockResolvedValue(makeResponse(mockPlans, 25))
 
-    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} />)
+    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} onDelete={vi.fn()} />)
 
     await waitFor(() => {
       expect(screen.getByText('Trang 1 / 3')).toBeInTheDocument()
@@ -112,7 +116,7 @@ describe('AdminPlanList', () => {
   it('resets to the first page and sends the trimmed search query', async () => {
     vi.mocked(getAdminPlans).mockResolvedValue(makeResponse(mockPlans, 25))
 
-    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} />)
+    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} onDelete={vi.fn()} />)
 
     await waitFor(() => {
       expect(screen.getByText('Trang 1 / 3')).toBeInTheDocument()
@@ -133,6 +137,57 @@ describe('AdminPlanList', () => {
     await waitFor(() => {
       expect(getAdminPlans).toHaveBeenLastCalledWith(
         expect.objectContaining({ skip: 0, search: 'nâng cao' }),
+      )
+    })
+  })
+
+  it('renders audience badges and free classification', async () => {
+    const candidateFree: AdminPlanRead = {
+      ...mockPlans[0],
+      id: 'plan-free',
+      name: 'Gói ứng viên miễn phí',
+      plan_audience: 'candidate',
+      is_free: true,
+      price: 0,
+    }
+    vi.mocked(getAdminPlans).mockResolvedValue(makeResponse([candidateFree]))
+
+    render(
+      <AdminPlanList
+        onEdit={vi.fn()}
+        onStatus={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Ứng viên')).toHaveLength(2)
+      expect(screen.getAllByText('Miễn phí')).toHaveLength(2)
+    })
+  })
+
+  it('filters plans by audience and resets pagination', async () => {
+    vi.mocked(getAdminPlans).mockResolvedValue(makeResponse(mockPlans, 25))
+
+    render(
+      <AdminPlanList
+        onEdit={vi.fn()}
+        onStatus={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Trang 1 / 3')).toBeInTheDocument()
+    })
+
+    fireEvent.change(screen.getByLabelText('Lọc theo đối tượng'), {
+      target: { value: 'candidate' },
+    })
+
+    await waitFor(() => {
+      expect(getAdminPlans).toHaveBeenLastCalledWith(
+        expect.objectContaining({ skip: 0, audience: 'candidate' }),
       )
     })
   })

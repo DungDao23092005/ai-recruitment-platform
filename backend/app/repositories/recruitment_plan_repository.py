@@ -79,10 +79,13 @@ class RecruitmentPlanRepository(BaseRepository[RecruitmentPlan]):
         skip: int,
         limit: int,
         search: Optional[str] = None,
+        audience: Optional[PlanAudience] = None,
     ) -> tuple[list[RecruitmentPlan], int]:
         filters = [
             RecruitmentPlan.is_deleted == False,  # noqa: E712
         ]
+        if audience is not None:
+            filters.append(RecruitmentPlan.plan_audience == audience)
         if search:
             from sqlalchemy import or_
 

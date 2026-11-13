@@ -73,8 +73,9 @@ class RecruitmentPlanService:
         skip: int = 0,
         limit: int = 10,
         search: Optional[str] = None,
+        audience: Optional[PlanAudience] = None,
     ) -> tuple[list[RecruitmentPlan], int]:
-        return await self.plans.list_admin(skip, limit, search)
+        return await self.plans.list_admin(skip, limit, search, audience)
 
     async def update_plan(
         self,

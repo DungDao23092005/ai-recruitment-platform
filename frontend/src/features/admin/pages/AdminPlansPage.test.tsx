@@ -19,6 +19,8 @@ const mockPlans: AdminPlanRead[] = [
     max_ai_features: 5,
     display_order: 1,
     is_active: true,
+    plan_audience: 'company',
+    is_free: false,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
   },
@@ -34,6 +36,8 @@ const mockPlans: AdminPlanRead[] = [
     max_ai_features: 20,
     display_order: 2,
     is_active: false,
+    plan_audience: 'company',
+    is_free: false,
     created_at: '2024-01-02T00:00:00Z',
     updated_at: '2024-01-02T00:00:00Z',
   },
@@ -57,7 +61,7 @@ describe('AdminPlansPage', () => {
     render(<AdminPlansPage />)
 
     await waitFor(() => {
-      expect(screen.getByText('Quản lý các gói tuyển dụng cho nhà tuyển dụng')).toBeInTheDocument()
+      expect(screen.getByText('Quản lý gói dịch vụ cho doanh nghiệp và ứng viên')).toBeInTheDocument()
     })
 
     // Header button "Tạo gói mới" should be visible

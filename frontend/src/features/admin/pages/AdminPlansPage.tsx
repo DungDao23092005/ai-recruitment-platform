@@ -10,6 +10,7 @@ import type { AdminPlanRead } from '@/types/admin'
 export function AdminPlansPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [plans, setPlans] = useState<AdminPlanRead[]>([])
   const [editingPlan, setEditingPlan] = useState<AdminPlanRead | null>(null)
   const [statusPlan, setStatusPlan] = useState<AdminPlanRead | null>(null)
   const [deletingPlan, setDeletingPlan] = useState<AdminPlanRead | null>(null)
@@ -20,11 +21,11 @@ export function AdminPlansPage() {
     setLoading(true)
     setError(null)
     try {
-      await getAdminPlans({
+      const data = await getAdminPlans({
         skip: 0,
         limit: 100,
       })
-      // AdminPlanList loads its own data
+      setPlans(data.items)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Không thể tải danh sách gói'
       setError(message)
@@ -74,6 +75,9 @@ export function AdminPlansPage() {
     loadPlans()
   }
 
+  const existingActiveFreePlan =
+    plans.find((plan) => plan.is_free && plan.is_active) ?? null
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -90,7 +94,7 @@ export function AdminPlansPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Gói tuyển dụng</h1>
-          <p className="text-muted-foreground mt-1">Quản lý các gói tuyển dụng cho nhà tuyển dụng</p>
+          <p className="text-muted-foreground mt-1">Quản lý gói dịch vụ cho doanh nghiệp và ứng viên</p>
         </div>
         <Button
           onClick={handleCreate}
@@ -123,6 +127,7 @@ export function AdminPlansPage() {
       {isCreateModalOpen && (
         <AdminPlanForm
           mode="create"
+          existingActiveFreePlan={existingActiveFreePlan}
           onClose={() => setIsCreateModalOpen(false)}
           onSuccess={handlePlanCreated}
         />

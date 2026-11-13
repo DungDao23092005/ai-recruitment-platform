@@ -96,6 +96,8 @@ export interface AdminJobListParams {
   search?: string
 }
 
+export type AdminPlanAudience = 'company' | 'candidate'
+
 export interface AdminPlanRead {
   id: string
   name: string
@@ -106,6 +108,8 @@ export interface AdminPlanRead {
   max_job_posts: number
   max_candidate_searches: number
   max_ai_features: number
+  plan_audience: AdminPlanAudience
+  is_free: boolean
   display_order: number
   is_active: boolean
   created_at: string
@@ -123,6 +127,7 @@ export interface AdminPlanListParams {
   skip: number
   limit: number
   search?: string
+  audience?: AdminPlanAudience
 }
 
 export interface AdminPlanCreate {
@@ -134,6 +139,8 @@ export interface AdminPlanCreate {
   max_job_posts: number
   max_candidate_searches: number
   max_ai_features: number
+  plan_audience: AdminPlanAudience
+  is_free: boolean
   display_order: number
 }
 
@@ -146,6 +153,8 @@ export interface AdminPlanUpdate {
   max_job_posts?: number
   max_candidate_searches?: number
   max_ai_features?: number
+  plan_audience?: AdminPlanAudience
+  is_free?: boolean
   display_order?: number
   is_active?: boolean
 }
@@ -158,12 +167,24 @@ export type AdminSubscriptionStatus = 'active' | 'expired' | 'cancelled' | 'pend
 
 export type AdminSubscriptionAuditAction = 'provision' | 'change_plan' | 'revoke'
 
+export type AdminSubscriptionScope =
+  | 'company_recruiting'
+  | 'candidate_personal'
+  | 'legacy_recruiter_personal'
+
 export interface AdminSubscriptionListItem {
   id: string
   user_id: string
   user_email: string | null
+  user_full_name: string | null
   plan_id: string
   plan_name: string | null
+  plan_audience: AdminPlanAudience | null
+  scope: AdminSubscriptionScope | null
+  is_free: boolean
+  company_id: string | null
+  company_name: string | null
+  current_period_key: string | null
   status: AdminSubscriptionStatus
   effective_status: AdminSubscriptionStatus
   started_at: string | null
@@ -256,6 +277,53 @@ export interface AdminSubscriptionChangePlan {
 
 export interface AdminSubscriptionRevoke {
   reason: string
+}
+
+export type AdminPaymentOrderStatus =
+  | 'pending'
+  | 'paid'
+  | 'failed'
+  | 'cancelled'
+  | 'expired'
+
+export type AdminPaymentProvider = 'momo' | 'vnpay'
+
+export interface AdminPaymentOrder {
+  id: string
+  user_id: string
+  user_email: string | null
+  user_full_name: string | null
+  company_id: string | null
+  company_name: string | null
+  plan_id: string
+  plan_name: string | null
+  plan_audience: AdminPlanAudience | null
+  subscription_id: string | null
+  scope: AdminSubscriptionScope
+  amount: number
+  currency: string
+  provider: AdminPaymentProvider
+  internal_order_id: string
+  status: AdminPaymentOrderStatus
+  paid_at: string | null
+  expired_at: string | null
+  created_at: string
+}
+
+export interface AdminPaymentOrderList {
+  items: AdminPaymentOrder[]
+  total: number
+  skip: number
+  limit: number
+}
+
+export interface AdminPaymentOrderListParams {
+  skip: number
+  limit: number
+  status?: AdminPaymentOrderStatus
+  scope?: AdminSubscriptionScope
+  provider?: AdminPaymentProvider
+  search?: string
 }
 
 export type AdminEmailStatus = 'pending' | 'processing' | 'sent' | 'failed'

@@ -17,6 +17,7 @@ from app.domain.enums import (
     PaymentOrderStatus,
     PaymentProvider,
     SubscriptionAuditAction,
+    SubscriptionScope,
     SubscriptionStatus,
 )
 from app.domain.models.base import utc_now
@@ -58,6 +59,7 @@ def make_plan(**overrides):
     values = {
         "id": uuid.uuid4(),
         "name": "Gói mới",
+        "plan_audience": None,
         "duration_days": 60,
         "max_job_posts": 2,
         "max_candidate_searches": 2,
@@ -72,6 +74,10 @@ def make_subscription(**overrides) -> Subscription:
         "id": uuid.uuid4(),
         "user_id": uuid.uuid4(),
         "plan_id": uuid.uuid4(),
+        "scope": SubscriptionScope.LEGACY_RECRUITER_PERSONAL,
+        "is_free": False,
+        "company_id": None,
+        "current_period_key": None,
         "status": SubscriptionStatus.ACTIVE,
         "started_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
         "expires_at": datetime(2027, 1, 1, tzinfo=timezone.utc),

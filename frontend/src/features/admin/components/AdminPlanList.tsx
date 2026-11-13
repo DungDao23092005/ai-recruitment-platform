@@ -9,7 +9,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorBanner } from '@/components/ui/error-banner'
-import type { AdminPlanRead } from '@/types/admin'
+import type { AdminPlanAudience, AdminPlanRead } from '@/types/admin'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 
 export const ADMIN_PLAN_PAGE_SIZE = 10
@@ -42,6 +42,7 @@ export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
+  const [audienceFilter, setAudienceFilter] = useState<'' | AdminPlanAudience>('')
 
   const load = useCallback(async () => {
     setListState({ kind: 'loading' })
@@ -50,6 +51,7 @@ export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps
         skip: (page - 1) * ADMIN_PLAN_PAGE_SIZE,
         limit: ADMIN_PLAN_PAGE_SIZE,
         search: searchQuery.trim() || undefined,
+        audience: audienceFilter || undefined,
       })
       const lastPage = Math.max(1, Math.ceil(data.total / ADMIN_PLAN_PAGE_SIZE))
       if (page > lastPage) {
@@ -60,7 +62,7 @@ export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps
     } catch (err) {
       setListState({ kind: 'error', message: getFriendlyErrorMessage(err) })
     }
-  }, [page, searchQuery])
+  }, [page, searchQuery, audienceFilter])
 
   useEffect(() => {
     void load()
@@ -100,6 +102,26 @@ export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps
             aria-label="Tìm theo tên gói"
           />
         </div>
+        <div className="w-full sm:max-w-xs">
+          <label htmlFor="admin-plan-audience" className="sr-only">
+            Lọc theo đối tượng
+          </label>
+          <select
+            id="admin-plan-audience"
+            name="audience"
+            value={audienceFilter}
+            onChange={(event) => {
+              setPage(1)
+              setAudienceFilter(event.target.value as '' | AdminPlanAudience)
+            }}
+            aria-label="Lọc theo đối tượng"
+            className="flex h-9 w-full rounded-lg border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            <option value="">Tất cả đối tượng</option>
+            <option value="company">Doanh nghiệp</option>
+            <option value="candidate">Ứng viên</option>
+          </select>
+        </div>
         <Button type="submit">
           <Search className="h-4 w-4" aria-hidden="true" />
           Tìm kiếm
@@ -127,8 +149,8 @@ export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps
               icon={<Building className="h-6 w-6" aria-hidden="true" />}
               title="Không tìm thấy gói"
               description={
-                searchQuery
-                  ? 'Không có gói tuyển dụng nào khớp với từ khóa hiện tại. Hãy điều chỉnh tìm kiếm để xem thêm kết quả.'
+                searchQuery || audienceFilter
+                  ? 'Không có gói tuyển dụng nào khớp với bộ lọc hiện tại. Hãy điều chỉnh bộ lọc để xem thêm kết quả.'
                   : 'Chưa có gói tuyển dụng nào trên nền tảng.'
               }
             />
@@ -139,6 +161,8 @@ export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps
                   <thead>
                     <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
                       <th scope="col" className="px-4 py-3 font-medium">Tên gói</th>
+                      <th scope="col" className="px-4 py-3 font-medium">Đối tượng</th>
+                      <th scope="col" className="px-4 py-3 font-medium">Phân loại</th>
                       <th scope="col" className="px-4 py-3 font-medium">Giá</th>
                       <th scope="col" className="px-4 py-3 font-medium">Thời lượng</th>
                       <th scope="col" className="px-4 py-3 font-medium">Số lượng bài đăng</th>
@@ -159,7 +183,21 @@ export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps
                           <span className="font-medium">{plan.name}</span>
                         </td>
                         <td className="px-4 py-3">
-                          {plan.currency} {plan.price.toLocaleString()}
+                          <Badge variant="info">
+                            {plan.plan_audience === 'candidate'
+                              ? 'Ứng viên'
+                              : 'Doanh nghiệp'}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3">
+                          <Badge variant={plan.is_free ? 'success' : 'neutral'}>
+                            {plan.is_free ? 'Miễn phí' : 'Trả phí'}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3">
+                          {plan.is_free
+                            ? 'Miễn phí'
+                            : `${plan.currency} ${plan.price.toLocaleString()}`}
                         </td>
                         <td className="px-4 py-3">
                           {formatDuration(plan.duration_days)}
@@ -180,7 +218,7 @@ export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps
                             type="button"
                             variant="outline"
                             size="sm"
-                            aria-label="Sửa gói {plan.name}"
+                            aria-label={`Sửa gói ${plan.name}`}
                             onClick={() => onEdit(plan)}
                           >
                             <Edit className="h-4 w-4" aria-hidden="true" />

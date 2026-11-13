@@ -132,7 +132,9 @@ describe('AppShell sidebar', () => {
     renderShell('recruiter', '/recruiter/portal', 'admin')
 
     await waitFor(() => {
-      expect(getAppNav()).toBeInTheDocument()
+      expect(mockedGetWorkspaces).toHaveBeenCalled()
+    })
+    await waitFor(() => {
       expect(within(getAppNav()).getByText('Công ty')).toBeInTheDocument()
     })
 
@@ -197,14 +199,20 @@ describe('AppShell sidebar', () => {
 
     const nav = getAppNav()
     expect(within(nav).getByText('Tổng quan')).toBeInTheDocument()
-    expect(within(nav).getByText('Quản lý người dùng')).toBeInTheDocument()
-    expect(within(nav).getByText('Quản lý công ty')).toBeInTheDocument()
-    expect(within(nav).getByText('Quản lý tuyển dụng')).toBeInTheDocument()
+    expect(within(nav).getByText('Người dùng')).toBeInTheDocument()
+    expect(within(nav).getByText('Công ty')).toBeInTheDocument()
     expect(within(nav).getByText('Tin tuyển dụng')).toBeInTheDocument()
-    expect(within(nav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
+    expect(within(nav).getByText('Gói dịch vụ')).toBeInTheDocument()
+    expect(within(nav).getByText('Thuê bao')).toBeInTheDocument()
+    expect(within(nav).getByText('Đơn thanh toán')).toBeInTheDocument()
+    expect(within(nav).getByText('Hàng đợi email')).toBeInTheDocument()
+    expect(within(nav).getByText('Nhật ký quản trị')).toBeInTheDocument()
+    expect(within(nav).queryByText('Lịch phỏng vấn')).not.toBeInTheDocument()
+    expect(within(nav).queryByText('Tìm ứng viên AI')).not.toBeInTheDocument()
+    expect(within(nav).queryByText('Trợ lý AI')).not.toBeInTheDocument()
   })
 
-  it('points admin "Quản lý người dùng" at /admin/users', async () => {
+  it('points admin "Người dùng" at /admin/users', async () => {
     renderShell('admin', '/admin/dashboard')
 
     await waitFor(() => {
@@ -212,11 +220,11 @@ describe('AppShell sidebar', () => {
     })
 
     expect(
-      screen.getByRole('link', { name: 'Quản lý người dùng' }),
+      screen.getByRole('link', { name: 'Người dùng' }),
     ).toHaveAttribute('href', '/admin/users')
   })
 
-  it('points admin "Quản lý công ty" at /admin/companies', async () => {
+  it('points admin "Công ty" at /admin/companies', async () => {
     renderShell('admin', '/admin/dashboard')
 
     await waitFor(() => {
@@ -224,8 +232,20 @@ describe('AppShell sidebar', () => {
     })
 
     expect(
-      screen.getByRole('link', { name: 'Quản lý công ty' }),
+      screen.getByRole('link', { name: 'Công ty' }),
     ).toHaveAttribute('href', '/admin/companies')
+  })
+
+  it('points admin "Đơn thanh toán" at /admin/payment-orders', async () => {
+    renderShell('admin', '/admin/dashboard')
+
+    await waitFor(() => {
+      expect(screen.getByText('Tổng quan')).toBeInTheDocument()
+    })
+
+    expect(
+      screen.getByRole('link', { name: 'Đơn thanh toán' }),
+    ).toHaveAttribute('href', '/admin/payment-orders')
   })
 
   it('points candidate "Việc làm" at the private candidate jobs route', async () => {

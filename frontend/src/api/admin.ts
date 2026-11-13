@@ -27,6 +27,8 @@ import type {
   AdminEmailOutboxListParams,
   AdminEmailOutboxMessage,
   AdminEmailOutboxStats,
+  AdminPaymentOrderList,
+  AdminPaymentOrderListParams,
 } from '@/types/admin'
 
 export async function getAdminStats(): Promise<AdminStats> {
@@ -159,6 +161,15 @@ export async function revokeAdminSubscription(
   return apiClient.post<AdminSubscriptionRevoke, AdminSubscriptionListItem>(
     `/admin/subscriptions/${id}/revoke`,
     data,
+  )
+}
+
+export async function getAdminPaymentOrders(
+  params: AdminPaymentOrderListParams,
+): Promise<AdminPaymentOrderList> {
+  return apiClient.get<AdminPaymentOrderList, AdminPaymentOrderList>(
+    '/admin/payment-orders',
+    { params },
   )
 }
 

@@ -52,6 +52,21 @@ const STATUS_FILTERS: { value: '' | AdminSubscriptionStatus; label: string }[] =
   { value: 'cancelled', label: 'Đã hủy' },
 ]
 
+function getClassification(item: AdminSubscriptionListItem): {
+  label: string
+  variant: 'success' | 'warning' | 'destructive' | 'neutral' | 'info'
+} {
+  if (item.scope === 'candidate_personal') {
+    return item.is_free
+      ? { label: 'Ứng viên — Miễn phí', variant: 'success' }
+      : { label: 'Ứng viên — Trả phí', variant: 'info' }
+  }
+  if (item.scope === 'company_recruiting') {
+    return { label: 'Doanh nghiệp', variant: 'neutral' }
+  }
+  return { label: 'Nhà tuyển dụng (legacy)', variant: 'warning' }
+}
+
 export function formatSubscriptionDate(value: string | null): string {
   if (!value) return '—'
   const date = new Date(value)
@@ -281,6 +296,7 @@ export function AdminSubscriptionList({
                     <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
                       <th scope="col" className="px-4 py-3 font-medium">Người dùng</th>
                       <th scope="col" className="px-4 py-3 font-medium">Gói</th>
+                      <th scope="col" className="px-4 py-3 font-medium">Phân loại</th>
                       <th scope="col" className="px-4 py-3 font-medium">Trạng thái</th>
                       <th scope="col" className="px-4 py-3 font-medium">Hết hạn</th>
                       <th scope="col" className="px-4 py-3 font-medium">Hạn mức đã dùng</th>
@@ -300,6 +316,7 @@ export function AdminSubscriptionList({
                       const blockedTitle = actionBlocked
                         ? 'Không thể thao tác khi người dùng có nhiều gói hoạt động hoặc giao dịch chưa xử lý.'
                         : undefined
+                      const classification = getClassification(item)
                       return (
                       <tr
                         key={item.id}
@@ -307,8 +324,20 @@ export function AdminSubscriptionList({
                       >
                         <td className="px-4 py-3">
                           <span className="font-medium">
-                            {item.user_email ?? item.user_id}
+                            {item.user_full_name ||
+                              item.user_email ||
+                              item.user_id}
                           </span>
+                          {item.user_full_name && item.user_email ? (
+                            <div className="text-xs text-muted-foreground">
+                              {item.user_email}
+                            </div>
+                          ) : null}
+                          {item.company_name ? (
+                            <div className="text-xs text-muted-foreground">
+                              {item.company_name}
+                            </div>
+                          ) : null}
                           {item.total_subscriptions > 1 ||
                           item.has_multiple_active ||
                           item.has_unresolved_payment ? (
@@ -357,22 +386,42 @@ export function AdminSubscriptionList({
                           {item.plan_name ?? '—'}
                         </td>
                         <td className="px-4 py-3">
+                          <Badge variant={classification.variant}>
+                            {classification.label}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3">
                           <SubscriptionStatusBadge status={item.effective_status} />
                         </td>
                         <td className="px-4 py-3 text-muted-foreground">
                           {formatSubscriptionDate(item.expires_at)}
                         </td>
                         <td className="px-4 py-3 text-xs text-muted-foreground">
-                          <div>
-                            Tin: {item.job_posts_used}/{item.max_job_posts}
-                          </div>
-                          <div>
-                            Tìm: {item.candidate_searches_used}/
-                            {item.max_candidate_searches}
-                          </div>
-                          <div>
-                            AI: {item.ai_features_used}/{item.max_ai_features}
-                          </div>
+                          {item.scope === 'candidate_personal' ? (
+                            <>
+                              <div>
+                                AI: {item.ai_features_used}/
+                                {item.max_ai_features}
+                              </div>
+                              {item.current_period_key ? (
+                                <div>Kỳ: {item.current_period_key}</div>
+                              ) : null}
+                            </>
+                          ) : (
+                            <>
+                              <div>
+                                Tin: {item.job_posts_used}/{item.max_job_posts}
+                              </div>
+                              <div>
+                                Tìm: {item.candidate_searches_used}/
+                                {item.max_candidate_searches}
+                              </div>
+                              <div>
+                                AI: {item.ai_features_used}/
+                                {item.max_ai_features}
+                              </div>
+                            </>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-right">
                           <Button

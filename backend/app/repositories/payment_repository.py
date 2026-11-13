@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.domain.enums import (
     PaymentOrderStatus,
@@ -13,7 +14,7 @@ from app.domain.enums import (
     SubscriptionScope,
     SubscriptionStatus,
 )
-from app.models import PaymentOrder, PaymentTransaction, Subscription
+from app.models import PaymentOrder, PaymentTransaction, Subscription, User
 from app.repositories.base import BaseRepository
 
 
@@ -284,6 +285,8 @@ class PaymentOrderRepository(BaseRepository[PaymentOrder]):
         user_id: Optional[Any] = None,
         status_filter: Optional[PaymentOrderStatus] = None,
         provider: Optional[PaymentProvider] = None,
+        scope_filter: Optional[SubscriptionScope] = None,
+        search: Optional[str] = None,
     ) -> tuple[list[PaymentOrder], int]:
         filters = [
             PaymentOrder.is_deleted == False,  # noqa: E712
@@ -294,9 +297,30 @@ class PaymentOrderRepository(BaseRepository[PaymentOrder]):
             filters.append(PaymentOrder.status == status_filter)
         if provider is not None:
             filters.append(PaymentOrder.provider == provider)
+        if scope_filter is not None:
+            filters.append(PaymentOrder.scope == scope_filter)
+        if search and search.strip():
+            term = f"%{search.strip()}%"
+            filters.append(
+                or_(
+                    PaymentOrder.internal_order_id.ilike(term),
+                    PaymentOrder.user_id.in_(
+                        select(User.id).where(User.email.ilike(term))
+                    ),
+                )
+            )
 
         count_stmt = select(func.count()).select_from(PaymentOrder)
-        list_stmt = select(PaymentOrder).order_by(PaymentOrder.created_at.desc())
+        list_stmt = (
+            select(PaymentOrder)
+            .options(
+                selectinload(PaymentOrder.user).selectinload(User.candidate_profile),
+                selectinload(PaymentOrder.user).selectinload(User.recruiter_profile),
+                selectinload(PaymentOrder.company),
+                selectinload(PaymentOrder.plan),
+            )
+            .order_by(PaymentOrder.created_at.desc(), PaymentOrder.id.desc())
+        )
 
         if filters:
             count_stmt = count_stmt.where(*filters)

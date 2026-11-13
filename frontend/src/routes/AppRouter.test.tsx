@@ -129,6 +129,7 @@ vi.mock('@/api/admin', () => ({
   getAdminCompanies: vi.fn(),
   deleteAdminCompany: vi.fn(),
   getAdminAuditLogs: vi.fn(),
+  getAdminPaymentOrders: vi.fn(),
 }))
 
 vi.mock('@/api/endpoints', () => {
@@ -176,6 +177,7 @@ const mockedGetSystemHealth = vi.mocked(adminApi.getSystemHealth)
 const mockedGetAdminUsers = vi.mocked(adminApi.getAdminUsers)
 const mockedGetAdminCompanies = vi.mocked(adminApi.getAdminCompanies)
 const mockedGetAdminAuditLogs = vi.mocked(adminApi.getAdminAuditLogs)
+const mockedGetAdminPaymentOrders = vi.mocked(adminApi.getAdminPaymentOrders)
 const mockedGetApplicationsByJob = vi.mocked(
   applicationsApi.getApplicationsByJob,
 )
@@ -248,6 +250,12 @@ beforeEach(async () => {
     total: 0,
     skip: 0,
     limit: 20,
+  })
+  mockedGetAdminPaymentOrders.mockResolvedValue({
+    items: [],
+    total: 0,
+    skip: 0,
+    limit: 10,
   })
   mockedGetCandidateProfile.mockResolvedValue({
     id: 'candidate-1',
@@ -502,6 +510,63 @@ describe('AppRouter role guards', () => {
     })
     await waitFor(() => {
       expect(mockedGetAdminAuditLogs).toHaveBeenCalled()
+    })
+  })
+
+  it('lets an admin open the payment orders page', async () => {
+    setUser('admin')
+
+    renderAt('/admin/payment-orders')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Đơn thanh toán', level: 1 }),
+      ).toBeInTheDocument()
+    })
+    await waitFor(() => {
+      expect(mockedGetAdminPaymentOrders).toHaveBeenCalled()
+    })
+  })
+
+  it('blocks an admin from the interviewer calendar', async () => {
+    setUser('admin')
+
+    renderAt('/interviewer/interviews')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: /Lịch phỏng vấn/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('blocks an admin from AI chat', async () => {
+    setUser('admin')
+
+    renderAt('/ai/chat')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Trợ lý AI tuyển dụng' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('blocks an admin from semantic candidate search', async () => {
+    setUser('admin')
+
+    renderAt('/recruiter/search/candidates')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
     })
   })
 
