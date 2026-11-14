@@ -174,7 +174,9 @@ export function AppRouter() {
             path="/interviewer/interviews"
             element={
               <ProtectedByRole allowedRoles={['recruiter']}>
-                <WorkspaceRoleGuard allowedRoles={['recruiter', 'interviewer']}>
+                <WorkspaceRoleGuard
+                  allowedRoles={['admin', 'recruiter', 'interviewer']}
+                >
                   <MyInterviewsPage />
                 </WorkspaceRoleGuard>
               </ProtectedByRole>

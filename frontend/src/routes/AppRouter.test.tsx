@@ -133,6 +133,11 @@ vi.mock('@/api/subscriptions', () => ({
   }),
 }))
 
+vi.mock('@/api/interviews', () => ({
+  listMyAssignedInterviews: vi.fn().mockResolvedValue([]),
+  getInterviewerApplication: vi.fn(),
+}))
+
 vi.mock('@/api/admin', () => ({
   getAdminStats: vi.fn(),
   getSystemHealth: vi.fn(),
@@ -251,6 +256,9 @@ beforeEach(async () => {
   })
   const mockedCompanies = vi.mocked(await import('@/api/companies'))
   mockedCompanies.getCompanies.mockResolvedValue([])
+
+  const mockedInterviews = vi.mocked(await import('@/api/interviews'))
+  mockedInterviews.listMyAssignedInterviews.mockResolvedValue([])
 
   mockedGetJobs.mockResolvedValue({ items: [mockJob], total: 1 })
   mockedGetJobById.mockResolvedValue(mockJob)
@@ -746,6 +754,118 @@ describe('AppRouter recruiter job routes', () => {
     })
     expect(
       screen.queryByRole('heading', { name: 'Sửa tin tuyển dụng' }),
+    ).not.toBeInTheDocument()
+  })
+})
+
+describe('AppRouter interview schedule routes', () => {
+  it('lets a recruiter with workspace role admin open the interview schedule', async () => {
+    setUser('recruiter')
+    const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
+    mockedWorkspaces.getWorkspaces.mockResolvedValue([
+      {
+        company_id: 'company-1',
+        company_name: 'Acme Corp',
+        company_slug: 'acme-corp',
+        membership_id: 'membership-1',
+        role: 'admin',
+        is_platform_admin: false,
+      },
+    ])
+
+    renderAt('/interviewer/interviews')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Lịch phỏng vấn của tôi' }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: /Tìm đúng công việc/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('lets a recruiter with workspace role recruiter open the interview schedule', async () => {
+    setUser('recruiter')
+    const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
+    mockedWorkspaces.getWorkspaces.mockResolvedValue([
+      {
+        company_id: 'company-1',
+        company_name: 'Acme Corp',
+        company_slug: 'acme-corp',
+        membership_id: 'membership-1',
+        role: 'recruiter',
+        is_platform_admin: false,
+      },
+    ])
+
+    renderAt('/interviewer/interviews')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Lịch phỏng vấn của tôi' }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: /Tìm đúng công việc/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('lets a recruiter with workspace role interviewer open the interview schedule', async () => {
+    setUser('recruiter')
+    const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
+    mockedWorkspaces.getWorkspaces.mockResolvedValue([
+      {
+        company_id: 'company-1',
+        company_name: 'Acme Corp',
+        company_slug: 'acme-corp',
+        membership_id: 'membership-1',
+        role: 'interviewer',
+        is_platform_admin: false,
+      },
+    ])
+
+    renderAt('/interviewer/interviews')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Lịch phỏng vấn của tôi' }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: /Tìm đúng công việc/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('blocks a candidate from the interview schedule', async () => {
+    setUser('candidate')
+
+    renderAt('/interviewer/interviews')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Lịch phỏng vấn của tôi' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('blocks a recruiter without an active workspace from the interview schedule', async () => {
+    setUser('recruiter')
+    const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
+    mockedWorkspaces.getWorkspaces.mockResolvedValue([])
+
+    renderAt('/interviewer/interviews')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Lịch phỏng vấn của tôi' }),
     ).not.toBeInTheDocument()
   })
 })
