@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import text
 
 from app.database.session import async_session_factory, engine
@@ -62,3 +63,47 @@ def test_session_rollback_discards_changes(run_async):
             return await session.get(User, user_id)
 
     assert run_async(_run()) is None
+
+
+def test_drop_schema_restores_lock_timeout(run_async):
+    """The DDL watchdog must not leak its LOCK_TIMEOUT into the pool."""
+    from tests.integration.conftest import _drop_schema_with_connection
+
+    async def _run():
+        async with engine.connect() as conn:
+            await conn.execute(text("SET LOCK_TIMEOUT 12345"))
+            await conn.commit()
+
+            await _drop_schema_with_connection(conn)
+
+            restored = (
+                await conn.execute(text("SELECT @@LOCK_TIMEOUT"))
+            ).scalar()
+            await conn.rollback()
+            return restored
+
+    assert run_async(_run()) == -1
+
+
+def test_reset_database_drains_dispatch_before_schema_drop(monkeypatch):
+    import tests.integration.conftest as integration_conftest
+
+    calls: list[str] = []
+
+    async def _drain():
+        calls.append("drain")
+
+    async def _drop():
+        calls.append("drop")
+
+    monkeypatch.setattr(
+        integration_conftest, "_drain_worker_dispatch", _drain
+    )
+    monkeypatch.setattr(integration_conftest, "_drop_schema", _drop)
+
+    reset = integration_conftest._reset_database_impl()
+    next(reset)
+    with pytest.raises(StopIteration):
+        next(reset)
+
+    assert calls == ["drain", "drop", "drain", "drop"]

@@ -7,7 +7,6 @@ checkout, and that activation emails are idempotent across payment retries.
 
 from __future__ import annotations
 
-import asyncio
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -31,6 +30,9 @@ from app.domain.enums import (  # noqa: E402
 )
 from app.models import PaymentOrder, RecruitmentPlan, Subscription, User  # noqa: E402
 from app.services.admin_subscription_service import AdminSubscriptionService  # noqa: E402
+from app.services.email_outbox_worker import (  # noqa: E402
+    drain_default_worker_dispatch_tasks,
+)
 from app.services.email_service import EmailService  # noqa: E402
 from app.services.payment_providers.vnpay import VNPAYProvider  # noqa: E402
 from app.services.payment_service import PaymentService  # noqa: E402
@@ -140,7 +142,7 @@ def test_provision_emails_the_subscription_owner(run_async, email_spy):
                 user_id=user_id,
                 plan_id=plan_id,
             )
-            await asyncio.sleep(0.05)
+            await drain_default_worker_dispatch_tasks(timeout=5)
 
         assert email_spy.await_count == 1
         to_email, subject, html, _ = email_spy.await_args.args
@@ -180,7 +182,7 @@ def test_change_plan_emails_the_owner(run_async, email_spy):
                 target_plan_id=target_id,
                 reason="Nâng cấp",
             )
-            await asyncio.sleep(0.05)
+            await drain_default_worker_dispatch_tasks(timeout=5)
 
         assert email_spy.await_count == 1
         to_email, subject, html, _ = email_spy.await_args.args
@@ -209,7 +211,7 @@ def test_revoke_emails_the_owner(run_async, email_spy):
                 subscription_id=sub_id,
                 reason="Thu hồi",
             )
-            await asyncio.sleep(0.05)
+            await drain_default_worker_dispatch_tasks(timeout=5)
 
         assert email_spy.await_count == 1
         to_email, subject, html, _ = email_spy.await_args.args
@@ -230,7 +232,7 @@ def test_unpaid_checkout_sends_no_email(run_async, email_spy):
 
         async with async_session_factory() as session:
             await PaymentService(session).create_vnpay_payment(user_id, plan_id, "127.0.0.1")
-            await asyncio.sleep(0.05)
+            await drain_default_worker_dispatch_tasks(timeout=5)
 
         email_spy.assert_not_awaited()
 
@@ -276,7 +278,7 @@ def test_vnpay_receipt_is_idempotent_across_ipn_retries(run_async, email_spy):
             second = await svc.process_vnpay_ipn(params, "127.0.0.1")
             assert first["RspCode"] == "00"
             assert second["RspCode"] == "00"
-            await asyncio.sleep(0.05)
+            await drain_default_worker_dispatch_tasks(timeout=5)
 
         assert email_spy.await_count == 1, "duplicate IPN must not resend the receipt"
         to_email, subject, _, _ = email_spy.await_args.args
@@ -329,7 +331,7 @@ def test_vnpay_ipn_success_sends_enriched_receipt(run_async, email_spy):
             assert params["vnp_TransactionNo"] == "13524458"
             result = await svc.process_vnpay_ipn(params, "127.0.0.1")
             assert result["RspCode"] == "00"
-            await asyncio.sleep(0.05)
+            await drain_default_worker_dispatch_tasks(timeout=5)
 
         assert email_spy.await_count == 1
         to_email, subject, html, text = email_spy.await_args.args
@@ -375,7 +377,7 @@ def test_vnpay_querydr_success_sends_enriched_receipt(run_async, email_spy):
                 svc, "_send_querydr_request", new=AsyncMock(return_value=body)
             ):
                 await svc._reconcile_pending_vnpay_payment(order_row)
-            await asyncio.sleep(0.05)
+            await drain_default_worker_dispatch_tasks(timeout=5)
 
         assert email_spy.await_count == 1
         to_email, subject, html, text = email_spy.await_args.args
@@ -402,7 +404,7 @@ def test_vnpay_failed_payment_sends_no_receipt(run_async, email_spy):
             params["vnp_TransactionStatus"] = "02"
             params["vnp_SecureHash"] = provider.generate_secure_hash(params)
             await svc.process_vnpay_ipn(params, "127.0.0.1")
-            await asyncio.sleep(0.05)
+            await drain_default_worker_dispatch_tasks(timeout=5)
 
         email_spy.assert_not_awaited()
 
@@ -423,7 +425,7 @@ def test_vnpay_invalid_signature_sends_no_receipt(run_async, email_spy):
             params["vnp_SecureHash"] = "0" * 128  # tampered signature
             result = await svc.process_vnpay_ipn(params, "127.0.0.1")
             assert result["RspCode"] == "97"
-            await asyncio.sleep(0.05)
+            await drain_default_worker_dispatch_tasks(timeout=5)
 
         email_spy.assert_not_awaited()
 

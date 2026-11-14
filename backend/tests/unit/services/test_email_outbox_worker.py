@@ -6,6 +6,8 @@ import asyncio
 import uuid
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from app.services import email_outbox_worker as worker_module
 from app.services.email_outbox_realtime import (
     ACTION_CLAIMED,
@@ -166,3 +168,132 @@ class TestWorkerRealtimeEvents:
             await worker._recover_leases()
 
         schedule.assert_not_called()
+
+
+class TestDispatchTaskOwnership:
+    """Post-commit dispatch tasks are tracked and drained deterministically."""
+
+    def test_schedule_dispatch_tracks_and_clears_task(self):
+        async def _run():
+            worker = EmailOutboxWorker()
+            worker.dispatch_now = AsyncMock()
+
+            task = worker.schedule_dispatch()
+
+            assert task is not None
+            assert task in worker._dispatch_tasks
+            await task
+            assert task not in worker._dispatch_tasks
+            worker.dispatch_now.assert_awaited_once()
+
+        asyncio.run(_run())
+
+    def test_schedule_dispatch_runs_when_poll_loop_disabled(self, monkeypatch):
+        async def _run():
+            worker = EmailOutboxWorker()
+            worker.dispatch_now = AsyncMock()
+            monkeypatch.setattr(
+                worker_module.settings, "EMAIL_OUTBOX_ENABLED", False
+            )
+
+            task = worker.schedule_dispatch()
+
+            assert task is not None
+            await task
+            worker.dispatch_now.assert_awaited_once()
+
+        asyncio.run(_run())
+
+    def test_drain_waits_for_owned_tasks(self):
+        async def _run():
+            worker = EmailOutboxWorker()
+            started = asyncio.Event()
+            finish = asyncio.Event()
+
+            async def _dispatch():
+                started.set()
+                await finish.wait()
+
+            worker.dispatch_now = _dispatch
+            task = worker.schedule_dispatch()
+            assert task is not None
+            await started.wait()
+
+            drainer = asyncio.create_task(
+                worker.drain_dispatch_tasks(timeout=1.0)
+            )
+            await asyncio.sleep(0.01)
+            assert not drainer.done()
+
+            finish.set()
+            await asyncio.wait_for(drainer, timeout=1.0)
+            assert task.done()
+
+        asyncio.run(_run())
+
+    def test_drain_does_not_touch_unowned_loop_tasks(self):
+        async def _run():
+            worker = EmailOutboxWorker()
+            unowned = asyncio.create_task(asyncio.sleep(10))
+            try:
+                await worker.drain_dispatch_tasks(timeout=0.01)
+                assert not unowned.done()
+            finally:
+                unowned.cancel()
+                await asyncio.gather(unowned, return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_drain_cancels_stalled_task_and_raises_actionable_error(self):
+        async def _run():
+            worker = EmailOutboxWorker()
+
+            async def _stalled():
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    # Ignore the first cancellation long enough to exercise the
+                    # bounded grace period and the teardown failure path.
+                    await asyncio.sleep(0.2)
+                    raise
+
+            worker.dispatch_now = _stalled
+            task = worker.schedule_dispatch()
+            assert task is not None
+            try:
+                with pytest.raises(RuntimeError, match="did not stop"):
+                    await worker.drain_dispatch_tasks(
+                        timeout=0.01, cancel_grace=0.01
+                    )
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        asyncio.run(_run())
+
+    def test_reset_keeps_pending_dispatch_drainable(self):
+        async def _run():
+            worker_module.reset_default_worker()
+            worker = worker_module.get_default_worker()
+            finish = asyncio.Event()
+
+            async def _dispatch():
+                await finish.wait()
+
+            worker.dispatch_now = _dispatch
+            task = worker.schedule_dispatch()
+            assert task is not None
+
+            worker_module.reset_default_worker()
+
+            drainer = asyncio.create_task(
+                worker_module.drain_default_worker_dispatch_tasks(timeout=1.0)
+            )
+            await asyncio.sleep(0.01)
+            assert not drainer.done()
+
+            finish.set()
+            await asyncio.wait_for(drainer, timeout=1.0)
+            assert task.done()
+
+        asyncio.run(_run())

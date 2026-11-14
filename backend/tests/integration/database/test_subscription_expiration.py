@@ -252,14 +252,36 @@ def test_expiration_does_not_overwrite_concurrent_change_plan(run_async):
             "_commit_and_refresh",
             new=_hold_then_commit,
         ):
-            renewal = asyncio.create_task(_change_plan())
-            await asyncio.wait_for(renewal_flushed.wait(), timeout=5)
-            expiration = asyncio.create_task(_expire())
-            await asyncio.sleep(0.2)
-            assert not expiration.done()
-            release_renewal.set()
-            renewed = await renewal
-            expired = await expiration
+            renewal = None
+            expiration = None
+            try:
+                renewal = asyncio.create_task(
+                    _change_plan(), name="expiration-renewal"
+                )
+                await asyncio.wait_for(renewal_flushed.wait(), timeout=5)
+                expiration = asyncio.create_task(
+                    _expire(), name="expiration-worker"
+                )
+                await asyncio.sleep(0.2)
+                assert not expiration.done()
+                release_renewal.set()
+                renewed = await asyncio.wait_for(renewal, timeout=10)
+                expired = await asyncio.wait_for(expiration, timeout=10)
+            finally:
+                # Always release the renewal gate and reap both workers so a
+                # failed assertion cannot leave a transaction holding locks
+                # while the schema is dropped.
+                release_renewal.set()
+                workers = [
+                    task
+                    for task in (renewal, expiration)
+                    if task is not None
+                ]
+                for task in workers:
+                    if not task.done():
+                        task.cancel()
+                if workers:
+                    await asyncio.gather(*workers, return_exceptions=True)
 
         assert renewed.status == SubscriptionStatus.ACTIVE
         assert renewed.plan_id == target_plan_id

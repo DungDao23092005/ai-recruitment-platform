@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.database.session import async_session_factory
-from app.domain.enums import UserRole
+from app.domain.enums import OutboxStatus, UserRole
 from app.models import EmailOutbox, User
 from app.services.account_email_service import (
     EVENT_ACCOUNT_DELETED,
@@ -23,6 +23,7 @@ from app.services.account_email_service import (
 )
 from app.services.admin_service import AdminService
 from app.services.auth_service import AuthService
+from app.services.email_outbox_service import enqueue_email
 
 pytestmark = pytest.mark.integration
 
@@ -122,5 +123,53 @@ class TestPasswordResetOtpIsNotOutboxed:
                 )
             # OTP values are transient and must never be persisted in the outbox.
             assert total == 0
+
+        run_async(_test())
+
+
+class TestPostCommitDispatchWithPollingDisabled:
+    def test_post_commit_dispatch_still_runs(self, run_async, monkeypatch):
+        from app.core.config import settings
+        from app.services.email_outbox_worker import (
+            get_default_worker,
+            reset_default_worker,
+            signal_dispatch_after_commit,
+            start_default_worker,
+        )
+
+        async def _test():
+            reset_default_worker()
+            monkeypatch.setattr(
+                settings, "EMAIL_OUTBOX_ENABLED", False
+            )
+            await start_default_worker()
+
+            worker = get_default_worker()
+            assert worker._task is None, "poll loop must remain disabled"
+
+            async with async_session_factory() as session:
+                row = await enqueue_email(
+                    session,
+                    event_type="test_event",
+                    to_email=(
+                        f"dispatch-{uuid.uuid4().hex[:8]}@example.com"
+                    ),
+                    subject="Dispatch",
+                    html_body="<p>Hello</p>",
+                    text_body="Hello",
+                )
+                assert row is not None
+                message_id = row.id
+                signal_dispatch_after_commit(session)
+                await session.commit()
+
+            await worker.drain_dispatch_tasks(timeout=10)
+
+            async with async_session_factory() as session:
+                stored = await session.get(EmailOutbox, message_id)
+            assert stored is not None
+            assert stored.status == OutboxStatus.SENT.value
+
+            reset_default_worker()
 
         run_async(_test())

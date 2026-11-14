@@ -107,6 +107,7 @@ class EmailOutboxWorker:
         )
         self._stop_event = asyncio.Event()
         self._task: Optional[asyncio.Task[None]] = None
+        self._dispatch_tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
         self._cleanup_lock = asyncio.Lock()
 
@@ -207,6 +208,91 @@ class EmailOutboxWorker:
             await self.process_due_messages()
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("Immediate email outbox dispatch failed: %s", exc)
+
+    def schedule_dispatch(self) -> Optional[asyncio.Task[None]]:
+        """Schedule a post-commit dispatch and retain its task reference.
+
+        The task is tracked until completion so callers (notably integration
+        test teardown) can drain it instead of dropping the schema while a
+        dispatch is still touching the database.
+
+        This is deliberately independent of ``EMAIL_OUTBOX_ENABLED``: that flag
+        only controls the background poll loop. A post-commit signal must still
+        drain committed rows immediately when the poller is disabled.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug(
+                "No running event loop; skipping post-commit email dispatch"
+            )
+            return None
+
+        task = loop.create_task(
+            self.dispatch_now(), name="email-outbox-dispatch"
+        )
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._on_dispatch_done)
+        return task
+
+    def _on_dispatch_done(self, task: asyncio.Task[None]) -> None:
+        self._dispatch_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:  # pragma: no cover - defensive
+            return
+        if exc is not None:
+            logger.warning("Post-commit email outbox dispatch failed: %s", exc)
+
+    async def drain_dispatch_tasks(
+        self,
+        *,
+        timeout: float = 15.0,
+        cancel_grace: float = 5.0,
+    ) -> None:
+        """Wait for owned post-commit dispatch tasks, then cancel stragglers.
+
+        Only tasks created by :meth:`schedule_dispatch` on the current event
+        loop are inspected; tasks owned by another loop (for example a
+        TestClient portal) are left to that loop, and no other task on the
+        event loop is touched. If a task cannot stop within the cancellation
+        grace period, ``RuntimeError`` is raised so a teardown fails loudly
+        instead of dropping tables under an active dispatch.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            pending = {
+                task
+                for task in self._dispatch_tasks
+                if not task.done() and task.get_loop() is loop
+            }
+            if not pending:
+                return
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            await asyncio.wait(pending, timeout=remaining)
+
+        pending = {
+            task
+            for task in self._dispatch_tasks
+            if not task.done() and task.get_loop() is loop
+        }
+        if not pending:
+            return
+
+        for task in pending:
+            task.cancel()
+        _, still_pending = await asyncio.wait(pending, timeout=cancel_grace)
+        if still_pending:
+            names = ", ".join(sorted(task.get_name() for task in still_pending))
+            raise RuntimeError(
+                "Email outbox post-commit dispatch tasks did not stop after "
+                f"cancellation ({len(still_pending)} remaining: {names})"
+            )
 
     # ------------------------------------------------------------------ passes
 
@@ -627,6 +713,7 @@ def _consume_task_result(task: asyncio.Task[Any]) -> None:
 # --------------------------------------------------------------------- default
 
 _default_worker: Optional[EmailOutboxWorker] = None
+_retired_dispatch_workers: list[EmailOutboxWorker] = []
 
 
 def get_default_worker() -> EmailOutboxWorker:
@@ -638,9 +725,37 @@ def get_default_worker() -> EmailOutboxWorker:
 
 
 def reset_default_worker() -> None:
-    """Drop the process-wide worker (used by tests)."""
+    """Drop the process-wide worker (used by tests).
+
+    A worker that still owns in-flight post-commit dispatch tasks is retained so
+    teardown can drain them; otherwise resetting the reference would hide the
+    tasks and reintroduce the schema-drop race.
+    """
     global _default_worker
+    worker = _default_worker
+    if worker is not None and worker._dispatch_tasks:
+        _retired_dispatch_workers.append(worker)
     _default_worker = None
+
+
+async def drain_default_worker_dispatch_tasks(
+    *,
+    timeout: float = 15.0,
+    cancel_grace: float = 5.0,
+) -> None:
+    """Drain post-commit dispatch tasks owned by the shared worker, if any."""
+    workers = list(_retired_dispatch_workers)
+    if _default_worker is not None:
+        workers.append(_default_worker)
+    for worker in workers:
+        await worker.drain_dispatch_tasks(
+            timeout=timeout, cancel_grace=cancel_grace
+        )
+    _retired_dispatch_workers[:] = [
+        worker
+        for worker in _retired_dispatch_workers
+        if worker._dispatch_tasks
+    ]
 
 
 def default_worker_health() -> dict[str, Any]:
@@ -706,7 +821,9 @@ def signal_dispatch_after_commit(session: AsyncSession) -> None:
 
     def _run_after_commit(sync_session) -> None:  # noqa: ARG001
         try:
-            asyncio.create_task(get_default_worker().dispatch_now())
+            # Never gate this on EMAIL_OUTBOX_ENABLED: that flag only controls
+            # the poll loop, while this signal must still drain committed rows.
+            get_default_worker().schedule_dispatch()
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Could not signal email outbox dispatch: %s", exc)
 
