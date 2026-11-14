@@ -297,6 +297,8 @@ export function AppShell() {
   const workspaceRole = selectedWorkspace?.role
   const isInterviewer =
     role === 'recruiter' && workspaceRole === 'interviewer'
+  const isAdminRoute =
+    location.pathname === '/admin' || location.pathname.startsWith('/admin/')
 
   useEffect(() => {
     setDrawerOpen(false)
@@ -370,7 +372,9 @@ export function AppShell() {
             <Menu className="h-5 w-5" aria-hidden="true" />
           </Button>
           <div className="flex-1" />
-          <WorkspaceSwitcher className="max-w-[14rem] sm:max-w-none" />
+          {isAdminRoute ? null : (
+            <WorkspaceSwitcher className="max-w-[14rem] sm:max-w-none" />
+          )}
           <Badge variant="outline-ai" className="hidden sm:inline-flex">
             {USER_ROLE_LABELS[role ?? 'candidate']}
           </Badge>

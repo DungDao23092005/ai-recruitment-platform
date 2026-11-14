@@ -7,6 +7,7 @@ import { AuthProvider } from '@/contexts/AuthContext'
 import { WorkspaceProvider } from '@/contexts/WorkspaceContext'
 import * as authApi from '@/api/auth'
 import * as workspacesApi from '@/api/workspaces'
+import { WORKSPACE_STORAGE_KEY } from '@/api/client'
 import { USER_ROLE_LABELS } from '@/types/auth'
 import type { User, UserRole } from '@/types/auth'
 import type { MembershipRole, Workspace } from '@/types/workspace'
@@ -20,12 +21,16 @@ const mockUser: User = {
   updated_at: '2026-01-01T00:00:00Z',
 }
 
-function makeWorkspace(role: MembershipRole): Workspace {
+function makeWorkspace(
+  role: MembershipRole,
+  companyId = 'company-1',
+  companyName = 'Acme Corp',
+): Workspace {
   return {
-    company_id: 'company-1',
-    company_name: 'Acme Corp',
-    company_slug: 'acme-corp',
-    membership_id: 'membership-1',
+    company_id: companyId,
+    company_name: companyName,
+    company_slug: companyName.toLowerCase().replace(/\s+/g, '-'),
+    membership_id: `membership-${companyId}`,
     role,
     is_platform_admin: false,
   }
@@ -365,5 +370,66 @@ describe('AppShell sidebar', () => {
     expect(
       screen.queryByRole('button', { name: 'Đóng menu điều hướng' }),
     ).not.toBeInTheDocument()
+  })
+})
+
+describe('AppShell workspace switcher visibility', () => {
+  const switcherName = 'Chọn công ty làm việc'
+
+  it('does not render the workspace switcher on /admin', async () => {
+    renderShell('admin', '/admin', 'admin')
+
+    await waitForRoleBadge('admin')
+
+    expect(
+      screen.queryByRole('combobox', { name: switcherName }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('does not render the workspace switcher on nested /admin routes', async () => {
+    renderShell('admin', '/admin/audit', 'admin')
+
+    await waitForRoleBadge('admin')
+
+    expect(
+      screen.queryByRole('combobox', { name: switcherName }),
+    ).not.toBeInTheDocument()
+  })
+
+  it.each(['/recruiter/portal', '/recruiter/jobs', '/recruiter/admin-tools'])(
+    'keeps the workspace switcher on %s',
+    async (path) => {
+      renderShell('recruiter', path, 'recruiter')
+
+      const switcher = await screen.findByRole('combobox', {
+        name: switcherName,
+      })
+
+      expect(switcher).toBeInTheDocument()
+      expect(
+        within(switcher).getByRole('option', { name: 'Acme Corp' }),
+      ).toBeInTheDocument()
+    },
+  )
+
+  it('keeps recruiter workspace selection behavior unchanged', async () => {
+    mockedGetCurrentUser.mockResolvedValue({ ...mockUser, role: 'recruiter' })
+    mockedGetWorkspaces.mockResolvedValue([
+      makeWorkspace('recruiter', 'company-1', 'Acme Corp'),
+      makeWorkspace('admin', 'company-2', 'Beta Inc'),
+    ])
+    localStorage.setItem('ai_recruitment_token', 'token-abc')
+
+    renderApp('/recruiter/portal')
+
+    const switcher = await screen.findByRole('combobox', {
+      name: switcherName,
+    })
+    await waitFor(() => expect(switcher).toHaveValue('company-1'))
+
+    fireEvent.change(switcher, { target: { value: 'company-2' } })
+
+    expect(switcher).toHaveValue('company-2')
+    expect(localStorage.getItem(WORKSPACE_STORAGE_KEY)).toBe('company-2')
   })
 })
