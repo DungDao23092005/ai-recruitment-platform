@@ -97,7 +97,7 @@ function useAppNav(
         ],
       },
       {
-        title: 'Nâng cấp nhà tuyển dụng',
+        title: 'Gói dịch vụ AI',
         items: [
           { to: '/plans', label: 'Gói dịch vụ', icon: Sparkles, end: true },
         ],

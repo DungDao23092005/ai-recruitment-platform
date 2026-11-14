@@ -42,6 +42,7 @@ export function formatPlanDuration(days: number): string {
 
 const PlanCard = React.forwardRef<HTMLDivElement, PlanCardProps>(
   ({ plan, onSelect, isSelected = false, isCurrent = false, disabled = false, disabledReason, className }, ref) => {
+    const isCandidatePlan = plan.plan_audience === 'candidate'
     const isDisabled = isCurrent || isSelected || disabled
     const buttonLabel = isCurrent
       ? 'Gói hiện tại của bạn'
@@ -83,7 +84,7 @@ const PlanCard = React.forwardRef<HTMLDivElement, PlanCardProps>(
 
         <header className="flex-1">
           <p className="text-xs font-semibold uppercase tracking-wider text-primary">
-            Gói tuyển dụng
+            {isCandidatePlan ? 'Gói dịch vụ AI' : 'Gói tuyển dụng'}
           </p>
           <h3 className="mt-2 pr-16 text-xl font-semibold leading-snug text-foreground">
             {plan.name}
@@ -104,21 +105,30 @@ const PlanCard = React.forwardRef<HTMLDivElement, PlanCardProps>(
           </div>
 
           <dl className="mt-5 space-y-3 border-t border-border pt-5 text-sm">
-            <div className="flex items-start gap-2.5">
-              <CheckCircle2
-                className="mt-0.5 h-4 w-4 shrink-0 text-primary"
-                aria-hidden="true"
-              />
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <span className="font-semibold text-foreground">
-                  {plan.max_job_posts}
-                </span>
-                <span>bài đăng tin</span>
-              </div>
-            </div>
-
-            {plan.max_candidate_searches !== null &&
-              plan.max_candidate_searches !== undefined && (
+            {isCandidatePlan ? (
+              <>
+                {plan.max_ai_features !== null &&
+                  plan.max_ai_features !== undefined && (
+                    <div className="flex items-start gap-2.5">
+                      <CheckCircle2
+                        className="mt-0.5 h-4 w-4 shrink-0 text-primary"
+                        aria-hidden="true"
+                      />
+                      <div className="flex items-center gap-1.5 text-muted-foreground">
+                        <span className="font-semibold text-foreground">
+                          {plan.max_ai_features}
+                        </span>
+                        <span>lượt AI dùng chung</span>
+                      </div>
+                    </div>
+                  )}
+                <p className="text-xs text-muted-foreground">
+                  Một hạn mức AI dùng chung cho Phân tích CV, Gợi ý việc làm và
+                  Trò chuyện AI.
+                </p>
+              </>
+            ) : (
+              <>
                 <div className="flex items-start gap-2.5">
                   <CheckCircle2
                     className="mt-0.5 h-4 w-4 shrink-0 text-primary"
@@ -126,28 +136,45 @@ const PlanCard = React.forwardRef<HTMLDivElement, PlanCardProps>(
                   />
                   <div className="flex items-center gap-1.5 text-muted-foreground">
                     <span className="font-semibold text-foreground">
-                      {plan.max_candidate_searches}
+                      {plan.max_job_posts}
                     </span>
-                    <span>tìm kiếm ứng viên</span>
+                    <span>bài đăng tin</span>
                   </div>
                 </div>
-              )}
 
-            {plan.max_ai_features !== null &&
-              plan.max_ai_features !== undefined && (
-                <div className="flex items-start gap-2.5">
-                  <CheckCircle2
-                    className="mt-0.5 h-4 w-4 shrink-0 text-primary"
-                    aria-hidden="true"
-                  />
-                  <div className="flex items-center gap-1.5 text-muted-foreground">
-                    <span className="font-semibold text-foreground">
-                      {plan.max_ai_features}
-                    </span>
-                    <span>tính năng AI</span>
-                  </div>
-                </div>
-              )}
+                {plan.max_candidate_searches !== null &&
+                  plan.max_candidate_searches !== undefined && (
+                    <div className="flex items-start gap-2.5">
+                      <CheckCircle2
+                        className="mt-0.5 h-4 w-4 shrink-0 text-primary"
+                        aria-hidden="true"
+                      />
+                      <div className="flex items-center gap-1.5 text-muted-foreground">
+                        <span className="font-semibold text-foreground">
+                          {plan.max_candidate_searches}
+                        </span>
+                        <span>tìm kiếm ứng viên</span>
+                      </div>
+                    </div>
+                  )}
+
+                {plan.max_ai_features !== null &&
+                  plan.max_ai_features !== undefined && (
+                    <div className="flex items-start gap-2.5">
+                      <CheckCircle2
+                        className="mt-0.5 h-4 w-4 shrink-0 text-primary"
+                        aria-hidden="true"
+                      />
+                      <div className="flex items-center gap-1.5 text-muted-foreground">
+                        <span className="font-semibold text-foreground">
+                          {plan.max_ai_features}
+                        </span>
+                        <span>tính năng AI</span>
+                      </div>
+                    </div>
+                  )}
+              </>
+            )}
           </dl>
 
           {plan.features && plan.features.length > 0 && (

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -12,6 +12,10 @@ from app.domain.enums import SubscriptionScope, SubscriptionStatus, UserRole
 from app.domain.models.base import utc_now
 from app.models import Subscription, User
 from app.repositories import RecruitmentPlanRepository, SubscriptionRepository
+from app.schemas.subscription import (
+    CandidateEntitlementSnapshot,
+    CandidateEntitlementSummary,
+)
 
 CANDIDATE_CALENDAR_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 
@@ -56,6 +60,109 @@ class CandidateEntitlementService:
     ) -> Subscription | None:
         return await self.subscriptions.get_active_candidate_paid_by_user_id(
             user_id, now
+        )
+
+    @staticmethod
+    def next_free_reset_at(now: datetime) -> datetime:
+        """Return the next Vietnam-month boundary as an aware UTC instant."""
+        local_now = now.astimezone(CANDIDATE_CALENDAR_TIMEZONE)
+        if local_now.month == 12:
+            next_local = datetime(
+                local_now.year + 1,
+                1,
+                1,
+                tzinfo=CANDIDATE_CALENDAR_TIMEZONE,
+            )
+        else:
+            next_local = datetime(
+                local_now.year,
+                local_now.month + 1,
+                1,
+                tzinfo=CANDIDATE_CALENDAR_TIMEZONE,
+            )
+        return next_local.astimezone(timezone.utc)
+
+    @staticmethod
+    def _candidate_snapshot(
+        subscription: Subscription,
+        *,
+        projected: bool = False,
+    ) -> CandidateEntitlementSnapshot:
+        plan = subscription.__dict__.get("plan")
+        plan_name = getattr(plan, "name", None) if plan is not None else None
+        limit = subscription.max_ai_features or 0
+        plan_limit = getattr(plan, "max_ai_features", None)
+        if plan_limit is not None:
+            limit = plan_limit
+        used = 0 if projected else max(0, subscription.ai_features_used or 0)
+        remaining = max(0, limit - used)
+        return CandidateEntitlementSnapshot(
+            id=subscription.id,
+            plan_id=subscription.plan_id,
+            plan_name=plan_name,
+            status=subscription.status,
+            is_free=subscription.is_free,
+            started_at=subscription.started_at,
+            expires_at=subscription.expires_at,
+            current_period_key=subscription.current_period_key,
+            max_ai_features=limit,
+            ai_features_used=used,
+            ai_features_remaining=remaining,
+            is_projected=projected,
+        )
+
+    async def get_candidate_entitlement_summary(
+        self,
+        user_id,
+        now: Optional[datetime] = None,
+    ) -> CandidateEntitlementSummary:
+        """Resolve the candidate's effective tier with Paid taking precedence.
+
+        A Paid row is resolved first and its read path never mutates the Free
+        row, not even when the Free period is stale. Free is only provisioned
+        (idempotently) when no Paid entitlement is active and no Free row
+        exists. A stale Free row is projected in memory without a write.
+        """
+        current = now or utc_now()
+        reset_at = self.next_free_reset_at(current)
+
+        paid = await self.get_active_paid_subscription(user_id, current)
+        if paid is not None:
+            free = await self.get_active_free_subscription(user_id, current)
+            paid_snapshot = self._candidate_snapshot(paid)
+            return CandidateEntitlementSummary(
+                effective_tier="paid",
+                effective_subscription=paid_snapshot,
+                free_subscription=(
+                    self._candidate_snapshot(free)
+                    if free is not None
+                    else None
+                ),
+                paid_subscription=paid_snapshot,
+                is_paid_exhausted=(
+                    paid_snapshot.ai_features_remaining <= 0
+                ),
+                is_projected=False,
+                next_free_reset_at=reset_at,
+            )
+
+        free = await self.get_active_free_subscription(user_id, current)
+        if free is None:
+            free = await self.provision_free_entitlement(user_id, current)
+
+        period_key = self.candidate_period_key(current)
+        projected = free.current_period_key != period_key
+        free_snapshot = self._candidate_snapshot(
+            free, projected=projected
+        )
+        return CandidateEntitlementSummary(
+            effective_tier="free",
+            effective_subscription=free_snapshot,
+            free_subscription=free_snapshot,
+            paid_subscription=None,
+            is_paid_exhausted=False,
+            is_projected=projected,
+            next_free_reset_at=reset_at,
         )
 
     async def provision_free_entitlement(

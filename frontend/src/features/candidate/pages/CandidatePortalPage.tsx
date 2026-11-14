@@ -17,6 +17,9 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { useCandidateEntitlement } from '@/features/subscriptions/hooks/useCandidateEntitlement'
+import { CandidateQuotaCard } from '@/features/candidate/components/CandidateQuotaCard'
+import { CandidateAIUsageHistoryTable } from '@/features/candidate/components/CandidateAIUsageHistoryTable'
 
 const PORTAL_CARDS = [
   {
@@ -55,6 +58,9 @@ const PORTAL_CARDS = [
 ]
 
 export function CandidatePortalPage() {
+  const { entitlement, isLoading, error, refetch } =
+    useCandidateEntitlement(true)
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -99,6 +105,16 @@ export function CandidatePortalPage() {
             </CardContent>
           </Card>
         ))}
+      </div>
+
+      <div className="space-y-6">
+        <CandidateQuotaCard
+          entitlement={entitlement}
+          isLoading={isLoading}
+          error={error}
+          onRetry={refetch}
+        />
+        <CandidateAIUsageHistoryTable enabled />
       </div>
     </div>
   )

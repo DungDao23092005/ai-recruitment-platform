@@ -14,6 +14,7 @@ from app.domain.enums import (
     SubscriptionScope,
     SubscriptionStatus,
     SubscriptionUsageFeatureType,
+    SubscriptionUsageStatus,
 )
 from app.models import PaymentOrder, Subscription, SubscriptionUsage, User
 from app.repositories.base import BaseRepository
@@ -722,6 +723,55 @@ class SubscriptionRepository(BaseRepository[Subscription]):
                     User.recruiter_profile
                 )
             )
+            .where(*filters)
+            .order_by(
+                SubscriptionUsage.created_at.desc(),
+                SubscriptionUsage.id.desc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), total
+
+    async def list_candidate_usages(
+        self,
+        *,
+        user_id: Any,
+        start_at: datetime,
+        end_at: datetime,
+        page: int,
+        page_size: int,
+        feature_type: SubscriptionUsageFeatureType | None = None,
+        status: SubscriptionUsageStatus | None = None,
+    ) -> tuple[list[SubscriptionUsage], int]:
+        """List one candidate's personal usage rows in a time window.
+
+        Ownership, the Candidate scope, and ``company_id IS NULL`` are fixed
+        predicates so caller filters can never widen the query to another user
+        or to a Company workspace. ``end_at`` is exclusive.
+        """
+        filters = [
+            SubscriptionUsage.user_id == user_id,
+            SubscriptionUsage.company_id.is_(None),
+            SubscriptionUsage.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+            SubscriptionUsage.created_at >= start_at,
+            SubscriptionUsage.created_at < end_at,
+        ]
+        if feature_type is not None:
+            filters.append(SubscriptionUsage.feature_type == feature_type)
+        if status is not None:
+            filters.append(SubscriptionUsage.status == status)
+
+        total_result = await self.session.execute(
+            select(func.count())
+            .select_from(SubscriptionUsage)
+            .where(*filters)
+        )
+        total = int(total_result.scalar_one())
+
+        stmt = (
+            select(SubscriptionUsage)
             .where(*filters)
             .order_by(
                 SubscriptionUsage.created_at.desc(),

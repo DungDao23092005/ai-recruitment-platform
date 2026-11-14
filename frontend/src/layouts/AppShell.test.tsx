@@ -99,6 +99,10 @@ describe('AppShell sidebar', () => {
     expect(within(nav).getByText('Trợ lý AI')).toBeInTheDocument()
     expect(within(nav).getByText('Upload CV')).toBeInTheDocument()
     expect(within(nav).getByText('Hồ sơ cá nhân')).toBeInTheDocument()
+    expect(within(nav).getByText('Gói dịch vụ AI')).toBeInTheDocument()
+    expect(
+      within(nav).queryByText('Nâng cấp nhà tuyển dụng'),
+    ).not.toBeInTheDocument()
     expect(within(nav).queryByText('Quản lý người dùng')).not.toBeInTheDocument()
     expect(screen.getByText('App Content')).toBeInTheDocument()
   })

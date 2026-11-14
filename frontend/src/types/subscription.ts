@@ -24,6 +24,8 @@ export interface RecruitmentPlan {
   max_job_posts: number
   max_candidate_searches: number | null
   max_ai_features: number | null
+  plan_audience?: PlanAudience
+  is_free?: boolean
   is_active: boolean
   display_order?: number
   features?: string[]
@@ -75,9 +77,66 @@ export interface RecruitmentPlanRead {
   max_job_posts: number
   max_candidate_searches: number | null
   max_ai_features: number | null
+  plan_audience?: PlanAudience
+  is_free?: boolean
   is_active: boolean
   display_order?: number
   features?: string[]
+}
+
+export interface CandidateEntitlementSnapshot {
+  id: string
+  plan_id: string
+  plan_name: string | null
+  status: SubscriptionStatus
+  is_free: boolean
+  started_at: string | null
+  expires_at: string | null
+  current_period_key: string | null
+  max_ai_features: number
+  ai_features_used: number
+  ai_features_remaining: number
+  is_projected: boolean
+}
+
+export interface CandidateEntitlementSummary {
+  effective_tier: 'free' | 'paid'
+  effective_subscription: CandidateEntitlementSnapshot
+  free_subscription: CandidateEntitlementSnapshot | null
+  paid_subscription: CandidateEntitlementSnapshot | null
+  is_paid_exhausted: boolean
+  is_projected: boolean
+  next_free_reset_at: string | null
+}
+
+export interface CandidateUsageItem {
+  id: string
+  subscription_id: string
+  feature_type: SubscriptionUsageFeatureType
+  feature_label: string
+  amount: number
+  status: SubscriptionUsageStatus
+  status_label: string
+  reference_id: string | null
+  created_at: string
+  finalized_at: string | null
+}
+
+export interface CandidateUsageHistoryResponse {
+  items: CandidateUsageItem[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
+export interface CandidateUsageQueryParams {
+  page?: number
+  page_size?: number
+  start_date?: string
+  end_date?: string
+  feature_type?: SubscriptionUsageFeatureType
+  status?: SubscriptionUsageStatus
 }
 
 export interface CompanyUsageItem {

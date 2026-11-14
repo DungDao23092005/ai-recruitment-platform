@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -110,6 +110,58 @@ class CompanyUsageItem(BaseModel):
 
 class CompanyUsageHistoryResponse(BaseModel):
     items: list[CompanyUsageItem]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class CandidateEntitlementSnapshot(BaseModel):
+    """One Candidate tier as seen by the entitlement summary.
+
+    ``is_projected`` marks a stale Free snapshot that has been reset in memory
+    only. The persisted row is intentionally left untouched on read paths.
+    """
+
+    id: uuid.UUID
+    plan_id: uuid.UUID
+    plan_name: Optional[str] = None
+    status: SubscriptionStatus
+    is_free: bool
+    started_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    current_period_key: Optional[str] = None
+    max_ai_features: int
+    ai_features_used: int
+    ai_features_remaining: int
+    is_projected: bool = False
+
+
+class CandidateEntitlementSummary(BaseModel):
+    effective_tier: Literal["free", "paid"]
+    effective_subscription: CandidateEntitlementSnapshot
+    free_subscription: Optional[CandidateEntitlementSnapshot] = None
+    paid_subscription: Optional[CandidateEntitlementSnapshot] = None
+    is_paid_exhausted: bool = False
+    is_projected: bool = False
+    next_free_reset_at: Optional[datetime] = None
+
+
+class CandidateUsageItem(BaseModel):
+    id: uuid.UUID
+    subscription_id: uuid.UUID
+    feature_type: SubscriptionUsageFeatureType
+    feature_label: str
+    amount: int
+    status: SubscriptionUsageStatus
+    status_label: str
+    reference_id: Optional[uuid.UUID] = None
+    created_at: datetime
+    finalized_at: Optional[datetime] = None
+
+
+class CandidateUsageHistoryResponse(BaseModel):
+    items: list[CandidateUsageItem]
     total: int
     page: int
     page_size: int

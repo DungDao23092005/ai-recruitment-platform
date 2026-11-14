@@ -1,5 +1,8 @@
 import apiClient from '@/api/client'
 import type {
+  CandidateEntitlementSummary,
+  CandidateUsageHistoryResponse,
+  CandidateUsageQueryParams,
   CompanyUsageHistoryResponse,
   CompanyUsageQueryParams,
   Subscription,
@@ -28,6 +31,29 @@ export async function getCompanySubscription(): Promise<Subscription | null> {
     }
     throw error
   }
+}
+
+export async function getCandidateEntitlementSummary(): Promise<CandidateEntitlementSummary> {
+  return apiClient.get<CandidateEntitlementSummary, CandidateEntitlementSummary>(
+    '/subscriptions/candidate/me',
+  )
+}
+
+export async function getCandidateUsages(
+  params: CandidateUsageQueryParams = {},
+): Promise<CandidateUsageHistoryResponse> {
+  const query: Record<string, string | number> = {}
+  if (params.page !== undefined) query.page = params.page
+  if (params.page_size !== undefined) query.page_size = params.page_size
+  if (params.start_date) query.start_date = params.start_date
+  if (params.end_date) query.end_date = params.end_date
+  if (params.feature_type) query.feature_type = params.feature_type
+  if (params.status) query.status = params.status
+
+  return apiClient.get<
+    CandidateUsageHistoryResponse,
+    CandidateUsageHistoryResponse
+  >('/subscriptions/candidate/usages', { params: query })
 }
 
 export async function getCompanySubscriptionHistory(): Promise<

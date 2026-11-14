@@ -18,14 +18,20 @@ from app.core.exceptions import (
 from app.domain.enums import (
     MembershipRole,
     SubscriptionUsageFeatureType,
+    SubscriptionUsageStatus,
     UserRole,
 )
 from app.models import User
 from app.schemas.payment import PaymentOrderRead
 from app.schemas.subscription import (
+    CandidateEntitlementSummary,
+    CandidateUsageHistoryResponse,
     CompanyUsageHistoryResponse,
     SubscriptionRead,
     SubscriptionSummary,
+)
+from app.services.candidate_entitlement_service import (
+    CandidateEntitlementService,
 )
 from app.services.subscription_service import SubscriptionService
 from app.services.workspace_service import WorkspaceContext, WorkspaceService
@@ -222,6 +228,73 @@ async def list_company_usages(
             end_date=end_date,
             feature_type=feature_type,
             user_id=user_id,
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+
+def _require_candidate(current_user: User) -> None:
+    if current_user.role != UserRole.CANDIDATE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Candidate access required",
+        )
+
+
+@router.get(
+    "/candidate/me",
+    response_model=CandidateEntitlementSummary,
+)
+async def get_candidate_entitlement(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+    service: SubscriptionService = Depends(_get_subscription_service),
+) -> CandidateEntitlementSummary:
+    """Get the candidate's effective personal AI entitlement.
+
+    Paid always takes precedence over Free. Free preservation is read-only on
+    this path; the only permitted write is idempotent lazy provisioning when a
+    candidate has neither an active Paid nor an active Free row.
+    """
+    _require_candidate(current_user)
+    session = db if isinstance(db, AsyncSession) else service.session
+    summary = await CandidateEntitlementService(
+        session
+    ).get_candidate_entitlement_summary(current_user.id)
+    await session.commit()
+    return summary
+
+
+@router.get(
+    "/candidate/usages",
+    response_model=CandidateUsageHistoryResponse,
+)
+async def list_candidate_usages(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=50),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    feature_type: SubscriptionUsageFeatureType | None = Query(default=None),
+    usage_status: SubscriptionUsageStatus | None = Query(
+        default=None, alias="status"
+    ),
+    current_user: User = Depends(get_current_active_user),
+    service: SubscriptionService = Depends(_get_subscription_service),
+) -> CandidateUsageHistoryResponse:
+    """List the candidate's own personal AI usage history."""
+    _require_candidate(current_user)
+    try:
+        return await service.list_candidate_usages(
+            user_id=current_user.id,
+            page=page,
+            page_size=page_size,
+            start_date=start_date,
+            end_date=end_date,
+            feature_type=feature_type,
+            status=usage_status,
         )
     except ValidationError as exc:
         raise HTTPException(

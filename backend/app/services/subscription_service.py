@@ -37,6 +37,8 @@ from app.repositories import (
     SubscriptionRepository,
 )
 from app.schemas.subscription import (
+    CandidateUsageHistoryResponse,
+    CandidateUsageItem,
     CompanyUsageHistoryResponse,
     CompanyUsageItem,
     SubscriptionCreate,
@@ -207,6 +209,67 @@ class SubscriptionService:
                 if recruiter_profile is not None
                 else None
             ),
+            feature_type=usage.feature_type,
+            feature_label=_USAGE_FEATURE_LABELS.get(
+                usage.feature_type, usage.feature_type.value
+            ),
+            amount=usage.amount,
+            status=usage.status,
+            status_label=_USAGE_STATUS_LABELS.get(
+                usage.status, usage.status.value
+            ),
+            reference_id=usage.reference_id,
+            created_at=_as_utc(usage.created_at),
+            finalized_at=(
+                _as_utc(usage.finalized_at)
+                if usage.finalized_at is not None
+                else None
+            ),
+        )
+
+    async def list_candidate_usages(
+        self,
+        *,
+        user_id: uuid.UUID,
+        page: int,
+        page_size: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        feature_type: SubscriptionUsageFeatureType | None = None,
+        status: SubscriptionUsageStatus | None = None,
+        now: datetime | None = None,
+    ) -> CandidateUsageHistoryResponse:
+        start_at, end_at = _normalize_usage_window(
+            start_date, end_date, now
+        )
+        usages, total = await self.subscriptions.list_candidate_usages(
+            user_id=user_id,
+            start_at=start_at,
+            end_at=end_at,
+            page=page,
+            page_size=page_size,
+            feature_type=feature_type,
+            status=status,
+        )
+        total_pages = (total + page_size - 1) // page_size if total else 0
+        return CandidateUsageHistoryResponse(
+            items=[
+                self._serialize_candidate_usage(usage)
+                for usage in usages
+            ],
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+        )
+
+    @staticmethod
+    def _serialize_candidate_usage(
+        usage: SubscriptionUsage,
+    ) -> CandidateUsageItem:
+        return CandidateUsageItem(
+            id=usage.id,
+            subscription_id=usage.subscription_id,
             feature_type=usage.feature_type,
             feature_label=_USAGE_FEATURE_LABELS.get(
                 usage.feature_type, usage.feature_type.value

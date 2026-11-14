@@ -1,13 +1,12 @@
 import { useEffect } from 'react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 import { PlansPage } from '@/pages/plans/PlansPage'
 import { useAuth } from '@/contexts/AuthContext'
 import { WorkspaceProvider } from '@/contexts/WorkspaceContext'
 import { usePlans } from '@/features/subscriptions/hooks/usePlans'
-import { useMySubscription } from '@/features/subscriptions/hooks/useMySubscription'
 import type { UserRole } from '@/types/auth'
 import type { Workspace } from '@/types/workspace'
 
@@ -26,6 +25,7 @@ vi.mock('@/api/subscriptions', async () => {
   return {
     ...actual,
     getMySubscription: vi.fn(),
+    getCandidateEntitlementSummary: vi.fn(),
     getCompanySubscription: vi.fn(),
     getCompanySubscriptionHistory: vi.fn(),
     getCompanyUsages: vi.fn(),
@@ -47,6 +47,9 @@ vi.mock('@/contexts/AuthContext', () => ({
 
 const mockedGetPlans = (await import('@/api/plans')).getPlans
 const mockedGetMySubscription = (await import('@/api/subscriptions')).getMySubscription
+const mockedGetCandidateEntitlement = (
+  await import('@/api/subscriptions')
+).getCandidateEntitlementSummary
 const mockedGetCompanySubscription = (
   await import('@/api/subscriptions')
 ).getCompanySubscription
@@ -580,167 +583,160 @@ it('renders multiple plan cards with correct data', async () => {
     expect(mockedGetMySubscription).toHaveBeenCalledTimes(2)
   })
 
-  describe('candidate recruiter upgrade flow', () => {
-    beforeEach(() => {
-      mockAuth('candidate')
-    })
+  describe('candidate AI subscription flow', () => {
+    const candidatePlans = [
+      {
+        id: 'candidate-free',
+        name: 'Gói AI Miễn phí',
+        description: 'Gói AI miễn phí',
+        price: 0,
+        currency: 'VND',
+        duration_days: 30,
+        max_job_posts: 0,
+        max_candidate_searches: 0,
+        max_ai_features: 6,
+        plan_audience: 'candidate',
+        is_free: true,
+        is_active: true,
+      },
+      {
+        id: 'candidate-paid',
+        name: 'Gói AI Pro',
+        description: 'Gói AI trả phí',
+        price: 99000,
+        currency: 'VND',
+        duration_days: 30,
+        max_job_posts: 0,
+        max_candidate_searches: 0,
+        max_ai_features: 25,
+        plan_audience: 'candidate',
+        is_free: false,
+        is_active: true,
+      },
+    ]
 
-    async function openModal() {
-      mockedGetPlans.mockResolvedValueOnce(plans as any)
-      mockedGetMySubscription.mockResolvedValueOnce(null)
-
-      renderPlans()
-
-      fireEvent.click(
-        await screen.findByRole('button', { name: 'Chọn gói Gói Standard' }),
-      )
-      return screen.findByRole('dialog')
+    const freeSnapshot = {
+      id: 'sub-free',
+      plan_id: 'candidate-free',
+      plan_name: 'Gói AI Miễn phí',
+      status: 'active' as const,
+      is_free: true,
+      started_at: '2026-01-01T00:00:00Z',
+      expires_at: null,
+      current_period_key: '2026-11',
+      max_ai_features: 6,
+      ai_features_used: 1,
+      ai_features_remaining: 5,
+      is_projected: false,
     }
 
-    it('opens the transition modal instead of navigating to checkout', async () => {
-      const dialog = await openModal()
+    const paidSnapshot = {
+      ...freeSnapshot,
+      id: 'sub-paid',
+      plan_id: 'candidate-paid',
+      plan_name: 'Gói AI Pro',
+      is_free: false,
+      max_ai_features: 25,
+      ai_features_used: 3,
+      ai_features_remaining: 22,
+      expires_at: '2026-12-01T00:00:00Z',
+    }
 
-      expect(dialog).toHaveAccessibleName('Bạn muốn trở thành nhà tuyển dụng?')
-      expect(
-        within(dialog).getByText('Bạn muốn trở thành nhà tuyển dụng?'),
-      ).toBeInTheDocument()
-      expect(dialog.contains(document.activeElement)).toBe(true)
-      expect(screen.queryByText('CHECKOUT PAGE')).not.toBeInTheDocument()
-    })
+    function candidateSummary(
+      snapshot: typeof freeSnapshot | typeof paidSnapshot,
+      tier: 'free' | 'paid' = 'free',
+    ) {
+      return {
+        effective_tier: tier,
+        effective_subscription: snapshot,
+        free_subscription: tier === 'paid' ? freeSnapshot : snapshot,
+        paid_subscription: tier === 'paid' ? snapshot : null,
+        is_paid_exhausted: false,
+        is_projected: false,
+        next_free_reset_at: '2026-12-01T00:00:00Z',
+      }
+    }
 
-    it('shows the selected plan name, price, duration, and quotas', async () => {
-      const dialog = await openModal()
-
-      expect(within(dialog).getByText('Gói Standard')).toBeInTheDocument()
-      expect(within(dialog).getByText('5.000.000 ₫')).toBeInTheDocument()
-      expect(within(dialog).getByText('/ 1 tháng')).toBeInTheDocument()
-      expect(within(dialog).getByText('Bài đăng tin')).toBeInTheDocument()
-      expect(within(dialog).getByText('Tìm kiếm ứng viên')).toBeInTheDocument()
-      expect(within(dialog).getByText('Tính năng AI')).toBeInTheDocument()
-    })
-
-    it('keeps the acknowledgement unchecked and continue disabled by default', async () => {
-      const dialog = await openModal()
-
-      const checkbox = within(dialog).getByRole('checkbox')
-      const continueButton = within(dialog).getByRole('button', {
-        name: /Tiếp tục tới thanh toán/,
-      })
-
-      expect(checkbox).not.toBeChecked()
-      expect(continueButton).toBeDisabled()
-
-      fireEvent.click(checkbox)
-
-      expect(checkbox).toBeChecked()
-      expect(continueButton).toBeEnabled()
-    })
-
-    it('explains the role change, lost candidate features, and retained data', async () => {
-      const dialog = await openModal()
-
-      expect(
-        within(dialog).getAllByText(/Tài khoản của bạn được chuyển từ/).length,
-      ).toBeGreaterThan(0)
-      expect(
-        within(dialog).getAllByText(/tính năng chỉ dành riêng cho ứng viên/)
-          .length,
-      ).toBeGreaterThan(0)
-      expect(
-        within(dialog).getAllByText(/Hồ sơ, CV và lịch sử ứng tuyển/)
-          .length,
-      ).toBeGreaterThan(0)
-      expect(
-        within(dialog).getAllByText(/xác minh thanh toán thành công/).length,
-      ).toBeGreaterThan(0)
-    })
-
-    it('navigates to checkout for the selected plan after acknowledgement', async () => {
-      const dialog = await openModal()
-
-      fireEvent.click(within(dialog).getByRole('checkbox'))
-      fireEvent.click(
-        within(dialog).getByRole('button', {
-          name: /Tiếp tục tới thanh toán/,
-        }),
+    beforeEach(() => {
+      mockAuth('candidate')
+      mockedGetCandidateEntitlement.mockResolvedValue(
+        candidateSummary(freeSnapshot),
       )
-
-      await waitFor(() =>
-        expect(screen.getByText('CHECKOUT PAGE')).toBeInTheDocument(),
-      )
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-      expect(checkoutMounts).toBe(1)
     })
 
-    it('cancels back to the plans page without checking out', async () => {
-      const dialog = await openModal()
-
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Hủy' }))
-
-      await waitFor(() =>
-        expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
-      )
-      expect(screen.queryByText('CHECKOUT PAGE')).not.toBeInTheDocument()
-      expect(screen.getByText('Các gói tuyển dụng')).toBeInTheDocument()
-    })
-
-    it('closes on Escape without navigating', async () => {
-      await openModal()
-
-      fireEvent.keyDown(document, { key: 'Escape' })
-
-      await waitFor(() =>
-        expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
-      )
-      expect(screen.queryByText('CHECKOUT PAGE')).not.toBeInTheDocument()
-    })
-
-    it('does not change the account role when opening or confirming', async () => {
-      const dialog = await openModal()
-
-      fireEvent.click(within(dialog).getByRole('checkbox'))
-      fireEvent.click(
-        within(dialog).getByRole('button', {
-          name: /Tiếp tục tới thanh toán/,
-        }),
-      )
-
-      await waitFor(() =>
-        expect(screen.getByText('CHECKOUT PAGE')).toBeInTheDocument(),
-      )
-      expect(refreshCurrentUserMock).not.toHaveBeenCalled()
-      expect(loginMock).not.toHaveBeenCalled()
-      expect(logoutMock).not.toHaveBeenCalled()
-    })
-
-    it('navigates only once when continue is activated again', async () => {
-      const dialog = await openModal()
-
-      fireEvent.click(within(dialog).getByRole('checkbox'))
-      const continueButton = within(dialog).getByRole('button', {
-        name: /Tiếp tục tới thanh toán/,
-      })
-      fireEvent.click(continueButton)
-
-      await waitFor(() =>
-        expect(screen.getByText('CHECKOUT PAGE')).toBeInTheDocument(),
-      )
-      fireEvent.click(continueButton)
-
-      expect(checkoutMounts).toBe(1)
-    })
-
-    it('does not open the transition modal for the current active plan', async () => {
-      mockedGetPlans.mockResolvedValueOnce(plans as any)
-      mockedGetMySubscription.mockResolvedValueOnce(subscription as any)
+    it('loads candidate plans and shows the AI subscription heading', async () => {
+      mockedGetPlans.mockResolvedValueOnce(candidatePlans as any)
 
       renderPlans()
 
-      const currentButton = await screen.findByText('Gói hiện tại của bạn')
+      expect(await screen.findByText('Gói dịch vụ AI')).toBeInTheDocument()
+      expect(mockedGetPlans).toHaveBeenCalledWith('candidate')
+      expect(
+        screen.queryByText('Bạn muốn trở thành nhà tuyển dụng?'),
+      ).not.toBeInTheDocument()
+      expect(screen.getByText('Gói AI Pro')).toBeInTheDocument()
+    })
+
+    it('navigates straight to checkout for a paid candidate plan', async () => {
+      mockedGetPlans.mockResolvedValueOnce(candidatePlans as any)
+
+      renderPlans()
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Chọn gói Gói AI Pro' }),
+      )
+
+      await waitFor(() =>
+        expect(screen.getByText('CHECKOUT PAGE')).toBeInTheDocument(),
+      )
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      expect(refreshCurrentUserMock).not.toHaveBeenCalled()
+    })
+
+    it('does not allow purchasing the free candidate plan', async () => {
+      mockedGetPlans.mockResolvedValueOnce(candidatePlans as any)
+      mockedGetCandidateEntitlement.mockResolvedValue(
+        candidateSummary(paidSnapshot, 'paid'),
+      )
+
+      renderPlans()
+
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: /Gói miễn phí không cần thanh toán/,
+        }),
+      )
+
+      expect(screen.queryByText('CHECKOUT PAGE')).not.toBeInTheDocument()
+    })
+
+    it('marks the current free plan and does not navigate', async () => {
+      mockedGetPlans.mockResolvedValueOnce(candidatePlans as any)
+
+      renderPlans()
+
+      const currentButton = await screen.findByRole('button', {
+        name: /Gói hiện tại của bạn: Gói AI Miễn phí/,
+      })
       fireEvent.click(currentButton)
 
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
       expect(screen.queryByText('CHECKOUT PAGE')).not.toBeInTheDocument()
+    })
+
+    it('shows the current paid entitlement and marks the paid plan current', async () => {
+      mockedGetPlans.mockResolvedValueOnce(candidatePlans as any)
+      mockedGetCandidateEntitlement.mockResolvedValue(
+        candidateSummary(paidSnapshot, 'paid'),
+      )
+
+      renderPlans()
+
+      expect(await screen.findByText('Gói trả phí')).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', {
+          name: /Gói hiện tại của bạn: Gói AI Pro/,
+        }),
+      ).toBeInTheDocument()
     })
   })
 
