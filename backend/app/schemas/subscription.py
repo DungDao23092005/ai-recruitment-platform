@@ -13,6 +13,8 @@ from app.domain.enums import (
     SubscriptionAuditAction,
     SubscriptionScope,
     SubscriptionStatus,
+    SubscriptionUsageFeatureType,
+    SubscriptionUsageStatus,
 )
 from app.schemas.recruitment_plan import RecruitmentPlanRead
 
@@ -88,6 +90,30 @@ class SubscriptionCreate(BaseModel):
     status: SubscriptionStatus = SubscriptionStatus.PENDING
     started_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
+
+
+class CompanyUsageItem(BaseModel):
+    id: uuid.UUID
+    subscription_id: uuid.UUID
+    user_id: uuid.UUID
+    user_email: Optional[str] = None
+    user_full_name: Optional[str] = None
+    feature_type: SubscriptionUsageFeatureType
+    feature_label: str
+    amount: int
+    status: SubscriptionUsageStatus
+    status_label: str
+    reference_id: Optional[uuid.UUID] = None
+    created_at: datetime
+    finalized_at: Optional[datetime] = None
+
+
+class CompanyUsageHistoryResponse(BaseModel):
+    items: list[CompanyUsageItem]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
 
 
 class SubscriptionAdminRead(BaseModel):

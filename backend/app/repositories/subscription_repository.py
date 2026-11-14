@@ -13,8 +13,9 @@ from app.domain.enums import (
     PaymentProvider,
     SubscriptionScope,
     SubscriptionStatus,
+    SubscriptionUsageFeatureType,
 )
-from app.models import PaymentOrder, Subscription, User
+from app.models import PaymentOrder, Subscription, SubscriptionUsage, User
 from app.repositories.base import BaseRepository
 
 
@@ -679,3 +680,55 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def list_company_usages(
+        self,
+        *,
+        company_id: Any,
+        start_at: datetime,
+        end_at: datetime,
+        page: int,
+        page_size: int,
+        feature_type: SubscriptionUsageFeatureType | None = None,
+        user_id: Any | None = None,
+    ) -> tuple[list[SubscriptionUsage], int]:
+        """List Company-scoped usage rows inside a half-open time window.
+
+        ``end_at`` is exclusive. Tenant scoping and the Company scope are
+        applied here so callers cannot widen the query through filters.
+        """
+        filters = [
+            SubscriptionUsage.company_id == company_id,
+            SubscriptionUsage.scope == SubscriptionScope.COMPANY_RECRUITING,
+            SubscriptionUsage.created_at >= start_at,
+            SubscriptionUsage.created_at < end_at,
+        ]
+        if feature_type is not None:
+            filters.append(SubscriptionUsage.feature_type == feature_type)
+        if user_id is not None:
+            filters.append(SubscriptionUsage.user_id == user_id)
+
+        total_result = await self.session.execute(
+            select(func.count())
+            .select_from(SubscriptionUsage)
+            .where(*filters)
+        )
+        total = int(total_result.scalar_one())
+
+        stmt = (
+            select(SubscriptionUsage)
+            .options(
+                selectinload(SubscriptionUsage.user).selectinload(
+                    User.recruiter_profile
+                )
+            )
+            .where(*filters)
+            .order_by(
+                SubscriptionUsage.created_at.desc(),
+                SubscriptionUsage.id.desc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), total

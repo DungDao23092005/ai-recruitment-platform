@@ -120,6 +120,19 @@ vi.mock('@/api/workspaces', () => ({
   acceptInvitation: vi.fn(),
 }))
 
+vi.mock('@/api/subscriptions', () => ({
+  getMySubscription: vi.fn().mockResolvedValue(null),
+  getCompanySubscription: vi.fn().mockResolvedValue(null),
+  getCompanySubscriptionHistory: vi.fn().mockResolvedValue([]),
+  getCompanyUsages: vi.fn().mockResolvedValue({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 10,
+    total_pages: 0,
+  }),
+}))
+
 vi.mock('@/api/admin', () => ({
   getAdminStats: vi.fn(),
   getSystemHealth: vi.fn(),
@@ -224,6 +237,18 @@ beforeEach(async () => {
 
   const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
   mockedWorkspaces.getWorkspaces.mockResolvedValue([])
+  mockedWorkspaces.getWorkspaceMembers.mockResolvedValue([])
+  const mockedSubscriptions = vi.mocked(await import('@/api/subscriptions'))
+  mockedSubscriptions.getMySubscription.mockResolvedValue(null)
+  mockedSubscriptions.getCompanySubscription.mockResolvedValue(null)
+  mockedSubscriptions.getCompanySubscriptionHistory.mockResolvedValue([])
+  mockedSubscriptions.getCompanyUsages.mockResolvedValue({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 10,
+    total_pages: 0,
+  })
   const mockedCompanies = vi.mocked(await import('@/api/companies'))
   mockedCompanies.getCompanies.mockResolvedValue([])
 
@@ -643,6 +668,29 @@ describe('AppRouter role guards', () => {
 })
 
 describe('AppRouter recruiter job routes', () => {
+  it('lets a recruiter with an active workspace open billing', async () => {
+    setUser('recruiter')
+    const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
+    mockedWorkspaces.getWorkspaces.mockResolvedValue([
+      {
+        company_id: 'company-1',
+        company_name: 'Acme Corp',
+        company_slug: 'acme-corp',
+        membership_id: 'membership-1',
+        role: 'recruiter',
+        is_platform_admin: false,
+      },
+    ])
+
+    renderAt('/recruiter/billing')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Gói & Thanh toán' }),
+      ).toBeInTheDocument()
+    })
+  })
+
   it('renders interview generator for a recruiter', async () => {
     setUser('recruiter')
 

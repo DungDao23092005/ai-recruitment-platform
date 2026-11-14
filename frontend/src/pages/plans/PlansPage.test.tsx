@@ -5,9 +5,11 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 import { PlansPage } from '@/pages/plans/PlansPage'
 import { useAuth } from '@/contexts/AuthContext'
+import { WorkspaceProvider } from '@/contexts/WorkspaceContext'
 import { usePlans } from '@/features/subscriptions/hooks/usePlans'
 import { useMySubscription } from '@/features/subscriptions/hooks/useMySubscription'
 import type { UserRole } from '@/types/auth'
+import type { Workspace } from '@/types/workspace'
 
 // Mock the API modules
 vi.mock('@/api/plans', async () => {
@@ -24,6 +26,18 @@ vi.mock('@/api/subscriptions', async () => {
   return {
     ...actual,
     getMySubscription: vi.fn(),
+    getCompanySubscription: vi.fn(),
+    getCompanySubscriptionHistory: vi.fn(),
+    getCompanyUsages: vi.fn(),
+  }
+})
+
+vi.mock('@/api/workspaces', async () => {
+  const actual = await import('@/api/workspaces')
+  return {
+    ...actual,
+    getWorkspaces: vi.fn(),
+    getWorkspaceMembers: vi.fn(),
   }
 })
 
@@ -33,6 +47,10 @@ vi.mock('@/contexts/AuthContext', () => ({
 
 const mockedGetPlans = (await import('@/api/plans')).getPlans
 const mockedGetMySubscription = (await import('@/api/subscriptions')).getMySubscription
+const mockedGetCompanySubscription = (
+  await import('@/api/subscriptions')
+).getCompanySubscription
+const mockedGetWorkspaces = (await import('@/api/workspaces')).getWorkspaces
 const mockedUseAuth = vi.mocked(useAuth)
 
 const loginMock = vi.fn()
@@ -137,6 +155,10 @@ describe('PlansPage', () => {
     vi.clearAllMocks()
     checkoutMounts = 0
     mockAuth('recruiter')
+    mockedGetCompanySubscription.mockImplementation(() =>
+      mockedGetMySubscription(),
+    )
+    mockedGetWorkspaces.mockResolvedValue([])
   })
 
   it('shows loading UI while fetching data', async () => {
@@ -738,6 +760,85 @@ it('renders multiple plan cards with correct data', async () => {
         expect(screen.getByText('CHECKOUT PAGE')).toBeInTheDocument(),
       )
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('company workspace permissions', () => {
+    function makeWorkspace(role: 'admin' | 'recruiter'): Workspace {
+      return {
+        company_id: 'company-1',
+        company_name: 'Công ty Mẫu',
+        company_slug: 'cong-ty-mau',
+        membership_id: 'membership-1',
+        role,
+        is_platform_admin: false,
+      }
+    }
+
+    function renderWithWorkspace(workspace: Workspace) {
+      mockedGetWorkspaces.mockResolvedValue([workspace])
+      return render(
+        <WorkspaceProvider>
+          <MemoryRouter initialEntries={['/plans']}>
+            <Routes>
+              <Route path="/plans" element={<PlansPage />} />
+              <Route path="/checkout/:planId" element={<div>CHECKOUT PAGE</div>} />
+            </Routes>
+          </MemoryRouter>
+        </WorkspaceProvider>,
+      )
+    }
+
+    it('loads the company plan audience for recruiters', async () => {
+      mockedGetPlans.mockResolvedValueOnce(plans as any)
+      mockedGetMySubscription.mockResolvedValueOnce(null)
+
+      renderPlans()
+
+      await screen.findByText('Gói Standard')
+      expect(mockedGetPlans).toHaveBeenCalledWith('company')
+    })
+
+    it('lets a Workspace Admin select a company plan', async () => {
+      mockedGetPlans.mockResolvedValueOnce(plans as any)
+      mockedGetMySubscription.mockResolvedValueOnce(null)
+
+      renderWithWorkspace(makeWorkspace('admin'))
+
+      fireEvent.click(
+        await screen.findByRole('button', { name: 'Chọn gói Gói Standard' }),
+      )
+
+      await waitFor(() =>
+        expect(screen.getByText('CHECKOUT PAGE')).toBeInTheDocument(),
+      )
+      expect(
+        screen.queryByText(
+          'Chỉ Quản trị viên công ty (Workspace Admin) mới có quyền mua hoặc thay đổi gói dịch vụ.',
+        ),
+      ).not.toBeInTheDocument()
+    })
+
+    it('blocks a Workspace Recruiter from selecting a company plan', async () => {
+      mockedGetPlans.mockResolvedValueOnce(plans as any)
+      mockedGetMySubscription.mockResolvedValueOnce(null)
+
+      renderWithWorkspace(makeWorkspace('recruiter'))
+
+      expect(
+        await screen.findByText(
+          'Chỉ Quản trị viên công ty (Workspace Admin) mới có quyền mua hoặc thay đổi gói dịch vụ.',
+        ),
+      ).toBeInTheDocument()
+
+      const disabledButtons = await screen.findAllByRole('button', {
+        name: /Chỉ Quản trị viên công ty/,
+      })
+      expect(disabledButtons).toHaveLength(2)
+      disabledButtons.forEach((button) => expect(button).toBeDisabled())
+
+      fireEvent.click(disabledButtons[0])
+      expect(screen.queryByText('CHECKOUT PAGE')).not.toBeInTheDocument()
     })
   })
 })

@@ -29,6 +29,9 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { getRecruiterMetrics } from '@/api/metrics'
 import type { RecruiterMetrics, ApplicationStatusCount } from '@/types/metrics'
 import { isAxiosError } from 'axios'
+import { useOptionalWorkspace } from '@/contexts/WorkspaceContext'
+import { useCompanySubscription } from '@/features/subscriptions/hooks/useCompanySubscription'
+import { CompanySubscriptionCard } from '@/features/recruiter/components/CompanySubscriptionCard'
 
 const PORTAL_CARDS = [
   {
@@ -207,6 +210,10 @@ type PageState =
 
 export function RecruiterPortalPage() {
   const [state, setState] = useState<PageState>({ kind: 'loading' })
+  const workspace = useOptionalWorkspace()
+  const hasWorkspace = Boolean(workspace?.selectedCompanyId)
+  const isWorkspaceAdmin = workspace?.selectedWorkspace?.role === 'admin'
+  const companySubscription = useCompanySubscription(hasWorkspace)
 
   const loadMetrics = async () => {
     setState({ kind: 'loading' })
@@ -327,6 +334,15 @@ export function RecruiterPortalPage() {
           title="Tổng quan tuyển dụng"
           description="Quản lý công ty, tin tuyển dụng và ứng viên với sự hỗ trợ của AI."
         />
+        {hasWorkspace ? (
+          <CompanySubscriptionCard
+            subscription={companySubscription.subscription}
+            isLoading={companySubscription.isLoading}
+            error={companySubscription.error}
+            onRetry={companySubscription.refetch}
+            isAdmin={isWorkspaceAdmin}
+          />
+        ) : null}
         <EmptyState
           icon={<Briefcase className="h-8 w-8" />}
           title="Chưa có tin tuyển dụng"
@@ -398,6 +414,16 @@ export function RecruiterPortalPage() {
           </Link>
         }
       />
+
+      {hasWorkspace ? (
+        <CompanySubscriptionCard
+          subscription={companySubscription.subscription}
+          isLoading={companySubscription.isLoading}
+          error={companySubscription.error}
+          onRetry={companySubscription.refetch}
+          isAdmin={isWorkspaceAdmin}
+        />
+      ) : null}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard

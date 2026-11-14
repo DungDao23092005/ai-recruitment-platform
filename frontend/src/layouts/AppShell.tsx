@@ -125,6 +125,7 @@ function useAppNav(
         ? [{ to: '/recruiter/workspace', label: 'Thành viên', icon: Users }]
         : []),
       { to: '/plans', label: 'Gói dịch vụ', icon: Sparkles },
+      { to: '/recruiter/billing', label: 'Gói & Thanh toán', icon: CreditCard },
     ]
 
     return [

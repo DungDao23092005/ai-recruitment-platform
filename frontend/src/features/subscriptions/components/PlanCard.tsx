@@ -10,6 +10,8 @@ export interface PlanCardProps {
   onSelect: (planId: string) => void
   isSelected?: boolean
   isCurrent?: boolean
+  disabled?: boolean
+  disabledReason?: string
   className?: string
 }
 
@@ -39,18 +41,22 @@ export function formatPlanDuration(days: number): string {
 }
 
 const PlanCard = React.forwardRef<HTMLDivElement, PlanCardProps>(
-  ({ plan, onSelect, isSelected = false, isCurrent = false, className }, ref) => {
-    const isDisabled = isCurrent || isSelected
+  ({ plan, onSelect, isSelected = false, isCurrent = false, disabled = false, disabledReason, className }, ref) => {
+    const isDisabled = isCurrent || isSelected || disabled
     const buttonLabel = isCurrent
       ? 'Gói hiện tại của bạn'
       : isSelected
         ? 'Đã chọn'
-        : 'Chọn gói này'
+        : disabled
+          ? 'Không khả dụng'
+          : 'Chọn gói này'
     const buttonAriaLabel = isCurrent
       ? `Gói hiện tại của bạn: ${plan.name}`
       : isSelected
         ? `Đã chọn gói ${plan.name}`
-        : `Chọn gói ${plan.name}`
+        : disabled
+          ? `${disabledReason ?? 'Không khả dụng'}: ${plan.name}`
+          : `Chọn gói ${plan.name}`
 
     return (
       <article
@@ -61,6 +67,7 @@ const PlanCard = React.forwardRef<HTMLDivElement, PlanCardProps>(
           'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2',
           isSelected && 'border-primary ring-2 ring-primary/30',
           !isSelected && isCurrent && 'border-primary/50 ring-1 ring-primary/20',
+          disabled && !isCurrent && !isSelected && 'opacity-75',
           className,
         )}
         aria-current={isCurrent ? 'true' : undefined}

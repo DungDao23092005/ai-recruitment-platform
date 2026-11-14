@@ -24,7 +24,7 @@ interface FetchOptions {
   silent: boolean
 }
 
-export function useMySubscription(): UseMySubscriptionResult {
+export function useMySubscription(enabled = true): UseMySubscriptionResult {
   const [subscription, setSubscription] = useState<Subscription | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -116,6 +116,17 @@ export function useMySubscription(): UseMySubscriptionResult {
 
   useEffect(() => {
     isMountedRef.current = true
+
+    if (!enabled) {
+      generationRef.current += 1
+      setSubscription(null)
+      setIsLoading(false)
+      setError(null)
+      return () => {
+        isMountedRef.current = false
+      }
+    }
+
     void fetchSubscription({ silent: false })
 
     const handleUserSubscriptionChanged = () => {
@@ -162,7 +173,7 @@ export function useMySubscription(): UseMySubscriptionResult {
         debounceTimerRef.current = null
       }
     }
-  }, [fetchSubscription, scheduleSilentRefresh])
+  }, [enabled, fetchSubscription, scheduleSilentRefresh])
 
   return { subscription, isLoading, error, refetch }
 }

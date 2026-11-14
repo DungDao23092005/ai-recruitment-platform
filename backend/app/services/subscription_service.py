@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,16 +18,29 @@ from app.domain.enums import (
     PlanAudience,
     SubscriptionScope,
     SubscriptionStatus,
+    SubscriptionUsageFeatureType,
+    SubscriptionUsageStatus,
     UserRole,
 )
 from app.domain.models.base import utc_now
-from app.models import PaymentOrder, RecruitmentPlan, RecruiterProfile, Subscription, User
+from app.models import (
+    PaymentOrder,
+    RecruitmentPlan,
+    RecruiterProfile,
+    Subscription,
+    SubscriptionUsage,
+    User,
+)
 from app.repositories import (
     PaymentOrderRepository,
     RecruitmentPlanRepository,
     SubscriptionRepository,
 )
-from app.schemas.subscription import SubscriptionCreate
+from app.schemas.subscription import (
+    CompanyUsageHistoryResponse,
+    CompanyUsageItem,
+    SubscriptionCreate,
+)
 from app.services.notification_service import NotificationService
 from app.services.recruiter_access import ensure_recruiter_access
 from app.services.subscription_email_service import schedule_activation_email
@@ -34,6 +48,78 @@ from app.services.subscription_realtime import (
     ACTION_ACTIVATED,
     schedule_admin_subscription_event,
 )
+
+_VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+_MAX_USAGE_RANGE_DAYS = 366
+
+_USAGE_FEATURE_LABELS: dict[SubscriptionUsageFeatureType, str] = {
+    SubscriptionUsageFeatureType.JOB_POST: "Tin tuyển dụng",
+    SubscriptionUsageFeatureType.CANDIDATE_SEARCH: "Tìm kiếm ứng viên",
+    SubscriptionUsageFeatureType.AI_FEATURE: "AI tuyển dụng",
+    SubscriptionUsageFeatureType.RECRUITING_AI: "AI tuyển dụng",
+    SubscriptionUsageFeatureType.CANDIDATE_PARSE_RESUME: "Phân tích CV",
+    SubscriptionUsageFeatureType.CANDIDATE_JOB_RECOMMENDATIONS: "Gợi ý việc làm",
+    SubscriptionUsageFeatureType.CANDIDATE_CHAT: "Trò chuyện AI",
+}
+
+_USAGE_STATUS_LABELS: dict[SubscriptionUsageStatus, str] = {
+    SubscriptionUsageStatus.RESERVED: "Đang xử lý",
+    SubscriptionUsageStatus.COMPLETED: "Hoàn tất",
+    SubscriptionUsageStatus.FAILED: "Thất bại",
+}
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _local_day_start(value: date) -> datetime:
+    return datetime.combine(value, time.min, tzinfo=_VN_TZ)
+
+
+def _normalize_usage_window(
+    start_date: date | None,
+    end_date: date | None,
+    now: datetime | None,
+) -> tuple[datetime, datetime]:
+    """Resolve the Company usage window to a half-open UTC interval.
+
+    Defaults follow the current calendar month in Asia/Ho_Chi_Minh. The end
+    bound is exclusive: an explicit ``end_date`` includes that whole local day,
+    while an omitted end uses the actual current instant.
+    """
+    current = _as_utc(now or utc_now())
+    local_now = current.astimezone(_VN_TZ)
+
+    if start_date is None:
+        start_local = _local_day_start(local_now.date().replace(day=1))
+    else:
+        start_local = _local_day_start(start_date)
+
+    if end_date is None:
+        end_exclusive = current
+        effective_end_date = local_now.date()
+    else:
+        end_exclusive = _local_day_start(end_date + timedelta(days=1))
+        effective_end_date = end_date
+
+    start_utc = start_local.astimezone(timezone.utc)
+    end_utc = end_exclusive.astimezone(timezone.utc)
+
+    if start_date is not None:
+        span_days = (effective_end_date - start_date).days + 1
+        if span_days > _MAX_USAGE_RANGE_DAYS:
+            raise ValidationError(
+                f"Date range must not exceed {_MAX_USAGE_RANGE_DAYS} days"
+            )
+    if start_date is not None and end_date is not None and start_date > end_date:
+        raise ValidationError("start_date must be on or before end_date")
+    if start_utc > end_utc:
+        raise ValidationError("start_date must be on or before end_date")
+
+    return start_utc, end_utc
 
 
 class SubscriptionService:
@@ -71,6 +157,72 @@ class SubscriptionService:
         return await self.payment_orders.get_by_company_id(
             company_id=company_id,
             user_id=user_id,
+        )
+
+    async def list_company_usages(
+        self,
+        *,
+        company_id: uuid.UUID,
+        page: int,
+        page_size: int,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        feature_type: SubscriptionUsageFeatureType | None = None,
+        user_id: uuid.UUID | None = None,
+        now: datetime | None = None,
+    ) -> CompanyUsageHistoryResponse:
+        start_at, end_at = _normalize_usage_window(
+            start_date, end_date, now
+        )
+        usages, total = await self.subscriptions.list_company_usages(
+            company_id=company_id,
+            start_at=start_at,
+            end_at=end_at,
+            page=page,
+            page_size=page_size,
+            feature_type=feature_type,
+            user_id=user_id,
+        )
+        total_pages = (total + page_size - 1) // page_size if total else 0
+        return CompanyUsageHistoryResponse(
+            items=[
+                self._serialize_company_usage(usage) for usage in usages
+            ],
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+        )
+
+    @staticmethod
+    def _serialize_company_usage(usage: SubscriptionUsage) -> CompanyUsageItem:
+        recruiter_profile = usage.user.recruiter_profile
+        return CompanyUsageItem(
+            id=usage.id,
+            subscription_id=usage.subscription_id,
+            user_id=usage.user_id,
+            user_email=usage.user.email,
+            user_full_name=(
+                recruiter_profile.full_name
+                if recruiter_profile is not None
+                else None
+            ),
+            feature_type=usage.feature_type,
+            feature_label=_USAGE_FEATURE_LABELS.get(
+                usage.feature_type, usage.feature_type.value
+            ),
+            amount=usage.amount,
+            status=usage.status,
+            status_label=_USAGE_STATUS_LABELS.get(
+                usage.status, usage.status.value
+            ),
+            reference_id=usage.reference_id,
+            created_at=_as_utc(usage.created_at),
+            finalized_at=(
+                _as_utc(usage.finalized_at)
+                if usage.finalized_at is not None
+                else None
+            ),
         )
 
     async def get_subscription_by_id(

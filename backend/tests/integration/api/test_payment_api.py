@@ -1741,3 +1741,55 @@ def test_a02_company_activation_never_changes_user_role(run_async):
             assert u.role == UserRole.RECRUITER
 
     run_async(_run())
+
+
+def test_company_checkout_requires_workspace_admin(run_async):
+    """Workspace Recruiters cannot start Company checkout; Admins can."""
+
+    async def _run():
+        async with async_session_factory() as session:
+            admin = await cbh._create_user(session, role=UserRole.RECRUITER)
+            recruiter = await cbh._create_user(
+                session, role=UserRole.RECRUITER
+            )
+            company = await cbh._create_company(session)
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=admin.id,
+                role=MembershipRole.ADMIN,
+            )
+            await cbh._create_membership(
+                session,
+                company_id=company.id,
+                user_id=recruiter.id,
+                role=MembershipRole.RECRUITER,
+            )
+            plan = await cbh._create_plan(session, price=500_000)
+            company_id, plan_id = company.id, plan.id
+            await session.commit()
+
+        recruiter_client = await cbh._make_jwt_client_for_user(recruiter)
+        try:
+            denied = await recruiter_client.post(
+                f"{API_V1}/payments/vnpay/create",
+                json={"plan_id": str(plan_id)},
+                headers={"X-Company-ID": str(company_id)},
+            )
+            assert denied.status_code == 403, denied.text
+        finally:
+            await recruiter_client.aclose()
+
+        admin_client = await cbh._make_jwt_client_for_user(admin)
+        try:
+            allowed = await admin_client.post(
+                f"{API_V1}/payments/vnpay/create",
+                json={"plan_id": str(plan_id)},
+                headers={"X-Company-ID": str(company_id)},
+            )
+            assert allowed.status_code == 201, allowed.text
+            assert allowed.json()["payment_url"]
+        finally:
+            await admin_client.aclose()
+
+    run_async(_run())

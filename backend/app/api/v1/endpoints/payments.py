@@ -76,8 +76,8 @@ async def create_vnpay_payment(
     """Create a VNPAY payment for a recruitment plan.
 
     When X-Company-ID is supplied:
-    - Requires UserRole.RECRUITER and active ADMIN/RECRUITER workspace membership.
-    - Rejects INTERVIEWER, CANDIDATE, and platform ADMIN.
+    - Requires UserRole.RECRUITER and an active ADMIN workspace membership.
+    - Rejects RECRUITER, INTERVIEWER, CANDIDATE, and platform ADMIN.
     - Creates a company-scoped VNPAY checkout via create_company_vnpay_payment.
 
     When X-Company-ID is absent:
@@ -124,13 +124,13 @@ async def create_vnpay_payment(
                 detail=str(exc),
             ) from exc
 
-        if workspace.membership is None or workspace.role not in {
-            MembershipRole.ADMIN,
-            MembershipRole.RECRUITER,
-        }:
+        if (
+            workspace.membership is None
+            or workspace.role != MembershipRole.ADMIN
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Recruiter or Admin workspace membership required",
+                detail="Workspace Admin membership required for company billing",
             )
 
         try:

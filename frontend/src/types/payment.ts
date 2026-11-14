@@ -14,6 +14,8 @@ export interface PaymentOrderRead {
   user_id: string
   plan_id: string
   subscription_id: string | null
+  company_id: string | null
+  scope: string | null
   amount: number
   currency: string
   provider: string

@@ -133,3 +133,7 @@ export function useWorkspace(): WorkspaceContextValue {
   }
   return context
 }
+
+export function useOptionalWorkspace(): WorkspaceContextValue | null {
+  return useContext(WorkspaceContext) ?? null
+}

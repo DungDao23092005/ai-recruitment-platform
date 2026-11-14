@@ -3,10 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import { Archive, Bot, Briefcase, Sparkles } from 'lucide-react'
 import { usePlans } from '@/features/subscriptions/hooks/usePlans'
 import { useMySubscription } from '@/features/subscriptions/hooks/useMySubscription'
+import { useCompanySubscription } from '@/features/subscriptions/hooks/useCompanySubscription'
 import { PlanCard } from '@/features/subscriptions/components/PlanCard'
 import { CurrentSubscriptionCard } from '@/features/subscriptions/components/CurrentSubscriptionCard'
 import { RecruiterTransitionModal } from '@/features/subscriptions/components/RecruiterTransitionModal'
 import { useAuth } from '@/contexts/AuthContext'
+import { useOptionalWorkspace } from '@/contexts/WorkspaceContext'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
@@ -78,17 +80,32 @@ function CandidateUpgradeHero() {
 }
 
 export function PlansPage() {
-  const { plans, isLoading, error, refetch } = usePlans()
+  const { currentUser } = useAuth()
+  const workspace = useOptionalWorkspace()
+  const navigate = useNavigate()
+
+  const isCandidate = currentUser?.role === 'candidate'
+  const isRecruiter = currentUser?.role === 'recruiter'
+
+  const { plans, isLoading, error, refetch } = usePlans(
+    isRecruiter ? 'company' : undefined,
+  )
+  const personalSubscription = useMySubscription(!isRecruiter)
+  const companySubscription = useCompanySubscription(isRecruiter)
+
   const {
     subscription: activeSubscription,
     isLoading: isSubscriptionLoading,
     error: subscriptionError,
     refetch: refetchSub,
-  } = useMySubscription()
-  const { currentUser } = useAuth()
-  const navigate = useNavigate()
+  } = isRecruiter ? companySubscription : personalSubscription
 
-  const isCandidate = currentUser?.role === 'candidate'
+  // A missing provider (e.g. isolated rendering) keeps the historical
+  // permissive behaviour; the backend remains the authority for checkout.
+  const isWorkspaceAdmin = workspace
+    ? workspace.selectedWorkspace?.role === 'admin'
+    : true
+  const canPurchase = !isRecruiter || isWorkspaceAdmin
 
   const [pendingPlan, setPendingPlan] = useState<RecruitmentPlanRead | null>(
     null,
@@ -134,6 +151,9 @@ export function PlansPage() {
       if (isCurrentPlan(planId)) {
         return
       }
+      if (isRecruiter && !canPurchase) {
+        return
+      }
       if (isCandidate) {
         const plan = plans.find((candidate) => candidate.id === planId)
         if (!plan) {
@@ -145,7 +165,7 @@ export function PlansPage() {
       }
       navigate(`/checkout/${planId}`)
     },
-    [isCandidate, isCurrentPlan, navigate, plans],
+    [canPurchase, isCandidate, isCurrentPlan, isRecruiter, navigate, plans],
   )
 
   const handleCancelTransition = useCallback(() => {
@@ -217,6 +237,15 @@ export function PlansPage() {
 
         {/* Plans Grid */}
         <div className="mt-8">
+          {isRecruiter && !canPurchase ? (
+            <div
+              role="note"
+              className="mb-5 rounded-xl border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground"
+            >
+              Chỉ Quản trị viên công ty (Workspace Admin) mới có quyền mua hoặc
+              thay đổi gói dịch vụ.
+            </div>
+          ) : null}
           {isLoading ? (
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
               {[1, 2].map((i) => (
@@ -236,6 +265,8 @@ export function PlansPage() {
                   plan={plan}
                   isCurrent={isCurrentPlan(plan.id)}
                   onSelect={handleSelectPlan}
+                  disabled={!canPurchase}
+                  disabledReason="Chỉ Quản trị viên công ty (Workspace Admin) mới có quyền mua hoặc thay đổi gói dịch vụ."
                 />
               ))}
             </div>

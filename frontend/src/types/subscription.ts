@@ -1,4 +1,18 @@
 export type SubscriptionStatus = 'pending' | 'active' | 'cancelled' | 'expired'
+export type SubscriptionScope =
+  | 'company_recruiting'
+  | 'candidate_personal'
+  | 'legacy_recruiter_personal'
+export type PlanAudience = 'company' | 'candidate'
+export type SubscriptionUsageFeatureType =
+  | 'job_post'
+  | 'candidate_search'
+  | 'ai_feature'
+  | 'recruiting_ai'
+  | 'candidate_parse_resume'
+  | 'candidate_job_recommendations'
+  | 'candidate_chat'
+export type SubscriptionUsageStatus = 'reserved' | 'completed' | 'failed'
 
 export interface RecruitmentPlan {
   id: string
@@ -23,6 +37,14 @@ export interface Subscription {
   started_at: string | null
   expires_at: string | null
   plan?: RecruitmentPlan
+  company_id?: string | null
+  scope?: SubscriptionScope | null
+  max_job_posts?: number
+  max_candidate_searches?: number
+  max_ai_features?: number
+  job_posts_used?: number
+  candidate_searches_used?: number
+  ai_features_used?: number
 }
 
 export interface SubscriptionRead {
@@ -33,6 +55,14 @@ export interface SubscriptionRead {
   started_at: string | null
   expires_at: string | null
   plan?: RecruitmentPlan
+  company_id?: string | null
+  scope?: SubscriptionScope | null
+  max_job_posts?: number
+  max_candidate_searches?: number
+  max_ai_features?: number
+  job_posts_used?: number
+  candidate_searches_used?: number
+  ai_features_used?: number
 }
 
 export interface RecruitmentPlanRead {
@@ -48,4 +78,37 @@ export interface RecruitmentPlanRead {
   is_active: boolean
   display_order?: number
   features?: string[]
+}
+
+export interface CompanyUsageItem {
+  id: string
+  subscription_id: string
+  user_id: string
+  user_email: string | null
+  user_full_name: string | null
+  feature_type: SubscriptionUsageFeatureType
+  feature_label: string
+  amount: number
+  status: SubscriptionUsageStatus
+  status_label: string
+  reference_id: string | null
+  created_at: string
+  finalized_at: string | null
+}
+
+export interface CompanyUsageHistoryResponse {
+  items: CompanyUsageItem[]
+  total: number
+  page: number
+  page_size: number
+  total_pages: number
+}
+
+export interface CompanyUsageQueryParams {
+  page?: number
+  page_size?: number
+  start_date?: string
+  end_date?: string
+  feature_type?: SubscriptionUsageFeatureType
+  user_id?: string
 }
