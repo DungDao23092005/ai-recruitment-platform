@@ -663,6 +663,8 @@ class TestApiRegression:
         body = resp.json()
         assert body["status"] == "healthy"
         assert body["service"] == "AI Recruitment Platform API"
+        assert body["version"] == settings.VERSION
+        assert body["environment"] == settings.ENVIRONMENT
 
 
 ACCESS_MATRIX = [

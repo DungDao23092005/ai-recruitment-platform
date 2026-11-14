@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.v1.endpoints import health
+from app.core.config import settings
 from app.services.analytics_rollup_worker import AnalyticsRollupWorker
 from app.services.email_outbox_worker import EmailOutboxWorker
 
@@ -261,6 +262,8 @@ async def test_worker_degradation_does_not_make_health_503(monkeypatch):
 
     assert response["status"] == "degraded"
     assert response["workers"]["email_outbox"]["status"] == "degraded"
+    assert response["version"] == settings.VERSION
+    assert response["environment"] == settings.ENVIRONMENT
 
 
 @pytest.mark.asyncio
@@ -288,3 +291,5 @@ async def test_infrastructure_failure_still_returns_503(monkeypatch):
         await health.health_check(db=AsyncMock())
 
     assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["version"] == settings.VERSION
+    assert exc_info.value.detail["environment"] == settings.ENVIRONMENT

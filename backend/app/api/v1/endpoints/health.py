@@ -276,6 +276,8 @@ async def health_check(db: AsyncSession = Depends(get_db_session)) -> Dict[str, 
             else "degraded"
         ),
         "service": f"{settings.PROJECT_NAME} API",
+        "version": settings.VERSION,
+        "environment": settings.ENVIRONMENT,
         "components": components,
         "workers": workers,
     }
