@@ -30,6 +30,7 @@ from app.repositories import (
 from app.schemas.interview import (
     AssignedInterviewRead,
     CandidateInterviewRead,
+    CandidateScheduledInterviewRead,
     InterviewActionRequest,
     InterviewCreate,
     InterviewerApplicationRead,
@@ -903,3 +904,66 @@ class InterviewService:
             candidate_name=candidate_name,
             application_status=application.status.value,
         )
+
+    async def list_candidate_interviews(
+        self,
+        current_user: User,
+    ) -> list[CandidateScheduledInterviewRead]:
+        """Aggregate all interviews across the authenticated candidate's applications.
+
+        Candidate identity is derived strictly from ``current_user`` via the
+        database profile; if no candidate profile exists, returns an empty list.
+        Deliberately projects into :class:`CandidateScheduledInterviewRead` so
+        internal recruiter notes, evaluations, and interviewer assignments are never exposed.
+        """
+        user = await UserService(self.session).get_user_with_profile(
+            current_user.id
+        )
+        if user is None or user.candidate_profile is None:
+            return []
+
+        interviews = await self.interviews.list_by_candidate_id(
+            user.candidate_profile.id
+        )
+
+        results: list[CandidateScheduledInterviewRead] = []
+        for interview in interviews:
+            application = interview.application
+            job = application.job if application is not None else None
+            company = job.company if job is not None else None
+
+            results.append(
+                CandidateScheduledInterviewRead(
+                    id=interview.id,
+                    application_id=interview.application_id,
+                    scheduled_at=interview.scheduled_at,
+                    duration_minutes=interview.duration_minutes,
+                    interview_type=(
+                        interview.interview_type.value
+                        if hasattr(interview.interview_type, "value")
+                        else str(interview.interview_type)
+                    ),
+                    meeting_url=interview.meeting_url,
+                    location=interview.location,
+                    candidate_notes=interview.candidate_notes,
+                    status=(
+                        interview.status.value
+                        if hasattr(interview.status, "value")
+                        else str(interview.status)
+                    ),
+                    created_at=interview.created_at,
+                    updated_at=interview.updated_at,
+                    job_id=(
+                        application.job_id
+                        if application is not None
+                        else (job.id if job is not None else uuid.uuid4())
+                    ),
+                    job_title=(
+                        job.title if job is not None and job.title else ""
+                    ),
+                    company_name=(
+                        company.name if company is not None and company.name else ""
+                    ),
+                )
+            )
+        return results

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from app.schemas.application import ApplicationDetailRead, ApplicationWithJobRead
 from app.schemas.interview import (
     CandidateInterviewRead,
+    CandidateScheduledInterviewRead,
     InterviewRead,
     RecruiterInterviewRead,
 )
@@ -75,3 +76,24 @@ class TestApplicationSchemaWiring:
     def test_recruiter_detail_uses_recruiter_projection(self):
         annotation = ApplicationDetailRead.model_fields["interviews"].annotation
         assert get_args(annotation) == (RecruiterInterviewRead,)
+
+
+class TestCandidateScheduledInterviewRead:
+    def test_excludes_recruiter_notes_field(self):
+        assert "notes" not in CandidateScheduledInterviewRead.model_fields
+        assert "scorecards" not in CandidateScheduledInterviewRead.model_fields
+        assert "evaluations" not in CandidateScheduledInterviewRead.model_fields
+        assert "assignments" not in CandidateScheduledInterviewRead.model_fields
+
+    def test_serialization_drops_recruiter_notes_and_includes_job_company(self):
+        source = _interview_source()
+        source.job_id = uuid.uuid4()
+        source.job_title = "Backend Engineer"
+        source.company_name = "Tech Corp"
+        schema = CandidateScheduledInterviewRead.model_validate(source)
+        dumped = schema.model_dump()
+        assert "notes" not in dumped
+        assert RECRUITER_NOTES not in schema.model_dump_json()
+        assert dumped["job_id"] == source.job_id
+        assert dumped["job_title"] == "Backend Engineer"
+        assert dumped["company_name"] == "Tech Corp"

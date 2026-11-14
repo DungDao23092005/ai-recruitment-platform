@@ -1,12 +1,19 @@
 import apiClient from '@/api/client'
 import type {
   AssignedInterview,
+  CandidateScheduledInterview,
   Interview,
   InterviewCreate,
   InterviewUpdate,
   InterviewerApplication,
   InterviewerInterview,
 } from '@/types/application'
+
+export async function listCandidateInterviews(): Promise<CandidateScheduledInterview[]> {
+  return apiClient.get<CandidateScheduledInterview[], CandidateScheduledInterview[]>(
+    '/applications/mine/interviews',
+  )
+}
 
 export async function listMyAssignedInterviews(): Promise<AssignedInterview[]> {
   return apiClient.get<AssignedInterview[], AssignedInterview[]>(
@@ -83,7 +90,7 @@ export async function candidateActionInterview(
     {
       action,
       candidate_notes: candidateNotes,
-    }
+    },
   )
   return response
 }

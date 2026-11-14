@@ -6,7 +6,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { candidateActionInterview } from '@/api/interviews'
 import { getFriendlyErrorMessage, isConflictError } from '@/utils/errors'
 import { formatDateTime } from '@/utils/datetime'
-import type { Interview, InterviewType } from '@/types/application'
+import type { CandidateScheduledInterview, Interview, InterviewType } from '@/types/application'
 
 const INTERVIEW_TYPE_LABELS: Record<InterviewType, string> = {
   technical: 'Chuyên môn',
@@ -19,7 +19,7 @@ export const DECLINE_REASON_MAX_LENGTH = 1000
 
 export interface InterviewDeclineModalProps {
   applicationId: string
-  interview: Interview
+  interview: Interview | CandidateScheduledInterview
   onClose: () => void
   onDeclined: (updated: Interview) => void
   onRefresh?: () => void

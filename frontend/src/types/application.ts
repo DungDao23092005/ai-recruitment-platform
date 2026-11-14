@@ -131,6 +131,23 @@ export interface InterviewerInterview {
   updated_at: string
 }
 
+export interface CandidateScheduledInterview {
+  id: string
+  application_id: string
+  scheduled_at: string
+  duration_minutes: number
+  interview_type: InterviewType
+  meeting_url: string | null
+  location: string | null
+  candidate_notes: string | null
+  status: InterviewStatus
+  created_at: string
+  updated_at: string
+  job_id: string
+  job_title: string
+  company_name: string
+}
+
 export interface AssignedInterview {
   id: string
   application_id: string

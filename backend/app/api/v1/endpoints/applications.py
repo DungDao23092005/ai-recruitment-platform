@@ -61,6 +61,7 @@ from app.schemas.application_note import (
 )
 from app.schemas.interview import (
     CandidateInterviewRead,
+    CandidateScheduledInterviewRead,
     InterviewActionRequest,
     InterviewCreate,
     InterviewRead,
@@ -231,6 +232,23 @@ async def list_my_applications(
         to_application_with_job_read(application)
         for application in applications
     ]
+
+
+@router.get(
+    "/mine/interviews",
+    response_model=list[CandidateScheduledInterviewRead],
+)
+async def list_my_interviews(
+    current_user: User = Depends(require_candidate),
+    db: AsyncSession = Depends(get_db),
+) -> list[CandidateScheduledInterviewRead]:
+    """List all scheduled interviews for the authenticated candidate.
+
+    Aggregates interviews across all active applications owned by the candidate.
+    Candidate identity is resolved from the auth context; internal notes and
+    interviewer details are strictly omitted.
+    """
+    return await InterviewService(db).list_candidate_interviews(current_user)
 
 
 @router.get(

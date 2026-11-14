@@ -124,6 +124,7 @@ describe('AppShell sidebar', () => {
 
     const nav = getAppNav()
     expect(within(nav).getByText('Tổng quan')).toBeInTheDocument()
+    expect(within(nav).getByText('Lịch phỏng vấn')).toBeInTheDocument()
     expect(within(nav).getByText('Tìm việc AI')).toBeInTheDocument()
     expect(within(nav).getByText('Gợi ý việc làm')).toBeInTheDocument()
     expect(within(nav).getByText('Trợ lý AI')).toBeInTheDocument()
@@ -335,6 +336,23 @@ describe('AppShell sidebar', () => {
     expect(
       screen.getByRole('link', { name: 'Đơn ứng tuyển' }),
     ).toHaveAttribute('href', '/candidate/applications')
+  })
+
+  it('points candidate "Lịch phỏng vấn" at /candidate/interviews and positions it after "Đơn ứng tuyển"', async () => {
+    renderShell('candidate', '/candidate/portal')
+
+    await waitFor(() => {
+      expect(screen.getByText('Tổng quan')).toBeInTheDocument()
+    })
+
+    const nav = getAppNav()
+    const links = within(nav).getAllByRole('link')
+    const linkTexts = links.map((l) => l.textContent)
+    const appIndex = linkTexts.findIndex((t) => t?.includes('Đơn ứng tuyển'))
+    const interviewIndex = linkTexts.findIndex((t) => t?.includes('Lịch phỏng vấn'))
+    expect(appIndex).toBeGreaterThan(-1)
+    expect(interviewIndex).toBe(appIndex + 1)
+    expect(links[interviewIndex]).toHaveAttribute('href', '/candidate/interviews')
   })
 
   it('opens the mobile drawer with the same sidebar navigation', async () => {

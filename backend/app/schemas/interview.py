@@ -106,6 +106,20 @@ class CandidateInterviewRead(BaseModel):
     updated_at: datetime
 
 
+class CandidateScheduledInterviewRead(CandidateInterviewRead):
+    """Aggregated interview item for the authenticated candidate's schedule.
+
+    Extends :class:`CandidateInterviewRead` with application-scoped job and
+    company context so the candidate portal schedule page needs only a single
+    request to render the complete session history. Deliberately excludes
+    internal recruiter notes, evaluations, scorecards, and interviewer assignments.
+    """
+
+    job_id: uuid.UUID
+    job_title: str
+    company_name: str
+
+
 class InterviewerInterviewRead(BaseModel):
     """Interviewer-facing view that never exposes internal recruiter notes."""
 

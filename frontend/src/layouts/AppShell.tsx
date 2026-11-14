@@ -92,6 +92,7 @@ function useAppNav(
         items: [
           { to: '/candidate/jobs', label: 'Việc làm', icon: Briefcase, end: true },
           { to: '/candidate/applications', label: 'Đơn ứng tuyển', icon: ClipboardList },
+          { to: '/candidate/interviews', label: 'Lịch phỏng vấn', icon: CalendarClock },
           { to: '/jobs/search', label: 'Tìm việc AI', icon: Search },
           { to: '/candidate/recommendations', label: 'Gợi ý việc làm', icon: Sparkles },
         ],

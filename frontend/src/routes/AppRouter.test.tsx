@@ -135,6 +135,7 @@ vi.mock('@/api/subscriptions', () => ({
 
 vi.mock('@/api/interviews', () => ({
   listMyAssignedInterviews: vi.fn().mockResolvedValue([]),
+  listCandidateInterviews: vi.fn().mockResolvedValue([]),
   getInterviewerApplication: vi.fn(),
 }))
 
@@ -259,6 +260,7 @@ beforeEach(async () => {
 
   const mockedInterviews = vi.mocked(await import('@/api/interviews'))
   mockedInterviews.listMyAssignedInterviews.mockResolvedValue([])
+  mockedInterviews.listCandidateInterviews.mockResolvedValue([])
 
   mockedGetJobs.mockResolvedValue({ items: [mockJob], total: 1 })
   mockedGetJobById.mockResolvedValue(mockJob)
@@ -1441,6 +1443,51 @@ describe('Phase 6.4 - Role Navigation Regression', () => {
     })
     expect(
       screen.queryByRole('heading', { name: 'Gợi ý việc làm cho bạn' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('lets a candidate access /candidate/interviews', async () => {
+    setUser('candidate')
+
+    renderAt('/candidate/interviews')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Lịch phỏng vấn' }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: /Tìm đúng công việc/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('blocks a recruiter from /candidate/interviews', async () => {
+    setUser('recruiter')
+
+    renderAt('/candidate/interviews')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Lịch phỏng vấn' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('blocks an admin from /candidate/interviews', async () => {
+    setUser('admin')
+
+    renderAt('/candidate/interviews')
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
+    expect(
+      screen.queryByRole('heading', { name: 'Lịch phỏng vấn' }),
     ).not.toBeInTheDocument()
   })
 })

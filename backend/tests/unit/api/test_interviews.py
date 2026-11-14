@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_current_user, get_optional_workspace
 from app.core.exceptions import EntityNotFoundException, InvalidTransitionException
 from app.domain.enums import MembershipRole, UserRole, InterviewStatus, InterviewType
+from app.schemas.interview import CandidateScheduledInterviewRead
 from app.main import app
 
 
@@ -24,6 +25,7 @@ def mock_service():
     service.update_interview = AsyncMock()
     service.cancel_interview = AsyncMock()
     service.candidate_action_interview = AsyncMock()
+    service.list_candidate_interviews = AsyncMock()
     return service
 
 
@@ -313,3 +315,42 @@ def test_recruiter_cancel_missing_interview_returns_404(
     )
 
     assert resp.status_code == 404
+
+
+def test_candidate_list_my_interviews_success(candidate_client, mock_service):
+    interview_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+    mock_service.list_candidate_interviews.return_value = [
+        CandidateScheduledInterviewRead(
+            id=interview_id,
+            application_id=app_id,
+            scheduled_at=_now(),
+            duration_minutes=45,
+            interview_type="technical",
+            meeting_url="https://meet.google.com/abc",
+            location=None,
+            candidate_notes=None,
+            status="scheduled",
+            created_at=_now(),
+            updated_at=_now(),
+            job_id=job_id,
+            job_title="Frontend Engineer",
+            company_name="Tech Co",
+        )
+    ]
+
+    resp = candidate_client.get("/api/v1/applications/mine/interviews")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["id"] == str(interview_id)
+    assert data[0]["job_title"] == "Frontend Engineer"
+    assert data[0]["company_name"] == "Tech Co"
+    mock_service.list_candidate_interviews.assert_awaited_once()
+
+
+def test_recruiter_list_candidate_interviews_forbidden(recruiter_client, mock_service):
+    resp = recruiter_client.get("/api/v1/applications/mine/interviews")
+    assert resp.status_code == 403
+    mock_service.list_candidate_interviews.assert_not_called()
