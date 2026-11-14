@@ -48,6 +48,9 @@ def _to_admin_audit_read(log: AdminAuditLog) -> AdminAuditLogRead:
         target_user_email=(
             log.target_user.email if log.target_user is not None else None
         ),
+        target_id=log.target_id,
+        target_type=log.target_type,
+        target_name=log.target_name,
         action=log.action,
         reason=log.reason,
         details=log.details,
@@ -64,6 +67,7 @@ async def list_admin_audit_logs(
     action: AdminAuditAction | None = Query(default=None),
     admin_id: uuid.UUID | None = Query(default=None),
     target_user_id: uuid.UUID | None = Query(default=None),
+    target_id: uuid.UUID | None = Query(default=None),
     created_from: datetime | None = Query(default=None),
     created_to: datetime | None = Query(default=None),
     search: str | None = Query(default=None, max_length=100),
@@ -75,6 +79,7 @@ async def list_admin_audit_logs(
             action=action,
             admin_id=admin_id,
             target_user_id=target_user_id,
+            target_id=target_id,
             created_from=created_from,
             created_to=created_to,
             search=search,

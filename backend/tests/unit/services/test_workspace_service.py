@@ -235,6 +235,8 @@ class TestResolveWorkspace:
         assert isinstance(audit, AdminAuditLog)
         assert audit.admin_id == admin.id
         assert audit.target_user_id == admin.id
+        assert audit.target_id == admin.id
+        assert audit.target_type == "user"
         assert audit.action == AdminAuditAction.WORKSPACE_ACCESS
         assert audit.details == {
             "company_id": str(company.id),

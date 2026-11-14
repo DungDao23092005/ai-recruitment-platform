@@ -33,15 +33,52 @@ const EMPTY_FILTERS: Filters = {
   createdTo: '',
 }
 
-type AuditBadgeVariant = 'warning' | 'success' | 'destructive'
+type AuditBadgeVariant = 'warning' | 'success' | 'destructive' | 'neutral'
 
-const ACTION_META: Record<
-  AdminAuditAction,
-  { label: string; variant: AuditBadgeVariant }
-> = {
+interface ActionMeta {
+  label: string
+  variant: AuditBadgeVariant
+}
+
+const ACTION_META: Record<AdminAuditAction, ActionMeta> = {
   user_lock: { label: 'Khóa tài khoản', variant: 'warning' },
   user_unlock: { label: 'Mở khóa tài khoản', variant: 'success' },
   user_delete: { label: 'Xóa tài khoản', variant: 'destructive' },
+  workspace_access: { label: 'Truy cập workspace', variant: 'neutral' },
+  plan_lock: { label: 'Khóa gói dịch vụ', variant: 'warning' },
+  plan_unlock: { label: 'Mở khóa gói dịch vụ', variant: 'success' },
+}
+
+const FALLBACK_ACTION_META: ActionMeta = {
+  label: 'Hành động khác',
+  variant: 'neutral',
+}
+
+function getActionMeta(action: string): ActionMeta {
+  return ACTION_META[action as AdminAuditAction] ?? FALLBACK_ACTION_META
+}
+
+function getTargetDisplay(log: AdminAuditLog): {
+  primary: string
+  secondary: string
+  title: string
+} {
+  if (log.target_type === 'plan') {
+    const primary = log.target_name ?? 'Gói dịch vụ'
+    return {
+      primary,
+      secondary: log.target_id ? shortId(log.target_id) : '—',
+      title: log.target_id ?? primary,
+    }
+  }
+  const primary =
+    log.target_user_email ?? log.target_name ?? 'Không xác định'
+  const identifier = log.target_user_id ?? log.target_id
+  return {
+    primary,
+    secondary: identifier ? shortId(identifier) : '—',
+    title: identifier ?? primary,
+  }
 }
 
 interface Filters {
@@ -174,7 +211,7 @@ export function AdminAuditPage() {
       <PageHeader
         eyebrow="Quản trị viên"
         title="Nhật ký quản trị"
-        description="Tra cứu các thao tác khóa, mở khóa và xóa tài khoản do quản trị viên thực hiện. Bản ghi chỉ đọc và luôn được sắp xếp mới nhất trước."
+        description="Tra cứu các thao tác khóa, mở khóa tài khoản hoặc gói dịch vụ do quản trị viên thực hiện. Bản ghi chỉ đọc và luôn được sắp xếp mới nhất trước."
         actions={
           <Button
             type="button"
@@ -230,6 +267,9 @@ export function AdminAuditPage() {
               <option value="user_lock">Khóa tài khoản</option>
               <option value="user_unlock">Mở khóa tài khoản</option>
               <option value="user_delete">Xóa tài khoản</option>
+              <option value="workspace_access">Truy cập workspace</option>
+              <option value="plan_lock">Khóa gói dịch vụ</option>
+              <option value="plan_unlock">Mở khóa gói dịch vụ</option>
             </Select>
             <Input
               id="admin-audit-from"
@@ -316,7 +356,7 @@ export function AdminAuditPage() {
               description={
                 hasActiveFilters
                   ? 'Thử thay đổi từ khóa, hành động hoặc khoảng thời gian để xem thêm kết quả.'
-                  : 'Các thao tác khóa, mở khóa hoặc xóa tài khoản sẽ xuất hiện tại đây.'
+                  : 'Các thao tác khóa, mở khóa tài khoản hoặc gói dịch vụ sẽ xuất hiện tại đây.'
               }
             >
               {hasActiveFilters ? (
@@ -356,7 +396,8 @@ export function AdminAuditPage() {
                   </thead>
                   <tbody>
                     {listState.data.items.map((log) => {
-                      const meta = ACTION_META[log.action]
+                      const meta = getActionMeta(log.action)
+                      const target = getTargetDisplay(log)
                       return (
                         <tr
                           key={log.id}
@@ -390,12 +431,12 @@ export function AdminAuditPage() {
                           <td className="px-4 py-3 align-top">
                             <span
                               className="block max-w-[220px] truncate"
-                              title={log.target_user_email ?? log.target_user_id}
+                              title={target.title}
                             >
-                              {log.target_user_email ?? 'Không xác định'}
+                              {target.primary}
                             </span>
                             <span className="mt-0.5 block font-mono text-xs text-muted-foreground">
-                              {shortId(log.target_user_id)}
+                              {target.secondary}
                             </span>
                           </td>
                           <td className="px-4 py-3 align-top">

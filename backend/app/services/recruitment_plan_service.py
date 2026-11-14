@@ -11,10 +11,11 @@ from app.core.exceptions import (
     EntityNotFoundException,
     ValidationError,
 )
-from app.domain.enums import PlanAudience
+from app.domain.enums import AdminAuditAction, PlanAudience
 from app.models import RecruitmentPlan
 from app.repositories import RecruitmentPlanRepository
 from app.schemas.recruitment_plan import RecruitmentPlanCreate, RecruitmentPlanUpdate
+from app.services.admin_audit_service import record_admin_audit
 
 
 def _validate_free_plan_audience(
@@ -30,6 +31,31 @@ class RecruitmentPlanService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.plans = RecruitmentPlanRepository(session)
+
+    def _record_status_audit(
+        self,
+        plan: RecruitmentPlan,
+        *,
+        admin_id: uuid.UUID | None,
+    ) -> None:
+        audience = getattr(plan.plan_audience, "value", plan.plan_audience)
+        record_admin_audit(
+            self.session,
+            admin_id=admin_id,
+            action=(
+                AdminAuditAction.PLAN_UNLOCK
+                if plan.is_active
+                else AdminAuditAction.PLAN_LOCK
+            ),
+            target_id=plan.id,
+            target_type="plan",
+            target_name=plan.name,
+            details={
+                "is_active": plan.is_active,
+                "plan_audience": audience,
+                "is_free": plan.is_free,
+            },
+        )
 
     async def create_plan(self, data: RecruitmentPlanCreate) -> RecruitmentPlan:
         _validate_free_plan_audience(data.plan_audience, data.is_free)
@@ -81,11 +107,15 @@ class RecruitmentPlanService:
         self,
         plan_id: uuid.UUID,
         data: RecruitmentPlanUpdate,
+        admin_id: uuid.UUID | None = None,
     ) -> RecruitmentPlan:
-        plan = await self.plans.get_active_by_id_admin(plan_id)
+        plan = await self.plans.get_active_by_id_admin(
+            plan_id, for_update=True
+        )
         if plan is None:
             raise EntityNotFoundException(f"Recruitment plan {plan_id} not found")
 
+        was_active = plan.is_active
         effective_audience = (
             data.plan_audience
             if data.plan_audience is not None
@@ -119,6 +149,9 @@ class RecruitmentPlanService:
         if data.display_order is not None:
             plan.display_order = data.display_order
 
+        if plan.is_active != was_active:
+            self._record_status_audit(plan, admin_id=admin_id)
+
         try:
             await self.session.commit()
             await self.session.refresh(plan)
@@ -131,12 +164,18 @@ class RecruitmentPlanService:
         self,
         plan_id: uuid.UUID,
         is_active: bool,
+        admin_id: uuid.UUID | None = None,
     ) -> RecruitmentPlan:
-        plan = await self.plans.get_active_by_id_admin(plan_id)
+        plan = await self.plans.get_active_by_id_admin(
+            plan_id, for_update=True
+        )
         if plan is None:
             raise EntityNotFoundException(f"Recruitment plan {plan_id} not found")
 
+        changed = plan.is_active != is_active
         plan.is_active = is_active
+        if changed:
+            self._record_status_audit(plan, admin_id=admin_id)
         try:
             await self.session.commit()
             await self.session.refresh(plan)

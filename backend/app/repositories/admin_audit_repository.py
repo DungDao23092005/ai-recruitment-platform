@@ -39,6 +39,7 @@ class AdminAuditRepository:
         action: AdminAuditAction | None = None,
         admin_id: uuid.UUID | None = None,
         target_user_id: uuid.UUID | None = None,
+        target_id: uuid.UUID | None = None,
         created_from: datetime | None = None,
         created_to: datetime | None = None,
         search: str | None = None,
@@ -46,8 +47,9 @@ class AdminAuditRepository:
         """Return a deterministic, database-paginated audit page and total.
 
         Date bounds are inclusive on both ends. ``search`` is matched against
-        the reason and the current actor/target email addresses. LIKE wildcards
-        in the query are escaped so ``%`` and ``_`` are searched literally.
+        the reason, the generic target name and the current actor/target email
+        addresses. LIKE wildcards in the query are escaped so ``%`` and ``_``
+        are searched literally.
         """
         filters = []
         if action is not None:
@@ -56,6 +58,8 @@ class AdminAuditRepository:
             filters.append(AdminAuditLog.admin_id == admin_id)
         if target_user_id is not None:
             filters.append(AdminAuditLog.target_user_id == target_user_id)
+        if target_id is not None:
+            filters.append(AdminAuditLog.target_id == target_id)
         if created_from is not None:
             filters.append(AdminAuditLog.created_at >= created_from)
         if created_to is not None:
@@ -72,6 +76,7 @@ class AdminAuditRepository:
             pattern = f"%{_escape_like(trimmed_search)}%"
             search_filter = or_(
                 AdminAuditLog.reason.ilike(pattern, escape="\\"),
+                AdminAuditLog.target_name.ilike(pattern, escape="\\"),
                 actor_alias.email.ilike(pattern, escape="\\"),
                 target_alias.email.ilike(pattern, escape="\\"),
             )

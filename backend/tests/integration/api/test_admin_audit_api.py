@@ -10,7 +10,8 @@ from tests.integration.api.conftest import API_V1, PASSWORD
 from tests.integration.conftest import run
 
 from app.database.session import async_session_factory
-from app.models import AdminAuditLog, User
+from app.domain.enums import PlanAudience
+from app.models import AdminAuditLog, RecruitmentPlan, User
 
 AUDIT_URL = f"{API_V1}/admin/audit-logs"
 
@@ -45,6 +46,25 @@ async def _audit_rows() -> list[AdminAuditLog]:
             )
         )
         return list(result.scalars().all())
+
+
+async def _create_plan(*, is_active: bool = True) -> tuple[uuid.UUID, str]:
+    name = f"Audit Plan {uuid.uuid4()}"
+    async with async_session_factory() as session:
+        plan = RecruitmentPlan(
+            name=name,
+            price=1000000,
+            currency="VND",
+            duration_days=30,
+            max_job_posts=5,
+            plan_audience=PlanAudience.COMPANY,
+            is_free=False,
+            is_active=is_active,
+        )
+        session.add(plan)
+        await session.commit()
+        await session.refresh(plan)
+        return plan.id, plan.name
 
 
 def _me(auth_client: httpx.AsyncClient) -> dict:
@@ -108,12 +128,18 @@ class TestAdminAuditMutations:
             "target_role": "candidate",
         }
         assert item["created_at"].endswith("Z") or "+00:00" in item["created_at"]
+        assert item["target_id"] == str(target.id)
+        assert item["target_type"] == "user"
+        assert item["target_name"] is None
         assert set(item) == {
             "id",
             "admin_id",
             "admin_email",
             "target_user_id",
             "target_user_email",
+            "target_id",
+            "target_type",
+            "target_name",
             "action",
             "reason",
             "details",
@@ -297,8 +323,77 @@ class TestAdminAuditFilters:
             {"skip": -1},
             {"action": "not_an_action"},
             {"target_user_id": "not-a-uuid"},
+            {"target_id": "not-a-uuid"},
         ],
     )
     def test_invalid_query_parameters_are_rejected(self, admin_client, params):
         resp = run(admin_client.get(AUDIT_URL, params=params))
         assert resp.status_code == 422, resp.text
+
+
+class TestAdminPlanAudit:
+    def test_status_endpoint_records_lock_and_unlock(self, admin_client):
+        plan_id, plan_name = run(_create_plan())
+
+        lock = run(
+            admin_client.patch(
+                f"{API_V1}/admin/plans/{plan_id}/status",
+                json={"is_active": False},
+            )
+        )
+        assert lock.status_code == 200, lock.text
+        unlock = run(
+            admin_client.patch(
+                f"{API_V1}/admin/plans/{plan_id}/status",
+                json={"is_active": True},
+            )
+        )
+        assert unlock.status_code == 200, unlock.text
+
+        data = run(
+            admin_client.get(AUDIT_URL, params={"target_id": str(plan_id)})
+        ).json()
+        assert data["total"] == 2
+        assert {item["action"] for item in data["items"]} == {
+            "plan_lock",
+            "plan_unlock",
+        }
+        for item in data["items"]:
+            assert item["target_id"] == str(plan_id)
+            assert item["target_type"] == "plan"
+            assert item["target_name"] == plan_name
+            assert item["target_user_id"] is None
+            assert item["target_user_email"] is None
+            assert item["admin_email"] is not None
+
+        searched = run(
+            admin_client.get(AUDIT_URL, params={"search": plan_name})
+        ).json()
+        assert searched["total"] == 2
+
+    def test_update_endpoint_records_status_change_only(self, admin_client):
+        plan_id, _ = run(_create_plan())
+
+        unchanged = run(
+            admin_client.patch(
+                f"{API_V1}/admin/plans/{plan_id}",
+                json={"name": "Renamed plan"},
+            )
+        )
+        assert unchanged.status_code == 200, unchanged.text
+        assert run(admin_client.get(AUDIT_URL)).json()["total"] == 0
+
+        changed = run(
+            admin_client.patch(
+                f"{API_V1}/admin/plans/{plan_id}",
+                json={"is_active": False},
+            )
+        )
+        assert changed.status_code == 200, changed.text
+
+        data = run(
+            admin_client.get(AUDIT_URL, params={"target_id": str(plan_id)})
+        ).json()
+        assert data["total"] == 1
+        assert data["items"][0]["action"] == "plan_lock"
+        assert data["items"][0]["target_type"] == "plan"

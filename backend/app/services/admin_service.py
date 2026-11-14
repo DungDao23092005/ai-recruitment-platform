@@ -25,6 +25,7 @@ from app.schemas.admin import (
     ApplicationStatusCounts,
 )
 from app.schemas.admin_audit import AdminAuditLogListParams
+from app.services.admin_audit_service import record_admin_audit
 from app.services.account_email_service import (
     schedule_account_deleted_email,
     schedule_account_locked_email,
@@ -64,16 +65,13 @@ class AdminService:
         argument keeps direct service callers backward compatible; production
         requests never accept an actor id from the client.
         """
-        if admin_id is None:
-            return
-        self.session.add(
-            AdminAuditLog(
-                admin_id=admin_id,
-                target_user_id=target_user_id,
-                action=action,
-                reason=reason,
-                details=details,
-            )
+        record_admin_audit(
+            self.session,
+            admin_id=admin_id,
+            action=action,
+            target_user_id=target_user_id,
+            reason=reason,
+            details=details,
         )
 
     async def get_stats(self) -> AdminStatsResponse:
@@ -127,6 +125,7 @@ class AdminService:
             action=params.action,
             admin_id=params.admin_id,
             target_user_id=params.target_user_id,
+            target_id=params.target_id,
             created_from=params.created_from,
             created_to=params.created_to,
             search=params.search,

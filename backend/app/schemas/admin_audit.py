@@ -17,8 +17,11 @@ class AdminAuditLogRead(BaseModel):
     id: uuid.UUID
     admin_id: uuid.UUID
     admin_email: str | None = None
-    target_user_id: uuid.UUID
+    target_user_id: uuid.UUID | None = None
     target_user_email: str | None = None
+    target_id: uuid.UUID | None = None
+    target_type: str = "user"
+    target_name: str | None = None
     action: AdminAuditAction
     reason: str | None = None
     details: dict[str, Any] | None = None
@@ -39,7 +42,8 @@ class AdminAuditLogListParams(BaseModel):
 
     ``created_from`` and ``created_to`` are inclusive UTC instants. Naive
     datetimes are interpreted as UTC. ``search`` is a literal substring match
-    over the reason and current actor/target email addresses.
+    over the reason, the generic target name and current actor/target email
+    addresses.
     """
 
     skip: int = Field(default=0, ge=0)
@@ -47,6 +51,7 @@ class AdminAuditLogListParams(BaseModel):
     action: AdminAuditAction | None = None
     admin_id: uuid.UUID | None = None
     target_user_id: uuid.UUID | None = None
+    target_id: uuid.UUID | None = None
     created_from: datetime | None = None
     created_to: datetime | None = None
     search: str | None = Field(default=None, max_length=100)

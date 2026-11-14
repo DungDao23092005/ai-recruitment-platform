@@ -105,7 +105,9 @@ async def update_plan(
 ) -> RecruitmentPlanAdminRead:
     """Update a recruitment plan (admin only)."""
     try:
-        plan = await service.update_plan(plan_id, data)
+        plan = await service.update_plan(
+            plan_id, data, admin_id=current_user.id
+        )
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -136,7 +138,9 @@ async def update_plan_status(
 ) -> RecruitmentPlanAdminRead:
     """Activate or deactivate a recruitment plan (admin only)."""
     try:
-        plan = await service.set_plan_status(plan_id, data.is_active)
+        plan = await service.set_plan_status(
+            plan_id, data.is_active, admin_id=current_user.id
+        )
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

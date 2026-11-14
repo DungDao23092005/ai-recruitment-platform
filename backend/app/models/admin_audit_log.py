@@ -40,6 +40,11 @@ class AdminAuditLog(Base):
             "created_at",
         ),
         Index(
+            "ix_admin_audit_logs_generic_target_created",
+            "target_id",
+            "created_at",
+        ),
+        Index(
             "ix_admin_audit_logs_action_created",
             "action",
             "created_at",
@@ -50,8 +55,18 @@ class AdminAuditLog(Base):
     admin_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id"), nullable=False
     )
-    target_user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id"), nullable=False
+    target_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    target_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    target_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="user",
+        server_default="user",
+    )
+    target_name: Mapped[str | None] = mapped_column(
+        String(255).with_variant(NVARCHAR(255), "mssql"), nullable=True
     )
     action: Mapped[AdminAuditAction] = mapped_column(
         StringEnum(AdminAuditAction), nullable=False
@@ -70,7 +85,7 @@ class AdminAuditLog(Base):
         foreign_keys=[admin_id],
         lazy="selectin",
     )
-    target_user: Mapped[User] = relationship(
+    target_user: Mapped[User | None] = relationship(
         foreign_keys=[target_user_id],
         lazy="selectin",
     )

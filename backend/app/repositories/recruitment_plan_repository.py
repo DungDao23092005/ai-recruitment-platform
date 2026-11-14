@@ -39,11 +39,18 @@ class RecruitmentPlanRepository(BaseRepository[RecruitmentPlan]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def get_active_by_id_admin(self, plan_id: Any) -> RecruitmentPlan | None:
+    async def get_active_by_id_admin(
+        self,
+        plan_id: Any,
+        *,
+        for_update: bool = False,
+    ) -> RecruitmentPlan | None:
         stmt = select(RecruitmentPlan).where(
             RecruitmentPlan.id == plan_id,
             RecruitmentPlan.is_deleted == False,  # noqa: E712
         )
+        if for_update:
+            stmt = stmt.with_for_update()
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 

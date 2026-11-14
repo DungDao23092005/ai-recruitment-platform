@@ -4,7 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { AdminAuditPage } from './AdminAuditPage'
 import * as adminApi from '@/api/admin'
-import type { AdminAuditLog, AdminAuditLogList } from '@/types/admin'
+import type {
+  AdminAuditAction,
+  AdminAuditLog,
+  AdminAuditLogList,
+} from '@/types/admin'
 
 vi.mock('@/api/admin', () => ({
   getAdminAuditLogs: vi.fn(),
@@ -19,6 +23,9 @@ function makeLog(overrides: Partial<AdminAuditLog> = {}): AdminAuditLog {
     admin_email: 'admin@example.com',
     target_user_id: 'user-1',
     target_user_email: 'candidate@example.com',
+    target_id: 'user-1',
+    target_type: 'user',
+    target_name: null,
     action: 'user_lock',
     reason: 'Vi phạm điều khoản',
     details: { was_active: true, target_role: 'candidate' },
@@ -97,6 +104,61 @@ describe('AdminAuditPage', () => {
     expect(within(table).getByText('Không có lý do')).toBeInTheDocument()
   })
 
+  it('renders package lock and unlock records with the plan target', async () => {
+    mockedGetAdminAuditLogs.mockResolvedValue(
+      makeList([
+        makeLog({
+          id: 'audit-plan-1',
+          action: 'plan_lock',
+          target_user_id: null,
+          target_user_email: null,
+          target_id: 'plan-1',
+          target_type: 'plan',
+          target_name: 'Gói Chuyên Nghiệp',
+          reason: null,
+        }),
+        makeLog({
+          id: 'audit-plan-2',
+          action: 'plan_unlock',
+          target_user_id: null,
+          target_user_email: null,
+          target_id: 'plan-1',
+          target_type: 'plan',
+          target_name: 'Gói Chuyên Nghiệp',
+          reason: null,
+        }),
+      ]),
+    )
+
+    renderPage()
+
+    const table = await screen.findByRole('table', {
+      name: 'Bảng nhật ký quản trị',
+    })
+    expect(within(table).getByText('Khóa gói dịch vụ')).toBeInTheDocument()
+    expect(within(table).getByText('Mở khóa gói dịch vụ')).toBeInTheDocument()
+    expect(
+      within(table).getAllByText('Gói Chuyên Nghiệp').length,
+    ).toBeGreaterThan(0)
+  })
+
+  it('falls back safely for an unknown action', async () => {
+    mockedGetAdminAuditLogs.mockResolvedValue(
+      makeList([
+        makeLog({
+          action: 'future_action' as unknown as AdminAuditAction,
+        }),
+      ]),
+    )
+
+    renderPage()
+
+    const table = await screen.findByRole('table', {
+      name: 'Bảng nhật ký quản trị',
+    })
+    expect(within(table).getByText('Hành động khác')).toBeInTheDocument()
+  })
+
   it('shows the initial empty state', async () => {
     mockedGetAdminAuditLogs.mockResolvedValue(makeList([], 0))
 
@@ -105,7 +167,7 @@ describe('AdminAuditPage', () => {
     expect(await screen.findByText('Chưa có bản ghi nào')).toBeInTheDocument()
     expect(
       screen.getByText(
-        'Các thao tác khóa, mở khóa hoặc xóa tài khoản sẽ xuất hiện tại đây.',
+        'Các thao tác khóa, mở khóa tài khoản hoặc gói dịch vụ sẽ xuất hiện tại đây.',
       ),
     ).toBeInTheDocument()
   })

@@ -1,29 +1,57 @@
-import { LockKeyhole, LockKeyholeOpen, ScrollText, Trash2 } from 'lucide-react'
+import {
+  Building2,
+  LockKeyhole,
+  LockKeyholeOpen,
+  Package,
+  PackageOpen,
+  ScrollText,
+  Trash2,
+} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
 import type { AdminAuditAction, AdminAuditLog } from '@/types/admin'
 
+type AuditBadgeVariant = 'warning' | 'success' | 'destructive' | 'neutral'
+
 const ACTION_LABELS: Record<AdminAuditAction, string> = {
   user_lock: 'Khóa tài khoản',
   user_unlock: 'Mở khóa tài khoản',
   user_delete: 'Xóa tài khoản',
+  workspace_access: 'Truy cập workspace',
+  plan_lock: 'Khóa gói dịch vụ',
+  plan_unlock: 'Mở khóa gói dịch vụ',
 }
 
-const ACTION_VARIANTS: Record<
-  AdminAuditAction,
-  'warning' | 'success' | 'destructive'
-> = {
+const ACTION_VARIANTS: Record<AdminAuditAction, AuditBadgeVariant> = {
   user_lock: 'warning',
   user_unlock: 'success',
   user_delete: 'destructive',
+  workspace_access: 'neutral',
+  plan_lock: 'warning',
+  plan_unlock: 'success',
 }
 
 const ACTION_ICONS = {
   user_lock: LockKeyhole,
   user_unlock: LockKeyholeOpen,
   user_delete: Trash2,
+  workspace_access: Building2,
+  plan_lock: Package,
+  plan_unlock: PackageOpen,
 } satisfies Record<AdminAuditAction, typeof ScrollText>
+
+function getActionLabel(action: string): string {
+  return ACTION_LABELS[action as AdminAuditAction] ?? 'Hành động khác'
+}
+
+function getActionVariant(action: string): AuditBadgeVariant {
+  return ACTION_VARIANTS[action as AdminAuditAction] ?? 'neutral'
+}
+
+function getActionIcon(action: string): typeof ScrollText {
+  return ACTION_ICONS[action as AdminAuditAction] ?? ScrollText
+}
 
 function formatTimestamp(value: string): string {
   const date = new Date(value)
@@ -45,7 +73,15 @@ export function AdminAuditDetailModal({
   log,
   onClose,
 }: AdminAuditDetailModalProps) {
-  const ActionIcon = ACTION_ICONS[log.action]
+  const ActionIcon = getActionIcon(log.action)
+  const actionLabel = getActionLabel(log.action)
+  const isPlanTarget = log.target_type === 'plan'
+  const targetIdentifier = isPlanTarget
+    ? log.target_id
+    : (log.target_user_id ?? log.target_id)
+  const targetPrimary = isPlanTarget
+    ? (log.target_name ?? 'Gói dịch vụ')
+    : (log.target_user_email ?? log.target_name ?? 'Không xác định')
   const detailsText =
     log.details && Object.keys(log.details).length > 0
       ? JSON.stringify(log.details, null, 2)
@@ -71,9 +107,9 @@ export function AdminAuditDetailModal({
     >
       <div className="space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-4">
-          <Badge variant={ACTION_VARIANTS[log.action]} className="gap-1.5">
+          <Badge variant={getActionVariant(log.action)} className="gap-1.5">
             <ActionIcon className="h-3.5 w-3.5" aria-hidden="true" />
-            {ACTION_LABELS[log.action]}
+            {actionLabel}
           </Badge>
           <code className="break-all font-mono text-xs text-muted-foreground">
             #{log.id}
@@ -95,9 +131,7 @@ export function AdminAuditDetailModal({
             <dt className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Hành động
             </dt>
-            <dd className="mt-1 text-sm text-foreground">
-              {ACTION_LABELS[log.action]}
-            </dd>
+            <dd className="mt-1 text-sm text-foreground">{actionLabel}</dd>
           </div>
           <div>
             <dt className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -117,11 +151,9 @@ export function AdminAuditDetailModal({
               Đối tượng
             </dt>
             <dd className="mt-1 text-sm text-foreground">
-              <span className="break-all">
-                {log.target_user_email ?? 'Không xác định'}
-              </span>
+              <span className="break-all">{targetPrimary}</span>
               <code className="mt-1 block break-all font-mono text-xs text-muted-foreground">
-                {log.target_user_id}
+                {targetIdentifier ?? '—'}
               </code>
             </dd>
           </div>

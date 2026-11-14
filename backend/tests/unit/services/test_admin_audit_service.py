@@ -71,6 +71,7 @@ class TestAdminServiceAudit:
             action=AdminAuditAction.USER_LOCK,
             admin_id=uuid.uuid4(),
             target_user_id=uuid.uuid4(),
+            target_id=uuid.uuid4(),
             created_from="2026-01-01T00:00:00Z",
             created_to="2026-01-31T23:59:59Z",
             search="  example.com  ",
@@ -86,6 +87,7 @@ class TestAdminServiceAudit:
             action=AdminAuditAction.USER_LOCK,
             admin_id=params.admin_id,
             target_user_id=params.target_user_id,
+            target_id=params.target_id,
             created_from=params.created_from,
             created_to=params.created_to,
             search="example.com",
@@ -114,6 +116,8 @@ class TestAdminServiceAudit:
         audit = self._added_audit(session)
         assert audit.admin_id == admin_id
         assert audit.target_user_id == user.id
+        assert audit.target_id == user.id
+        assert audit.target_type == "user"
         assert audit.action == AdminAuditAction.USER_LOCK
         assert audit.reason == "Vi phạm điều khoản"
         assert audit.details == {
@@ -163,6 +167,8 @@ class TestAdminServiceAudit:
         audit = self._added_audit(session)
         assert audit.admin_id == admin_id
         assert audit.target_user_id == user.id
+        assert audit.target_id == user.id
+        assert audit.target_type == "user"
         assert audit.action == AdminAuditAction.USER_UNLOCK
         assert audit.reason is None
         assert audit.details == {
@@ -191,6 +197,8 @@ class TestAdminServiceAudit:
         audit = self._added_audit(session)
         assert audit.admin_id == admin_id
         assert audit.target_user_id == user.id
+        assert audit.target_id == user.id
+        assert audit.target_type == "user"
         assert audit.action == AdminAuditAction.USER_DELETE
         assert audit.reason is None
         assert audit.details == {

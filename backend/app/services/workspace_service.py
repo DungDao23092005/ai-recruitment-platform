@@ -224,6 +224,8 @@ class WorkspaceService:
                 AdminAuditLog(
                     admin_id=user.id,
                     target_user_id=user.id,
+                    target_id=user.id,
+                    target_type="user",
                     action=AdminAuditAction.WORKSPACE_ACCESS,
                     details={
                         "company_id": str(company.id),

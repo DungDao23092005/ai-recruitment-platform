@@ -368,14 +368,23 @@ export interface AdminEmailOutboxStats {
   oldest_pending_created_at: string | null
 }
 
-export type AdminAuditAction = 'user_lock' | 'user_unlock' | 'user_delete'
+export type AdminAuditAction =
+  | 'user_lock'
+  | 'user_unlock'
+  | 'user_delete'
+  | 'workspace_access'
+  | 'plan_lock'
+  | 'plan_unlock'
 
 export interface AdminAuditLog {
   id: string
   admin_id: string
   admin_email: string | null
-  target_user_id: string
+  target_user_id: string | null
   target_user_email: string | null
+  target_id: string | null
+  target_type: string
+  target_name: string | null
   action: AdminAuditAction
   reason: string | null
   details: Record<string, unknown> | null
@@ -395,6 +404,7 @@ export interface AdminAuditLogListParams {
   action?: AdminAuditAction
   admin_id?: string
   target_user_id?: string
+  target_id?: string
   created_from?: string
   created_to?: string
   search?: string

@@ -10,8 +10,8 @@ from app.core.exceptions import (
     EntityNotFoundException,
     ValidationError,
 )
-from app.domain.enums import PlanAudience
-from app.models import RecruitmentPlan
+from app.domain.enums import AdminAuditAction, PlanAudience
+from app.models import AdminAuditLog, RecruitmentPlan
 from app.repositories import RecruitmentPlanRepository
 from app.schemas.recruitment_plan import (
     RecruitmentPlanAdminRead,
@@ -342,6 +342,115 @@ class TestSetPlanStatus:
 
         assert result is plan
         assert plan.is_active is False
+
+
+class TestPlanStatusAudit:
+    def _added_audit(self, session: MagicMock) -> AdminAuditLog:
+        session.add.assert_called_once()
+        audit = session.add.call_args.args[0]
+        assert isinstance(audit, AdminAuditLog)
+        return audit
+
+    def test_lock_records_plan_lock_audit(self):
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        plan.is_active = True
+        service.plans.get_active_by_id_admin.return_value = plan
+        admin_id = uuid.uuid4()
+
+        asyncio.run(service.set_plan_status(plan.id, False, admin_id=admin_id))
+
+        audit = self._added_audit(session)
+        assert audit.admin_id == admin_id
+        assert audit.action == AdminAuditAction.PLAN_LOCK
+        assert audit.target_id == plan.id
+        assert audit.target_user_id is None
+        assert audit.target_type == "plan"
+        assert audit.target_name == plan.name
+        assert audit.details == {
+            "is_active": False,
+            "plan_audience": "company",
+            "is_free": False,
+        }
+
+    def test_unlock_records_plan_unlock_audit(self):
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        plan.is_active = False
+        service.plans.get_active_by_id_admin.return_value = plan
+
+        asyncio.run(
+            service.set_plan_status(plan.id, True, admin_id=uuid.uuid4())
+        )
+
+        audit = self._added_audit(session)
+        assert audit.action == AdminAuditAction.PLAN_UNLOCK
+        assert audit.target_id == plan.id
+        assert audit.target_type == "plan"
+
+    def test_unchanged_status_records_no_audit(self):
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        plan.is_active = True
+        service.plans.get_active_by_id_admin.return_value = plan
+
+        asyncio.run(
+            service.set_plan_status(plan.id, True, admin_id=uuid.uuid4())
+        )
+
+        session.add.assert_not_called()
+
+    def test_missing_admin_id_records_no_audit(self):
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        plan.is_active = True
+        service.plans.get_active_by_id_admin.return_value = plan
+
+        asyncio.run(service.set_plan_status(plan.id, False))
+
+        session.add.assert_not_called()
+
+    def test_update_plan_status_change_records_audit(self):
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        plan.is_active = True
+        service.plans.get_active_by_id_admin.return_value = plan
+        admin_id = uuid.uuid4()
+
+        asyncio.run(
+            service.update_plan(
+                plan.id,
+                RecruitmentPlanUpdate(is_active=False),
+                admin_id=admin_id,
+            )
+        )
+
+        audit = self._added_audit(session)
+        assert audit.admin_id == admin_id
+        assert audit.action == AdminAuditAction.PLAN_LOCK
+        assert audit.target_id == plan.id
+
+    def test_update_plan_without_status_change_records_no_audit(self):
+        session = make_session()
+        service = make_service(session)
+        plan = make_plan()
+        plan.is_active = True
+        service.plans.get_active_by_id_admin.return_value = plan
+
+        asyncio.run(
+            service.update_plan(
+                plan.id,
+                RecruitmentPlanUpdate(name="Renamed"),
+                admin_id=uuid.uuid4(),
+            )
+        )
+
+        session.add.assert_not_called()
 
 
 class TestDeletePlan:

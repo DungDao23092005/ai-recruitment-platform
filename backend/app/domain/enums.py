@@ -172,6 +172,8 @@ class AdminAuditAction(str, Enum):
     USER_UNLOCK = "user_unlock"
     USER_DELETE = "user_delete"
     WORKSPACE_ACCESS = "workspace_access"
+    PLAN_LOCK = "plan_lock"
+    PLAN_UNLOCK = "plan_unlock"
 
 
 class SubscriptionUsageFeatureType(str, Enum):
