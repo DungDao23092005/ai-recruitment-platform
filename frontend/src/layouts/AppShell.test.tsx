@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
@@ -7,6 +7,7 @@ import { AuthProvider } from '@/contexts/AuthContext'
 import { WorkspaceProvider } from '@/contexts/WorkspaceContext'
 import * as authApi from '@/api/auth'
 import * as workspacesApi from '@/api/workspaces'
+import { USER_ROLE_LABELS } from '@/types/auth'
 import type { User, UserRole } from '@/types/auth'
 import type { MembershipRole, Workspace } from '@/types/workspace'
 
@@ -49,17 +50,7 @@ vi.mock('@/api/workspaces', () => ({
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
 const mockedGetWorkspaces = vi.mocked(workspacesApi.getWorkspaces)
 
-function renderShell(
-  role: UserRole,
-  path: string,
-  workspaceRole?: MembershipRole,
-) {
-  mockedGetCurrentUser.mockResolvedValue({ ...mockUser, role })
-  mockedGetWorkspaces.mockResolvedValue(
-    workspaceRole ? [makeWorkspace(workspaceRole)] : [],
-  )
-  localStorage.setItem('ai_recruitment_token', 'token-abc')
-
+function renderApp(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <AuthProvider>
@@ -75,6 +66,38 @@ function renderShell(
   )
 }
 
+function renderShell(
+  role: UserRole,
+  path: string,
+  workspaceRole?: MembershipRole,
+) {
+  mockedGetCurrentUser.mockResolvedValue({ ...mockUser, role })
+  mockedGetWorkspaces.mockResolvedValue(
+    workspaceRole ? [makeWorkspace(workspaceRole)] : [],
+  )
+  localStorage.setItem('ai_recruitment_token', 'token-abc')
+
+  return renderApp(path)
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+async function waitForRoleBadge(role: UserRole) {
+  await waitFor(() => {
+    expect(
+      screen.getAllByText(USER_ROLE_LABELS[role]).length,
+    ).toBeGreaterThan(0)
+  })
+}
+
 function getAppNav() {
   return screen.getByRole('navigation', { name: 'Điều hướng ứng dụng' })
 }
@@ -88,8 +111,10 @@ describe('AppShell sidebar', () => {
   it('renders the sidebar with candidate navigation', async () => {
     renderShell('candidate', '/candidate/portal')
 
+    // "Tìm việc AI" only exists in the candidate sidebar, so it proves the
+    // authenticated candidate (not the loading fallback) has rendered.
     await waitFor(() => {
-      expect(getAppNav()).toBeInTheDocument()
+      expect(within(getAppNav()).getByText('Tìm việc AI')).toBeInTheDocument()
     })
 
     const nav = getAppNav()
@@ -153,6 +178,7 @@ describe('AppShell sidebar', () => {
     expect(within(nav).getByText('Gói & Thanh toán')).toBeInTheDocument()
     expect(within(nav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
     expect(within(nav).getByText('Hồ sơ cá nhân')).toBeInTheDocument()
+    expect(within(nav).getByText('Trợ lý AI')).toBeInTheDocument()
   })
 
   it('renders standard recruiter workspace navigation without company settings or member governance', async () => {
@@ -172,6 +198,7 @@ describe('AppShell sidebar', () => {
     expect(within(nav).getByText('Gói & Thanh toán')).toBeInTheDocument()
     expect(within(nav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
     expect(within(nav).getByText('Hồ sơ cá nhân')).toBeInTheDocument()
+    expect(within(nav).getByText('Trợ lý AI')).toBeInTheDocument()
     expect(within(nav).queryByText('Công ty')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Thành viên')).not.toBeInTheDocument()
   })
@@ -194,14 +221,16 @@ describe('AppShell sidebar', () => {
     expect(within(nav).queryByText('Tin tuyển dụng')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Phân tích')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Thành viên')).not.toBeInTheDocument()
+    expect(within(nav).queryByText('Trợ lý AI')).not.toBeInTheDocument()
   })
 
   it('renders the sidebar with admin navigation', async () => {
     renderShell('admin', '/admin/dashboard')
 
-    await waitFor(() => {
-      expect(getAppNav()).toBeInTheDocument()
-    })
+    // The sidebar exists synchronously and the admin fallback nav renders even
+    // while auth is loading, so wait for the role badge to show the loaded
+    // Admin user before asserting role-gated navigation.
+    await waitForRoleBadge('admin')
 
     const nav = getAppNav()
     expect(within(nav).getByText('Tổng quan')).toBeInTheDocument()
@@ -216,6 +245,30 @@ describe('AppShell sidebar', () => {
     expect(within(nav).queryByText('Lịch phỏng vấn')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Tìm ứng viên AI')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Trợ lý AI')).not.toBeInTheDocument()
+  })
+
+  it('hides the AI Chat link while authentication is loading', async () => {
+    const pendingUser = deferred<User>()
+    mockedGetCurrentUser.mockReturnValue(pendingUser.promise)
+    mockedGetWorkspaces.mockResolvedValue([])
+    localStorage.setItem('ai_recruitment_token', 'token-abc')
+
+    renderApp('/admin/dashboard')
+
+    expect(mockedGetCurrentUser).toHaveBeenCalledTimes(1)
+    expect(within(getAppNav()).queryByText('Trợ lý AI')).not.toBeInTheDocument()
+
+    await act(async () => {
+      pendingUser.resolve({ ...mockUser, role: 'admin' })
+      await pendingUser.promise
+    })
+
+    await waitForRoleBadge('admin')
+
+    const nav = getAppNav()
+    expect(within(nav).queryByText('Trợ lý AI')).not.toBeInTheDocument()
+    expect(within(nav).getByText('Người dùng')).toBeInTheDocument()
+    expect(within(nav).getByText('Hàng đợi email')).toBeInTheDocument()
   })
 
   it('points admin "Người dùng" at /admin/users', async () => {

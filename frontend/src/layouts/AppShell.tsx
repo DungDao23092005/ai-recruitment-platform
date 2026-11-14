@@ -190,6 +190,13 @@ function SidebarNav({
   workspaceRole?: MembershipRole | null
 }) {
   const sections = useAppNav(role, workspaceRole)
+  const isInterviewer =
+    role === 'recruiter' && workspaceRole === 'interviewer'
+  // Positive allowlist: while auth is loading `role` is undefined, so a
+  // negative check would leak the link to admins, interviewers, and the
+  // unauthenticated/loading state.
+  const canUseAiChat =
+    (role === 'candidate' || role === 'recruiter') && !isInterviewer
   const sectionClass = ({ isActive }: { isActive: boolean }) =>
     cn(
       'flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
@@ -221,7 +228,7 @@ function SidebarNav({
           </ul>
         </div>
       ))}
-      {role !== 'admin' ? (
+      {canUseAiChat ? (
         <div>
           <p className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Nền tảng
