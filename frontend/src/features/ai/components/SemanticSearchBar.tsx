@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Search, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -10,8 +10,10 @@ import type { SemanticSearchResult } from '@/types/ai'
 
 export interface SemanticSearchBarProps {
   placeholder?: string
-  searchFn: (query: string) => Promise<SemanticSearchResult[]>
+  searchFn: (query: string, isRetry?: boolean) => Promise<SemanticSearchResult[]>
   onResultClick?: (result: SemanticSearchResult) => void
+  initialQuery?: string
+  autoSearchOnMount?: boolean
 }
 
 export function formatSearchScore(score: number): string {
@@ -62,20 +64,24 @@ export function SemanticSearchBar({
   placeholder = 'Nhập từ khóa tìm kiếm...',
   searchFn,
   onResultClick,
+  initialQuery = '',
+  autoSearchOnMount = false,
 }: SemanticSearchBarProps) {
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(initialQuery)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [results, setResults] = useState<SemanticSearchResult[] | null>(null)
 
-  const runSearch = async (q: string) => {
+  const runSearch = async (q: string, isRetry = false) => {
     if (!q.trim()) {
       return
     }
     setIsLoading(true)
     setError(null)
     try {
-      const data = await searchFn(q.trim())
+      const data = isRetry
+        ? await searchFn(q.trim(), true)
+        : await searchFn(q.trim())
       setResults(data)
     } catch (err) {
       setError(getFriendlyErrorMessage(err))
@@ -85,110 +91,122 @@ export function SemanticSearchBar({
     }
   }
 
-  const handleSubmit = (event: FormEvent) => {
-    event.preventDefault()
-    void runSearch(query)
-  }
+  const hasMountedRef = useRef(false)
 
-  return (
-    <div className="space-y-4">
-      <form onSubmit={handleSubmit} className="flex gap-2">
-        <Input
-          type="search"
-          name="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={placeholder}
-          aria-label="Từ khóa tìm kiếm ngữ nghĩa"
-          className="h-10"
-        />
+  useEffect(() => {
+      if (!hasMountedRef.current) {
+        hasMountedRef.current = true
+        if (autoSearchOnMount && initialQuery.trim()) {
+          void runSearch(initialQuery, true)
+        }
+      }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [])
+
+const handleSubmit = (event: FormEvent) => {
+  event.preventDefault()
+  void runSearch(query, false)
+}
+
+return (
+  <div className="space-y-4">
+    <form onSubmit={handleSubmit} className="flex gap-2">
+      <Input
+        type="search"
+        name="search"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder={placeholder}
+        aria-label="Từ khóa tìm kiếm ngữ nghĩa"
+        className="h-10"
+      />
+      <Button
+        type="submit"
+        disabled={isLoading || !query.trim()}
+        isLoading={isLoading}
+        loadingText="Đang tìm..."
+      >
+        <Search className="h-4 w-4" aria-hidden="true" />
+        Tìm kiếm
+      </Button>
+    </form>
+
+    {error ? (
+      <div role="alert" className="space-y-2">
+        <p className="text-sm font-medium text-destructive">{error}</p>
         <Button
-          type="submit"
-          disabled={isLoading || !query.trim()}
-          isLoading={isLoading}
-          loadingText="Đang tìm..."
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => void runSearch(query, true)}
         >
-          <Search className="h-4 w-4" aria-hidden="true" />
-          Tìm kiếm
+          <RefreshCw className="h-4 w-4" aria-hidden="true" />
+          Thử lại
         </Button>
-      </form>
+      </div>
+    ) : null}
 
-      {error ? (
-        <div role="alert" className="space-y-2">
-          <p className="text-sm font-medium text-destructive">{error}</p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => void runSearch(query)}
-          >
-            <RefreshCw className="h-4 w-4" aria-hidden="true" />
-            Thử lại
-          </Button>
-        </div>
-      ) : null}
+    {isLoading ? (
+      <div className="flex items-center gap-3 text-sm text-muted-foreground">
+        <Spinner size="sm" />
+        <span>Đang tìm kiếm ngữ nghĩa...</span>
+      </div>
+    ) : null}
 
-      {isLoading ? (
-        <div className="flex items-center gap-3 text-sm text-muted-foreground">
-          <Spinner size="sm" />
-          <span>Đang tìm kiếm ngữ nghĩa...</span>
-        </div>
-      ) : null}
-
-      {results !== null && !isLoading && !error ? (
-        results.length > 0 ? (
-          <ul className="space-y-2">
-            {results.map((result) => (
-              <li
-                key={result.id}
-                className="flex items-start justify-between gap-3 rounded-lg border bg-card p-3.5 transition-shadow hover:shadow-soft cursor-pointer"
-                onClick={() => onResultClick?.(result)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    onResultClick?.(result)
-                  }
-                }}
+    {results !== null && !isLoading && !error ? (
+      results.length > 0 ? (
+        <ul className="space-y-2">
+          {results.map((result) => (
+            <li
+              key={result.id}
+              className="flex items-start justify-between gap-3 rounded-lg border bg-card p-3.5 transition-shadow hover:shadow-soft cursor-pointer"
+              onClick={() => onResultClick?.(result)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onResultClick?.(result)
+                }
+              }}
+            >
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{getDisplayName(result)}</p>
+                {getSubtitle(result) ? (
+                  <p className="truncate text-xs text-muted-foreground mt-0.5">
+                    {getSubtitle(result)}
+                  </p>
+                ) : null}
+                {result.skills.length > 0 ? (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {result.skills.map((skill) => (
+                      <Badge key={skill} variant="neutral">
+                        {skill}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <Badge
+                variant={scoreVariant(result.score)}
+                className={cn(
+                  'shrink-0 text-sm font-bold',
+                  result.score >= 0.75 && 'text-success',
+                  result.score >= 0.5 && result.score < 0.75 && 'text-warning',
+                )}
+                aria-label={`Độ phù hợp ${formatSearchScore(result.score)}`}
               >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{getDisplayName(result)}</p>
-                  {getSubtitle(result) ? (
-                    <p className="truncate text-xs text-muted-foreground mt-0.5">
-                      {getSubtitle(result)}
-                    </p>
-                  ) : null}
-                  {result.skills.length > 0 ? (
-                    <div className="mt-1.5 flex flex-wrap gap-1">
-                      {result.skills.map((skill) => (
-                        <Badge key={skill} variant="neutral">
-                          {skill}
-                        </Badge>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-                <Badge
-                  variant={scoreVariant(result.score)}
-                  className={cn(
-                    'shrink-0 text-sm font-bold',
-                    result.score >= 0.75 && 'text-success',
-                    result.score >= 0.5 && result.score < 0.75 && 'text-warning',
-                  )}
-                  aria-label={`Độ phù hợp ${formatSearchScore(result.score)}`}
-                >
-                  {formatSearchScore(result.score)}
-                </Badge>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="rounded-lg border border-dashed bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
-            Không tìm thấy kết quả phù hợp.
-          </p>
-        )
-      ) : null}
-    </div>
-  )
+                {formatSearchScore(result.score)}
+              </Badge>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="rounded-lg border border-dashed bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+          Không tìm thấy kết quả phù hợp.
+        </p>
+      )
+    ) : null}
+  </div>
+)
 }

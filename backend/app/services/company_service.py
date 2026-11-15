@@ -17,6 +17,7 @@ from app.repositories import (
     UserRepository,
 )
 from app.schemas.company import CompanyCreate, CompanyUpdate
+from app.services.company_entitlement_service import CompanyEntitlementService
 from app.services.job_service import JobService
 
 
@@ -105,7 +106,17 @@ class CompanyService:
         elif owner.recruiter_profile.company_id is None:
             owner.recruiter_profile.company_id = company.id
 
+        await self.session.flush()
+
         try:
+            # Company Free is provisioned in the same transaction as the
+            # workspace, owner membership and RecruiterProfile. A missing
+            # canonical plan raises before commit, so no workspace is ever
+            # created without an entitlement.
+            entitlement_service = CompanyEntitlementService(self.session)
+            await entitlement_service.provision_company_free_subscription(
+                company.id
+            )
             await self.session.commit()
             await self.session.refresh(company)
         except Exception:

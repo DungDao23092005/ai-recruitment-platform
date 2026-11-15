@@ -726,6 +726,7 @@ describe('AppRouter recruiter job routes', () => {
     expect(mockedGetCandidateRecommendations).toHaveBeenCalledWith(
       'job-1',
       10,
+      expect.any(String),
     )
   })
 

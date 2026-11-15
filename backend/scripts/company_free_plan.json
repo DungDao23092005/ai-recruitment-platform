@@ -1,0 +1,12 @@
+{
+  "name": "Gói Doanh nghiệp Miễn phí",
+  "description": "Gói miễn phí cho doanh nghiệp mới sử dụng nền tảng tuyển dụng.",
+  "price": 0,
+  "currency": "VND",
+  "duration_days": 30,
+  "max_job_posts": 1,
+  "max_candidate_searches": 10,
+  "max_ai_features": 5,
+  "plan_audience": "company",
+  "is_free": true
+}

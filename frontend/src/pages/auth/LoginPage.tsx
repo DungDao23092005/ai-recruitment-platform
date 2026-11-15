@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { LogIn, AlertCircle } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { getWorkspaces } from '@/api/workspaces'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -79,7 +80,18 @@ export function LoginPage() {
         email: values.email.trim(),
         password: values.password,
       })
-      navigate(from ?? homeForRole(user.role), {
+      let destination = from ?? homeForRole(user.role)
+      if (!from && !invitationToken && user.role === 'recruiter') {
+        try {
+          const workspaces = await getWorkspaces()
+          if (workspaces.length === 0) {
+            destination = '/recruiter/company'
+          }
+        } catch {
+          // fallback to /recruiter/portal
+        }
+      }
+      navigate(destination, {
         replace: true,
         state: invitationToken ? { invitationToken } : undefined,
       })

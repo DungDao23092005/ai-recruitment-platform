@@ -45,6 +45,9 @@ from app.core.exceptions import (
     ForbiddenException,
     InvalidDocumentError,
     PDFWorkerUnavailableError,
+    ValidationError,
+    WorkspaceRequiredException,
+    WorkspaceSelectionRequiredException,
 )
 from app.core.rate_limit import (
     RateLimitResult,
@@ -92,8 +95,14 @@ from app.services.quota_enforcement_service import (
     ReservationResult,
 )
 from app.services.rag_chat_service import RAGChatService
+from app.services.recruiter_chat_coordinator import RecruiterChatCoordinator
 from app.services.semantic_search_service import SemanticSearchService
-from app.services.workspace_service import WorkspaceContext
+from app.services.workspace_service import (
+    WorkspaceContext,
+    WorkspaceService,
+    reset_workspace_company_id,
+    set_workspace_company_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -835,6 +844,10 @@ async def recommend_jobs_for_candidate(
         ) from exc
 
 
+def _get_request_safely(request: Request) -> Request:
+    return request
+
+
 @router.post(
     "/chat",
     response_model=ChatResponse,
@@ -843,6 +856,8 @@ async def recommend_jobs_for_candidate(
 async def ai_chat(
     data: ChatRequest,
     current_user: User = Depends(get_current_active_user),
+    http_request: Request = Depends(_get_request_safely),
+    x_company_id: Annotated[str | None, Header(alias="X-Company-ID")] = None,
     db: AsyncSession = Depends(get_db),
     service: RAGChatService = Depends(_get_rag_chat_service),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
@@ -850,6 +865,10 @@ async def ai_chat(
 ) -> ChatResponse:
     quota_service: QuotaEnforcementService | None = None
     reservation: ReservationResult | None = None
+    coordinator: RecruiterChatCoordinator | None = None
+
+    is_http = isinstance(http_request, Request)
+
     if current_user.role == UserRole.CANDIDATE:
         quota_service, reservation = await _reserve_candidate_ai_quota(
             db,
@@ -857,6 +876,72 @@ async def ai_chat(
             SubscriptionUsageFeatureType.CANDIDATE_CHAT,
             idempotency_key,
         )
+    elif current_user.role == UserRole.RECRUITER and is_http:
+        try:
+            workspace = await WorkspaceService(db).resolve(
+                current_user, x_company_id
+            )
+        except WorkspaceSelectionRequiredException as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        except (WorkspaceRequiredException, ForbiddenException) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=str(exc),
+            ) from exc
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+
+        if workspace is None or workspace.company_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Recruiter AI chat requires an active company workspace.",
+            )
+        ensure_not_interviewer(workspace)
+
+        raw_key = (idempotency_key or "").strip()
+        if idempotency_key is not None:
+            if not raw_key or len(raw_key) > 128:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid Idempotency-Key header (must be 1-128 characters).",
+                )
+            chat_key = raw_key
+        else:
+            chat_key = f"chat_{uuid.uuid4()}"
+
+        redis_client = getattr(http_request.app.state, "redis", None)
+        coordinator = RecruiterChatCoordinator(
+            redis_client=redis_client,
+            user_id=current_user.id,
+            company_id=workspace.company_id,
+            idempotency_key=chat_key,
+            message=data.message,
+            history=data.history,
+        )
+
+        cached_response = await coordinator.claim_or_get_completed()
+        if cached_response is not None:
+            return cached_response
+
+        quota_service = QuotaEnforcementService(db)
+        try:
+            reservation = await quota_service.reserve_ai_quota(
+                user_id=current_user.id,
+                idempotency_key=chat_key,
+                reference_id=None,
+                company_id=workspace.company_id,
+                is_admin=False,
+            )
+            await db.commit()
+        except Exception:
+            await coordinator.release()
+            raise
 
     try:
         try:
@@ -870,19 +955,27 @@ async def ai_chat(
                 await _release_ai_reservation_safe(
                     db, quota_service, reservation
                 )
+            if coordinator is not None:
+                await coordinator.release()
             raise
 
         if quota_service is not None and reservation is not None:
             try:
                 await quota_service.finalize_reservation(
-                    reservation.usage_id
+                    reservation.usage_id, success=True
                 )
                 await db.commit()
             except (Exception, asyncio.CancelledError):
                 await _release_ai_reservation_safe(
                     db, quota_service, reservation
                 )
+                if coordinator is not None:
+                    await coordinator.release()
                 raise
+
+        if coordinator is not None:
+            await coordinator.complete(response)
+
         return response
     except EmptyDocumentError as exc:
         raise HTTPException(
@@ -897,6 +990,16 @@ async def ai_chat(
     except EntityNotFoundException as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except ConflictException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
     except AIProviderQuotaExceededError as exc:
@@ -984,9 +1087,19 @@ async def semantic_search_candidates(
                 db, current_user, workspace
             )
 
+        scoped_idempotency_key: str | None = None
+        if idempotency_key is not None:
+            raw_key = idempotency_key.strip()
+            if not raw_key or len(raw_key) > 128:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid Idempotency-Key header (must be 1-128 characters).",
+                )
+            scoped_idempotency_key = raw_key
+
         reservation = await quota_service.reserve_search_quota(
             user_id=current_user.id,
-            idempotency_key=idempotency_key,
+            idempotency_key=scoped_idempotency_key,
             company_id=quota_company_id,
             is_admin=is_admin,
         )
@@ -1094,9 +1207,19 @@ async def recommend_candidates_for_job(
                 referenced_company_id=referenced_company_id,
             )
 
+        scoped_idempotency_key: str | None = None
+        if idempotency_key is not None:
+            raw_key = idempotency_key.strip()
+            if not raw_key or len(raw_key) > 128:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid Idempotency-Key header (must be 1-128 characters).",
+                )
+            scoped_idempotency_key = raw_key
+
         reservation = await quota_service.reserve_search_quota(
             user_id=current_user.id,
-            idempotency_key=idempotency_key,
+            idempotency_key=scoped_idempotency_key,
             reference_id=job_id,
             company_id=quota_company_id,
             is_admin=is_admin,

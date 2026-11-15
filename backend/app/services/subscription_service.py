@@ -43,6 +43,7 @@ from app.schemas.subscription import (
     CompanyUsageItem,
     SubscriptionCreate,
 )
+from app.services.company_entitlement_service import CompanyEntitlementService
 from app.services.notification_service import NotificationService
 from app.services.recruiter_access import ensure_recruiter_access
 from app.services.subscription_email_service import schedule_activation_email
@@ -147,9 +148,30 @@ class SubscriptionService:
     ) -> Optional[Subscription]:
         if now is None:
             now = utc_now()
-        return await self.subscriptions.get_active_by_company_id(
+        subscription = await self.subscriptions.get_active_by_company_id(
             company_id, now
         )
+        if subscription is None:
+            try:
+                entitlement_service = CompanyEntitlementService(self.session)
+                subscription = (
+                    await entitlement_service.provision_company_free_subscription(
+                        company_id, now
+                    )
+                )
+                await self.session.commit()
+            except Exception:
+                subscription = None
+
+        if subscription is not None and subscription.is_free:
+            from app.services.quota_enforcement_service import (
+                QuotaEnforcementService,
+            )
+
+            await QuotaEnforcementService(self.session)._rollover_company_free_period(
+                subscription, now
+            )
+        return subscription
 
     async def list_company_payment_orders(
         self,
@@ -603,6 +625,9 @@ class SubscriptionService:
         expiring_candidate_paid = await self.subscriptions.get_stale_candidate_paid(
             now, limit=limit
         )
+        expiring_company_paid = await self.subscriptions.get_stale_company_paid(
+            now, limit=limit
+        )
         count = await self.subscriptions.expire_stale_active(now, limit=limit)
 
         if count > 0:
@@ -617,6 +642,16 @@ class SubscriptionService:
                         paid_subscription_id=candidate_paid.id,
                         reason="expired",
                     )
+            if expiring_company_paid:
+                entitlement_service = CompanyEntitlementService(self.session)
+                for company_paid in expiring_company_paid:
+                    await self.session.refresh(company_paid)
+                    if company_paid.status != SubscriptionStatus.EXPIRED:
+                        continue
+                    if company_paid.company_id is not None:
+                        await entitlement_service.provision_company_free_subscription(
+                            company_paid.company_id, now=now
+                        )
             try:
                 await self.session.commit()
             except Exception:

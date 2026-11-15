@@ -24,8 +24,13 @@ class RecruitmentPlanBase(BaseModel):
 
     @model_validator(mode="after")
     def validate_free_plan_audience(self) -> "RecruitmentPlanBase":
-        if self.is_free and self.plan_audience != PlanAudience.CANDIDATE:
-            raise ValueError("A free plan must target the candidate audience")
+        if self.is_free and self.plan_audience not in (
+            PlanAudience.CANDIDATE,
+            PlanAudience.COMPANY,
+        ):
+            raise ValueError(
+                "A free plan must target the candidate or company audience"
+            )
         return self
 
 
@@ -60,9 +65,14 @@ class RecruitmentPlanUpdate(BaseModel):
         if (
             self.is_free is True
             and self.plan_audience is not None
-            and self.plan_audience != PlanAudience.CANDIDATE
+            and self.plan_audience not in (
+                PlanAudience.CANDIDATE,
+                PlanAudience.COMPANY,
+            )
         ):
-            raise ValueError("A free plan must target the candidate audience")
+            raise ValueError(
+                "A free plan must target the candidate or company audience"
+            )
         return self
 
 

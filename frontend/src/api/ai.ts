@@ -81,12 +81,18 @@ export async function getJobRecommendations(
 export async function getCandidateRecommendations(
   jobId: string,
   limit = 10,
+  sessionId?: string,
 ): Promise<CandidateMatchRecommendation[]> {
+  const headers: Record<string, string> = {}
+  if (sessionId) {
+    headers['Idempotency-Key'] = sessionId
+  }
   return apiClient.get<
     CandidateMatchRecommendation[],
     CandidateMatchRecommendation[]
   >('/ai/recommendations/candidates', {
     params: { job_id: jobId, limit },
+    headers,
   })
 }
 
@@ -122,7 +128,12 @@ export async function searchJobs(
 
 export async function searchCandidates(
   params: SemanticSearchParams,
+  sessionId?: string,
 ): Promise<SemanticSearchResult[]> {
+  const headers: Record<string, string> = {}
+  if (sessionId) {
+    headers['Idempotency-Key'] = sessionId
+  }
   return apiClient.get<SemanticSearchResult[], SemanticSearchResult[]>(
     '/ai/search/candidates',
     {
@@ -131,14 +142,22 @@ export async function searchCandidates(
         limit: params.limit ?? 10,
         score_threshold: params.score_threshold,
       },
+      headers,
     },
   )
 }
 
 export async function sendChatMessage(
   data: ChatRequest,
+  idempotencyKey?: string,
 ): Promise<ChatResponse> {
-  return apiClient.post<ChatResponse, ChatResponse>('/ai/chat', data)
+  const headers: Record<string, string> = {}
+  if (idempotencyKey) {
+    headers['Idempotency-Key'] = idempotencyKey
+  }
+  return apiClient.post<ChatResponse, ChatResponse>('/ai/chat', data, {
+    headers,
+  })
 }
 
 export async function generateInterviewQuestions(

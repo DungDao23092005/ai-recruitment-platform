@@ -174,92 +174,111 @@ export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps
                     </tr>
                   </thead>
                   <tbody>
-                    {plans.map((plan: AdminPlanRead) => (
-                      <tr
-                        key={plan.id}
-                        className="border-b last:border-b-0 hover:bg-muted/40"
-                      >
-                        <td className="px-4 py-3">
-                          <span className="font-medium">{plan.name}</span>
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge variant="info">
-                            {plan.plan_audience === 'candidate'
-                              ? 'Ứng viên'
-                              : 'Doanh nghiệp'}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-3">
-                          <Badge variant={plan.is_free ? 'success' : 'neutral'}>
-                            {plan.is_free ? 'Miễn phí' : 'Trả phí'}
-                          </Badge>
-                        </td>
-                        <td className="px-4 py-3">
-                          {plan.is_free
-                            ? 'Miễn phí'
-                            : `${plan.currency} ${plan.price.toLocaleString()}`}
-                        </td>
-                        <td className="px-4 py-3">
-                          {formatDuration(plan.duration_days)}
-                        </td>
-                        <td className="px-4 py-3 text-muted-foreground">
-                          {plan.plan_audience === 'candidate' ? '—' : plan.max_job_posts}
-                        </td>
-                        <td className="px-4 py-3 text-muted-foreground">
-                          {plan.plan_audience === 'candidate' ? '—' : plan.max_candidate_searches}
-                        </td>
-                        <td className="px-4 py-3 text-muted-foreground">{plan.max_ai_features ?? '-'}</td>
-                        <td className="px-4 py-3 text-muted-foreground">{plan.display_order}</td>
-                        <td className="px-4 py-3">
-                          {plan.is_active ? (
-                            <Badge variant="success">Hoạt động</Badge>
-                          ) : (
-                            <Badge variant="destructive">Khóa</Badge>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            aria-label={`Sửa gói ${plan.name}`}
-                            onClick={() => onEdit(plan)}
-                          >
-                            <Edit className="h-4 w-4" aria-hidden="true" />
-                            Sửa
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            aria-label={plan.is_active ? `Khóa gói ${plan.name}` : `Mở khóa gói ${plan.name}`}
-                            onClick={() => onStatus(plan)}
-                          >
+                    {plans.map((plan: AdminPlanRead) => {
+                      const isCanonicalCompanyFree =
+                        plan.is_free &&
+                        plan.plan_audience === 'company' &&
+                        plan.is_active
+                      const isFreePlan = plan.is_free
+                      return (
+                        <tr
+                          key={plan.id}
+                          className="border-b last:border-b-0 hover:bg-muted/40"
+                        >
+                          <td className="px-4 py-3">
+                            <span className="font-medium">{plan.name}</span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <Badge variant="info">
+                              {plan.plan_audience === 'candidate'
+                                ? 'Ứng viên'
+                                : 'Doanh nghiệp'}
+                            </Badge>
+                          </td>
+                          <td className="px-4 py-3">
+                            <Badge variant={plan.is_free ? 'success' : 'neutral'}>
+                              {plan.is_free ? 'Miễn phí' : 'Trả phí'}
+                            </Badge>
+                          </td>
+                          <td className="px-4 py-3">
+                            {plan.is_free
+                              ? 'Miễn phí'
+                              : `${plan.currency} ${plan.price.toLocaleString()}`}
+                          </td>
+                          <td className="px-4 py-3">
+                            {formatDuration(plan.duration_days)}
+                          </td>
+                          <td className="px-4 py-3 text-muted-foreground">
+                            {plan.plan_audience === 'candidate' ? '—' : plan.max_job_posts}
+                          </td>
+                          <td className="px-4 py-3 text-muted-foreground">
+                            {plan.plan_audience === 'candidate' ? '—' : plan.max_candidate_searches}
+                          </td>
+                          <td className="px-4 py-3 text-muted-foreground">{plan.max_ai_features ?? '-'}</td>
+                          <td className="px-4 py-3 text-muted-foreground">{plan.display_order}</td>
+                          <td className="px-4 py-3">
                             {plan.is_active ? (
-                              <>
-                                <Lock className="h-4 w-4 mr-1" aria-hidden="true" />
-                                Khóa
-                              </>
+                              <Badge variant="success">Hoạt động</Badge>
                             ) : (
-                              <>
-                                <Unlock className="h-4 w-4 mr-1" aria-hidden="true" />
-                                Mở khóa
-                              </>
+                              <Badge variant="destructive">Khóa</Badge>
                             )}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="destructive"
-                            size="sm"
-                            aria-label={`Xóa gói ${plan.name}`}
-                            onClick={() => onDelete(plan)}
-                          >
-                            <Trash2 className="h-4 w-4 mr-1" aria-hidden="true" />
-                            Xóa
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              aria-label={`Sửa gói ${plan.name}`}
+                              onClick={() => onEdit(plan)}
+                            >
+                              <Edit className="h-4 w-4" aria-hidden="true" />
+                              Sửa
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              aria-label={plan.is_active ? `Khóa gói ${plan.name}` : `Mở khóa gói ${plan.name}`}
+                              disabled={isCanonicalCompanyFree}
+                              title={
+                                isCanonicalCompanyFree
+                                  ? 'Không thể khóa gói Doanh nghiệp Miễn phí mặc định'
+                                  : undefined
+                              }
+                              onClick={() => onStatus(plan)}
+                            >
+                              {plan.is_active ? (
+                                <>
+                                  <Lock className="h-4 w-4 mr-1" aria-hidden="true" />
+                                  Khóa
+                                </>
+                              ) : (
+                                <>
+                                  <Unlock className="h-4 w-4 mr-1" aria-hidden="true" />
+                                  Mở khóa
+                                </>
+                              )}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              aria-label={`Xóa gói ${plan.name}`}
+                              disabled={isFreePlan}
+                              title={
+                                isFreePlan
+                                  ? 'Không thể xóa gói miễn phí mặc định của hệ thống'
+                                  : undefined
+                              }
+                              onClick={() => onDelete(plan)}
+                            >
+                              <Trash2 className="h-4 w-4 mr-1" aria-hidden="true" />
+                              Xóa
+                            </Button>
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </CardContent>

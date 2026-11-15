@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { RecruiterPortalPage } from './RecruiterPortalPage'
@@ -42,8 +42,24 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
-function renderWithRouter(ui: React.ReactElement) {
-  return render(<MemoryRouter>{ui}</MemoryRouter>)
+function renderWithRouter(
+  ui: React.ReactElement,
+  {
+    initialEntries = ['/'],
+  }: { initialEntries?: (string | { pathname: string; state?: unknown })[] } = {},
+) {
+  return render(
+    <MemoryRouter initialEntries={initialEntries}>
+      <Routes>
+        <Route path="/" element={ui} />
+        <Route path="/recruiter/portal" element={ui} />
+        <Route
+          path="/recruiter/company"
+          element={<div>Trang tạo công ty</div>}
+        />
+      </Routes>
+    </MemoryRouter>,
+  )
 }
 
 function createAxiosError(status: number, message = 'Request failed') {
@@ -57,24 +73,36 @@ function createAxiosError(status: number, message = 'Request failed') {
 }
 
 describe('RecruiterPortalPage', () => {
-  it('NO COMPANY — 404: shows no-company empty state', async () => {
+  it('NO COMPANY — 404: redirects newly registered recruiter to /recruiter/company', async () => {
     const error = createAxiosError(404, 'Not Found')
     mockedGetRecruiterMetrics.mockRejectedValueOnce(error)
 
     renderWithRouter(<RecruiterPortalPage />)
 
     await waitFor(() => {
-      expect(screen.getByText('Chưa có công ty')).toBeInTheDocument()
+      expect(screen.getByText('Trang tạo công ty')).toBeInTheDocument()
+    })
+  })
+
+  it('NO COMPANY WITH INVITATION — preserves invitation acceptance path without forcing redirect', async () => {
+    const error = createAxiosError(404, 'Not Found')
+    mockedGetRecruiterMetrics.mockRejectedValueOnce(error)
+
+    renderWithRouter(<RecruiterPortalPage />, {
+      initialEntries: [
+        {
+          pathname: '/recruiter/portal',
+          state: { invitationToken: 'invite-123' },
+        },
+      ],
     })
 
-    expect(screen.getByText('Hãy tạo công ty để bắt đầu tuyển dụng.')).toBeInTheDocument()
-
-    const createCompanyButton = screen.getByRole('button', { name: /Tạo công ty/i })
-    expect(createCompanyButton).toBeInTheDocument()
-    expect(createCompanyButton.closest('a')).toHaveAttribute('href', '/recruiter/company')
-
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
-    expect(screen.queryByText('Request failed with status code 404')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText('Chưa có công ty')).toBeInTheDocument()
+    })
+    expect(
+      screen.getByText('Hãy tạo công ty để bắt đầu tuyển dụng.'),
+    ).toBeInTheDocument()
   })
 
   it('EMPTY JOBS — 200 + zero jobs: shows empty jobs state', async () => {

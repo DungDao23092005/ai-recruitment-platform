@@ -75,8 +75,14 @@ export function AdminPlansPage() {
     loadPlans()
   }
 
-  const existingActiveFreePlan =
-    plans.find((plan) => plan.is_free && plan.is_active) ?? null
+  const existingActiveCompanyFreePlan =
+    plans.find(
+      (plan) => plan.is_free && plan.is_active && plan.plan_audience === 'company',
+    ) ?? null
+  const existingActiveCandidateFreePlan =
+    plans.find(
+      (plan) => plan.is_free && plan.is_active && plan.plan_audience === 'candidate',
+    ) ?? null
 
   if (loading) {
     return (
@@ -127,7 +133,8 @@ export function AdminPlansPage() {
       {isCreateModalOpen && (
         <AdminPlanForm
           mode="create"
-          existingActiveFreePlan={existingActiveFreePlan}
+          existingActiveCompanyFreePlan={existingActiveCompanyFreePlan}
+          existingActiveCandidateFreePlan={existingActiveCandidateFreePlan}
           onClose={() => setIsCreateModalOpen(false)}
           onSuccess={handlePlanCreated}
         />

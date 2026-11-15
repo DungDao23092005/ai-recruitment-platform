@@ -22,9 +22,14 @@ def _validate_free_plan_audience(
     plan_audience: PlanAudience,
     is_free: bool,
 ) -> None:
-    """Enforce the database constraint ``is_free = 0 OR audience = candidate``."""
-    if is_free and plan_audience != PlanAudience.CANDIDATE:
-        raise ValidationError("A free plan must target the candidate audience")
+    """Enforce the database constraint ``is_free = 0 OR audience in (candidate, company)``."""
+    if is_free and plan_audience not in (
+        PlanAudience.CANDIDATE,
+        PlanAudience.COMPANY,
+    ):
+        raise ValidationError(
+            "A free plan must target the candidate or company audience"
+        )
 
 
 class RecruitmentPlanService:
@@ -59,6 +64,26 @@ class RecruitmentPlanService:
 
     async def create_plan(self, data: RecruitmentPlanCreate) -> RecruitmentPlan:
         _validate_free_plan_audience(data.plan_audience, data.is_free)
+        if data.is_free:
+            if data.plan_audience == PlanAudience.COMPANY:
+                existing_company_free = (
+                    await self.plans.get_active_company_free_plan()
+                )
+                if existing_company_free is not None:
+                    raise ConflictException(
+                        "Đã có gói Doanh nghiệp Miễn phí đang hoạt động. "
+                        "Hãy chỉnh sửa gói hiện có thay vì tạo gói mới."
+                    )
+            elif data.plan_audience == PlanAudience.CANDIDATE:
+                existing_candidate_free = (
+                    await self.plans.get_active_candidate_free_plan()
+                )
+                if existing_candidate_free is not None:
+                    raise ConflictException(
+                        "Đã có gói Ứng viên Miễn phí đang hoạt động. "
+                        "Hãy chỉnh sửa gói hiện có thay vì tạo gói mới."
+                    )
+
         plan = RecruitmentPlan(
             name=data.name,
             description=data.description,
@@ -124,6 +149,33 @@ class RecruitmentPlanService:
         effective_is_free = data.is_free if data.is_free is not None else plan.is_free
         _validate_free_plan_audience(effective_audience, effective_is_free)
 
+        effective_active = (
+            data.is_active if data.is_active is not None else plan.is_active
+        )
+        if effective_is_free and effective_active:
+            if effective_audience == PlanAudience.COMPANY:
+                existing = await self.plans.get_active_company_free_plan()
+                if existing is not None and existing.id != plan.id:
+                    raise ConflictException(
+                        "Đã có gói Doanh nghiệp Miễn phí đang hoạt động. Chỉ cho phép tối đa 1 gói miễn phí hoạt động."
+                    )
+            elif effective_audience == PlanAudience.CANDIDATE:
+                existing = await self.plans.get_active_candidate_free_plan()
+                if existing is not None and existing.id != plan.id:
+                    raise ConflictException(
+                        "Đã có gói Ứng viên Miễn phí đang hoạt động. Chỉ cho phép tối đa 1 gói miễn phí hoạt động."
+                    )
+
+        if (
+            plan.is_free
+            and plan.plan_audience == PlanAudience.COMPANY
+            and plan.is_active
+            and data.is_active is False
+        ):
+            raise ConflictException(
+                "Không thể khóa gói Doanh nghiệp Miễn phí mặc định của hệ thống."
+            )
+
         if data.name is not None:
             plan.name = data.name
         if data.description is not None:
@@ -172,6 +224,30 @@ class RecruitmentPlanService:
         if plan is None:
             raise EntityNotFoundException(f"Recruitment plan {plan_id} not found")
 
+        if (
+            plan.is_free
+            and plan.plan_audience == PlanAudience.COMPANY
+            and plan.is_active
+            and not is_active
+        ):
+            raise ConflictException(
+                "Không thể khóa gói Doanh nghiệp Miễn phí mặc định của hệ thống."
+            )
+
+        if plan.is_free and is_active:
+            if plan.plan_audience == PlanAudience.COMPANY:
+                existing = await self.plans.get_active_company_free_plan()
+                if existing is not None and existing.id != plan.id:
+                    raise ConflictException(
+                        "Đã có gói Doanh nghiệp Miễn phí khác đang hoạt động."
+                    )
+            elif plan.plan_audience == PlanAudience.CANDIDATE:
+                existing = await self.plans.get_active_candidate_free_plan()
+                if existing is not None and existing.id != plan.id:
+                    raise ConflictException(
+                        "Đã có gói Ứng viên Miễn phí khác đang hoạt động."
+                    )
+
         changed = plan.is_active != is_active
         plan.is_active = is_active
         if changed:
@@ -195,6 +271,16 @@ class RecruitmentPlanService:
         plan = await self.plans.get_by_id(plan_id)
         if plan is None:
             raise EntityNotFoundException(f"Recruitment plan {plan_id} not found")
+
+        if plan.is_free:
+            if plan.plan_audience == PlanAudience.COMPANY:
+                raise ConflictException(
+                    "Không thể xóa gói Doanh nghiệp Miễn phí mặc định của hệ thống."
+                )
+            if plan.plan_audience == PlanAudience.CANDIDATE:
+                raise ConflictException(
+                    "Không thể xóa gói Ứng viên Miễn phí mặc định của hệ thống."
+                )
 
         # Check for subscriptions
         subscription_count = await self.plans.count_subscriptions(plan.id)

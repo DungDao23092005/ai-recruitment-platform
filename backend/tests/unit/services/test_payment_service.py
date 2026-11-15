@@ -2184,3 +2184,62 @@ class TestReconcileForgeResistance:
 
         finalize_failure.assert_not_called()
         assert order.status == PaymentOrderStatus.PENDING
+
+
+class TestCompanyFreePaidUpgrade:
+    @pytest.mark.asyncio
+    async def test_activate_company_subscription_cancels_superseded_company_free(self) -> None:
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+
+        company_id = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+
+        free_sub = Subscription(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            plan_id=uuid.uuid4(),
+            status=SubscriptionStatus.ACTIVE,
+            is_free=True,
+            scope="company_recruiting",
+        )
+        paid_sub = Subscription(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            plan_id=uuid.uuid4(),
+            status=SubscriptionStatus.PENDING,
+            is_free=False,
+            scope="company_recruiting",
+        )
+        plan = MagicMock()
+        plan.duration_days = 30
+        plan.max_job_posts = 10
+        plan.max_candidate_searches = 50
+        plan.max_ai_features = 20
+
+        order = MagicMock()
+        order.id = uuid.uuid4()
+        order.company_id = company_id
+        order.subscription_id = paid_sub.id
+        order.provider_transaction_id = "TRANS_001"
+        order.ipn_verified_at = now
+        order.status = PaymentOrderStatus.PENDING
+
+        service.subscriptions.expire_stale_active_for_company = AsyncMock()
+        service.subscriptions.get_active_by_company_id = AsyncMock(return_value=free_sub)
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+
+        sub = await service._activate_company_subscription_for_payment(
+            payment_order=order,
+            subscription=paid_sub,
+            provider_transaction_id="TX_123",
+            provider_result_code="00",
+            provider_message="Success",
+            provider_request_id=None,
+            provider_response_metadata="{}",
+        )
+
+        assert free_sub.status == SubscriptionStatus.CANCELLED
+        assert paid_sub.status == SubscriptionStatus.ACTIVE
+        assert sub.status == SubscriptionStatus.ACTIVE
+        session.commit.assert_awaited()

@@ -16,22 +16,35 @@ import type {
 } from '@/types/admin'
 
 type FormMode = 'create' | 'edit' | 'status'
-type PlanKind = 'company' | 'candidate_free' | 'candidate_paid'
+type PlanKind = 'company_free' | 'company' | 'candidate_free' | 'candidate_paid'
 
 const PLAN_KIND_OPTIONS: { value: PlanKind; label: string }[] = [
+  { value: 'company_free', label: 'Doanh nghiệp — Miễn phí' },
   { value: 'company', label: 'Doanh nghiệp — Trả phí' },
   { value: 'candidate_free', label: 'Ứng viên — Miễn phí' },
   { value: 'candidate_paid', label: 'Ứng viên — Trả phí' },
 ]
 
+function isCompanyKind(kind: PlanKind): boolean {
+  return kind === 'company' || kind === 'company_free'
+}
+
+function isFreeKind(kind: PlanKind): boolean {
+  return kind === 'company_free' || kind === 'candidate_free'
+}
+
 function resolvePlanKind(plan?: AdminPlanRead): PlanKind {
   if (!plan) return 'company'
-  if (plan.is_free) return 'candidate_free'
+  if (plan.is_free) {
+    return plan.plan_audience === 'company'
+      ? 'company_free'
+      : 'candidate_free'
+  }
   return plan.plan_audience === 'candidate' ? 'candidate_paid' : 'company'
 }
 
 function audienceForKind(kind: PlanKind): AdminPlanAudience {
-  return kind === 'company' ? 'company' : 'candidate'
+  return isCompanyKind(kind) ? 'company' : 'candidate'
 }
 
 interface AdminPlanFormProps {
@@ -40,7 +53,8 @@ interface AdminPlanFormProps {
   onSuccess?: (plan: AdminPlanRead) => void
   mode: FormMode
   planId?: string
-  existingActiveFreePlan?: AdminPlanRead | null
+  existingActiveCompanyFreePlan?: AdminPlanRead | null
+  existingActiveCandidateFreePlan?: AdminPlanRead | null
 }
 
 export function AdminPlanForm({
@@ -49,7 +63,8 @@ export function AdminPlanForm({
   onSuccess,
   mode,
   planId,
-  existingActiveFreePlan,
+  existingActiveCompanyFreePlan,
+  existingActiveCandidateFreePlan,
 }: AdminPlanFormProps) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -65,10 +80,26 @@ export function AdminPlanForm({
     resolvePlanKind(defaultPlan),
   )
   const planAudience = audienceForKind(planKind)
-  const isCompany = planKind === 'company'
-  const isFree = planKind === 'candidate_free'
+  const isCompany = isCompanyKind(planKind)
+  const isCompanyFree = planKind === 'company_free'
+  const isCandidateFree = planKind === 'candidate_free'
+  const isFree = isFreeKind(planKind)
   const freePlanConflict =
-    isCreate && isFree && existingActiveFreePlan != null
+    isCreate &&
+    ((isCompanyFree && existingActiveCompanyFreePlan != null) ||
+      (isCandidateFree && existingActiveCandidateFreePlan != null))
+  const freePlanConflictName = isCompanyFree
+    ? existingActiveCompanyFreePlan?.name
+    : existingActiveCandidateFreePlan?.name
+  const freePlanConflictLabel = isCompanyFree
+    ? 'Doanh nghiệp Miễn phí'
+    : 'Ứng viên Miễn phí'
+
+  // The canonical Company Free row must stay active so workspaces always have
+  // a fallback entitlement. Editing its quotas/name is allowed; deactivation is
+  // blocked both here and by the backend.
+  const isCanonicalCompanyFree =
+    isCompanyFree && defaultPlan?.is_active === true
 
   // Initialize form state from defaultPlan when in edit mode, otherwise use defaults
   const [name, setName] = useState(defaultPlan?.name ?? '')
@@ -90,14 +121,14 @@ export function AdminPlanForm({
   } | null>(null)
 
   const handlePlanKindChange = (kind: PlanKind) => {
-    if (planKind === 'company' && kind !== 'company') {
+    if (isCompanyKind(planKind) && !isCompanyKind(kind)) {
       companyQuotasRef.current = { maxJobPosts, maxCandidateSearches }
     }
 
-    if (kind !== 'company') {
+    if (!isCompanyKind(kind)) {
       setMaxJobPosts(0)
       setMaxCandidateSearches(0)
-    } else if (planKind !== 'company') {
+    } else if (!isCompanyKind(planKind)) {
       const restored = companyQuotasRef.current ?? {
         maxJobPosts: 10,
         maxCandidateSearches: 50,
@@ -107,8 +138,17 @@ export function AdminPlanForm({
     }
 
     setPlanKind(kind)
-    if (kind === 'candidate_free') {
+    if (isFreeKind(kind)) {
       setPrice(0)
+    }
+    if (kind === 'company_free') {
+      setCurrency('VND')
+      setDurationDays(30)
+      if (planKind !== 'company_free') {
+        setMaxJobPosts(1)
+        setMaxCandidateSearches(10)
+        setMaxAiFeatures(5)
+      }
     }
   }
 
@@ -147,7 +187,9 @@ export function AdminPlanForm({
     }
     if (freePlanConflict) {
       setError(
-        `Đã có gói Ứng viên Miễn phí đang hoạt động (${existingActiveFreePlan?.name}). Hãy chỉnh sửa gói đó thay vì tạo gói mới.`,
+        `Đã có gói ${freePlanConflictLabel} đang hoạt động${
+          freePlanConflictName ? ` (${freePlanConflictName})` : ''
+        }. Hãy chỉnh sửa gói đó thay vì tạo gói mới.`,
       )
       return false
     }
@@ -171,6 +213,11 @@ export function AdminPlanForm({
   }
 
   const handleSubmit = async () => {
+    if (isStatus && isCanonicalCompanyFree && !isActive) {
+      setError('Không thể khóa gói Doanh nghiệp Miễn phí mặc định của hệ thống.')
+      return
+    }
+
     // Only validate full form for create/edit modes
     if (!isStatus && !validateForm()) return
 
@@ -280,6 +327,17 @@ export function AdminPlanForm({
           <p className="text-sm text-muted-foreground">
             Trạng thái hiện tại: <span className="font-medium">{defaultPlan?.is_active ? 'Hoạt động' : 'Khóa'}</span>
           </p>
+          {isCanonicalCompanyFree ? (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-md border border-info/40 bg-info/10 px-3 py-2 text-sm text-foreground"
+            >
+              <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>
+                Gói Doanh nghiệp Miễn phí mặc định không thể khóa để đảm bảo quyền lợi tuyển dụng cho doanh nghiệp.
+              </span>
+            </div>
+          ) : null}
           <div>
             <label htmlFor="status" className="block text-sm font-medium mb-1">
               Trạng thái mới <span className="text-destructive">*</span>
@@ -289,6 +347,7 @@ export function AdminPlanForm({
               name="status"
               value={isActive.toString()}
               onChange={(e) => setIsActive(e.target.value === 'true')}
+              disabled={isCanonicalCompanyFree}
             >
               <option value="true">Hoạt động</option>
               <option value="false">Khóa</option>
@@ -357,11 +416,9 @@ export function AdminPlanForm({
             >
               <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
               <span>
-                Đã có gói Ứng viên Miễn phí đang hoạt động
-                {existingActiveFreePlan?.name
-                  ? `: ${existingActiveFreePlan.name}`
-                  : ''}
-                . Hãy chỉnh sửa gói hiện có thay vì tạo gói mới.
+                Đã có gói {freePlanConflictLabel} đang hoạt động
+                {freePlanConflictName ? `: ${freePlanConflictName}` : ''}. Hãy
+                chỉnh sửa gói hiện có thay vì tạo gói mới.
               </span>
             </div>
           ) : null}
@@ -391,6 +448,7 @@ export function AdminPlanForm({
                 name="currency"
                 value={currency}
                 onChange={(e) => setCurrency(e.target.value)}
+                disabled={submitting || isFree}
               >
                 <option value="VND">VND (Vietnamese Dong)</option>
                 <option value="USD">USD (US Dollar)</option>
@@ -406,11 +464,11 @@ export function AdminPlanForm({
               <Input
                 id="durationDays"
                 type="number"
-                value={durationDays}
+                value={isCompanyFree ? 30 : durationDays}
                 onChange={(e) => setDurationDays(Number(e.target.value) || 0)}
                 placeholder="30"
                 min={1}
-                disabled={submitting}
+                disabled={submitting || isCompanyFree}
               />
             </div>
 

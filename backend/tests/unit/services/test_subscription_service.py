@@ -1,7 +1,7 @@
 import asyncio
 import uuid
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -808,3 +808,45 @@ class TestActivateSubscriptionRoleTransition:
         add_calls = [call for call in session.add.call_args_list
                      if call.args and hasattr(call.args[0], '__class__') and call.args[0].__class__.__name__ == 'RecruiterProfile']
         assert len(add_calls) == 0  # No new profile created
+
+
+class TestCompanyPaidExpirationFallback:
+    def test_check_and_expire_provisions_company_free_on_paid_expiration(self):
+        session = make_session()
+        service = make_service(session)
+
+        company_id = uuid.uuid4()
+        now = utc_now()
+
+        paid_sub = Subscription(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            plan_id=uuid.uuid4(),
+            status=SubscriptionStatus.ACTIVE,
+            is_free=False,
+            scope="company_recruiting",
+            expires_at=now - timedelta(days=1),
+        )
+
+        service.subscriptions.get_stale_candidate_paid = AsyncMock(return_value=[])
+        service.subscriptions.get_stale_company_paid = AsyncMock(return_value=[paid_sub])
+        service.subscriptions.expire_stale_active = AsyncMock(return_value=1)
+
+        async def _refresh(sub):
+            sub.status = SubscriptionStatus.EXPIRED
+
+        session.refresh.side_effect = _refresh
+
+        with patch(
+            "app.services.subscription_service.CompanyEntitlementService"
+        ) as mock_entitlement_cls:
+            mock_entitlement = mock_entitlement_cls.return_value
+            mock_entitlement.provision_company_free_subscription = AsyncMock()
+
+            expired_count = asyncio.run(service.check_and_expire_subscriptions(now=now))
+
+            assert expired_count == 1
+            mock_entitlement.provision_company_free_subscription.assert_awaited_once_with(
+                company_id, now=now
+            )
+            session.commit.assert_awaited()

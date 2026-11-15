@@ -85,6 +85,32 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_active_company_free_by_company_id(
+        self,
+        company_id: Any,
+        now: Optional[datetime] = None,
+    ) -> Subscription | None:
+        """Return the company's active Company Free entitlement, if any."""
+        if now is None:
+            from app.domain.models.base import utc_now
+
+            now = utc_now()
+
+        stmt = (
+            select(Subscription)
+            .options(selectinload(Subscription.plan))
+            .where(
+                Subscription.company_id == company_id,
+                Subscription.scope == SubscriptionScope.COMPANY_RECRUITING,
+                Subscription.is_free == True,  # noqa: E712
+                Subscription.is_deleted == False,  # noqa: E712
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                or_(Subscription.expires_at.is_(None), Subscription.expires_at > now),
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def _get_active_candidate_by_user_id(
         self,
         user_id: Any,
@@ -155,6 +181,28 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             .where(
                 Subscription.company_id.is_(None),
                 Subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+                Subscription.is_free == False,  # noqa: E712
+                self._stale_active_condition(now),
+            )
+            .order_by(Subscription.expires_at.asc(), Subscription.id.asc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(max(1, int(limit)))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_stale_company_paid(
+        self,
+        now: datetime,
+        limit: Optional[int] = None,
+    ) -> list[Subscription]:
+        """Return Company Paid rows that are about to expire."""
+        stmt = (
+            select(Subscription)
+            .options(selectinload(Subscription.plan))
+            .where(
+                Subscription.company_id.is_not(None),
+                Subscription.scope == SubscriptionScope.COMPANY_RECRUITING,
                 Subscription.is_free == False,  # noqa: E712
                 self._stale_active_condition(now),
             )

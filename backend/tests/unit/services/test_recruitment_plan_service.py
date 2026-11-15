@@ -41,12 +41,15 @@ def make_plan(plan_id: uuid.UUID | None = None) -> RecruitmentPlan:
         max_job_posts=5,
         plan_audience=PlanAudience.COMPANY,
         is_free=False,
+        is_active=True,
     )
 
 
 def make_service(session: MagicMock) -> RecruitmentPlanService:
     service = RecruitmentPlanService(session)
     service.plans = AsyncMock(spec=RecruitmentPlanRepository)
+    service.plans.get_active_candidate_free_plan.return_value = None
+    service.plans.get_active_company_free_plan.return_value = None
     return service
 
 
@@ -158,16 +161,32 @@ class TestCreatePlan:
         assert plan.plan_audience == PlanAudience.COMPANY
         assert plan.is_free is False
 
-    def test_rejects_free_company_plan_at_schema_level(self):
-        with pytest.raises(ValueError, match="candidate audience"):
-            RecruitmentPlanCreate(
-                name="Invalid Free",
-                price=0,
-                duration_days=30,
-                max_job_posts=0,
-                plan_audience=PlanAudience.COMPANY,
-                is_free=True,
-            )
+    def test_allows_free_company_plan_at_schema_level(self):
+        plan = RecruitmentPlanCreate(
+            name="Company Free",
+            price=0,
+            duration_days=30,
+            max_job_posts=1,
+            plan_audience=PlanAudience.COMPANY,
+            is_free=True,
+        )
+        assert plan.is_free is True
+        assert plan.plan_audience == PlanAudience.COMPANY
+
+    def test_rejects_duplicate_active_company_free_plan_on_create(self):
+        session = make_session()
+        service = make_service(session)
+        service.plans.get_active_company_free_plan.return_value = make_plan()
+        data = RecruitmentPlanCreate(
+            name="Another Company Free",
+            price=0,
+            duration_days=30,
+            max_job_posts=1,
+            plan_audience=PlanAudience.COMPANY,
+            is_free=True,
+        )
+        with pytest.raises(ConflictException, match="Đã có gói Doanh nghiệp Miễn phí"):
+            asyncio.run(service.create_plan(data))
 
 
 class TestGetPlan:
@@ -284,25 +303,27 @@ class TestUpdatePlan:
         assert plan.is_free is True
         session.commit.assert_awaited_once()
 
-    def test_rejects_free_update_for_company_plan(self):
+    def test_rejects_free_update_for_company_plan_when_active_exists(self):
         session = make_session()
         service = make_service(session)
         plan = make_plan()
         service.plans.get_active_by_id_admin.return_value = plan
+        service.plans.get_active_company_free_plan.return_value = make_plan()
         data = RecruitmentPlanUpdate(is_free=True)
 
-        with pytest.raises(ValidationError, match="candidate audience"):
+        with pytest.raises(ConflictException, match="Đã có gói Doanh nghiệp Miễn phí"):
             asyncio.run(service.update_plan(plan.id, data))
 
         assert plan.is_free is False
         session.commit.assert_not_awaited()
 
-    def test_rejects_company_audience_for_free_plan_in_payload(self):
-        with pytest.raises(ValueError, match="candidate audience"):
-            RecruitmentPlanUpdate(
-                plan_audience=PlanAudience.COMPANY,
-                is_free=True,
-            )
+    def test_allows_company_audience_for_free_plan_in_payload(self):
+        update = RecruitmentPlanUpdate(
+            plan_audience=PlanAudience.COMPANY,
+            is_free=True,
+        )
+        assert update.plan_audience == PlanAudience.COMPANY
+        assert update.is_free is True
 
     def test_rollback_on_commit_failure(self):
         session = make_session()

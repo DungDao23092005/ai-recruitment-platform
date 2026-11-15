@@ -23,8 +23,8 @@ class RecruitmentPlan(Base, TimestampMixin, SoftDeleteMixin):
             name="ck_recruitment_plans_audience",
         ),
         CheckConstraint(
-            "is_free = 0 OR plan_audience = 'candidate'",
-            name="ck_recruitment_plans_free_candidate",
+            "is_free = 0 OR plan_audience IN ('candidate', 'company')",
+            name="ck_recruitment_plans_free_audience",
         ),
         Index("ix_recruitment_plans_display_order", "display_order"),
         Index("ix_recruitment_plans_is_active", "is_active"),
@@ -42,6 +42,15 @@ class RecruitmentPlan(Base, TimestampMixin, SoftDeleteMixin):
             unique=True,
             mssql_where=text(
                 "is_active = 1 AND is_deleted = 0 AND plan_audience = 'candidate' AND is_free = 1"
+            ),
+        ),
+        Index(
+            "uq_recruitment_plans_active_company_free",
+            "plan_audience",
+            "is_free",
+            unique=True,
+            mssql_where=text(
+                "is_active = 1 AND is_deleted = 0 AND plan_audience = 'company' AND is_free = 1"
             ),
         ),
     )

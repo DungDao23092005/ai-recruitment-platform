@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { ChevronLeft, RefreshCw, UserRoundSearch } from 'lucide-react'
 import { getMyJobById } from '@/api/jobs'
 import { getCandidateRecommendations } from '@/api/ai'
@@ -18,50 +18,66 @@ type PageState =
   | { kind: 'loading' }
   | { kind: 'error'; message: string; notFound: boolean }
   | {
-      kind: 'success'
-      job: Job
-      recommendations: CandidateMatchRecommendation[]
-    }
+    kind: 'success'
+    job: Job
+    recommendations: CandidateMatchRecommendation[]
+  }
 
 export function JobRecommendationsPage() {
   const { id } = useParams<{ id: string }>()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [state, setState] = useState<PageState>({ kind: 'loading' })
 
-  const load = useCallback(() => {
-    if (!id) {
-      setState({
-        kind: 'error',
-        message: 'Không tìm thấy tin tuyển dụng',
-        notFound: true,
-      })
-      return
-    }
-
-    setState({ kind: 'loading' })
-
-    Promise.all([getMyJobById(id), getCandidateRecommendations(id, DEFAULT_LIMIT)])
-      .then(([job, recommendations]) => {
-        const sorted = [...recommendations].sort(
-          (a, b) => b.match_result.overall_score - a.match_result.overall_score,
-        )
-        setState({ kind: 'success', job, recommendations: sorted })
-      })
-      .catch((err) => {
-        const status = (err as Error & { response?: { status?: number } })
-          .response?.status
-        const notFound = status === 404
+  const load = useCallback(
+    (isRetry = false) => {
+      if (!id) {
         setState({
           kind: 'error',
-          message: notFound
-            ? 'Không tìm thấy tin tuyển dụng'
-            : getFriendlyErrorMessage(err),
-          notFound,
+          message: 'Không tìm thấy tin tuyển dụng',
+          notFound: true,
         })
-      })
-  }, [id])
+        return
+      }
+
+      let sessionId = searchParams.get('session_id')
+      if (!sessionId || !isRetry) {
+        if (!sessionId) {
+          sessionId = crypto.randomUUID()
+          setSearchParams({ session_id: sessionId }, { replace: true })
+        }
+      }
+
+      setState({ kind: 'loading' })
+
+      Promise.all([
+        getMyJobById(id),
+        getCandidateRecommendations(id, DEFAULT_LIMIT, sessionId),
+      ])
+        .then(([job, recommendations]) => {
+          const sorted = [...recommendations].sort(
+            (a, b) =>
+              b.match_result.overall_score - a.match_result.overall_score,
+          )
+          setState({ kind: 'success', job, recommendations: sorted })
+        })
+        .catch((err) => {
+          const status = (err as Error & { response?: { status?: number } })
+            .response?.status
+          const notFound = status === 404
+          setState({
+            kind: 'error',
+            message: notFound
+              ? 'Không tìm thấy tin tuyển dụng'
+              : getFriendlyErrorMessage(err),
+            notFound,
+          })
+        })
+    },
+    [id, searchParams, setSearchParams],
+  )
 
   useEffect(() => {
-    load()
+    load(true)
   }, [load])
 
   if (state.kind === 'loading') {
@@ -99,7 +115,7 @@ export function JobRecommendationsPage() {
               <Button variant="outline">Quay lại tin tuyển dụng</Button>
             </Link>
           ) : (
-            <Button variant="outline" onClick={load}>
+            <Button variant="outline" onClick={() => load(true)}>
               <RefreshCw className="h-4 w-4" aria-hidden="true" />
               Thử lại
             </Button>

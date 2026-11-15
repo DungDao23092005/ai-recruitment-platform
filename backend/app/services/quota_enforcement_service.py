@@ -28,8 +28,9 @@ from app.domain.enums import (
 )
 from app.domain.models.base import utc_now
 from app.models import Subscription, SubscriptionUsage, User
-from app.repositories import SubscriptionRepository
+from app.repositories import RecruitmentPlanRepository, SubscriptionRepository
 from app.services.candidate_entitlement_service import CandidateEntitlementService
+from app.services.company_entitlement_service import CompanyEntitlementService
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,7 @@ class QuotaEnforcementService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.subscriptions = SubscriptionRepository(session)
+        self.plans = RecruitmentPlanRepository(session)
 
     def _is_real_async_session(self) -> bool:
         return isinstance(self.session, AsyncSession)
@@ -194,7 +196,92 @@ class QuotaEnforcementService:
             or_(Subscription.expires_at.is_(None), Subscription.expires_at > now),
         )
         result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        subscription = result.scalar_one_or_none()
+        if subscription is None:
+            try:
+                entitlement_service = CompanyEntitlementService(self.session)
+                subscription = (
+                    await entitlement_service.provision_company_free_subscription(
+                        company_id, now
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Lazy Company Free provisioning skipped for company %s: %s",
+                    company_id,
+                    exc,
+                )
+                subscription = None
+        if subscription is not None:
+            await self._rollover_company_free_period(subscription, now)
+        return subscription
+
+    async def _rollover_company_free_period(
+        self,
+        subscription: Subscription,
+        now: datetime,
+    ) -> None:
+        """Lazily advance a Company Free subscription to the current month.
+
+        The update re-checks the stale period key so concurrent requests and a
+        worker retry can never reset the same month twice. Quotas are refreshed
+        from the canonical Company Free plan only at rollover; an Admin edit
+        mid-month therefore never changes the current month's snapshot. If the
+        canonical plan is missing, the existing snapshot is kept and a warning
+        is logged instead of interrupting the request.
+        """
+        if not self._is_real_async_session() or not subscription.is_free:
+            return
+
+        period_key = CompanyEntitlementService.company_period_key(now)
+        if subscription.current_period_key == period_key:
+            return
+
+        canonical_plan = await self.plans.get_active_company_free_plan()
+        values: dict = {
+            "job_posts_used": 0,
+            "candidate_searches_used": 0,
+            "ai_features_used": 0,
+            "current_period_key": period_key,
+            "updated_at": now,
+        }
+        if canonical_plan is None:
+            logger.warning(
+                "Cannot refresh Company Free quota snapshot for subscription "
+                "%s during monthly rollover: no active Company Free plan is "
+                "configured. Keeping the previous snapshot.",
+                subscription.id,
+            )
+        else:
+            values.update(
+                plan_id=canonical_plan.id,
+                max_job_posts=canonical_plan.max_job_posts,
+                max_candidate_searches=(
+                    canonical_plan.max_candidate_searches or 0
+                ),
+                max_ai_features=canonical_plan.max_ai_features or 0,
+            )
+
+        stmt = (
+            update(Subscription)
+            .where(
+                Subscription.id == subscription.id,
+                Subscription.company_id.is_not(None),
+                Subscription.scope == SubscriptionScope.COMPANY_RECRUITING,
+                Subscription.is_free == True,  # noqa: E712
+                Subscription.is_deleted == False,  # noqa: E712
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                or_(
+                    Subscription.current_period_key.is_(None),
+                    Subscription.current_period_key != period_key,
+                ),
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
+        if (result.rowcount or 0) > 0:
+            await self.session.refresh(subscription)
 
     async def _verify_and_lock_company_membership(
         self,
@@ -438,6 +525,24 @@ class QuotaEnforcementService:
         if limit == 0:
             raise ForbiddenException(self._feature_zero_limit_message(feature_type))
 
+        if idempotency_key:
+            existing = await self._get_usage_by_subscription_and_idempotency(
+                subscription.id, idempotency_key
+            )
+            if existing is not None:
+                if self._is_real_async_session():
+                    await self.session.refresh(subscription)
+                return self._validate_and_build_idempotent_result(
+                    existing=existing,
+                    subscription=subscription,
+                    feature_type=feature_type,
+                    amount=amount,
+                    reference_id=reference_id,
+                    user_id=user_id,
+                    company_id=company_id,
+                    allow_company_shared_job_post=_allow_company_shared_job_post,
+                )
+
         used_col = self._get_counter_column(feature_type)
         limit_col = self._get_max_column(feature_type)
 
@@ -491,6 +596,8 @@ class QuotaEnforcementService:
                             subscription.id, idempotency_key
                         )
                         if existing is not None:
+                            if self._is_real_async_session():
+                                await self.session.refresh(subscription)
                             return self._validate_and_build_idempotent_result(
                                 existing=existing,
                                 subscription=subscription,
@@ -1360,6 +1467,8 @@ class QuotaEnforcementService:
                             subscription.id, idempotency_key
                         )
                         if existing is not None:
+                            if self._is_real_async_session():
+                                await self.session.refresh(subscription)
                             return self._validate_and_build_idempotent_result(
                                 existing=existing,
                                 subscription=subscription,

@@ -674,7 +674,7 @@ class PaymentService:
         existing_active = await self.subscriptions.get_active_by_company_id(
             company_id, now_utc
         )
-        if existing_active is not None:
+        if existing_active is not None and not existing_active.is_free:
             await self.session.rollback()
             raise ConflictException(
                 f"Company already has an active subscription (id: {existing_active.id})"
@@ -1254,11 +1254,15 @@ class PaymentService:
             company_id, now
         )
         if existing_active is not None and existing_active.id != subscription.id:
-            active_id = existing_active.id
-            await self.session.rollback()
-            raise ConflictException(
-                f"Company {company_id} already has an active subscription (id: {active_id})"
-            )
+            if existing_active.is_free:
+                existing_active.status = SubscriptionStatus.CANCELLED
+                await self.session.flush()
+            else:
+                active_id = existing_active.id
+                await self.session.rollback()
+                raise ConflictException(
+                    f"Company {company_id} already has an active subscription (id: {active_id})"
+                )
 
         plan_id = subscription.plan_id
         plan = await self.plans.get_active_by_id(plan_id)

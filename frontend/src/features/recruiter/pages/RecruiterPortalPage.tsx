@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, Navigate, useLocation } from 'react-router-dom'
 import {
   Building,
   Briefcase,
@@ -209,6 +209,8 @@ type PageState =
   | { kind: 'no-company' }
 
 export function RecruiterPortalPage() {
+  const location = useLocation()
+  const invitationToken = (location.state as { invitationToken?: string } | null)?.invitationToken
   const [state, setState] = useState<PageState>({ kind: 'loading' })
   const workspace = useOptionalWorkspace()
   const hasWorkspace = Boolean(workspace?.selectedCompanyId)
@@ -258,6 +260,9 @@ export function RecruiterPortalPage() {
   }
 
   if (state.kind === 'no-company') {
+    if (!invitationToken) {
+      return <Navigate to="/recruiter/company" replace />
+    }
     return (
       <div className="space-y-6">
         <PageHeader

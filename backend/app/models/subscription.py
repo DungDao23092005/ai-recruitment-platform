@@ -32,8 +32,8 @@ class Subscription(Base, TimestampMixin, SoftDeleteMixin):
             name="ck_subscriptions_scope_company_pairing",
         ),
         CheckConstraint(
-            "is_free = 0 OR scope = 'candidate_personal'",
-            name="ck_subscriptions_free_candidate",
+            "is_free = 0 OR scope IN ('candidate_personal', 'company_recruiting')",
+            name="ck_subscriptions_free_scope",
         ),
         Index(
             "uq_subscriptions_active_company",

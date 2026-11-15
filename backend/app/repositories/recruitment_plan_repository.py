@@ -39,6 +39,22 @@ class RecruitmentPlanRepository(BaseRepository[RecruitmentPlan]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_active_company_free_plan(self) -> RecruitmentPlan | None:
+        """Return the single active Company Free plan, if configured.
+
+        The filtered unique index ``uq_recruitment_plans_active_company_free``
+        guarantees at most one row. A missing plan is a configuration error for
+        callers: no fallback quota is ever inferred here.
+        """
+        stmt = select(RecruitmentPlan).where(
+            RecruitmentPlan.plan_audience == PlanAudience.COMPANY,
+            RecruitmentPlan.is_free == True,  # noqa: E712
+            RecruitmentPlan.is_active == True,  # noqa: E712
+            RecruitmentPlan.is_deleted == False,  # noqa: E712
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_active_by_id_admin(
         self,
         plan_id: Any,
