@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
 import { AdminPlanList } from '@/features/admin/components/AdminPlanList'
 import { getAdminPlans } from '@/api/admin'
@@ -163,6 +163,68 @@ describe('AdminPlanList', () => {
     await waitFor(() => {
       expect(screen.getAllByText('Ứng viên')).toHaveLength(2)
       expect(screen.getAllByText('Miễn phí')).toHaveLength(2)
+    })
+  })
+
+  it('shows — in recruitment quota columns for Candidate Free', async () => {
+    const candidateFree: AdminPlanRead = {
+      ...mockPlans[0],
+      id: 'plan-free',
+      name: 'Gói ứng viên miễn phí',
+      plan_audience: 'candidate',
+      is_free: true,
+      price: 0,
+      max_job_posts: 0,
+      max_candidate_searches: 0,
+    }
+    vi.mocked(getAdminPlans).mockResolvedValue(makeResponse([candidateFree]))
+
+    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} onDelete={vi.fn()} />)
+
+    await waitFor(() => {
+      const row = screen.getByText('Gói ứng viên miễn phí').closest('tr')
+      expect(row).not.toBeNull()
+      const cells = within(row as HTMLElement).getAllByRole('cell')
+      expect(cells[5]).toHaveTextContent('—')
+      expect(cells[6]).toHaveTextContent('—')
+    })
+  })
+
+  it('shows — in recruitment quota columns for Candidate Paid', async () => {
+    const candidatePaid: AdminPlanRead = {
+      ...mockPlans[0],
+      id: 'plan-candidate-paid',
+      name: 'Gói ứng viên trả phí',
+      plan_audience: 'candidate',
+      is_free: false,
+      price: 49000,
+      max_job_posts: 0,
+      max_candidate_searches: 0,
+    }
+    vi.mocked(getAdminPlans).mockResolvedValue(makeResponse([candidatePaid]))
+
+    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} onDelete={vi.fn()} />)
+
+    await waitFor(() => {
+      const row = screen.getByText('Gói ứng viên trả phí').closest('tr')
+      expect(row).not.toBeNull()
+      const cells = within(row as HTMLElement).getAllByRole('cell')
+      expect(cells[5]).toHaveTextContent('—')
+      expect(cells[6]).toHaveTextContent('—')
+    })
+  })
+
+  it('continues to show numeric recruitment quotas for Company plans', async () => {
+    vi.mocked(getAdminPlans).mockResolvedValue(makeResponse([mockPlans[0]]))
+
+    render(<AdminPlanList onEdit={vi.fn()} onStatus={vi.fn()} onDelete={vi.fn()} />)
+
+    await waitFor(() => {
+      const row = screen.getByText('Gói cơ bản').closest('tr')
+      expect(row).not.toBeNull()
+      const cells = within(row as HTMLElement).getAllByRole('cell')
+      expect(cells[5]).toHaveTextContent('5')
+      expect(cells[6]).toHaveTextContent('20')
     })
   })
 

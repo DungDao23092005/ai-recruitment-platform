@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Building, Info, Save } from 'lucide-react'
 import { createAdminPlan, updateAdminPlan, updateAdminPlanStatus } from '@/api/admin'
 import { Button } from '@/components/ui/button'
@@ -65,6 +65,7 @@ export function AdminPlanForm({
     resolvePlanKind(defaultPlan),
   )
   const planAudience = audienceForKind(planKind)
+  const isCompany = planKind === 'company'
   const isFree = planKind === 'candidate_free'
   const freePlanConflict =
     isCreate && isFree && existingActiveFreePlan != null
@@ -81,12 +82,47 @@ export function AdminPlanForm({
   const [displayOrder, setDisplayOrder] = useState(defaultPlan?.display_order ?? 0)
   const [isActive, setIsActive] = useState(defaultPlan?.is_active ?? true)
 
+  // Remember Company quota values so switching to a Candidate plan (which
+  // stores zero for recruitment quotas) does not discard them.
+  const companyQuotasRef = useRef<{
+    maxJobPosts: number
+    maxCandidateSearches: number
+  } | null>(null)
+
   const handlePlanKindChange = (kind: PlanKind) => {
+    if (planKind === 'company' && kind !== 'company') {
+      companyQuotasRef.current = { maxJobPosts, maxCandidateSearches }
+    }
+
+    if (kind !== 'company') {
+      setMaxJobPosts(0)
+      setMaxCandidateSearches(0)
+    } else if (planKind !== 'company') {
+      const restored = companyQuotasRef.current ?? {
+        maxJobPosts: 10,
+        maxCandidateSearches: 50,
+      }
+      setMaxJobPosts(restored.maxJobPosts)
+      setMaxCandidateSearches(restored.maxCandidateSearches)
+    }
+
     setPlanKind(kind)
     if (kind === 'candidate_free') {
       setPrice(0)
     }
   }
+
+  // Candidate plans always submit zero recruitment quotas; their shared AI
+  // quota is mapped through max_ai_features.
+  const effectiveMaxJobPosts = isCompany ? maxJobPosts : 0
+  const effectiveMaxCandidateSearches = isCompany ? maxCandidateSearches : 0
+
+  const aiQuotaLabel = isCompany
+    ? 'Lượt AI tuyển dụng'
+    : 'Hạn mức AI ứng viên (Lượt AI dùng chung)'
+  const aiQuotaHelper = isCompany
+    ? 'Hạn mức lượt dùng cho các tính năng AI phục vụ tuyển dụng.'
+    : 'Một hạn mức AI dùng chung cho Phân tích CV, Gợi ý việc làm và Trò chuyện AI.'
 
   const validateForm = (): boolean => {
     if (!name.trim()) {
@@ -115,16 +151,16 @@ export function AdminPlanForm({
       )
       return false
     }
-    if (maxJobPosts < 0) {
+    if (isCompany && maxJobPosts < 0) {
       setError('Số lượng bài đăng không được âm')
       return false
     }
-    if (maxCandidateSearches < 0) {
+    if (isCompany && maxCandidateSearches < 0) {
       setError('Số tìm kiếm ứng viên không được âm')
       return false
     }
     if (maxAiFeatures < 0) {
-      setError('AI features không được âm')
+      setError('Lượt AI không được âm')
       return false
     }
     if (displayOrder < 0) {
@@ -151,8 +187,8 @@ export function AdminPlanForm({
           price,
           currency,
           duration_days: durationDays,
-          max_job_posts: maxJobPosts,
-          max_candidate_searches: maxCandidateSearches,
+          max_job_posts: effectiveMaxJobPosts,
+          max_candidate_searches: effectiveMaxCandidateSearches,
           max_ai_features: maxAiFeatures,
           plan_audience: planAudience,
           is_free: isFree,
@@ -171,8 +207,8 @@ export function AdminPlanForm({
           price: price >= 0 ? price : undefined,
           currency: currency || undefined,
           duration_days: durationDays > 0 ? durationDays : undefined,
-          max_job_posts: maxJobPosts >= 0 ? maxJobPosts : undefined,
-          max_candidate_searches: maxCandidateSearches >= 0 ? maxCandidateSearches : undefined,
+          max_job_posts: effectiveMaxJobPosts,
+          max_candidate_searches: effectiveMaxCandidateSearches,
           max_ai_features: maxAiFeatures >= 0 ? maxAiFeatures : undefined,
           plan_audience: planAudience,
           is_free: isFree,
@@ -378,41 +414,45 @@ export function AdminPlanForm({
               />
             </div>
 
-            <div>
-              <label htmlFor="maxJobPosts" className="block text-sm font-medium mb-1">
-                Số lượng bài đăng <span className="text-destructive">*</span>
-              </label>
-              <Input
-                id="maxJobPosts"
-                type="number"
-                value={maxJobPosts}
-                onChange={(e) => setMaxJobPosts(Number(e.target.value) || 0)}
-                placeholder="10"
-                min={0}
-                disabled={submitting}
-              />
-            </div>
+            {isCompany ? (
+              <div>
+                <label htmlFor="maxJobPosts" className="block text-sm font-medium mb-1">
+                  Số lượng bài đăng <span className="text-destructive">*</span>
+                </label>
+                <Input
+                  id="maxJobPosts"
+                  type="number"
+                  value={maxJobPosts}
+                  onChange={(e) => setMaxJobPosts(Number(e.target.value) || 0)}
+                  placeholder="10"
+                  min={0}
+                  disabled={submitting}
+                />
+              </div>
+            ) : null}
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="maxCandidateSearches" className="block text-sm font-medium mb-1">
-                Số tìm kiếm ứng viên <span className="text-destructive">*</span>
-              </label>
-              <Input
-                id="maxCandidateSearches"
-                type="number"
-                value={maxCandidateSearches}
-                onChange={(e) => setMaxCandidateSearches(Number(e.target.value) || 0)}
-                placeholder="50"
-                min={0}
-                disabled={submitting}
-              />
-            </div>
+          <div className={isCompany ? 'grid grid-cols-2 gap-4' : 'space-y-4'}>
+            {isCompany ? (
+              <div>
+                <label htmlFor="maxCandidateSearches" className="block text-sm font-medium mb-1">
+                  Số tìm kiếm ứng viên <span className="text-destructive">*</span>
+                </label>
+                <Input
+                  id="maxCandidateSearches"
+                  type="number"
+                  value={maxCandidateSearches}
+                  onChange={(e) => setMaxCandidateSearches(Number(e.target.value) || 0)}
+                  placeholder="50"
+                  min={0}
+                  disabled={submitting}
+                />
+              </div>
+            ) : null}
 
             <div>
               <label htmlFor="maxAiFeatures" className="block text-sm font-medium mb-1">
-                AI features <span className="text-destructive">*</span>
+                {aiQuotaLabel} <span className="text-destructive">*</span>
               </label>
               <Input
                 id="maxAiFeatures"
@@ -422,7 +462,11 @@ export function AdminPlanForm({
                 placeholder="10"
                 min={0}
                 disabled={submitting}
+                aria-describedby="maxAiFeatures-helper"
               />
+              <p id="maxAiFeatures-helper" className="mt-1 text-xs text-muted-foreground">
+                {aiQuotaHelper}
+              </p>
             </div>
           </div>
 

@@ -202,8 +202,12 @@ export function AdminPlanList({ onEdit, onStatus, onDelete }: AdminPlanListProps
                         <td className="px-4 py-3">
                           {formatDuration(plan.duration_days)}
                         </td>
-                        <td className="px-4 py-3 text-muted-foreground">{plan.max_job_posts}</td>
-                        <td className="px-4 py-3 text-muted-foreground">{plan.max_candidate_searches ?? '-'}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {plan.plan_audience === 'candidate' ? '—' : plan.max_job_posts}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {plan.plan_audience === 'candidate' ? '—' : plan.max_candidate_searches}
+                        </td>
                         <td className="px-4 py-3 text-muted-foreground">{plan.max_ai_features ?? '-'}</td>
                         <td className="px-4 py-3 text-muted-foreground">{plan.display_order}</td>
                         <td className="px-4 py-3">
