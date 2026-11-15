@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -105,16 +106,20 @@ def mock_quota_service():
         yield service
 
 
+@contextmanager
 def _build_client(db_session, user, mock_rag_chat, mock_redis=None):
     app.dependency_overrides[_get_rag_chat_service] = lambda: mock_rag_chat
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_current_user] = lambda: user
 
-    original_redis = getattr(app.state, "redis", None)
-    app.state.redis = mock_redis
-
-    client = TestClient(app)
-    return client, original_redis
+    with TestClient(app) as client:
+        original_redis = getattr(app.state, "redis", None)
+        app.state.redis = mock_redis
+        try:
+            yield client
+        finally:
+            app.state.redis = original_redis
+            app.dependency_overrides.clear()
 
 
 def _restore_client(original_redis):
@@ -132,9 +137,7 @@ def test_recruiter_chat_success_consumes_quota_and_finalizes(
 
     session = _fake_db_session()
     user = _FakeUser()
-    client, orig_redis = _build_client(session, user, mock_rag_chat_service, mock_redis)
-
-    try:
+    with _build_client(session, user, mock_rag_chat_service, mock_redis) as client:
         resp = client.post(
             "/api/v1/ai/chat",
             json={"message": "Các vị trí đang mở?", "history": []},
@@ -152,8 +155,6 @@ def test_recruiter_chat_success_consumes_quota_and_finalizes(
         assert kwargs["idempotency_key"] == "rec_chat_001"
         mock_quota_service.finalize_reservation.assert_awaited_once()
         mock_quota_service.release_reservation.assert_not_called()
-    finally:
-        _restore_client(orig_redis)
 
 
 def test_recruiter_chat_llm_failure_releases_quota_and_lock(
@@ -165,9 +166,7 @@ def test_recruiter_chat_llm_failure_releases_quota_and_lock(
 
     session = _fake_db_session()
     user = _FakeUser()
-    client, orig_redis = _build_client(session, user, mock_rag_chat_service, mock_redis)
-
-    try:
+    with _build_client(session, user, mock_rag_chat_service, mock_redis) as client:
         resp = client.post(
             "/api/v1/ai/chat",
             json={"message": "Các vị trí đang mở?", "history": []},
@@ -178,8 +177,6 @@ def test_recruiter_chat_llm_failure_releases_quota_and_lock(
         # Verifies quota reservation was released safely
         mock_quota_service.release_reservation.assert_awaited_once()
         mock_quota_service.finalize_reservation.assert_not_called()
-    finally:
-        _restore_client(orig_redis)
 
 
 def test_recruiter_chat_replay_returns_cached_without_llm_or_quota(
@@ -197,9 +194,7 @@ def test_recruiter_chat_replay_returns_cached_without_llm_or_quota(
 
     session = _fake_db_session()
     user = _FakeUser()
-    client, orig_redis = _build_client(session, user, mock_rag_chat_service, mock_redis)
-
-    try:
+    with _build_client(session, user, mock_rag_chat_service, mock_redis) as client:
         resp = client.post(
             "/api/v1/ai/chat",
             json={"message": "Các vị trí đang mở?", "history": []},
@@ -212,8 +207,6 @@ def test_recruiter_chat_replay_returns_cached_without_llm_or_quota(
         # Neither LLM nor quota reservation should be called on replay
         mock_rag_chat_service.chat.assert_not_called()
         mock_quota_service.reserve_ai_quota.assert_not_called()
-    finally:
-        _restore_client(orig_redis)
 
 
 def test_recruiter_chat_mismatch_payload_returns_409(
@@ -224,9 +217,7 @@ def test_recruiter_chat_mismatch_payload_returns_409(
 
     session = _fake_db_session()
     user = _FakeUser()
-    client, orig_redis = _build_client(session, user, mock_rag_chat_service, mock_redis)
-
-    try:
+    with _build_client(session, user, mock_rag_chat_service, mock_redis) as client:
         resp = client.post(
             "/api/v1/ai/chat",
             json={"message": "A different question with same key", "history": []},
@@ -237,8 +228,6 @@ def test_recruiter_chat_mismatch_payload_returns_409(
         assert "Idempotency-Key" in resp.json()["detail"]
         mock_rag_chat_service.chat.assert_not_called()
         mock_quota_service.reserve_ai_quota.assert_not_called()
-    finally:
-        _restore_client(orig_redis)
 
 
 def test_recruiter_chat_redis_unavailable_fails_closed_503(
@@ -247,9 +236,7 @@ def test_recruiter_chat_redis_unavailable_fails_closed_503(
     session = _fake_db_session()
     user = _FakeUser()
     # redis is None
-    client, orig_redis = _build_client(session, user, mock_rag_chat_service, mock_redis=None)
-
-    try:
+    with _build_client(session, user, mock_rag_chat_service, mock_redis=None) as client:
         resp = client.post(
             "/api/v1/ai/chat",
             json={"message": "Testing redis down", "history": []},
@@ -260,8 +247,6 @@ def test_recruiter_chat_redis_unavailable_fails_closed_503(
         assert "Redis" in resp.json()["detail"]
         mock_rag_chat_service.chat.assert_not_called()
         mock_quota_service.reserve_ai_quota.assert_not_called()
-    finally:
-        _restore_client(orig_redis)
 
 
 def test_recruiter_chat_interviewer_role_returns_403(
@@ -270,17 +255,13 @@ def test_recruiter_chat_interviewer_role_returns_403(
     mock_redis = AsyncMock()
     session = _fake_db_session(role=MembershipRole.INTERVIEWER)
     user = _FakeUser()
-    client, orig_redis = _build_client(session, user, mock_rag_chat_service, mock_redis)
-
-    try:
+    with _build_client(session, user, mock_rag_chat_service, mock_redis) as client:
         resp = client.post(
             "/api/v1/ai/chat",
             json={"message": "Testing interviewer forbidden", "history": []},
         )
 
         assert resp.status_code == status.HTTP_403_FORBIDDEN
-    finally:
-        _restore_client(orig_redis)
 
 
 def test_recruiter_chat_no_company_workspace_returns_403(
@@ -289,17 +270,13 @@ def test_recruiter_chat_no_company_workspace_returns_403(
     mock_redis = AsyncMock()
     session = _fake_db_session(has_membership=False)
     user = _FakeUser()
-    client, orig_redis = _build_client(session, user, mock_rag_chat_service, mock_redis)
-
-    try:
+    with _build_client(session, user, mock_rag_chat_service, mock_redis) as client:
         resp = client.post(
             "/api/v1/ai/chat",
             json={"message": "Testing no workspace", "history": []},
         )
 
         assert resp.status_code == status.HTTP_403_FORBIDDEN
-    finally:
-        _restore_client(orig_redis)
 
 
 def test_recruiter_chat_invalid_idempotency_key_length_returns_400(
@@ -308,9 +285,7 @@ def test_recruiter_chat_invalid_idempotency_key_length_returns_400(
     mock_redis = AsyncMock()
     session = _fake_db_session()
     user = _FakeUser()
-    client, orig_redis = _build_client(session, user, mock_rag_chat_service, mock_redis)
-
-    try:
+    with _build_client(session, user, mock_rag_chat_service, mock_redis) as client:
         resp = client.post(
             "/api/v1/ai/chat",
             json={"message": "Testing too long key", "history": []},
@@ -319,5 +294,3 @@ def test_recruiter_chat_invalid_idempotency_key_length_returns_400(
 
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
         assert "Idempotency-Key" in resp.json()["detail"]
-    finally:
-        _restore_client(orig_redis)

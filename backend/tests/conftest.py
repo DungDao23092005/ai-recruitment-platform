@@ -68,3 +68,28 @@ def _no_outbound_email():
         EmailService, "send_password_reset_otp", new=AsyncMock()
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_global_rate_limiter_and_redis():
+    """Preserve and restore global rate limiter and app.state.redis across tests.
+
+    Captures the pre-test state and restores it on teardown. This ensures:
+    - Tests starting with no RateLimiter restore None.
+    - Tests running in a suite with a session-scoped RateLimiter (e.g. test_rate_limit_api.py)
+      have that session-scoped limiter restored.
+    - Tests that modify app.state.redis restore previous app.state.redis.
+    Does not close Redis clients directly, as client lifecycle is managed by
+    the respective application lifespan or test fixture.
+    """
+    from app.core.rate_limit import get_rate_limiter, set_rate_limiter
+    from app.main import app
+
+    prev_limiter = get_rate_limiter()
+    prev_redis = getattr(app.state, "redis", None)
+
+    yield
+
+    set_rate_limiter(prev_limiter)
+    if hasattr(app.state, "redis"):
+        app.state.redis = prev_redis

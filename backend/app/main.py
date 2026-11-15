@@ -174,8 +174,8 @@ async def lifespan(app: FastAPI):
         )
 
         await stop_candidate_quota_reset_worker()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Error stopping candidate quota reset worker: %s", exc)
 
     try:
         from app.services.subscription_expiration_worker import (
@@ -183,8 +183,8 @@ async def lifespan(app: FastAPI):
         )
 
         await stop_subscription_expiration_worker()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Error stopping subscription expiration worker: %s", exc)
 
     try:
         from app.services.quota_reconciliation_worker import (
@@ -192,8 +192,8 @@ async def lifespan(app: FastAPI):
         )
 
         await stop_quota_reconciliation_worker()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Error stopping quota reconciliation worker: %s", exc)
 
     try:
         from app.services.analytics_rollup_worker import (
@@ -201,32 +201,44 @@ async def lifespan(app: FastAPI):
         )
 
         await stop_analytics_worker()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Error stopping analytics rollup worker: %s", exc)
 
     try:
         from app.services.email_outbox_worker import stop_default_worker
 
         await stop_default_worker()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Error stopping email outbox worker: %s", exc)
 
     try:
         await pubsub_manager.disconnect()
         logger.info("PubSub manager disconnected")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Error disconnecting PubSub manager: %s", exc)
 
-    if redis_client:
-        try:
-            await redis_client.aclose()
-        except Exception:
-            pass
-    if redis_pool:
-        try:
-            await redis_pool.disconnect()
-        except Exception:
-            pass
+    try:
+        set_rate_limiter(None)
+        if hasattr(app.state, "redis"):
+            app.state.redis = None
+
+        if redis_client is not None:
+            try:
+                await redis_client.aclose(close_connection_pool=False)
+            except Exception as exc:
+                logger.warning("Error closing Redis client: %s", exc)
+
+        if redis_pool is not None:
+            try:
+                await redis_pool.disconnect()
+            except Exception as exc:
+                logger.warning("Error disconnecting Redis connection pool: %s", exc)
+    finally:
+        set_rate_limiter(None)
+        if hasattr(app.state, "redis"):
+            app.state.redis = None
+        redis_client = None
+        redis_pool = None
 
 
 is_prod = settings.ENVIRONMENT == "production"
