@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import (
     APIRouter,

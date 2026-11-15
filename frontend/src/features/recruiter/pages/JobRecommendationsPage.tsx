@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { ChevronLeft, RefreshCw, UserRoundSearch } from 'lucide-react'
 import { getMyJobById } from '@/api/jobs'
@@ -26,6 +26,8 @@ type PageState =
 export function JobRecommendationsPage() {
   const { id } = useParams<{ id: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
+  const searchParamsRef = useRef(searchParams)
+  searchParamsRef.current = searchParams
   const [state, setState] = useState<PageState>({ kind: 'loading' })
 
   const load = useCallback(
@@ -39,7 +41,7 @@ export function JobRecommendationsPage() {
         return
       }
 
-      let sessionId = searchParams.get('session_id')
+      let sessionId = searchParamsRef.current.get('session_id')
       if (!sessionId || !isRetry) {
         if (!sessionId) {
           sessionId = crypto.randomUUID()
@@ -73,7 +75,7 @@ export function JobRecommendationsPage() {
           })
         })
     },
-    [id, searchParams, setSearchParams],
+    [id],
   )
 
   useEffect(() => {
