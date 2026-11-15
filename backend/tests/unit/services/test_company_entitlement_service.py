@@ -9,8 +9,17 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import ConfigurationError
-from app.domain.enums import SubscriptionScope, SubscriptionStatus
+from app.database.base_class import Base
+from app.domain.enums import (
+    MembershipRole,
+    MembershipStatus,
+    SubscriptionScope,
+    SubscriptionStatus,
+)
+from app.models import CompanyMembership
 from app.services.company_entitlement_service import CompanyEntitlementService
+from sqlalchemy.dialects import mssql
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
 def _service() -> tuple[CompanyEntitlementService, MagicMock]:
@@ -142,3 +151,148 @@ async def test_provision_requires_an_active_member():
 
     with pytest.raises(ConfigurationError, match="active member"):
         await service.provision_company_free_subscription(uuid4())
+
+
+@pytest.mark.asyncio
+async def test_resolve_owner_statement_compiles_for_mssql_with_case_expression():
+    service, session = _service()
+    company_id = uuid4()
+    owner_id = uuid4()
+    scalars = MagicMock()
+    scalars.first.return_value = _membership(owner_id)
+    execute_result = MagicMock()
+    execute_result.scalars.return_value = scalars
+    session.execute.return_value = execute_result
+
+    resolved = await service._resolve_owner_user_id(company_id)
+    assert resolved == owner_id
+
+    session.execute.assert_awaited_once()
+    statement = session.execute.await_args[0][0]
+
+    compiled = statement.compile(
+        dialect=mssql.dialect(),
+        compile_kwargs={"literal_binds": True},
+    )
+    sql_str = str(compiled)
+
+    # 1. Statement compiles successfully using MSSQL dialect without invalid boolean ordering
+    assert "ORDER BY company_memberships.role = 'admin' DESC" not in sql_str
+    assert "company_memberships.role = 'admin' DESC" not in sql_str
+
+    # 2. Contains CASE WHEN expression for ADMIN prioritization
+    assert "CASE WHEN (company_memberships.role = 'admin') THEN 1 ELSE 0 END DESC" in sql_str
+
+    # 4. Secondary ordering by joined_at and created_at remains intact
+    assert "company_memberships.joined_at ASC" in sql_str
+    assert "company_memberships.created_at ASC" in sql_str
+
+
+@pytest.mark.asyncio
+async def test_resolve_owner_prioritizes_admin_membership():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        cid = uuid4()
+        m_recruiter = CompanyMembership(
+            company_id=cid,
+            user_id=uuid4(),
+            role=MembershipRole.RECRUITER,
+            status=MembershipStatus.ACTIVE,
+            joined_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        admin_id = uuid4()
+        m_admin = CompanyMembership(
+            company_id=cid,
+            user_id=admin_id,
+            role=MembershipRole.ADMIN,
+            status=MembershipStatus.ACTIVE,
+            joined_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+            created_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+        )
+        session.add_all([m_recruiter, m_admin])
+        await session.commit()
+
+        service = CompanyEntitlementService(session)
+        resolved_id = await service._resolve_owner_user_id(cid)
+        assert resolved_id == admin_id
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_resolve_owner_secondary_ordering_by_joined_at():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        cid = uuid4()
+        earlier_user_id = uuid4()
+        m1 = CompanyMembership(
+            company_id=cid,
+            user_id=earlier_user_id,
+            role=MembershipRole.RECRUITER,
+            status=MembershipStatus.ACTIVE,
+            joined_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            created_at=datetime(2026, 1, 10, tzinfo=timezone.utc),
+        )
+        later_user_id = uuid4()
+        m2 = CompanyMembership(
+            company_id=cid,
+            user_id=later_user_id,
+            role=MembershipRole.RECRUITER,
+            status=MembershipStatus.ACTIVE,
+            joined_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        session.add_all([m1, m2])
+        await session.commit()
+
+        service = CompanyEntitlementService(session)
+        resolved_id = await service._resolve_owner_user_id(cid)
+        assert resolved_id == earlier_user_id
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_resolve_owner_secondary_ordering_by_created_at():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        cid = uuid4()
+        earlier_created_id = uuid4()
+        m1 = CompanyMembership(
+            company_id=cid,
+            user_id=earlier_created_id,
+            role=MembershipRole.RECRUITER,
+            status=MembershipStatus.ACTIVE,
+            joined_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        later_created_id = uuid4()
+        m2 = CompanyMembership(
+            company_id=cid,
+            user_id=later_created_id,
+            role=MembershipRole.RECRUITER,
+            status=MembershipStatus.ACTIVE,
+            joined_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+        session.add_all([m1, m2])
+        await session.commit()
+
+        service = CompanyEntitlementService(session)
+        resolved_id = await service._resolve_owner_user_id(cid)
+        assert resolved_id == earlier_created_id
+
+    await engine.dispose()

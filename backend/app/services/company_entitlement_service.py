@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,7 +56,10 @@ class CompanyEntitlementService:
             )
             .order_by(
                 # ADMIN first, then the earliest joined member as a fallback.
-                (CompanyMembership.role == MembershipRole.ADMIN).desc(),
+                case(
+                    (CompanyMembership.role == MembershipRole.ADMIN, 1),
+                    else_=0,
+                ).desc(),
                 CompanyMembership.joined_at.asc(),
                 CompanyMembership.created_at.asc(),
             )
