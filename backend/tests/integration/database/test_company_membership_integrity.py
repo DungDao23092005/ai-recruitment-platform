@@ -7,6 +7,7 @@ import uuid
 from datetime import timedelta
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import ConflictException
@@ -17,12 +18,17 @@ from app.domain.enums import (
     InvitationStatus,
     MembershipRole,
     MembershipStatus,
+    PlanAudience,
+    SubscriptionScope,
+    SubscriptionStatus,
     UserRole,
 )
 from app.models import (
     Company,
     CompanyInvitation,
     CompanyMembership,
+    RecruitmentPlan,
+    Subscription,
     User,
 )
 from app.repositories.company_membership_repository import (
@@ -89,6 +95,66 @@ def _invitation(
         expires_at=utc_now() + timedelta(days=7),
         is_deleted=is_deleted,
     )
+
+
+async def _ensure_company_plan(session) -> RecruitmentPlan:
+    result = await session.execute(
+        select(RecruitmentPlan).where(
+            RecruitmentPlan.plan_audience == PlanAudience.COMPANY,
+            RecruitmentPlan.is_active == True,
+            RecruitmentPlan.is_deleted == False,
+        )
+    )
+    plan = result.scalars().first()
+    if plan is None:
+        plan = RecruitmentPlan(
+            name=f"Company Free {uuid.uuid4().hex[:6]}",
+            price=0,
+            currency="VND",
+            duration_days=30,
+            max_job_posts=1,
+            max_candidate_searches=10,
+            max_ai_features=5,
+            plan_audience=PlanAudience.COMPANY,
+            is_free=True,
+            is_active=True,
+            display_order=1,
+        )
+        session.add(plan)
+        await session.flush()
+    return plan
+
+
+async def _create_company_subscription(
+    session,
+    company: Company,
+    owner: User | None = None,
+) -> Subscription:
+    plan = await _ensure_company_plan(session)
+    now = utc_now()
+    if owner is None:
+        owner = _user()
+        session.add(owner)
+        await session.flush()
+    sub = Subscription(
+        user_id=owner.id,
+        company_id=company.id,
+        plan_id=plan.id,
+        scope=SubscriptionScope.COMPANY_RECRUITING,
+        status=SubscriptionStatus.ACTIVE,
+        is_free=plan.is_free,
+        started_at=now,
+        expires_at=None,
+        max_job_posts=plan.max_job_posts,
+        max_candidate_searches=plan.max_candidate_searches,
+        max_ai_features=plan.max_ai_features,
+        job_posts_used=0,
+        candidate_searches_used=0,
+        ai_features_used=0,
+    )
+    session.add(sub)
+    await session.flush()
+    return sub
 
 
 class TestMembershipFilteredUniqueIndex:
@@ -396,6 +462,79 @@ class TestInvitationAcceptance:
                 session, CompanyMembership
             ).get_active(invitee.id, company.id)
             assert active is not None
+
+        run_async(_test())
+
+    def test_accept_invitation_activates_membership(
+        self, session, run_async
+    ):
+        """Gap B — Accepting an invitation activates membership and preserves existing company subscription."""
+        async def _test() -> None:
+            company = _company(f"accept-sub-{uuid.uuid4().hex[:8]}")
+            inviter = _user()
+            invitee = _user()
+            invitee.email = f"invitee-{uuid.uuid4()}@example.com"
+            session.add_all([company, inviter, invitee])
+            await session.flush()
+
+            # Arrange: Create exactly one active company subscription using _create_company_subscription(session, company)
+            existing_sub = await _create_company_subscription(session, company, inviter)
+            existing_sub_id = existing_sub.id
+
+            token = secrets_token()
+            invitation = _invitation(
+                company, inviter, email=invitee.email
+            )
+            invitation.token_hash = hash_invitation_token(token)
+            session.add(invitation)
+            await session.flush()
+
+            service = WorkspaceService(session)
+            result = await service.accept_invitation(invitee, token)
+
+            # 1. Invitee membership is ACTIVE and belongs to the correct company.
+            assert result.workspace.company_id == company.id
+            assert result.workspace.role == MembershipRole.RECRUITER
+            active_membership = await CompanyMembershipRepository(
+                session, CompanyMembership
+            ).get_active(invitee.id, company.id)
+            assert active_membership is not None
+            assert active_membership.status == MembershipStatus.ACTIVE
+            assert active_membership.company_id == company.id
+            assert active_membership.user_id == invitee.id
+
+            # 2. The company has exactly one ACTIVE subscription with:
+            # - scope = company_recruiting
+            # - company_id = the invited workspace's company ID.
+            stmt = select(Subscription).where(
+                Subscription.company_id == company.id,
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                Subscription.is_deleted == False,
+            )
+            active_company_subs = (await session.execute(stmt)).scalars().all()
+            assert len(active_company_subs) == 1
+            company_sub = active_company_subs[0]
+            assert company_sub.scope == SubscriptionScope.COMPANY_RECRUITING
+            assert company_sub.company_id == company.id
+
+            # 3. No company_recruiting subscription is created with user_id belonging to the invitee.
+            stmt_invitee = select(Subscription).where(
+                Subscription.user_id == invitee.id,
+                Subscription.scope == SubscriptionScope.COMPANY_RECRUITING,
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                Subscription.is_deleted == False,
+            )
+            invitee_subs = (await session.execute(stmt_invitee)).scalars().all()
+            assert len(invitee_subs) == 0
+
+            # 4. Existing company subscription ID remains unchanged.
+            assert company_sub.id == existing_sub_id
+
+            # 5. The company's quota entitlement remains bound to company_id and is shared by membership.
+            assert company_sub.company_id == company.id
+            assert company_sub.max_job_posts == existing_sub.max_job_posts
+            assert company_sub.max_candidate_searches == existing_sub.max_candidate_searches
+            assert company_sub.max_ai_features == existing_sub.max_ai_features
 
         run_async(_test())
 

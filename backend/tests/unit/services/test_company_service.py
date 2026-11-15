@@ -1,14 +1,19 @@
 import asyncio
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.exceptions import ConflictException, EntityNotFoundException
-from app.domain.enums import CompanySize
-from app.models import Company
-from app.repositories import CompanyRepository
+from app.core.exceptions import (
+    ConfigurationError,
+    ConflictException,
+    EntityNotFoundException,
+)
+from app.domain.enums import CompanySize, MembershipRole, MembershipStatus, UserRole
+from app.models import Company, CompanyMembership, RecruiterProfile, User
+from app.repositories import CompanyRepository, UserRepository
 from app.schemas.company import CompanyCreate, CompanyUpdate
+from app.services.company_entitlement_service import CompanyEntitlementService
 from app.services.company_service import CompanyService
 
 
@@ -18,6 +23,7 @@ def make_session() -> MagicMock:
     session.commit = AsyncMock()
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
+    session.flush = AsyncMock()
     return session
 
 
@@ -34,6 +40,7 @@ def make_company(company_id: uuid.UUID | None = None) -> Company:
 def make_service(session) -> CompanyService:
     service = CompanyService(session)
     service.companies = AsyncMock(spec=CompanyRepository)
+    service.users = AsyncMock(spec=UserRepository)
     return service
 
 
@@ -291,3 +298,190 @@ class TestCreateCompanyRecruiterOwnership:
             asyncio.run(service.create_company(data))
 
         session.commit.assert_not_awaited()
+
+
+class TestCreateCompanyForOwner:
+    """Gap A — Company workspace creation and entitlement provisioning rollback tests."""
+
+    def test_successful_provisioning_adds_entities_and_commits(self):
+        session = make_session()
+        service = make_service(session)
+        service.companies.get_by_slug.return_value = None
+        service.companies.get_by_tax_code.return_value = None
+
+        owner = User(
+            id=uuid.uuid4(),
+            email="owner@example.com",
+            role=UserRole.RECRUITER,
+            recruiter_profile=None,
+        )
+        service.users.get_with_profile.return_value = owner
+
+        data = CompanyCreate(
+            name="Acme Corp",
+            slug="acme-corp",
+            tax_code="123456789",
+            size=CompanySize.STARTUP,
+        )
+
+        with patch.object(
+            CompanyEntitlementService,
+            "provision_company_free_subscription",
+            new_callable=AsyncMock,
+        ) as mock_provision:
+            company = asyncio.run(service.create_company_for_owner(data, owner))
+
+            # Verify Company is added
+            added_companies = [
+                call.args[0]
+                for call in session.add.call_args_list
+                if isinstance(call.args[0], Company)
+            ]
+            assert len(added_companies) == 1
+            assert added_companies[0] is company
+
+            # Verify CompanyMembership owner is added with ADMIN role and ACTIVE status
+            added_memberships = [
+                call.args[0]
+                for call in session.add.call_args_list
+                if isinstance(call.args[0], CompanyMembership)
+            ]
+            assert len(added_memberships) == 1
+            membership = added_memberships[0]
+            assert membership.company_id == company.id
+            assert membership.user_id == owner.id
+            assert membership.role == MembershipRole.ADMIN
+            assert membership.status == MembershipStatus.ACTIVE
+
+            # Verify RecruiterProfile is created when missing
+            added_profiles = [
+                call.args[0]
+                for call in session.add.call_args_list
+                if isinstance(call.args[0], RecruiterProfile)
+            ]
+            assert len(added_profiles) == 1
+            assert added_profiles[0].company_id == company.id
+            assert added_profiles[0].user_id == owner.id
+
+            # Verify provisioning is called exactly once with the new company.id
+            mock_provision.assert_awaited_once_with(company.id)
+
+            # Verify session.commit is awaited exactly once
+            session.commit.assert_awaited_once()
+
+            # Verify session.rollback is not awaited
+            session.rollback.assert_not_awaited()
+
+    def test_successful_provisioning_associates_existing_unbound_profile(self):
+        session = make_session()
+        service = make_service(session)
+        service.companies.get_by_slug.return_value = None
+        service.companies.get_by_tax_code.return_value = None
+
+        existing_profile = RecruiterProfile(
+            user_id=uuid.uuid4(),
+            company_id=None,
+        )
+        owner = User(
+            id=existing_profile.user_id,
+            email="owner@example.com",
+            role=UserRole.RECRUITER,
+            recruiter_profile=existing_profile,
+        )
+        service.users.get_with_profile.return_value = owner
+
+        data = CompanyCreate(
+            name="Acme Corp",
+            slug="acme-corp",
+            tax_code="123456789",
+            size=CompanySize.STARTUP,
+        )
+
+        with patch.object(
+            CompanyEntitlementService,
+            "provision_company_free_subscription",
+            new_callable=AsyncMock,
+        ) as mock_provision:
+            company = asyncio.run(service.create_company_for_owner(data, owner))
+
+            assert existing_profile.company_id == company.id
+            mock_provision.assert_awaited_once_with(company.id)
+            session.commit.assert_awaited_once()
+            session.rollback.assert_not_awaited()
+
+    def test_configuration_error_during_provisioning_rolls_back_without_commit(self):
+        session = make_session()
+        service = make_service(session)
+        service.companies.get_by_slug.return_value = None
+        service.companies.get_by_tax_code.return_value = None
+
+        owner = User(
+            id=uuid.uuid4(),
+            email="owner@example.com",
+            role=UserRole.RECRUITER,
+            recruiter_profile=None,
+        )
+        service.users.get_with_profile.return_value = owner
+
+        data = CompanyCreate(
+            name="Acme Corp",
+            slug="acme-corp",
+            tax_code="123456789",
+            size=CompanySize.STARTUP,
+        )
+
+        with patch.object(
+            CompanyEntitlementService,
+            "provision_company_free_subscription",
+            new_callable=AsyncMock,
+        ) as mock_provision:
+            mock_provision.side_effect = ConfigurationError(
+                "No active Company Free Plan configured. Provision the canonical "
+                "Company Free plan before creating workspaces."
+            )
+
+            with pytest.raises(ConfigurationError, match="No active Company Free Plan"):
+                asyncio.run(service.create_company_for_owner(data, owner))
+
+            # Assert rollback is awaited exactly once
+            session.rollback.assert_awaited_once()
+
+            # Assert session.commit is not awaited
+            session.commit.assert_not_awaited()
+
+    def test_unexpected_runtime_exception_during_provisioning_rolls_back(self):
+        session = make_session()
+        service = make_service(session)
+        service.companies.get_by_slug.return_value = None
+        service.companies.get_by_tax_code.return_value = None
+
+        owner = User(
+            id=uuid.uuid4(),
+            email="owner@example.com",
+            role=UserRole.RECRUITER,
+            recruiter_profile=None,
+        )
+        service.users.get_with_profile.return_value = owner
+
+        data = CompanyCreate(
+            name="Acme Corp",
+            slug="acme-corp",
+            tax_code="123456789",
+            size=CompanySize.STARTUP,
+        )
+
+        with patch.object(
+            CompanyEntitlementService,
+            "provision_company_free_subscription",
+            new_callable=AsyncMock,
+        ) as mock_provision:
+            mock_provision.side_effect = RuntimeError("database connection failed")
+
+            with pytest.raises(RuntimeError, match="database connection failed"):
+                asyncio.run(service.create_company_for_owner(data, owner))
+
+            # Assert rollback is awaited exactly once
+            session.rollback.assert_awaited_once()
+
+            # Assert session.commit is not awaited
+            session.commit.assert_not_awaited()

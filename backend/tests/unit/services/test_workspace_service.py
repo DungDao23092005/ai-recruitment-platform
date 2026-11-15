@@ -27,6 +27,7 @@ from app.models import (
     Company,
     CompanyInvitation,
     CompanyMembership,
+    Subscription,
     User,
 )
 from app.repositories import (
@@ -526,6 +527,72 @@ class TestAcceptInvitation:
         assert invitation.accepted_at is not None
         session.commit.assert_awaited_once()
         assert session.execute.await_count == 1
+
+    def test_accept_invitation_does_not_provision_or_modify_subscriptions(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        user = make_user(email="invitee@example.com")
+        token = "invitation-token-value-1234567890"
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+            token=token,
+            role=MembershipRole.RECRUITER,
+        )
+        service.invitations.get_by_token_hash_for_update.return_value = invitation
+        service.companies.get_by_id.return_value = company
+        service.memberships.get_active.return_value = None
+
+        def assign_defaults():
+            membership = session.add.call_args.args[0]
+            membership.id = uuid.uuid4()
+            membership.created_at = utc_now()
+            membership.updated_at = utc_now()
+
+        session.flush.side_effect = assign_defaults
+
+        with patch(
+            "app.services.company_entitlement_service.CompanyEntitlementService.provision_company_free_subscription",
+            new_callable=AsyncMock,
+        ) as mock_provision:
+            result = asyncio.run(service.accept_invitation(user, token))
+
+            # 1. Invitation is accepted
+            assert invitation.status == InvitationStatus.ACCEPTED
+            assert invitation.accepted_at is not None
+
+            # 2. Invitee CompanyMembership is created for the invitation's company
+            assert result.workspace.company_id == company.id
+            added_memberships = [
+                call.args[0]
+                for call in session.add.call_args_list
+                if isinstance(call.args[0], CompanyMembership)
+            ]
+            assert len(added_memberships) == 1
+            membership = added_memberships[0]
+            assert membership.company_id == company.id
+            assert membership.user_id == user.id
+
+            # 3. Invitee role and membership status are preserved
+            assert membership.role == MembershipRole.RECRUITER
+            assert membership.status == MembershipStatus.ACTIVE
+            assert result.workspace.role == MembershipRole.RECRUITER
+
+            # 4. RecruiterProfile is associated with the invited company where applicable
+            assert session.execute.await_count == 1
+
+            # 5. No Subscription ORM instance is added to the session
+            added_objects = [call.args[0] for call in session.add.call_args_list]
+            assert not any(isinstance(obj, Subscription) for obj in added_objects)
+            assert all(isinstance(obj, CompanyMembership) for obj in added_objects)
+
+            # 6. No new company entitlement provisioning operation is invoked
+            mock_provision.assert_not_called()
+
+            # 7. Session committed once, no rollback
+            session.commit.assert_awaited_once()
+            session.rollback.assert_not_awaited()
 
     def test_wrong_email_is_forbidden(self):
         service = make_service(make_session())
