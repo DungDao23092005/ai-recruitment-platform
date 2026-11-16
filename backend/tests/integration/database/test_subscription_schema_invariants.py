@@ -54,6 +54,22 @@ def _load_subscription_migration_module():
     return module
 
 
+def _load_company_free_migration_module():
+    migration_path = (
+        Path(__file__).resolve().parents[3]
+        / "alembic"
+        / "versions"
+        / "company_free_subscription.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "company_free_subscription", migration_path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 async def _seed_user_company_and_plan(session) -> tuple[User, Company, RecruitmentPlan]:
     user = User(
         email=f"user-{uuid.uuid4()}@example.com",
@@ -151,7 +167,7 @@ def test_orm_transitional_defaults_on_flush_and_commit(run_async):
 
 
 def test_recruitment_plan_check_constraints_and_filtered_unique_index(run_async):
-    """Verify recruitment_plans check constraints and single active candidate free plan index."""
+    """Verify recruitment_plans check constraints and single active company and candidate free plan indexes."""
 
     async def _exercise():
         # 1. Invalid plan_audience rejected by ck_recruitment_plans_audience
@@ -175,20 +191,64 @@ def test_recruitment_plan_check_constraints_and_filtered_unique_index(run_async)
                 )
             await session.rollback()
 
-        # 2. Free company plan rejected by ck_recruitment_plans_free_candidate
+        # 2. Single active company free plan enforced by uq_recruitment_plans_active_company_free
         async with async_session_factory() as session:
-            bad_company_free = RecruitmentPlan(
-                name="Invalid Free Company Plan",
+            company_free_1 = RecruitmentPlan(
+                name="Company Free Tier",
                 price=0,
                 currency="VND",
                 duration_days=30,
                 max_job_posts=1,
+                max_candidate_searches=5,
+                max_ai_features=2,
                 plan_audience=PlanAudience.COMPANY,
                 is_free=True,
                 is_active=True,
                 display_order=0,
             )
-            session.add(bad_company_free)
+            inactive_company_free = RecruitmentPlan(
+                name="Archived Company Free Tier",
+                price=0,
+                currency="VND",
+                duration_days=30,
+                max_job_posts=1,
+                max_candidate_searches=5,
+                max_ai_features=2,
+                plan_audience=PlanAudience.COMPANY,
+                is_free=True,
+                is_active=False,
+                display_order=1,
+            )
+            paid_company = RecruitmentPlan(
+                name="Company Pro Monthly",
+                price=500000,
+                currency="VND",
+                duration_days=30,
+                max_job_posts=10,
+                max_candidate_searches=50,
+                max_ai_features=20,
+                plan_audience=PlanAudience.COMPANY,
+                is_free=False,
+                is_active=True,
+                display_order=2,
+            )
+            session.add_all([company_free_1, inactive_company_free, paid_company])
+            await session.commit()
+
+            duplicate_active_company_free = RecruitmentPlan(
+                name="Duplicate Active Company Free Tier",
+                price=0,
+                currency="VND",
+                duration_days=30,
+                max_job_posts=1,
+                max_candidate_searches=5,
+                max_ai_features=2,
+                plan_audience=PlanAudience.COMPANY,
+                is_free=True,
+                is_active=True,
+                display_order=3,
+            )
+            session.add(duplicate_active_company_free)
             with pytest.raises(IntegrityError):
                 await session.flush()
             await session.rollback()
@@ -265,7 +325,7 @@ def test_recruitment_plan_check_constraints_and_filtered_unique_index(run_async)
 
 
 def test_subscription_payment_and_usage_check_constraints(run_async):
-    """Verify scope validity, (scope, company_id) pairing, free-candidate constraint, and user_id NOT NULL."""
+    """Verify scope validity, (scope, company_id) pairing, free-scope constraint, and user_id NOT NULL."""
 
     async def _exercise():
         async with async_session_factory() as session:
@@ -329,14 +389,14 @@ def test_subscription_payment_and_usage_check_constraints(run_async):
                 await session.flush()
             await session.rollback()
 
-        # 4. is_free=True on company_recruiting -> fails ck_subscriptions_free_candidate
+        # 4. is_free=True on legacy_recruiter_personal -> fails ck_subscriptions_free_scope
         async with async_session_factory() as session:
             session.add(
                 Subscription(
                     user_id=user_id,
-                    company_id=company_id,
+                    company_id=None,
                     plan_id=plan_id,
-                    scope=SubscriptionScope.COMPANY_RECRUITING,
+                    scope=SubscriptionScope.LEGACY_RECRUITER_PERSONAL,
                     is_free=True,
                     status=SubscriptionStatus.PENDING,
                 )
@@ -568,7 +628,8 @@ def test_subscription_filtered_unique_indexes_and_candidate_free_plus_paid_coexi
 def test_migration_upgrade_downgrade_backfill_and_preflight_guards(run_async):
     """Verify wave1_4_subscriptions downgrade/upgrade, historical usage backfill, and preflight aborts."""
     _assert_not_development_database()
-    migration = _load_subscription_migration_module()
+    wave1_4_subscriptions = _load_subscription_migration_module()
+    wave1_5_company_free = _load_company_free_migration_module()
 
     def _run_migration_step(sync_conn, fn):
         ctx = MigrationContext.configure(sync_conn)
@@ -585,9 +646,14 @@ def test_migration_upgrade_downgrade_backfill_and_preflight_guards(run_async):
         orphan_usage_id = uuid.uuid4()
         missing_sub_id = uuid.uuid4()
 
-        # Step 1: Downgrade from wave1_4_subscriptions to add_interview_assignments schema state
+        # Step 1: Downgrade from current HEAD (Wave 1.5) to Wave 1.4, then to pre-Wave 1.4 schema state
         async with engine.begin() as conn:
-            await conn.run_sync(lambda sc: _run_migration_step(sc, migration.downgrade))
+            await conn.run_sync(
+                lambda sc: _run_migration_step(sc, wave1_5_company_free.downgrade)
+            )
+            await conn.run_sync(
+                lambda sc: _run_migration_step(sc, wave1_4_subscriptions.downgrade)
+            )
 
             # Seed pre-Wave-1.4 historical data (no scope, company_id, plan_audience, is_free columns)
             await conn.execute(
@@ -692,7 +758,9 @@ def test_migration_upgrade_downgrade_backfill_and_preflight_guards(run_async):
                 {"sub_id": sub_2_id, "user_id": user_id, "plan_id": plan_id},
             )
             with pytest.raises(RuntimeError, match="duplicate active subscriptions"):
-                await conn.run_sync(lambda sc: _run_migration_step(sc, migration.upgrade))
+                await conn.run_sync(
+                    lambda sc: _run_migration_step(sc, wave1_4_subscriptions.upgrade)
+                )
             await conn.rollback()
 
         # Step 3: Verify Preflight 3 fails fast if an orphaned subscription_usages row exists
@@ -720,12 +788,16 @@ def test_migration_upgrade_downgrade_backfill_and_preflight_guards(run_async):
             with pytest.raises(
                 RuntimeError, match="orphaned subscription_usages rows found"
             ):
-                await conn.run_sync(lambda sc: _run_migration_step(sc, migration.upgrade))
+                await conn.run_sync(
+                    lambda sc: _run_migration_step(sc, wave1_4_subscriptions.upgrade)
+                )
             await conn.rollback()
 
         # Step 4: Run clean upgrade() and verify backfill + defaults
         async with engine.begin() as conn:
-            await conn.run_sync(lambda sc: _run_migration_step(sc, migration.upgrade))
+            await conn.run_sync(
+                lambda sc: _run_migration_step(sc, wave1_4_subscriptions.upgrade)
+            )
 
             plan_row = (
                 await conn.execute(
@@ -776,8 +848,17 @@ def test_migration_upgrade_downgrade_backfill_and_preflight_guards(run_async):
             assert usage_row.company_id is None
             assert usage_row.period_key is None
 
-            # Step 5: Verify downgrade() -> upgrade() round-trip idempotency
-            await conn.run_sync(lambda sc: _run_migration_step(sc, migration.downgrade))
-            await conn.run_sync(lambda sc: _run_migration_step(sc, migration.upgrade))
+            # Step 5: Verify wave1_4 downgrade() -> upgrade() round-trip idempotency
+            await conn.run_sync(
+                lambda sc: _run_migration_step(sc, wave1_4_subscriptions.downgrade)
+            )
+            await conn.run_sync(
+                lambda sc: _run_migration_step(sc, wave1_4_subscriptions.upgrade)
+            )
+
+            # Step 6: Restore Wave 1.5 schema at current HEAD
+            await conn.run_sync(
+                lambda sc: _run_migration_step(sc, wave1_5_company_free.upgrade)
+            )
 
     run_async(_exercise())

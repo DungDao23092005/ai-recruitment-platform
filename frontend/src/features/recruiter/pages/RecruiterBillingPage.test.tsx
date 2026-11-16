@@ -193,7 +193,7 @@ describe('RecruiterBillingPage', () => {
     expect(
       screen.queryByRole('link', { name: /Gia hạn hoặc thay đổi gói/ }),
     ).not.toBeInTheDocument()
-    expect(screen.getByText('ORDER-123')).toBeInTheDocument()
+    expect(await screen.findByText('ORDER-123')).toBeInTheDocument()
   })
 
   it('forwards the feature filter and resets pagination', async () => {
