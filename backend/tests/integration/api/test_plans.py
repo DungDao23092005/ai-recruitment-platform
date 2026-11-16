@@ -193,8 +193,18 @@ class TestPublicPlans:
         data = resp.json()
         assert data
         assert all(item["plan_audience"] == "company" for item in data)
-        assert all(item["is_free"] is False for item in data)
-        assert any(item["name"] == company_name for item in data)
+        assert any(item["is_free"] is True for item in data)
+        assert any(item["is_free"] is False for item in data)
+        assert any(
+            item["name"] == company_name and item["is_free"] is False
+            for item in data
+        )
+        assert any(
+            item["is_free"] is True
+            and item["price"] == 0
+            and item["plan_audience"] == "company"
+            for item in data
+        )
         assert all(item["name"] != "Candidate Free Test Plan" for item in data)
 
     def test_list_plans_without_audience_returns_both(
@@ -338,7 +348,28 @@ class TestAdminPlans:
             )
         )
 
-        assert resp.status_code == 422, resp.text
+        assert resp.status_code == 400, resp.text
+        assert "Đã có gói Doanh nghiệp Miễn phí đang hoạt động" in resp.json()["detail"]
+
+        get_resp = run_async(
+            admin_plan_client.get(f"{API_V1}/admin/plans/{plan['id']}")
+        )
+        assert get_resp.status_code == 200
+        assert get_resp.json()["is_free"] is False
+
+        list_resp = run_async(
+            admin_plan_client.get(
+                f"{API_V1}/admin/plans", params={"audience": "company"}
+            )
+        )
+        assert list_resp.status_code == 200
+        free_plans = [
+            p
+            for p in list_resp.json()["items"]
+            if p["is_free"] is True and p["is_active"] is True
+        ]
+        assert len(free_plans) == 1
+        assert free_plans[0]["price"] == 0
 
     def test_admin_cannot_create_free_company_plan(
         self, admin_plan_client, run_async, plan_service_override
@@ -347,7 +378,21 @@ class TestAdminPlans:
 
         resp = run_async(admin_plan_client.post(f"{API_V1}/admin/plans", json=body))
 
-        assert resp.status_code == 422, resp.text
+        assert resp.status_code == 400, resp.text
+        assert "Đã có gói Doanh nghiệp Miễn phí đang hoạt động" in resp.json()["detail"]
+
+        list_resp = run_async(
+            admin_plan_client.get(
+                f"{API_V1}/admin/plans", params={"audience": "company"}
+            )
+        )
+        assert list_resp.status_code == 200
+        free_plans = [
+            p
+            for p in list_resp.json()["items"]
+            if p["is_free"] is True and p["is_active"] is True
+        ]
+        assert len(free_plans) == 1
 
     def test_admin_can_list_all_plans(self, admin_plan_client, run_async, plan_service_override):
         _create_plan(admin_plan_client, run_async)

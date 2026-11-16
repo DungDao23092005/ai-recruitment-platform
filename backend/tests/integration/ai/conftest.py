@@ -9,6 +9,7 @@ import httpx
 import pytest
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy import select
+from tests.integration.company_billing_helpers import _seed_canonical_company_free_plan
 from tests.integration.conftest import run
 
 from app.ai.interfaces.base_provider import (
@@ -96,6 +97,16 @@ def _ensure_candidate_free_plan(_reset_database):
             await session.commit()
 
     run(_seed())
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _ensure_canonical_company_free_plan(_reset_database):
+    """Company workspace creation fails closed without an active Company Free plan."""
+    if not SQL_AVAILABLE:
+        yield
+        return
+    run(_seed_canonical_company_free_plan())
     yield
 
 

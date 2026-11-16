@@ -14,7 +14,10 @@ from app.domain.enums import (
     InterviewStatus,
     JobStatus,
     OutboxStatus,
+    SubscriptionScope,
     SubscriptionStatus,
+    SubscriptionUsageFeatureType,
+    SubscriptionUsageStatus,
 )
 from app.models import (
     Application,
@@ -24,6 +27,7 @@ from app.models import (
     RecruitmentPlan,
     Resume,
     Subscription,
+    SubscriptionUsage,
 )
 from app.schemas.ai_resume import ParsedResumeSchema
 from app.services.ai_matching_service import AIMatchingService
@@ -207,6 +211,31 @@ class TestFullRecruitmentLifecycleE2E:
             )
             job_id = uuid.UUID(job_response.json()["id"])
             assert job_response.json()["status"] == "draft"
+
+            async def _exhaust_free_job_quota():
+                async with async_session_factory() as session:
+                    sub = await session.scalar(
+                        select(Subscription).where(
+                            Subscription.company_id == uuid.UUID(company_id),
+                            Subscription.scope == SubscriptionScope.COMPANY_RECRUITING,
+                            Subscription.is_deleted == False,  # noqa: E712
+                        )
+                    )
+                    assert sub is not None
+                    sub.job_posts_used = sub.max_job_posts
+                    usage = SubscriptionUsage(
+                        subscription_id=sub.id,
+                        user_id=sub.user_id,
+                        company_id=sub.company_id,
+                        scope=SubscriptionScope.COMPANY_RECRUITING,
+                        feature_type=SubscriptionUsageFeatureType.JOB_POST,
+                        status=SubscriptionUsageStatus.COMPLETED,
+                        amount=1,
+                    )
+                    session.add(usage)
+                    await session.commit()
+
+            run_async(_exhaust_free_job_quota())
 
             blocked_publish = run_async(
                 client.patch(

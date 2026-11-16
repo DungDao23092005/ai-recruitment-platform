@@ -8,8 +8,10 @@ import pytest
 from sqlalchemy import select
 
 from app.database.session import async_session_factory
+from app.domain.enums import SubscriptionScope, SubscriptionStatus
+from app.domain.models.base import utc_now
 from app.main import app
-from app.models import JobViewEvent
+from app.models import JobViewEvent, Subscription
 from tests.integration.api.conftest import API_V1, PASSWORD
 
 COMPANY_BODY = {
@@ -249,12 +251,31 @@ def test_recruiter_without_subscription_gets_empty_quota(
 ):
     recruiter = _register_recruiter(client, run_async)
     try:
-        run_async(
+        company_resp = run_async(
             recruiter.post(
                 f"{API_V1}/companies",
                 json=_company_body(uuid.uuid4().hex[:6]),
             )
         )
+        assert company_resp.status_code == 201, company_resp.text
+        company_id = uuid.UUID(company_resp.json()["id"])
+
+        async def _expire_company_subscription():
+            async with async_session_factory() as session:
+                sub = await session.scalar(
+                    select(Subscription).where(
+                        Subscription.company_id == company_id,
+                        Subscription.scope == SubscriptionScope.COMPANY_RECRUITING,
+                        Subscription.is_deleted == False,  # noqa: E712
+                    )
+                )
+                if sub is not None:
+                    sub.status = SubscriptionStatus.EXPIRED
+                    sub.expires_at = utc_now() - timedelta(days=1)
+                    await session.commit()
+
+        run_async(_expire_company_subscription())
+
         response = run_async(recruiter.get(_dashboard_url()))
         assert response.status_code == 200, response.text
         quota = response.json()["quota"]

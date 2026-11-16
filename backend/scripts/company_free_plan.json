@@ -8,5 +8,6 @@
   "max_candidate_searches": 10,
   "max_ai_features": 5,
   "plan_audience": "company",
-  "is_free": true
+  "is_free": true,
+  "display_order": 0
 }

@@ -78,80 +78,18 @@ from tests.integration.api.conftest import (
     PASSWORD,
     seed_confirmed_resume,
 )
-from tests.integration.conftest import _assert_not_development_database, run
+from tests.integration.company_billing_helpers import (
+    CANONICAL_COMPANY_FREE_NAME,
+    _seed_canonical_company_free_plan,
+)
+from tests.integration.conftest import _assert_not_development_database
 
 pytestmark = pytest.mark.integration
 
-CANONICAL_COMPANY_FREE_NAME = "Gói Doanh nghiệp Miễn phí"
-
 
 # ==============================================================================
-# Canonical Plan Fixture & Helper Functions
+# External Service Mocks & Test Helpers
 # ==============================================================================
-
-async def _seed_canonical_company_free_plan() -> RecruitmentPlan:
-    """Ensure an active canonical Company Free plan exists in the test DB.
-
-    Validates that any existing active Company Free plan matches the approved
-    specifications. Raises RuntimeError on conflicting limits.
-    """
-    _assert_not_development_database()
-    async with async_session_factory() as session:
-        existing = await session.scalar(
-            select(RecruitmentPlan).where(
-                RecruitmentPlan.plan_audience == PlanAudience.COMPANY,
-                RecruitmentPlan.is_free == True,  # noqa: E712
-                RecruitmentPlan.is_active == True,  # noqa: E712
-                RecruitmentPlan.is_deleted == False,  # noqa: E712
-            )
-        )
-        if existing is not None:
-            if (
-                existing.price != 0
-                or existing.currency != "VND"
-                or existing.duration_days != 30
-                or existing.max_job_posts != 1
-                or (existing.max_candidate_searches or 0) != 10
-                or (existing.max_ai_features or 0) != 5
-            ):
-                raise RuntimeError(
-                    f"Conflicting existing Company Free plan detected: id={existing.id}, "
-                    f"price={existing.price}, duration_days={existing.duration_days}, "
-                    f"max_job_posts={existing.max_job_posts}, "
-                    f"max_candidate_searches={existing.max_candidate_searches}, "
-                    f"max_ai_features={existing.max_ai_features}. "
-                    "Expected canonical Company Free configuration."
-                )
-            return existing
-
-        plan = RecruitmentPlan(
-            name=CANONICAL_COMPANY_FREE_NAME,
-            description="Canonical Company Free plan for integration testing",
-            price=0,
-            currency="VND",
-            duration_days=30,
-            max_job_posts=1,
-            max_candidate_searches=10,
-            max_ai_features=5,
-            plan_audience=PlanAudience.COMPANY,
-            is_free=True,
-            is_active=True,
-            is_deleted=False,
-            display_order=0,
-        )
-        session.add(plan)
-        await session.commit()
-        await session.refresh(plan)
-        return plan
-
-
-@pytest.fixture(autouse=True)
-def _ensure_canonical_company_free_plan(_reset_database):
-    """Autouse fixture ensuring the canonical Company Free plan is seeded in test DB."""
-    _assert_not_development_database()
-    run(_seed_canonical_company_free_plan())
-    yield
-
 
 @pytest.fixture(autouse=True)
 def _mock_ai_and_vector_backends():

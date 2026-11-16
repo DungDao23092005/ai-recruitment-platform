@@ -5,6 +5,7 @@ from sqlalchemy import select
 import httpx
 import pytest
 from asgi_lifespan import LifespanManager
+from tests.integration.company_billing_helpers import _seed_canonical_company_free_plan
 from tests.integration.conftest import run
 
 import app.models  # noqa: F401
@@ -62,6 +63,13 @@ async def _seed_candidate_free_plan() -> None:
 @pytest.fixture(autouse=True)
 def _ensure_candidate_free_plan(_reset_database):
     run(_seed_candidate_free_plan())
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _ensure_canonical_company_free_plan(_reset_database):
+    """Company workspace creation fails closed without an active Company Free plan."""
+    run(_seed_canonical_company_free_plan())
     yield
 
 
@@ -256,7 +264,7 @@ def _make_auth_client(client: httpx.AsyncClient, role: str) -> httpx.AsyncClient
                 except Exception:
                     return
 
-                from datetime import timedelta
+                from datetime import datetime, timedelta
                 from app.domain.enums import (
                     SubscriptionScope,
                     SubscriptionStatus,
@@ -273,8 +281,8 @@ def _make_auth_client(client: httpx.AsyncClient, role: str) -> httpx.AsyncClient
                             Subscription.is_deleted == False,  # noqa: E712
                         )
                     )
+                    now = utc_now()
                     if existing is None:
-                        now = utc_now()
                         session.add(
                             Subscription(
                                 user_id=seeded_ids["user_id"],
@@ -294,6 +302,54 @@ def _make_auth_client(client: httpx.AsyncClient, role: str) -> httpx.AsyncClient
                             )
                         )
                         await session.commit()
+                    else:
+                        if existing.expires_at is None:
+                            is_expired = True
+                        elif isinstance(existing.expires_at, datetime):
+                            comp_now = (
+                                now
+                                if existing.expires_at.tzinfo is not None
+                                else now.replace(tzinfo=None)
+                            )
+                            is_expired = existing.expires_at <= comp_now
+                        else:
+                            raise TypeError(
+                                f"Invalid expires_at type on existing subscription: {type(existing.expires_at)!r}"
+                            )
+
+                        needs_update = (
+                            existing.plan_id != seeded_ids["plan_id"]
+                            or bool(existing.is_free)
+                            or existing.status != SubscriptionStatus.ACTIVE
+                            or (existing.max_job_posts or 0) < 10
+                            or (existing.max_candidate_searches or 0) < 10
+                            or (existing.max_ai_features or 0) < 10
+                            or is_expired
+                        )
+
+                        if needs_update:
+                            existing.user_id = seeded_ids["user_id"]
+                            existing.plan_id = seeded_ids["plan_id"]
+                            existing.is_free = False
+                            existing.status = SubscriptionStatus.ACTIVE
+                            existing.started_at = now
+                            existing.expires_at = now + timedelta(days=30)
+                            existing.max_job_posts = 10
+                            existing.max_candidate_searches = 10
+                            existing.max_ai_features = 10
+                            if existing.job_posts_used is None or existing.job_posts_used < 0:
+                                existing.job_posts_used = 0
+                            if (
+                                existing.candidate_searches_used is None
+                                or existing.candidate_searches_used < 0
+                            ):
+                                existing.candidate_searches_used = 0
+                            if (
+                                existing.ai_features_used is None
+                                or existing.ai_features_used < 0
+                            ):
+                                existing.ai_features_used = 0
+                            await session.commit()
 
         auth_client.event_hooks["response"].append(
             _seed_company_subscription_on_create
