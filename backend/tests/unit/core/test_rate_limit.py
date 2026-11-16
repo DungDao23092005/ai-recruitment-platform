@@ -538,6 +538,420 @@ class TestResetPasswordRateLimit:
         assert excinfo.value.headers["Retry-After"] == "5"
 
 
+class TestRedisResilienceAndRecovery:
+    """Tests for Redis resilience, startup retries, runtime recovery, and health consistency."""
+
+    @pytest.fixture(autouse=True)
+    def isolate_global_rate_limiter(self):
+        """Ensure each test restores module-level _rate_limiter to its original state."""
+        from app.core.rate_limit import get_rate_limiter, set_rate_limiter
+
+        original_limiter = get_rate_limiter()
+        try:
+            yield
+        finally:
+            set_rate_limiter(original_limiter)
+
+    @pytest.mark.asyncio
+    async def test_startup_retry_succeeds(self, monkeypatch):
+        """Test A: Startup retry succeeds after initial transient PING failures."""
+        from app.main import lifespan, app
+        from app.core.rate_limit import get_rate_limiter
+
+        mock_redis = AsyncMock(spec=Redis)
+        mock_redis.ping = AsyncMock(
+            side_effect=[ConnectionError("fail1"), ConnectionError("fail2"), True]
+        )
+        mock_redis.aclose = AsyncMock()
+        mock_pool = MagicMock()
+        mock_pool.disconnect = AsyncMock()
+
+        monkeypatch.setattr(
+            "app.main.ConnectionPool.from_url", MagicMock(return_value=mock_pool)
+        )
+        monkeypatch.setattr("app.main.Redis", MagicMock(return_value=mock_redis))
+
+        # Mock other lifespan services
+        monkeypatch.setattr("app.main.QdrantVectorRepository", MagicMock())
+        monkeypatch.setattr("app.main.pubsub_manager", AsyncMock())
+        monkeypatch.setattr(
+            "app.services.email_outbox_worker.start_default_worker", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "app.services.email_outbox_worker.stop_default_worker", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "app.services.analytics_rollup_worker.start_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.analytics_rollup_worker.stop_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.quota_reconciliation_worker.start_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.quota_reconciliation_worker.stop_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.subscription_expiration_worker.start_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.subscription_expiration_worker.stop_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.candidate_quota_reset_worker.start_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.candidate_quota_reset_worker.stop_default_worker",
+            AsyncMock(),
+        )
+
+        sleep_mock = AsyncMock()
+        monkeypatch.setattr("asyncio.sleep", sleep_mock)
+
+        async with lifespan(app):
+            assert app.state.redis is mock_redis
+            limiter = get_rate_limiter()
+            assert limiter is not None
+            assert limiter.redis is mock_redis
+            assert mock_redis.ping.call_count == 3
+            assert sleep_mock.call_count == 2
+            # Verify exponential backoff intervals with jitter:
+            delays = [call.args[0] for call in sleep_mock.call_args_list]
+            assert 0.5 <= delays[0] <= 1.0
+            assert 1.0 <= delays[1] <= 2.0
+
+    @pytest.mark.asyncio
+    async def test_startup_retry_exponential_backoff_and_jitter(self, monkeypatch):
+        """Verify startup retries follow bounded exponential backoff with equal jitter capped at 5.0s."""
+        from app.main import lifespan, app
+
+        mock_redis = AsyncMock(spec=Redis)
+        mock_redis.ping = AsyncMock(side_effect=ConnectionError("fail"))
+        mock_redis.aclose = AsyncMock()
+        mock_pool = MagicMock()
+        mock_pool.disconnect = AsyncMock()
+
+        monkeypatch.setattr(
+            "app.main.ConnectionPool.from_url", MagicMock(return_value=mock_pool)
+        )
+        monkeypatch.setattr("app.main.Redis", MagicMock(return_value=mock_redis))
+        monkeypatch.setattr("app.main.QdrantVectorRepository", MagicMock())
+        monkeypatch.setattr("app.main.pubsub_manager", AsyncMock())
+        monkeypatch.setattr(
+            "app.services.email_outbox_worker.start_default_worker", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "app.services.email_outbox_worker.stop_default_worker", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "app.services.analytics_rollup_worker.start_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.analytics_rollup_worker.stop_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.quota_reconciliation_worker.start_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.quota_reconciliation_worker.stop_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.subscription_expiration_worker.start_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.subscription_expiration_worker.stop_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.candidate_quota_reset_worker.start_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.candidate_quota_reset_worker.stop_default_worker",
+            AsyncMock(),
+        )
+
+        sleep_mock = AsyncMock()
+        monkeypatch.setattr("asyncio.sleep", sleep_mock)
+
+        # Mock random.uniform to return midpoint for deterministic verification:
+        # delay = (capped / 2) + (capped / 4) = 0.75 * capped
+        monkeypatch.setattr(
+            "random.uniform",
+            MagicMock(side_effect=lambda a, b: (a + b) / 2.0),
+        )
+
+        async with lifespan(app):
+            # 5 retries configured -> 4 sleeps between retries
+            assert sleep_mock.call_count == settings.REDIS_STARTUP_RETRIES - 1
+            delays = [call.args[0] for call in sleep_mock.call_args_list]
+
+            # Attempt 1: capped = min(5.0, 1.0 * 2^0) = 1.0 -> delay = 0.5 + 0.25 = 0.75
+            assert delays[0] == 0.75
+            # Attempt 2: capped = min(5.0, 1.0 * 2^1) = 2.0 -> delay = 1.0 + 0.5 = 1.50
+            assert delays[1] == 1.5
+            # Attempt 3: capped = min(5.0, 1.0 * 2^2) = 4.0 -> delay = 2.0 + 1.0 = 3.0
+            assert delays[2] == 3.0
+            # Attempt 4: capped = min(5.0, 1.0 * 2^3) = 5.0 (capped) -> delay = 2.5 + 1.25 = 3.75
+            assert delays[3] == 3.75
+
+            # Strictly positive and capped at 5.0
+            for d in delays:
+                assert 0.0 < d <= 5.0
+
+    @pytest.mark.asyncio
+    async def test_redis_unavailable_after_retries(self, monkeypatch):
+        """Test B: Bounded retries exhausted; shared client and limiter retained in fail-closed state."""
+        from app.main import lifespan, app
+        from app.core.rate_limit import get_rate_limiter, _enforce_auth_limit
+        from fastapi import HTTPException
+
+        mock_redis = AsyncMock(spec=Redis)
+        mock_redis.ping = AsyncMock(side_effect=ConnectionError("fail"))
+        mock_redis.aclose = AsyncMock()
+        mock_pool = MagicMock()
+        mock_pool.disconnect = AsyncMock()
+
+        mock_script = AsyncMock(side_effect=ConnectionError("still down"))
+        mock_redis.register_script = MagicMock(return_value=mock_script)
+
+        monkeypatch.setattr(
+            "app.main.ConnectionPool.from_url", MagicMock(return_value=mock_pool)
+        )
+        monkeypatch.setattr("app.main.Redis", MagicMock(return_value=mock_redis))
+        monkeypatch.setattr("app.main.QdrantVectorRepository", MagicMock())
+        monkeypatch.setattr("app.main.pubsub_manager", AsyncMock())
+        monkeypatch.setattr(
+            "app.services.email_outbox_worker.start_default_worker", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "app.services.email_outbox_worker.stop_default_worker", AsyncMock()
+        )
+        monkeypatch.setattr(
+            "app.services.analytics_rollup_worker.start_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.analytics_rollup_worker.stop_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.quota_reconciliation_worker.start_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.quota_reconciliation_worker.stop_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.subscription_expiration_worker.start_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.subscription_expiration_worker.stop_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.candidate_quota_reset_worker.start_default_worker",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            "app.services.candidate_quota_reset_worker.stop_default_worker",
+            AsyncMock(),
+        )
+
+        sleep_mock = AsyncMock()
+        monkeypatch.setattr("asyncio.sleep", sleep_mock)
+
+        async with lifespan(app):
+            assert app.state.redis is mock_redis
+            limiter = get_rate_limiter()
+            assert limiter is not None
+            assert limiter.redis is mock_redis
+            assert mock_redis.ping.call_count == settings.REDIS_STARTUP_RETRIES
+
+            with pytest.raises(HTTPException) as excinfo:
+                await _enforce_auth_limit("auth:login:ip", "1.2.3.4", 20, 60)
+            assert excinfo.value.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_redis_becomes_available_after_startup(self, monkeypatch):
+        """Test C: Subsequent request recovers without process restart when Redis comes online."""
+        from app.core.rate_limit import (
+            RateLimiter,
+            get_rate_limiter,
+            _enforce_auth_limit,
+        )
+        from fastapi import HTTPException
+
+        mock_redis = AsyncMock(spec=Redis)
+        mock_script = AsyncMock()
+        mock_redis.register_script = MagicMock(return_value=mock_script)
+
+        mock_script.side_effect = [
+            ConnectionError("Redis down"),
+            [1, 1, 60, 1234567890],
+        ]
+
+        limiter = RateLimiter(mock_redis)
+        monkeypatch.setattr("app.core.rate_limit._rate_limiter", limiter)
+
+        with pytest.raises(HTTPException) as excinfo:
+            await _enforce_auth_limit("auth:login:ip", "10.0.0.1", 20, 60)
+        assert excinfo.value.status_code == 503
+
+        result = await _enforce_auth_limit("auth:login:ip", "10.0.0.1", 20, 60)
+        assert result.allowed is True
+        assert result.current_count == 1
+        assert get_rate_limiter() is limiter
+
+    @pytest.mark.asyncio
+    async def test_runtime_redis_disconnection_and_recovery(self, monkeypatch):
+        """Test D: Runtime connection drop returns 503, then recovers on same client."""
+        from app.core.rate_limit import RateLimiter, _enforce_auth_limit
+        from fastapi import HTTPException
+
+        mock_redis = AsyncMock(spec=Redis)
+        mock_script = AsyncMock()
+        mock_redis.register_script = MagicMock(return_value=mock_script)
+
+        mock_script.side_effect = [
+            [1, 1, 60, 1234567890],
+            ConnectionError("Socket drop"),
+            [1, 2, 59, 1234567890],
+        ]
+
+        limiter = RateLimiter(mock_redis)
+        monkeypatch.setattr("app.core.rate_limit._rate_limiter", limiter)
+
+        res1 = await _enforce_auth_limit("auth:login:ip", "10.0.0.2", 20, 60)
+        assert res1.allowed is True
+        assert res1.current_count == 1
+
+        with pytest.raises(HTTPException) as excinfo:
+            await _enforce_auth_limit("auth:login:ip", "10.0.0.2", 20, 60)
+        assert excinfo.value.status_code == 503
+
+        res3 = await _enforce_auth_limit("auth:login:ip", "10.0.0.2", 20, 60)
+        assert res3.allowed is True
+        assert res3.current_count == 2
+        assert limiter.redis is mock_redis
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_counter_and_ttl_integrity(self, monkeypatch):
+        """Test E: Counter and TTL integrity preserved through transient errors and recovery."""
+        from app.core.rate_limit import RateLimiter, _enforce_auth_limit
+        from fastapi import HTTPException
+
+        mock_redis = AsyncMock(spec=Redis)
+        mock_script = AsyncMock()
+        mock_redis.register_script = MagicMock(return_value=mock_script)
+
+        mock_script.side_effect = [
+            [1, 10, 30, 1234567890],
+            TimeoutError("Redis timeout"),
+            [0, 11, 25, 1234567895],
+        ]
+
+        limiter = RateLimiter(mock_redis)
+        monkeypatch.setattr("app.core.rate_limit._rate_limiter", limiter)
+
+        res1 = await _enforce_auth_limit("auth:login:ip", "10.0.0.3", 10, 60)
+        assert res1.allowed is True
+        assert res1.current_count == 10
+
+        with pytest.raises(HTTPException) as excinfo:
+            await _enforce_auth_limit("auth:login:ip", "10.0.0.3", 10, 60)
+        assert excinfo.value.status_code == 503
+
+        with pytest.raises(HTTPException) as excinfo:
+            await _enforce_auth_limit("auth:login:ip", "10.0.0.3", 10, 60)
+        assert excinfo.value.status_code == 429
+        assert excinfo.value.headers["Retry-After"] == "25"
+
+    def test_global_rate_limiter_isolated(self):
+        """Verify that _rate_limiter is isolated and not leaked across tests."""
+        from app.core.rate_limit import get_rate_limiter
+
+        limiter = get_rate_limiter()
+        # Verify that no test leaked a mock Redis instance into the module global
+        if limiter is not None and getattr(limiter, "redis", None) is not None:
+            assert not isinstance(limiter.redis, AsyncMock)
+
+    @pytest.mark.asyncio
+    async def test_lua_script_noscript_recovery(self):
+        """Test F: redis-py AsyncScript automatically handles NOSCRIPT and reloads."""
+        from redis.commands.core import AsyncScript
+        from redis.exceptions import NoScriptError
+
+        mock_client = AsyncMock(spec=Redis)
+        script_text = b"return 1"
+        script = AsyncScript(mock_client, script_text)
+
+        mock_client.evalsha = AsyncMock(
+            side_effect=[NoScriptError("NOSCRIPT No matching script"), 1]
+        )
+        mock_client.script_load = AsyncMock(return_value="new_sha_123")
+
+        result = await script()
+        assert result == 1
+        assert mock_client.evalsha.call_count == 2
+        mock_client.script_load.assert_awaited_once_with(script_text)
+
+    @pytest.mark.asyncio
+    async def test_readiness_and_liveness_consistency(self):
+        """Test H: Readiness accurately checks shared client, returns 503 on outage, 200 on recovery; liveness stays alive."""
+        from app.api.v1.endpoints.health import (
+            check_redis,
+            readiness_check,
+            liveness_check,
+        )
+        from fastapi import HTTPException
+
+        mock_request = MagicMock(spec=Request)
+        mock_request.app = MagicMock()
+        mock_redis = AsyncMock(spec=Redis)
+        mock_request.app.state.redis = mock_redis
+
+        mock_db = AsyncMock()
+        mock_db.execute = AsyncMock()
+
+        # 1. Redis outage -> readiness returns 503
+        mock_redis.ping = AsyncMock(side_effect=ConnectionError("Down"))
+        redis_health = await check_redis(mock_request)
+        assert redis_health["status"] == "unhealthy"
+
+        with pytest.raises(HTTPException) as excinfo:
+            await readiness_check(mock_request, db=mock_db)
+        assert excinfo.value.status_code == 503
+        assert excinfo.value.detail["status"] == "not_ready"
+
+        # Liveness probe remains healthy
+        live = await liveness_check()
+        assert live["status"] == "alive"
+
+        # 2. Redis recovery -> readiness returns 200
+        mock_redis.ping = AsyncMock(return_value=True)
+        redis_health = await check_redis(mock_request)
+        assert redis_health["status"] == "healthy"
+
+        ready = await readiness_check(mock_request, db=mock_db)
+        assert ready["status"] == "ready"
+
+
 # Run tests
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

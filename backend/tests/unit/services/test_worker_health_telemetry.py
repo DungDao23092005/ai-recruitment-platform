@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from app.api.v1.endpoints import health
 from app.core.config import settings
@@ -258,7 +258,11 @@ async def test_worker_degradation_does_not_make_health_503(monkeypatch):
         AsyncMock(return_value={"status": "healthy"}),
     )
 
-    response = await health.health_check(db=AsyncMock())
+    mock_request = MagicMock(spec=Request)
+    response = await health.health_check(
+        request=mock_request,
+        db=AsyncMock(),
+    )
 
     assert response["status"] == "degraded"
     assert response["workers"]["email_outbox"]["status"] == "degraded"
@@ -287,8 +291,12 @@ async def test_infrastructure_failure_still_returns_503(monkeypatch):
         AsyncMock(return_value={"status": "healthy"}),
     )
 
+    mock_request = MagicMock(spec=Request)
     with pytest.raises(HTTPException) as exc_info:
-        await health.health_check(db=AsyncMock())
+        await health.health_check(
+            request=mock_request,
+            db=AsyncMock(),
+        )
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail["version"] == settings.VERSION

@@ -1,9 +1,10 @@
+import asyncio
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict
 
 import redis.asyncio as redis
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -198,28 +199,26 @@ async def check_database(db: AsyncSession = Depends(get_db_session)) -> Dict[str
         return {"status": "unhealthy", "error": _sanitize_error()}
 
 
-async def check_redis() -> Dict[str, Any]:
-    """Check Redis connectivity with a lightweight ping."""
+async def check_redis(request: Request | None = None) -> Dict[str, Any]:
+    """Check Redis connectivity using the application's shared Redis client."""
     client = None
-    try:
-        # Build Redis URL with password if configured
-        redis_url = f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}"
-        if settings.REDIS_PASSWORD:
-            redis_url = f"redis://:{settings.REDIS_PASSWORD}@{settings.REDIS_HOST}:{settings.REDIS_PORT}"
+    if request is not None and hasattr(request, "app"):
+        client = getattr(request.app.state, "redis", None)
+    if client is None:
+        try:
+            from app.main import app
+            client = getattr(app.state, "redis", None)
+        except Exception:
+            client = None
 
-        client = redis.from_url(
-            redis_url,
-            db=settings.REDIS_DB,
-            socket_connect_timeout=2,
-            socket_timeout=2,
-        )
-        await client.ping()
+    if client is None:
+        return {"status": "unhealthy", "error": _sanitize_error()}
+
+    try:
+        await asyncio.wait_for(client.ping(), timeout=settings.REDIS_SOCKET_TIMEOUT)
         return {"status": "healthy"}
     except Exception:
         return {"status": "unhealthy", "error": _sanitize_error()}
-    finally:
-        if client:
-            await client.close()
 
 
 async def check_qdrant() -> Dict[str, Any]:
@@ -248,13 +247,16 @@ async def check_qdrant() -> Dict[str, Any]:
 
 
 @router.get("/health", response_model=Dict[str, Any])
-async def health_check(db: AsyncSession = Depends(get_db_session)) -> Dict[str, Any]:
+async def health_check(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
     """
     Comprehensive health check endpoint.
     Verifies connectivity to all critical infrastructure components.
     """
     db_health = await check_database(db)
-    redis_health = await check_redis()
+    redis_health = await check_redis(request)
     qdrant_health = await check_qdrant()
 
     components = {
@@ -301,13 +303,16 @@ async def liveness_check() -> Dict[str, str]:
 
 
 @router.get("/health/ready")
-async def readiness_check(db: AsyncSession = Depends(get_db_session)) -> Dict[str, Any]:
+async def readiness_check(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+) -> Dict[str, Any]:
     """
     Readiness probe - verifies service is ready to accept traffic.
     Checks critical dependencies.
     """
     db_health = await check_database(db)
-    redis_health = await check_redis()
+    redis_health = await check_redis(request)
 
     components = {
         "database": db_health,

@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_PASSWORD: Optional[str] = None
+    REDIS_SOCKET_TIMEOUT: float = 1.0
+    REDIS_CONNECT_TIMEOUT: float = 2.0
+    REDIS_STARTUP_RETRIES: int = 5
+    REDIS_STARTUP_RETRY_DELAY: float = 1.0
 
     # Explainable AI match-explanation cache
     MATCH_EXPLANATION_CACHE_ENABLED: bool = True
@@ -305,6 +309,26 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Reset-password rate limit settings must be greater than 0"
             )
+        return value
+
+    @field_validator(
+        "REDIS_SOCKET_TIMEOUT",
+        "REDIS_CONNECT_TIMEOUT",
+        "REDIS_STARTUP_RETRY_DELAY",
+    )
+    @classmethod
+    def validate_redis_timeouts(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError(
+                "Redis timeout and delay settings must be greater than 0"
+            )
+        return value
+
+    @field_validator("REDIS_STARTUP_RETRIES")
+    @classmethod
+    def validate_redis_startup_retries(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("REDIS_STARTUP_RETRIES must be greater than 0")
         return value
 
     @field_validator("MATCH_EXPLANATION_CACHE_TTL_SECONDS")

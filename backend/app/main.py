@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import random
 import uuid
 from contextlib import asynccontextmanager
 
@@ -54,33 +56,69 @@ async def lifespan(app: FastAPI):
             else f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}",
             max_connections=20,
             decode_responses=True,
-            socket_timeout=0.1,
-            socket_connect_timeout=0.1,
+            socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
+            socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT,
         )
         redis_client = Redis(connection_pool=redis_pool)
-        # Test connection
-        await redis_client.ping()
-
-        # Store Redis client in app state for shared access
         app.state.redis = redis_client
-        logger.info("Redis client initialized for application infrastructure")
 
-        # Initialize rate limiter only if enabled
+        # Initial Redis connectivity check with bounded retries
+        connected = False
+        for attempt in range(1, settings.REDIS_STARTUP_RETRIES + 1):
+            try:
+                await redis_client.ping()
+                connected = True
+                logger.info(
+                    "Redis client connected successfully (attempt %d/%d)",
+                    attempt,
+                    settings.REDIS_STARTUP_RETRIES,
+                )
+                break
+            except Exception as exc:
+                logger.warning(
+                    "Redis connection attempt %d/%d failed: %s",
+                    attempt,
+                    settings.REDIS_STARTUP_RETRIES,
+                    type(exc).__name__,
+                )
+                if attempt < settings.REDIS_STARTUP_RETRIES:
+                    capped_exp_delay = min(
+                        5.0,
+                        settings.REDIS_STARTUP_RETRY_DELAY * (2 ** (attempt - 1)),
+                    )
+                    # Equal jitter: half deterministic, half jittered in [0, capped_exp_delay / 2]
+                    delay = min(
+                        5.0,
+                        (capped_exp_delay / 2.0)
+                        + random.uniform(0.0, capped_exp_delay / 2.0),
+                    )
+                    await asyncio.sleep(delay)
+
+        if connected:
+            logger.info("Redis client initialized for application infrastructure")
+        else:
+            logger.warning(
+                "Redis unavailable after %d startup attempts. Backend running in degraded state; "
+                "requests requiring Redis will fail closed until connectivity recovers.",
+                settings.REDIS_STARTUP_RETRIES,
+            )
+
+        # Initialize rate limiter whenever enabled - preserve shared client even if initial PING failed
         if settings.RATE_LIMIT_ENABLED:
-            rate_limiter = RateLimiter()
+            rate_limiter = RateLimiter(redis_client)
             set_rate_limiter(rate_limiter)
-            logger.info("Redis rate limiter initialized successfully")
+            logger.info("Redis rate limiter initialized with shared client")
         else:
             logger.info("Rate limiting disabled (RATE_LIMIT_ENABLED=false)")
 
     except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning(
-            "Failed to initialize Redis client: %s", exc
+        logger.warning(
+            "Failed to construct Redis client infrastructure: %s",
+            type(exc).__name__,
         )
-        redis_client = None
-        redis_pool = None
         app.state.redis = None
+        if settings.RATE_LIMIT_ENABLED:
+            set_rate_limiter(RateLimiter(None))
 
     # Initialize Qdrant
     try:

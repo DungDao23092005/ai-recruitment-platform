@@ -162,13 +162,29 @@ class RateLimiter:
         if redis_client is not None:
             self.redis = redis_client
         else:
-            from app.main import app
-            self.redis = getattr(app.state, "redis", None)
+            try:
+                from app.main import app
+                self.redis = getattr(app.state, "redis", None)
+            except Exception:
+                self.redis = None
         self._script = None
 
+    def _get_redis(self) -> Optional[Redis]:
+        if self.redis is not None:
+            return self.redis
+        try:
+            from app.main import app
+            self.redis = getattr(app.state, "redis", None)
+        except Exception:
+            pass
+        return self.redis
+
     async def _get_script(self):
+        redis = self._get_redis()
+        if redis is None:
+            return None
         if self._script is None:
-            self._script = self.redis.register_script(RATE_LIMIT_SCRIPT)
+            self._script = redis.register_script(RATE_LIMIT_SCRIPT)
         return self._script
 
     def _normalize_email(self, email: str) -> str:
@@ -214,8 +230,23 @@ class RateLimiter:
         if not settings.RATE_LIMIT_ENABLED:
             return _allowed_result(limit, window_seconds)
 
+        redis = self._get_redis()
+        if redis is None:
+            if fail_closed:
+                logger.warning(
+                    "Rate limiter Redis client unavailable (fail-closed 503)"
+                )
+                raise rate_limit_unavailable_exception()
+            logger.warning("Rate limiter Redis client unavailable (fail-open)")
+            return _allowed_result(limit, window_seconds)
+
         key = self._build_key(endpoint, identifier)
         script = await self._get_script()
+        if script is None:
+            if fail_closed:
+                raise rate_limit_unavailable_exception()
+            return _allowed_result(limit, window_seconds)
+
         now = int(time.time())
 
         try:
@@ -253,9 +284,12 @@ class RateLimiter:
 
     async def reset(self, endpoint: str, identifier: str) -> None:
         """Best-effort removal of a rate limit bucket (e.g. after a login success)."""
+        redis = self._get_redis()
+        if redis is None:
+            return
         key = self._build_key(endpoint, identifier)
         try:
-            await self.redis.delete(key)
+            await redis.delete(key)
         except RedisError as e:
             logger.warning(
                 "Rate limiter reset failed: %s", type(e).__name__
@@ -271,7 +305,7 @@ def get_rate_limiter() -> Optional["RateLimiter"]:
     return _rate_limiter
 
 
-def set_rate_limiter(limiter: "RateLimiter") -> None:
+def set_rate_limiter(limiter: Optional["RateLimiter"]) -> None:
     """Set the global rate limiter instance."""
     global _rate_limiter
     _rate_limiter = limiter
