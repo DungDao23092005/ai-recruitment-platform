@@ -153,9 +153,7 @@ describe('AppShell sidebar', () => {
   it('marks the active route in the sidebar', async () => {
     renderShell('candidate', '/candidate/portal')
 
-    await waitFor(() => {
-      expect(screen.getByText('Tổng quan')).toBeInTheDocument()
-    })
+    await within(getAppNav()).findByRole('link', { name: 'Tìm việc AI' })
 
     expect(screen.getByRole('link', { name: 'Tổng quan' })).toHaveAttribute(
       'aria-current',
@@ -316,11 +314,11 @@ describe('AppShell sidebar', () => {
   it('points candidate "Việc làm" at the private candidate jobs route', async () => {
     renderShell('candidate', '/candidate/portal')
 
-    await waitFor(() => {
-      expect(screen.getByText('Tổng quan')).toBeInTheDocument()
+    const jobsLink = await within(getAppNav()).findByRole('link', {
+      name: 'Việc làm',
     })
 
-    expect(screen.getByRole('link', { name: 'Việc làm' })).toHaveAttribute(
+    expect(jobsLink).toHaveAttribute(
       'href',
       '/candidate/jobs',
     )
@@ -329,20 +327,21 @@ describe('AppShell sidebar', () => {
   it('points candidate "Đơn ứng tuyển" at /candidate/applications', async () => {
     renderShell('candidate', '/candidate/portal')
 
-    await waitFor(() => {
-      expect(screen.getByText('Tổng quan')).toBeInTheDocument()
+    const applicationLink = await within(getAppNav()).findByRole('link', {
+      name: 'Đơn ứng tuyển',
     })
 
-    expect(
-      screen.getByRole('link', { name: 'Đơn ứng tuyển' }),
-    ).toHaveAttribute('href', '/candidate/applications')
+    expect(applicationLink).toHaveAttribute(
+      'href',
+      '/candidate/applications',
+    )
   })
 
   it('points candidate "Lịch phỏng vấn" at /candidate/interviews and positions it after "Đơn ứng tuyển"', async () => {
     renderShell('candidate', '/candidate/portal')
 
-    await waitFor(() => {
-      expect(screen.getByText('Tổng quan')).toBeInTheDocument()
+    const interviewLink = await within(getAppNav()).findByRole('link', {
+      name: 'Lịch phỏng vấn',
     })
 
     const nav = getAppNav()
