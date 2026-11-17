@@ -1,10 +1,12 @@
 import asyncio
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.repositories import NotificationRepository
 from app.services.notification_service import (
+    ACCOUNT_UNLOCKED_TITLE,
+    ACCOUNT_UNLOCKED_TYPE,
     SUBSCRIPTION_ACTIVATED_TITLE,
     NotificationService,
     _format_expiry_date,
@@ -166,3 +168,61 @@ class TestNotifySubscriptionRevoked:
 
         kwargs = service.create_notification.await_args.kwargs
         assert "Gói dịch vụ của bạn" in kwargs["content"]
+
+
+class TestNotifyAccountUnlocked:
+    """Tests 25-26: Account unlock in-app notification and action delegation."""
+
+    def test_notify_account_unlocked_payload(self):
+        """25. notify_account_unlocked constructs the correct payload and entity bindings."""
+        service = make_service()
+        user_id = uuid.uuid4()
+
+        result = asyncio.run(service.notify_account_unlocked(user_id=user_id))
+
+        assert result == "created"
+        service.create_notification.assert_awaited_once()
+        kwargs = service.create_notification.await_args.kwargs
+        assert kwargs["user_id"] == user_id
+        assert kwargs["title"] == ACCOUNT_UNLOCKED_TITLE
+        assert kwargs["title"] == "Tài khoản đã được mở khóa"
+        assert kwargs["notification_type"] == ACCOUNT_UNLOCKED_TYPE
+        assert kwargs["entity_type"] == "user"
+        assert kwargs["entity_id"] == user_id
+        assert "mở khóa thành công" in kwargs["content"]
+
+    def test_create_notification_delegates_to_transaction_action_manager(self):
+        """26. create_notification registers realtime publish action with TransactionActionManager."""
+        session = MagicMock()
+        session.add = MagicMock()
+        session.flush = AsyncMock()
+
+        async def _mock_refresh(instance):
+            instance.id = uuid.uuid4()
+            instance.created_at = datetime.now(timezone.utc)
+            instance.is_read = False
+
+        session.refresh = AsyncMock(side_effect=_mock_refresh)
+        service = NotificationService(session)
+
+        user_id = uuid.uuid4()
+        with patch(
+            "app.services.notification_service.TransactionActionManager"
+        ) as tam_mock:
+            result = asyncio.run(
+                service.create_notification(
+                    user_id=user_id,
+                    title="Tiêu đề",
+                    content="Nội dung",
+                    notification_type="test_type",
+                )
+            )
+
+        session.add.assert_called_once()
+        session.flush.assert_awaited_once()
+        tam_mock.register_action.assert_called_once()
+        args, kwargs = tam_mock.register_action.call_args
+        assert args[0] is session
+        assert callable(args[1])
+        assert result.title == "Tiêu đề"
+        assert result.notification_type == "test_type"

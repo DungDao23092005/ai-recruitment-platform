@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -13,8 +14,14 @@ from app.core.pubsub import pubsub_manager
 from app.models import Notification, User
 from app.repositories import NotificationRepository
 from app.schemas.notification import NotificationRead
+from app.services.transaction_action_manager import TransactionActionManager
+
+logger = logging.getLogger(__name__)
 
 VIETNAM_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+ACCOUNT_UNLOCKED_TYPE = "account_unlocked"
+ACCOUNT_UNLOCKED_TITLE = "Tài khoản đã được mở khóa"
 
 SUBSCRIPTION_ACTIVATED_TYPE = "subscription_activated"
 SUBSCRIPTION_ENTITY_TYPE = "subscription"
@@ -78,33 +85,43 @@ class NotificationService:
         await self.session.flush()
         await self.session.refresh(notification)
 
-        # Schedule publish after commit using SQLAlchemy event listener
-        def _publish_after_commit(session):
-            try:
-                channel = f"notifications:user:{notification.user_id}"
-                message = {
-                    "type": "notification.created",
-                    "notification_id": str(notification.id),
-                    "title": notification.title,
-                    "content": notification.content,
-                    "notification_type": notification.notification_type,
-                    "entity_type": notification.entity_type,
-                    "entity_id": str(notification.entity_id) if notification.entity_id else None,
-                    "created_at": notification.created_at.isoformat() if notification.created_at else None,
-                    "unread_count": 0,
-                }
-                import asyncio
-                asyncio.create_task(
-                    pubsub_manager.publish(channel=channel, message=message)
-                )
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(f"Failed to publish notification event: {e}")
+        # Schedule publish after commit using TransactionActionManager
+        channel = f"notifications:user:{notification.user_id}"
+        message = {
+            "type": "notification.created",
+            "notification_id": str(notification.id),
+            "title": notification.title,
+            "content": notification.content,
+            "notification_type": notification.notification_type,
+            "entity_type": notification.entity_type,
+            "entity_id": str(notification.entity_id) if notification.entity_id else None,
+            "created_at": notification.created_at.isoformat() if notification.created_at else None,
+            "unread_count": 0,
+        }
 
-        # Register the event listener to fire after commit
-        event.listen(self.session.sync_session, "after_commit", _publish_after_commit, once=True)
+        async def _publish() -> None:
+            try:
+                await pubsub_manager.publish(channel=channel, message=message)
+            except Exception as e:
+                logger.warning(f"Failed to publish notification event: {e}")
+
+        TransactionActionManager.register_action(self.session, _publish)
 
         return NotificationRead.model_validate(notification)
+
+    async def notify_account_unlocked(
+        self,
+        user_id: uuid.UUID,
+    ) -> NotificationRead:
+        """Create the notification when an account is unlocked by an administrator."""
+        return await self.create_notification(
+            user_id=user_id,
+            title=ACCOUNT_UNLOCKED_TITLE,
+            content="Tài khoản của bạn đã được quản trị viên mở khóa thành công. Bạn đã có thể đăng nhập và tiếp tục sử dụng dịch vụ.",
+            notification_type=ACCOUNT_UNLOCKED_TYPE,
+            entity_type="user",
+            entity_id=user_id,
+        )
 
     async def notify_subscription_activated(
         self,

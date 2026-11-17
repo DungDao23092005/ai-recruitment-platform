@@ -818,8 +818,9 @@ def signal_dispatch_after_commit(session: AsyncSession) -> None:
     that cannot host event listeners (for example a mock) must never make the
     caller fail.
     """
+    from app.services.transaction_action_manager import TransactionActionManager
 
-    def _run_after_commit(sync_session) -> None:  # noqa: ARG001
+    def _run_after_commit() -> None:
         try:
             # Never gate this on EMAIL_OUTBOX_ENABLED: that flag only controls
             # the poll loop, while this signal must still drain committed rows.
@@ -828,8 +829,6 @@ def signal_dispatch_after_commit(session: AsyncSession) -> None:
             logger.debug("Could not signal email outbox dispatch: %s", exc)
 
     try:
-        event.listen(
-            session.sync_session, "after_commit", _run_after_commit, once=True
-        )
+        TransactionActionManager.register_action(session, _run_after_commit)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not register email outbox dispatch hook: %s", exc)

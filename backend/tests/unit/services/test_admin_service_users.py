@@ -139,6 +139,7 @@ class TestAdminServiceActivateDeactivate:
     def make_session(self) -> MagicMock:
         session = MagicMock()
         session.add = MagicMock()
+        session.flush = AsyncMock()
         session.commit = AsyncMock()
         session.refresh = AsyncMock()
         session.rollback = AsyncMock()
@@ -183,11 +184,18 @@ class TestAdminServiceActivateDeactivate:
         session = self.make_session()
         service = self.make_service(session)
         user = self.make_user(is_active=False)
-        service.users.get_admin_user.return_value = user
+        service.users.get_by_id_for_update.return_value = user
 
-        result = asyncio.run(AdminService.activate_user(service, user.id))
+        with patch(
+            "app.services.admin_service.schedule_account_unlocked_email",
+            new=AsyncMock(),
+        ), patch(
+            "app.services.admin_service.NotificationService"
+        ) as mock_notif_cls:
+            mock_notif_cls.return_value.notify_account_unlocked = AsyncMock()
+            result = asyncio.run(AdminService.activate_user(service, user.id))
 
-        service.users.get_admin_user.assert_awaited_once_with(user.id)
+        service.users.get_by_id_for_update.assert_awaited_once_with(user.id)
         assert result is user
         assert result.is_active is True
         session.commit.assert_awaited_once()
@@ -196,7 +204,7 @@ class TestAdminServiceActivateDeactivate:
     def test_activate_missing_raises_not_found(self):
         session = self.make_session()
         service = self.make_service(session)
-        service.users.get_admin_user.return_value = None
+        service.users.get_by_id_for_update.return_value = None
 
         with pytest.raises(EntityNotFoundException):
             asyncio.run(AdminService.activate_user(service, uuid.uuid4()))
@@ -502,3 +510,121 @@ class TestAdminServiceAccountLockEvent:
 
         scheduler.assert_not_called()
         session.commit.assert_not_awaited()
+
+
+class TestAdminServiceAccountUnlock:
+    """Tests 22-24: Admin unlock account notification and concurrency semantics."""
+
+    def make_session(self) -> MagicMock:
+        session = MagicMock()
+        session.add = MagicMock()
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+        session.rollback = AsyncMock()
+        session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
+        )
+        return session
+
+    def make_user(
+        self,
+        *,
+        is_active: bool = False,
+        is_deleted: bool = False,
+        role: UserRole = UserRole.CANDIDATE,
+    ) -> User:
+        user = User(
+            id=uuid.uuid4(),
+            email=f"{uuid.uuid4()}@example.com",
+            password_hash="hashed",
+            role=role,
+            is_active=is_active,
+        )
+        user.is_deleted = is_deleted
+        user.locked_at = datetime.now() if not is_active else None
+        return user
+
+    def make_service(self, session) -> AdminService:
+        service = AdminService(session)
+        service.users = AsyncMock(spec=type(service.users))
+        return service
+
+    def test_activate_user_acquires_lock_and_triggers_notifications(self):
+        """22. Activating an inactive account acquires update lock, sends unlock email and in-app notification."""
+        session = self.make_session()
+        service = self.make_service(session)
+        user = self.make_user(is_active=False)
+        service.users.get_by_id_for_update.return_value = user
+        admin_id = uuid.uuid4()
+
+        with patch(
+            "app.services.admin_service.schedule_account_unlocked_email",
+            new=AsyncMock(),
+        ) as email_mock, patch(
+            "app.services.admin_service.NotificationService"
+        ) as notif_cls:
+            notif_service = notif_cls.return_value
+            notif_service.notify_account_unlocked = AsyncMock()
+
+            result = asyncio.run(service.activate_user(user.id, admin_id=admin_id))
+
+        service.users.get_by_id_for_update.assert_awaited_once_with(user.id)
+        assert result.is_active is True
+        session.commit.assert_awaited_once()
+
+        email_mock.assert_awaited_once()
+        assert email_mock.await_args.kwargs["to_email"] == user.email
+        assert f"account_unlocked:{user.id}:" in email_mock.await_args.kwargs["idempotency_key"]
+
+        notif_service.notify_account_unlocked.assert_awaited_once_with(
+            user_id=user.id
+        )
+
+    def test_activate_user_when_already_active_is_noop_for_notifications(self):
+        """23. Activating an already active account does not send email or in-app notification."""
+        session = self.make_session()
+        service = self.make_service(session)
+        user = self.make_user(is_active=True)
+        service.users.get_by_id_for_update.return_value = user
+
+        with patch(
+            "app.services.admin_service.schedule_account_unlocked_email",
+            new=AsyncMock(),
+        ) as email_mock, patch(
+            "app.services.admin_service.NotificationService"
+        ) as notif_cls:
+            notif_service = notif_cls.return_value
+            notif_service.notify_account_unlocked = AsyncMock()
+
+            result = asyncio.run(service.activate_user(user.id))
+
+        service.users.get_by_id_for_update.assert_awaited_once_with(user.id)
+        assert result.is_active is True
+        session.commit.assert_awaited_once()
+
+        email_mock.assert_not_awaited()
+        notif_service.notify_account_unlocked.assert_not_awaited()
+
+    def test_activate_user_when_soft_deleted_does_not_notify(self):
+        """24. Activating a soft-deleted account does not send email or in-app notification."""
+        session = self.make_session()
+        service = self.make_service(session)
+        user = self.make_user(is_active=False, is_deleted=True)
+        service.users.get_by_id_for_update.return_value = user
+
+        with patch(
+            "app.services.admin_service.schedule_account_unlocked_email",
+            new=AsyncMock(),
+        ) as email_mock, patch(
+            "app.services.admin_service.NotificationService"
+        ) as notif_cls:
+            notif_service = notif_cls.return_value
+            notif_service.notify_account_unlocked = AsyncMock()
+
+            result = asyncio.run(service.activate_user(user.id))
+
+        service.users.get_by_id_for_update.assert_awaited_once_with(user.id)
+        session.commit.assert_awaited_once()
+
+        email_mock.assert_not_awaited()
+        notif_service.notify_account_unlocked.assert_not_awaited()

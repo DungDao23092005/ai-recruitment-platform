@@ -26,12 +26,14 @@ from sqlalchemy import select
 
 from app.database.session import async_session_factory  # noqa: E402
 from app.domain.enums import OutboxStatus, UserRole  # noqa: E402
-from app.models import CandidateProfile, EmailOutbox, Resume, User  # noqa: E402
+from app.models import CandidateProfile, EmailOutbox, Notification, Resume, User  # noqa: E402
 from app.services.account_email_service import (  # noqa: E402
     EVENT_ACCOUNT_DELETED,
     EVENT_ACCOUNT_LOCKED,
+    EVENT_ACCOUNT_UNLOCKED,
     SUBJECT_ACCOUNT_DELETED,
     SUBJECT_ACCOUNT_LOCKED,
+    SUBJECT_ACCOUNT_UNLOCKED,
     schedule_account_locked_email,
 )
 from app.services.admin_service import AdminService  # noqa: E402
@@ -85,6 +87,27 @@ async def _count_outbox_rows(to_email: str) -> int:
             )
         ).scalars().all()
         return len(rows)
+
+
+async def _count_notifications(
+    user_id: uuid.UUID, notification_type: str | None = None
+) -> int:
+    async with async_session_factory() as session:
+        stmt = select(Notification).where(Notification.user_id == user_id)
+        if notification_type is not None:
+            stmt = stmt.where(Notification.notification_type == notification_type)
+        rows = (await session.execute(stmt)).scalars().all()
+        return len(rows)
+
+
+async def _get_notification(
+    user_id: uuid.UUID, notification_type: str | None = None
+) -> Notification | None:
+    async with async_session_factory() as session:
+        stmt = select(Notification).where(Notification.user_id == user_id)
+        if notification_type is not None:
+            stmt = stmt.where(Notification.notification_type == notification_type)
+        return (await session.execute(stmt)).scalars().first()
 
 
 async def _wait_for_outbox_sent(
@@ -357,5 +380,153 @@ def test_email_is_sent_only_after_commit_not_rollback(run_async, email_spy):
 
         assert email_spy.await_count == 1
         assert email_spy.await_args.args[0] == user_email
+
+    run_async(_run())
+
+
+# ---------------------------------------------------------------------------
+# Account unlock integration tests (Tests 27-30)
+# ---------------------------------------------------------------------------
+
+
+def test_unlock_emails_owner_once_and_creates_notification(run_async, email_spy):
+    """27. Activating a locked user enqueues unlock email, creates in-app notification, and dispatches."""
+    async def _run():
+        async with async_session_factory() as setup:
+            user = await _seed_user(setup, is_active=False)
+            admin = await _seed_user(setup, role=UserRole.ADMIN, tag="admin")
+            await setup.commit()
+            user_id, user_email = user.id, user.email
+            admin_id, admin_email = admin.id, admin.email
+
+        async with async_session_factory() as session:
+            await AdminService(session).activate_user(user_id, admin_id=admin_id)
+
+        await _wait_for_outbox_sent(
+            to_email=user_email, event_type=EVENT_ACCOUNT_UNLOCKED
+        )
+
+        assert email_spy.await_count == 1
+        to_email, subject, html, text = email_spy.await_args.args
+        assert to_email == user_email
+        assert to_email != admin_email
+        assert subject == SUBJECT_ACCOUNT_UNLOCKED
+        for body in (html, text):
+            assert "mở khóa thành công" in body
+            assert "Đang hoạt động" in body
+        assert re.search(r"\d{2}:\d{2} \d{2}/\d{2}/\d{4}", text)
+
+        async with async_session_factory() as verify:
+            row = await verify.get(User, user_id)
+            assert row.is_active is True
+
+            notif = await _get_notification(user_id, "account_unlocked")
+            assert notif is not None
+            assert notif.title == "Tài khoản đã được mở khóa"
+            assert notif.entity_type == "user"
+            assert notif.entity_id == user_id
+
+    run_async(_run())
+
+
+def test_repeated_unlock_sends_no_second_email_or_notification(run_async, email_spy):
+    """28. Calling unlock on an already active account does not duplicate email or notification."""
+    async def _run():
+        async with async_session_factory() as setup:
+            user = await _seed_user(setup, is_active=False)
+            admin = await _seed_user(setup, role=UserRole.ADMIN, tag="admin")
+            await setup.commit()
+            user_id, user_email = user.id, user.email
+            admin_id = admin.id
+
+        # First unlock
+        async with async_session_factory() as session:
+            await AdminService(session).activate_user(user_id, admin_id=admin_id)
+        await _wait_for_outbox_sent(
+            to_email=user_email, event_type=EVENT_ACCOUNT_UNLOCKED
+        )
+        assert email_spy.await_count == 1
+        assert await _count_notifications(user_id, "account_unlocked") == 1
+
+        # Second unlock
+        async with async_session_factory() as session:
+            await AdminService(session).activate_user(user_id, admin_id=admin_id)
+
+        await _drain_outbox()
+        assert email_spy.await_count == 1
+        assert await _count_outbox_rows(user_email) == 1
+        assert await _count_notifications(user_id, "account_unlocked") == 1
+
+        async with async_session_factory() as verify:
+            row = await verify.get(User, user_id)
+            assert row.is_active is True
+
+    run_async(_run())
+
+
+def test_concurrent_unlock_sends_only_one_email_and_notification(run_async, email_spy):
+    """29. Two concurrent unlock requests serialize via SQL Server row lock, delivering only one email/notification."""
+    async def _run():
+        async with async_session_factory() as setup:
+            user = await _seed_user(setup, is_active=False)
+            admin = await _seed_user(setup, role=UserRole.ADMIN, tag="admin")
+            await setup.commit()
+            user_id, user_email = user.id, user.email
+            admin_id = admin.id
+
+        async def _attempt_unlock():
+            async with async_session_factory() as session:
+                return await AdminService(session).activate_user(
+                    user_id, admin_id=admin_id
+                )
+
+        # Run concurrent activations using two independent sessions
+        await asyncio.gather(_attempt_unlock(), _attempt_unlock())
+
+        await _wait_for_outbox_sent(
+            to_email=user_email, event_type=EVENT_ACCOUNT_UNLOCKED
+        )
+        await _drain_outbox()
+
+        assert email_spy.await_count == 1
+        assert await _count_outbox_rows(user_email) == 1
+        assert await _count_notifications(user_id, "account_unlocked") == 1
+
+        async with async_session_factory() as verify:
+            row = await verify.get(User, user_id)
+            assert row.is_active is True
+
+    run_async(_run())
+
+
+def test_unlock_failure_before_commit_rolls_back_atomically(run_async, email_spy):
+    """30. A failure occurring before transaction commit rolls back all changes atomically with no email sent."""
+    async def _run():
+        async with async_session_factory() as setup:
+            user = await _seed_user(setup, is_active=False)
+            admin = await _seed_user(setup, role=UserRole.ADMIN, tag="admin")
+            await setup.commit()
+            user_id, user_email = user.id, user.email
+            admin_id = admin.id
+
+        try:
+            async with async_session_factory() as session:
+                admin_svc = AdminService(session)
+                with patch.object(
+                    session, "commit", side_effect=RuntimeError("Pre-commit failure")
+                ):
+                    await admin_svc.activate_user(user_id, admin_id=admin_id)
+        except RuntimeError:
+            pass
+
+        await _drain_outbox()
+        email_spy.assert_not_awaited()
+
+        async with async_session_factory() as verify:
+            row = await verify.get(User, user_id)
+            assert row.is_active is False
+
+        assert await _count_outbox_rows(user_email) == 0
+        assert await _count_notifications(user_id, "account_unlocked") == 0
 
     run_async(_run())

@@ -13,8 +13,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services import account_email_service as module
 from app.services.account_email_service import (
+    EVENT_ACCOUNT_UNLOCKED,
     SUBJECT_ACCOUNT_DELETED,
     SUBJECT_ACCOUNT_LOCKED,
+    SUBJECT_ACCOUNT_UNLOCKED,
     AccountEmailService,
 )
 
@@ -22,6 +24,8 @@ from app.services.account_email_service import (
 LOCKED_AT = datetime(2026, 1, 15, 3, 30, tzinfo=timezone.utc)
 # 2026-05-05 03:15 UTC == 10:15 05/05/2026 Asia/Ho_Chi_Minh.
 DELETED_AT = datetime(2026, 5, 5, 3, 15, tzinfo=timezone.utc)
+# 2026-11-17 07:00 UTC == 14:00 17/11/2026 Asia/Ho_Chi_Minh.
+UNLOCKED_AT = datetime(2026, 11, 17, 7, 0, tzinfo=timezone.utc)
 
 
 class _RecorderEmailService:
@@ -321,4 +325,67 @@ def test_delete_scheduler_enqueues_rendered_primitives():
     assert kwargs["to_email"] == "original@example.com"
     assert kwargs["subject"] == SUBJECT_ACCOUNT_DELETED
     assert kwargs["idempotency_key"] == "account_deleted:1"
+    signal.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Account unlock email (Tests 19-21)
+# ---------------------------------------------------------------------------
+
+
+async def test_unlock_email_has_expected_subject_and_body():
+    """19. Account unlock email contains Vietnamese copy, timestamp, and calm emerald styling."""
+    recorder, service = _service()
+
+    await service.send_account_unlocked_email(
+        to_email="user@example.com",
+        unlocked_at=UNLOCKED_AT,
+    )
+
+    assert len(recorder.calls) == 1
+    to_email, subject, html, text = recorder.calls[0]
+    assert to_email == "user@example.com"
+    assert subject == SUBJECT_ACCOUNT_UNLOCKED
+    assert subject == "[AI Recruitment Platform] Thông báo mở khóa tài khoản"
+
+    for body in (html, text):
+        assert "Xin chào" in body
+        assert "mở khóa thành công" in body
+        assert "14:00 17/11/2026" in body
+        assert "Đang hoạt động" in body
+        assert "đăng nhập lại" in body
+        assert "AI Recruitment Platform" in body
+
+    # Calm emerald treatment
+    assert "#047857" in html
+
+
+async def test_unlock_email_escapes_script_and_quotes():
+    """20. Account unlock email escapes any injected payload and renders properly."""
+    html, text = module._render_account_unlocked(UNLOCKED_AT)
+    assert "<script>" not in html
+    assert "14:00 17/11/2026" in html
+    assert "Đang hoạt động" in html
+
+
+def test_schedule_account_unlocked_email_enqueues_outbox_row():
+    """21. schedule_account_unlocked_email correctly delegates to enqueue_email and signals dispatch."""
+    with patch.object(module, "enqueue_email", new=AsyncMock()) as enqueue, patch.object(
+        module, "signal_dispatch_after_commit"
+    ) as signal:
+        asyncio.run(
+            module.schedule_account_unlocked_email(
+                MagicMock(),
+                to_email="user@example.com",
+                unlocked_at=UNLOCKED_AT,
+                idempotency_key="account_unlocked:1",
+            )
+        )
+
+    enqueue.assert_awaited_once()
+    kwargs = enqueue.call_args.kwargs
+    assert kwargs["event_type"] == module.EVENT_ACCOUNT_UNLOCKED
+    assert kwargs["to_email"] == "user@example.com"
+    assert kwargs["subject"] == SUBJECT_ACCOUNT_UNLOCKED
+    assert kwargs["idempotency_key"] == "account_unlocked:1"
     signal.assert_called_once()

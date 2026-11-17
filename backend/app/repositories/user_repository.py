@@ -58,6 +58,26 @@ class UserRepository(BaseRepository[User]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_id_for_update(self, user_id: Any) -> User | None:
+        """Fetch a user with SQL Server UPDLOCK and ROWLOCK table hints.
+
+        Acquires an update lock on the target user row to serialize concurrent
+        administrative state transitions (such as account unlock). Eagerly loads
+        candidate_profile consistent with get_admin_user.
+        """
+        stmt = (
+            select(User)
+            .with_hint(
+                User,
+                "WITH (UPDLOCK, ROWLOCK)",
+                "mssql",
+            )
+            .options(joinedload(User.candidate_profile))
+            .where(User.id == user_id)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def list_admin_users(
         self,
         skip: int,

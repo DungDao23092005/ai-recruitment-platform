@@ -40,16 +40,19 @@ logger = logging.getLogger(__name__)
 # Outbox event types (stable identifiers used by the worker and admin API).
 EVENT_ACCOUNT_LOCKED = "account_locked"
 EVENT_ACCOUNT_DELETED = "account_deleted"
+EVENT_ACCOUNT_UNLOCKED = "account_unlocked"
 
 # Fixed subjects (Vietnamese, matching the existing product copy).
 SUBJECT_ACCOUNT_LOCKED = "[AI Recruitment Platform] Thông báo khóa tài khoản"
 SUBJECT_ACCOUNT_DELETED = "[AI Recruitment Platform] Thông báo xóa tài khoản"
+SUBJECT_ACCOUNT_UNLOCKED = "[AI Recruitment Platform] Thông báo mở khóa tài khoản"
 
 # Display fallback for an optional value that is not available.
 MISSING_VALUE = "—"
 
 # Palette: calm amber for the temporary lock, muted dark red for the permanent
-# deletion. Values are inlined so the layout survives Gmail/Outlook stripping.
+# deletion, and calm emerald for account unlock. Values are inlined so the layout
+# survives Gmail/Outlook stripping.
 _LOCK_HEADER_BG = "#b45309"
 _LOCK_HEADER_TEXT = "#ffffff"
 _LOCK_BADGE_BG = "#fef3c7"
@@ -59,6 +62,11 @@ _DELETE_HEADER_BG = "#7f1d1d"
 _DELETE_HEADER_TEXT = "#ffffff"
 _DELETE_BADGE_BG = "#fee2e2"
 _DELETE_BADGE_TEXT = "#991b1b"
+
+_UNLOCK_HEADER_BG = "#047857"
+_UNLOCK_HEADER_TEXT = "#ffffff"
+_UNLOCK_BADGE_BG = "#d1fae5"
+_UNLOCK_BADGE_TEXT = "#065f46"
 
 _FONT = "Arial,Helvetica,sans-serif"
 
@@ -290,6 +298,59 @@ def _render_account_deleted(deleted_at: datetime | None) -> tuple[str, str]:
     return html, text
 
 
+def _render_account_unlocked(unlocked_at: datetime | None) -> tuple[str, str]:
+    """Build the emerald account-unlock notification (HTML + plain text)."""
+    unlocked_text = _format_datetime(unlocked_at)
+
+    rows_html = "".join(
+        [
+            _detail_row("Trạng thái tài khoản", _esc("Đang hoạt động")),
+            _detail_row("Thời điểm mở khóa", _esc(unlocked_text)),
+        ]
+    )
+    intro_html = (
+        f'<p style="margin:0 0 12px;font-family:{_FONT};font-size:15px;'
+        'color:#111827;">Xin chào,</p>'
+        f'<p style="margin:0;font-family:{_FONT};font-size:15px;color:#374151;">'
+        "Tài khoản của bạn tại <strong>AI Recruitment Platform</strong> "
+        "đã được quản trị viên mở khóa thành công.</p>"
+    )
+    closing_html = (
+        f'<p style="margin:16px 0 0;font-family:{_FONT};font-size:14px;'
+        'color:#374151;">Hiện tại bạn đã có thể đăng nhập lại và tiếp tục sử '
+        "dụng đầy đủ các tính năng của hệ thống.</p>"
+        f'<p style="margin:8px 0 0;font-family:{_FONT};font-size:14px;'
+        'color:#374151;">Để bảo mật tài khoản, vui lòng không chia sẻ thông tin '
+        "đăng nhập với bất kỳ ai.</p>"
+        f'<p style="margin:8px 0 0;font-family:{_FONT};font-size:14px;'
+        'color:#374151;">Nếu bạn cần hỗ trợ thêm, vui lòng liên hệ bộ phận chăm '
+        "sóc khách hàng của nền tảng.</p>"
+    )
+    html = _shell(
+        header_bg=_UNLOCK_HEADER_BG,
+        header_text=_UNLOCK_HEADER_TEXT,
+        badge_bg=_UNLOCK_BADGE_BG,
+        badge_text=_UNLOCK_BADGE_TEXT,
+        badge_label="Tài khoản đã mở khóa",
+        title="Thông báo mở khóa tài khoản",
+        intro_html=intro_html,
+        rows_html=rows_html,
+        closing_html=closing_html,
+    )
+
+    text = (
+        "Xin chào,\n\n"
+        "Tài khoản của bạn tại AI Recruitment Platform đã được quản trị viên mở khóa thành công.\n\n"
+        "Trạng thái tài khoản: Đang hoạt động\n"
+        f"Thời điểm mở khóa: {unlocked_text}\n\n"
+        "Hiện tại bạn đã có thể đăng nhập lại và tiếp tục sử dụng đầy đủ các tính năng của hệ thống.\n"
+        "Để bảo mật tài khoản, vui lòng không chia sẻ thông tin đăng nhập với bất kỳ ai.\n\n"
+        "Nếu bạn cần hỗ trợ thêm, vui lòng liên hệ bộ phận chăm sóc khách hàng của nền tảng.\n\n"
+        "AI Recruitment Platform"
+    )
+    return html, text
+
+
 class AccountEmailService:
     """Sends account lock/deletion emails through the existing EmailService.
 
@@ -328,6 +389,17 @@ class AccountEmailService:
         html, text = _render_account_deleted(deleted_at)
         await self._deliver(
             to_email, SUBJECT_ACCOUNT_DELETED, html, text, label="account_deleted"
+        )
+
+    async def send_account_unlocked_email(
+        self,
+        *,
+        to_email: str,
+        unlocked_at: datetime | None,
+    ) -> None:
+        html, text = _render_account_unlocked(unlocked_at)
+        await self._deliver(
+            to_email, SUBJECT_ACCOUNT_UNLOCKED, html, text, label="account_unlocked"
         )
 
     async def _deliver(
@@ -412,6 +484,31 @@ async def schedule_account_deleted_email(
         event_type=EVENT_ACCOUNT_DELETED,
         to_email=to_email,
         subject=SUBJECT_ACCOUNT_DELETED,
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)
+
+
+async def schedule_account_unlocked_email(
+    session: AsyncSession,
+    *,
+    to_email: Optional[str],
+    unlocked_at: datetime | None,
+    idempotency_key: Optional[str] = None,
+) -> None:
+    """Durably enqueue the account-unlock email in the caller's transaction."""
+    if not to_email or to_email.endswith("@anonymized.local"):
+        logger.warning("Skipping account-unlock email: invalid or anonymized email")
+        return
+
+    html, text = _render_account_unlocked(unlocked_at)
+    await enqueue_email(
+        session,
+        event_type=EVENT_ACCOUNT_UNLOCKED,
+        to_email=to_email,
+        subject=SUBJECT_ACCOUNT_UNLOCKED,
         html_body=html,
         text_body=text,
         idempotency_key=idempotency_key,

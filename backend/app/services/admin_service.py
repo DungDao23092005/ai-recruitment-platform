@@ -29,9 +29,11 @@ from app.services.admin_audit_service import record_admin_audit
 from app.services.account_email_service import (
     schedule_account_deleted_email,
     schedule_account_locked_email,
+    schedule_account_unlocked_email,
 )
 from app.services.account_lock_realtime import schedule_account_locked_event
 from app.services.ai_matching_service import AIMatchingService
+from app.services.notification_service import NotificationService
 
 
 class AdminService:
@@ -229,10 +231,11 @@ class AdminService:
         Preserves lock audit fields (lock_reason, locked_at, locked_by)
         for moderation history.
         """
-        user = await self.users.get_admin_user(user_id)
+        user = await self.users.get_by_id_for_update(user_id)
         if user is None:
             raise EntityNotFoundException(f"User {user_id} not found")
         was_active = user.is_active
+        unlocked_at = datetime.now(timezone.utc)
         user.is_active = True
         # Preserve lock_reason, locked_at, locked_by for audit trail
         self._record_admin_audit(
@@ -244,6 +247,23 @@ class AdminService:
                 "target_role": user.role.value,
             },
         )
+
+        if (was_active is False) and (not user.is_deleted):
+            lock_marker = (
+                user.locked_at.isoformat()
+                if user.locked_at is not None
+                else unlocked_at.isoformat()
+            )
+            await schedule_account_unlocked_email(
+                self.session,
+                to_email=user.email,
+                unlocked_at=unlocked_at,
+                idempotency_key=f"account_unlocked:{user.id}:{lock_marker}",
+            )
+            await NotificationService(self.session).notify_account_unlocked(
+                user_id=user.id
+            )
+
         await self.session.commit()
         await self.session.refresh(user)
         return user
