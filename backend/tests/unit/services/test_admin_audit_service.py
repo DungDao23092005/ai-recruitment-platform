@@ -156,13 +156,22 @@ class TestAdminServiceAudit:
         session = self.make_session()
         service = self.make_service(session)
         user = self.make_user(is_active=False)
-        service.users.get_admin_user.return_value = user
+        service.users.get_by_id_for_update.return_value = user
         admin_id = uuid.uuid4()
 
-        result = asyncio.run(
-            AdminService.activate_user(service, user.id, admin_id=admin_id)
-        )
+        with patch(
+            "app.services.admin_service.schedule_account_unlocked_email",
+            new=AsyncMock(),
+        ), patch(
+            "app.services.admin_service.NotificationService"
+        ) as mock_notif_cls:
+            mock_notif_cls.return_value.notify_account_unlocked = AsyncMock()
+            result = asyncio.run(
+                AdminService.activate_user(service, user.id, admin_id=admin_id)
+            )
 
+        service.users.get_by_id_for_update.assert_awaited_once_with(user.id)
+        assert result is user
         assert result.is_active is True
         audit = self._added_audit(session)
         assert audit.admin_id == admin_id
@@ -227,15 +236,17 @@ class TestAdminServiceAudit:
     def test_activate_nonexistent_target_creates_no_audit_or_commit(self):
         session = self.make_session()
         service = self.make_service(session)
-        service.users.get_admin_user.return_value = None
+        service.users.get_by_id_for_update.return_value = None
+        target_id = uuid.uuid4()
 
         with pytest.raises(EntityNotFoundException):
             asyncio.run(
                 AdminService.activate_user(
-                    service, uuid.uuid4(), admin_id=uuid.uuid4()
+                    service, target_id, admin_id=uuid.uuid4()
                 )
             )
 
+        service.users.get_by_id_for_update.assert_awaited_once_with(target_id)
         session.add.assert_not_called()
         session.commit.assert_not_awaited()
 
