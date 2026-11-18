@@ -6,10 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from redis.exceptions import RedisError
 
-from app.core.exceptions import ConflictException, ForbiddenException
+from app.core.exceptions import (
+    ConflictException,
+    EmailTransportError,
+    ForbiddenException,
+)
 from app.core.rate_limit import RateLimiter, set_rate_limiter
 from app.domain.enums import UserRole
-from app.models import User
+from app.models import PasswordResetOTP, User
 from app.repositories import UserRepository
 from app.schemas.user import UserCreate
 from app.services.auth_service import AuthService
@@ -255,6 +259,169 @@ class TestRegisterUserEmailUniqueness:
             asyncio.run(service.register_user(data))
 
         session.commit.assert_not_awaited()
+
+
+class TestForgotPassword:
+    def _service_with_user(self, *, is_active: bool = True):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        user.is_active = is_active
+        user.is_deleted = False
+        service.users.get_by_email_for_update.return_value = user
+        service._get_active_otp = AsyncMock(return_value=None)
+        service._invalidate_user_otps = AsyncMock()
+        service.email_service = AsyncMock()
+        service.email_service.send_password_reset_otp = AsyncMock()
+        return session, service, user
+
+    def test_unknown_account_returns_generic_without_writes(self):
+        session = make_session()
+        service = make_service(session)
+        service.users.get_by_email_for_update.return_value = None
+
+        with patch("app.services.auth_service.dummy_otp_hash") as dummy:
+            result = asyncio.run(service.forgot_password("missing@example.com"))
+
+        assert result is None
+        dummy.assert_called_once()
+        session.add.assert_not_called()
+        session.commit.assert_not_awaited()
+        session.rollback.assert_awaited_once()
+
+    def test_locked_but_not_deleted_user_can_request_otp(self):
+        session, service, user = self._service_with_user(is_active=False)
+
+        result = asyncio.run(service.forgot_password(user.email))
+
+        assert result is None
+        session.add.assert_called_once()
+        added = session.add.call_args.args[0]
+        assert isinstance(added, PasswordResetOTP)
+        assert added.user_id == user.id
+        # Requesting a reset never unlocks/reactivates the account.
+        assert user.is_active is False
+        session.flush.assert_awaited_once()
+        session.commit.assert_awaited_once()
+        service.email_service.send_password_reset_otp.assert_awaited_once()
+
+    def test_cooldown_returns_generic_without_sending(self):
+        session, service, user = self._service_with_user()
+        existing = MagicMock()
+        existing.created_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+        service._get_active_otp = AsyncMock(return_value=existing)
+
+        with patch("app.services.auth_service.dummy_otp_hash") as dummy:
+            result = asyncio.run(service.forgot_password(user.email))
+
+        assert result is None
+        dummy.assert_called_once()
+        session.add.assert_not_called()
+        session.commit.assert_not_awaited()
+        session.rollback.assert_awaited_once()
+        service.email_service.send_password_reset_otp.assert_not_awaited()
+
+    def test_transport_failure_rolls_back_and_returns_generic(self):
+        session, service, user = self._service_with_user()
+        service.email_service.send_password_reset_otp.side_effect = (
+            EmailTransportError(provider="mailpit", cause_type="OSError")
+        )
+
+        result = asyncio.run(service.forgot_password(user.email))
+
+        assert result is None
+        session.flush.assert_awaited_once()
+        session.commit.assert_not_awaited()
+        session.rollback.assert_awaited_once()
+
+    def test_database_commit_failure_is_not_converted(self):
+        session, service, user = self._service_with_user()
+        session.commit.side_effect = RuntimeError("db down")
+
+        with pytest.raises(RuntimeError, match="db down"):
+            asyncio.run(service.forgot_password(user.email))
+
+        session.rollback.assert_awaited_once()
+
+
+class TestResetPassword:
+    def _setup(self):
+        session = make_session()
+        service = make_service(session)
+        user = make_user()
+        token = "valid-reset-token"
+        record = PasswordResetOTP(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            email=user.email,
+            otp_hash="otp-hash",
+            reset_token_hash="reset-token-hash",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            attempts=0,
+            max_attempts=5,
+            is_used=True,
+            reset_token_used=False,
+        )
+        service.users.get_by_email.return_value = user
+        return session, service, user, record, token
+
+    def test_failed_atomic_consume_does_not_change_password_or_enqueue(self):
+        session, service, user, record, token = self._setup()
+
+        select_result = MagicMock()
+        select_result.scalar_one_or_none.return_value = record
+        update_result = MagicMock()
+        update_result.rowcount = 0
+        session.execute = AsyncMock(side_effect=[select_result, update_result])
+        original_hash = user.password_hash
+
+        with patch(
+            "app.services.auth_service.verify_reset_token", return_value=True
+        ), patch(
+            "app.services.auth_service.schedule_password_changed_confirmation",
+            new=AsyncMock(),
+        ) as schedule:
+            result = asyncio.run(
+                service.reset_password(user.email, token, "newpassword123")
+            )
+
+        assert result is False
+        assert user.password_hash == original_hash
+        schedule.assert_not_awaited()
+        session.rollback.assert_awaited_once()
+        session.commit.assert_not_awaited()
+
+    def test_successful_reset_consumes_record_and_enqueues_confirmation(self):
+        session, service, user, record, token = self._setup()
+
+        select_result = MagicMock()
+        select_result.scalar_one_or_none.return_value = record
+        update_result = MagicMock()
+        update_result.rowcount = 1
+        session.execute = AsyncMock(side_effect=[select_result, update_result])
+
+        with patch(
+            "app.services.auth_service.verify_reset_token", return_value=True
+        ), patch(
+            "app.services.auth_service.get_password_hash",
+            return_value="new-password-hash",
+        ), patch(
+            "app.services.auth_service.schedule_password_changed_confirmation",
+            new=AsyncMock(),
+        ) as schedule:
+            result = asyncio.run(
+                service.reset_password(user.email, token, "newpassword123")
+            )
+
+        assert result is True
+        assert user.password_hash == "new-password-hash"
+        assert user.last_password_reset is not None
+        schedule.assert_awaited_once()
+        assert schedule.call_args.kwargs["idempotency_key"] == (
+            f"password_changed:{user.id}:{record.id}"
+        )
+        session.commit.assert_awaited_once()
+        session.rollback.assert_not_awaited()
 
 
 class TestRevokeToken:

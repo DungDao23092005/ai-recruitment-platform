@@ -1,10 +1,20 @@
-﻿import pytest
+﻿import asyncio
+
+import httpx
+import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
+from app.core.config import settings
+from app.core.exceptions import EmailTransportError
 from app.services.email_service import EmailService
 from app.services.email_providers.mailpit import MailpitProvider
 from app.services.email_providers.resend import ResendProvider
 from app.services.email_providers.gmail import GmailSMTPProvider
+
+# Capture the real methods before the suite-wide ``_no_outbound_email`` fixture
+# replaces them with AsyncMocks for the duration of each test.
+_ORIGINAL_SEND_EMAIL = EmailService.send_email
+_ORIGINAL_SEND_PASSWORD_RESET_OTP = EmailService.send_password_reset_otp
 
 def test_email_service_initializes_mailpit_by_default(monkeypatch):
     monkeypatch.setattr("app.core.config.settings.EMAIL_PROVIDER", "mailpit")
@@ -97,3 +107,90 @@ async def test_gmail_handles_smtp_error():
         mock_smtp.return_value.__enter__.side_effect = Exception("SMTP connection failed")
         with pytest.raises(Exception, match="SMTP connection failed"):
             await provider.send_password_reset_otp("test@example.com", "123456")
+
+
+def test_mailpit_transport_error_maps_to_email_transport_error(monkeypatch):
+    monkeypatch.setattr(settings, "EMAIL_PROVIDER", "mailpit")
+    service = EmailService()
+
+    with patch.object(
+        EmailService,
+        "send_password_reset_otp",
+        new=_ORIGINAL_SEND_PASSWORD_RESET_OTP,
+    ), patch(
+        "app.services.email_providers.mailpit.smtplib.SMTP",
+        side_effect=OSError("smtp connection refused"),
+    ):
+        with pytest.raises(EmailTransportError) as exc_info:
+            asyncio.run(
+                service.send_password_reset_otp("test@example.com", "123456")
+            )
+
+    error = exc_info.value
+    assert error.provider == "mailpit"
+    assert error.cause_type == "OSError"
+    # No raw provider text (or OTP) leaks through the typed exception.
+    assert "smtp connection refused" not in str(error)
+    assert "123456" not in str(error)
+
+
+def test_gmail_transport_error_maps_to_email_transport_error(monkeypatch):
+    monkeypatch.setattr(settings, "EMAIL_PROVIDER", "gmail")
+    monkeypatch.setattr(settings, "GMAIL_USERNAME", "test@gmail.com")
+    monkeypatch.setattr(settings, "GMAIL_APP_PASSWORD", "app-password")
+    service = EmailService()
+
+    with patch.object(
+        EmailService,
+        "send_password_reset_otp",
+        new=_ORIGINAL_SEND_PASSWORD_RESET_OTP,
+    ), patch(
+        "app.services.email_providers.gmail.smtplib.SMTP",
+        side_effect=OSError("gmail unreachable"),
+    ):
+        with pytest.raises(EmailTransportError) as exc_info:
+            asyncio.run(
+                service.send_password_reset_otp("test@example.com", "123456")
+            )
+
+    assert exc_info.value.provider == "gmail"
+    assert exc_info.value.cause_type == "OSError"
+
+
+def test_resend_transport_error_maps_to_email_transport_error(monkeypatch):
+    monkeypatch.setattr(settings, "EMAIL_PROVIDER", "resend")
+    monkeypatch.setattr(settings, "RESEND_API_KEY", "test-key")
+    service = EmailService()
+
+    with patch.object(
+        EmailService, "send_email", new=_ORIGINAL_SEND_EMAIL
+    ), patch(
+        "app.services.email_providers.resend.httpx.AsyncClient",
+        side_effect=httpx.ConnectError("resend unreachable"),
+    ):
+        with pytest.raises(EmailTransportError) as exc_info:
+            asyncio.run(
+                service.send_email(
+                    "test@example.com", "Subject", "<p>x</p>", "x"
+                )
+            )
+
+    error = exc_info.value
+    assert error.provider == "resend"
+    assert error.cause_type == "ConnectError"
+    assert "resend unreachable" not in str(error)
+
+
+def test_unexpected_provider_error_is_not_converted(monkeypatch):
+    """Programming/configuration errors must not look like transport failures."""
+    monkeypatch.setattr(settings, "EMAIL_PROVIDER", "mailpit")
+    service = EmailService()
+    service.provider.send_email = AsyncMock(
+        side_effect=ValueError("bad configuration")
+    )
+
+    with patch.object(EmailService, "send_email", new=_ORIGINAL_SEND_EMAIL):
+        with pytest.raises(ValueError, match="bad configuration"):
+            asyncio.run(
+                service.send_email("test@example.com", "Subject", "h", "t")
+            )

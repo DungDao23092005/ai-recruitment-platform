@@ -131,6 +131,19 @@ def test_nonexistent_email_returns_same_generic_200(candidate_client, mock_auth_
     mock_auth_service.forgot_password.assert_awaited_once_with("unknown@example.com")
 
 
+def test_forgot_password_unexpected_error_is_not_converted_to_generic_200(
+    candidate_client, mock_auth_service
+):
+    """Database/programming failures must propagate, not look like success."""
+    mock_auth_service.forgot_password.side_effect = RuntimeError("db down")
+
+    with pytest.raises(RuntimeError, match="db down"):
+        candidate_client.post(
+            "/api/v1/auth/forgot-password",
+            json={"email": "test@example.com"},
+        )
+
+
 def test_otp_generated_and_stored(candidate_client, mock_auth_service):
     """OTP is generated and stored in DB"""
     mock_auth_service.forgot_password.return_value = None

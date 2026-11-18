@@ -123,6 +123,28 @@ class InvalidDocumentError(AIError):
     """Raised when a document is corrupted, invalid format, or exceeds size limits."""
 
 
+class EmailTransportError(ServiceException):
+    """Raised when an expected email-provider transport failure occurs.
+
+    Carries only safe, non-secret diagnostics: the configured provider name and
+    the originating exception *type*. Raw provider response bodies, credentials
+    and message content are intentionally never retained.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        cause_type: str | None = None,
+    ) -> None:
+        self.provider = provider
+        self.cause_type = cause_type
+        detail = f"Email transport failure via {provider}"
+        if cause_type:
+            detail = f"{detail} ({cause_type})"
+        super().__init__(detail)
+
+
 class ConfigurationError(ServiceException):
     """Raised when required platform configuration is missing or invalid.
 

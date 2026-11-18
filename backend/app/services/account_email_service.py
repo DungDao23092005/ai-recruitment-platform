@@ -41,11 +41,15 @@ logger = logging.getLogger(__name__)
 EVENT_ACCOUNT_LOCKED = "account_locked"
 EVENT_ACCOUNT_DELETED = "account_deleted"
 EVENT_ACCOUNT_UNLOCKED = "account_unlocked"
+EVENT_PASSWORD_CHANGED = "password_changed_confirmation"
 
 # Fixed subjects (Vietnamese, matching the existing product copy).
 SUBJECT_ACCOUNT_LOCKED = "[AI Recruitment Platform] Thông báo khóa tài khoản"
 SUBJECT_ACCOUNT_DELETED = "[AI Recruitment Platform] Thông báo xóa tài khoản"
 SUBJECT_ACCOUNT_UNLOCKED = "[AI Recruitment Platform] Thông báo mở khóa tài khoản"
+SUBJECT_PASSWORD_CHANGED = (
+    "[AI Recruitment Platform] Mật khẩu của bạn đã được thay đổi"
+)
 
 # Display fallback for an optional value that is not available.
 MISSING_VALUE = "—"
@@ -67,6 +71,11 @@ _UNLOCK_HEADER_BG = "#047857"
 _UNLOCK_HEADER_TEXT = "#ffffff"
 _UNLOCK_BADGE_BG = "#d1fae5"
 _UNLOCK_BADGE_TEXT = "#065f46"
+
+_PASSWORD_CHANGED_HEADER_BG = "#1d4ed8"
+_PASSWORD_CHANGED_HEADER_TEXT = "#ffffff"
+_PASSWORD_CHANGED_BADGE_BG = "#dbeafe"
+_PASSWORD_CHANGED_BADGE_TEXT = "#1e40af"
 
 _FONT = "Arial,Helvetica,sans-serif"
 
@@ -351,6 +360,61 @@ def _render_account_unlocked(unlocked_at: datetime | None) -> tuple[str, str]:
     return html, text
 
 
+def _render_password_changed(changed_at: datetime | None) -> tuple[str, str]:
+    """Build the password-change confirmation (HTML + plain text).
+
+    The message intentionally contains no password, OTP or reset-token value.
+    """
+    changed_text = _format_datetime(changed_at)
+
+    rows_html = "".join(
+        [
+            _detail_row("Trạng thái bảo mật", _esc("Mật khẩu đã được thay đổi")),
+            _detail_row("Thời điểm thay đổi", _esc(changed_text)),
+        ]
+    )
+    intro_html = (
+        f'<p style="margin:0 0 12px;font-family:{_FONT};font-size:15px;'
+        'color:#111827;">Xin chào,</p>'
+        f'<p style="margin:0;font-family:{_FONT};font-size:15px;color:#374151;">'
+        "Mật khẩu cho tài khoản của bạn tại <strong>AI Recruitment "
+        "Platform</strong> vừa được thay đổi thành công.</p>"
+    )
+    closing_html = (
+        f'<p style="margin:16px 0 0;font-family:{_FONT};font-size:14px;'
+        'color:#374151;">Bạn có thể đăng nhập bằng mật khẩu mới. Để bảo mật, '
+        "vui lòng không chia sẻ mật khẩu với bất kỳ ai.</p>"
+        f'<p style="margin:8px 0 0;font-family:{_FONT};font-size:14px;'
+        'color:#374151;">Nếu bạn không thực hiện thay đổi này, hãy liên hệ ngay '
+        "bộ phận quản trị của nền tảng để được hỗ trợ.</p>"
+    )
+    html = _shell(
+        header_bg=_PASSWORD_CHANGED_HEADER_BG,
+        header_text=_PASSWORD_CHANGED_HEADER_TEXT,
+        badge_bg=_PASSWORD_CHANGED_BADGE_BG,
+        badge_text=_PASSWORD_CHANGED_BADGE_TEXT,
+        badge_label="Mật khẩu đã thay đổi",
+        title="Thông báo thay đổi mật khẩu",
+        intro_html=intro_html,
+        rows_html=rows_html,
+        closing_html=closing_html,
+    )
+
+    text = (
+        "Xin chào,\n\n"
+        "Mật khẩu cho tài khoản của bạn tại AI Recruitment Platform vừa được "
+        "thay đổi thành công.\n\n"
+        "Trạng thái bảo mật: Mật khẩu đã được thay đổi\n"
+        f"Thời điểm thay đổi: {changed_text}\n\n"
+        "Bạn có thể đăng nhập bằng mật khẩu mới. Để bảo mật, vui lòng không "
+        "chia sẻ mật khẩu với bất kỳ ai.\n"
+        "Nếu bạn không thực hiện thay đổi này, hãy liên hệ ngay bộ phận quản "
+        "trị của nền tảng để được hỗ trợ.\n\n"
+        "AI Recruitment Platform"
+    )
+    return html, text
+
+
 class AccountEmailService:
     """Sends account lock/deletion emails through the existing EmailService.
 
@@ -400,6 +464,21 @@ class AccountEmailService:
         html, text = _render_account_unlocked(unlocked_at)
         await self._deliver(
             to_email, SUBJECT_ACCOUNT_UNLOCKED, html, text, label="account_unlocked"
+        )
+
+    async def send_password_changed_email(
+        self,
+        *,
+        to_email: str,
+        changed_at: datetime | None,
+    ) -> None:
+        html, text = _render_password_changed(changed_at)
+        await self._deliver(
+            to_email,
+            SUBJECT_PASSWORD_CHANGED,
+            html,
+            text,
+            label="password_changed",
         )
 
     async def _deliver(
@@ -509,6 +588,39 @@ async def schedule_account_unlocked_email(
         event_type=EVENT_ACCOUNT_UNLOCKED,
         to_email=to_email,
         subject=SUBJECT_ACCOUNT_UNLOCKED,
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)
+
+
+async def schedule_password_changed_confirmation(
+    session: AsyncSession,
+    *,
+    to_email: Optional[str],
+    changed_at: datetime | None,
+    idempotency_key: Optional[str] = None,
+) -> None:
+    """Durably enqueue the password-change confirmation in the caller's transaction.
+
+    The outbox row is inserted into the same database transaction as the
+    password update and reset-token consumption. The dispatch signal only wakes
+    the worker after that transaction commits; a rollback discards it. The
+    message contains no password, OTP or reset-token value.
+    """
+    if not to_email or to_email.endswith("@anonymized.local"):
+        logger.warning(
+            "Skipping password-changed email: invalid or anonymized email"
+        )
+        return
+
+    html, text = _render_password_changed(changed_at)
+    await enqueue_email(
+        session,
+        event_type=EVENT_PASSWORD_CHANGED,
+        to_email=to_email,
+        subject=SUBJECT_PASSWORD_CHANGED,
         html_body=html,
         text_body=text,
         idempotency_key=idempotency_key,

@@ -189,11 +189,72 @@ it('shows error for empty OTP', async () => {
     })
   })
 
-  it('shows resend button with cooldown', async () => {
-    vi.mocked(authApi.verifyResetOtp).mockResolvedValue({ reset_token: 'test-token' })
+  it('resends the OTP by calling forgot-password with the current email', async () => {
+    vi.mocked(authApi.forgotPassword).mockResolvedValue({ message: 'ok' })
 
     await act(async () => {
       renderPage([{ pathname: '/verify-reset-otp', state: { email: mockEmail } }])
+    })
+
+    const button = screen.getByRole('button', { name: /gửi lại mã otp/i })
+    expect(button).not.toBeDisabled()
+
+    await act(async () => {
+      fireEvent.click(button)
+    })
+
+    await waitFor(() => {
+      expect(authApi.forgotPassword).toHaveBeenCalledTimes(1)
+    })
+    expect(authApi.forgotPassword).toHaveBeenCalledWith(mockEmail)
+  })
+
+  it('ignores duplicate resend clicks while a request is pending', async () => {
+    let resolveFn: (value: { message: string }) => void
+    const promise = new Promise<{ message: string }>((resolve) => {
+      resolveFn = resolve
+    })
+    vi.mocked(authApi.forgotPassword).mockReturnValue(promise)
+
+    await act(async () => {
+      renderPage([{ pathname: '/verify-reset-otp', state: { email: mockEmail } }])
+    })
+
+    const button = screen.getByRole('button', { name: /gửi lại mã otp/i })
+
+    await act(async () => {
+      fireEvent.click(button)
+      fireEvent.click(button)
+    })
+
+    expect(authApi.forgotPassword).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      resolveFn!({ message: 'ok' })
+    })
+  })
+
+  it('disables the resend button during the request and re-enables it afterwards', async () => {
+    let resolveFn: (value: { message: string }) => void
+    const promise = new Promise<{ message: string }>((resolve) => {
+      resolveFn = resolve
+    })
+    vi.mocked(authApi.forgotPassword).mockReturnValue(promise)
+
+    await act(async () => {
+      renderPage([{ pathname: '/verify-reset-otp', state: { email: mockEmail } }])
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /gửi lại mã otp/i }))
+    })
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /đang gửi/i })).toBeDisabled()
+    })
+
+    await act(async () => {
+      resolveFn!({ message: 'ok' })
     })
 
     await waitFor(() => {
@@ -201,15 +262,95 @@ it('shows error for empty OTP', async () => {
       expect(button).toBeInTheDocument()
       expect(button).not.toBeDisabled()
     })
+  })
 
-    // After click, cooldown should start
+  it('disables resend while OTP verification is in flight', async () => {
+    let resolveFn: (value: { reset_token: string }) => void
+    const promise = new Promise<{ reset_token: string }>((resolve) => {
+      resolveFn = resolve
+    })
+    vi.mocked(authApi.verifyResetOtp).mockReturnValue(promise)
+
     await act(async () => {
-      await screen.getByRole('button', { name: /gửi lại mã otp/i }).click()
+      renderPage([{ pathname: '/verify-reset-otp', state: { email: mockEmail } }])
+    })
+
+    const inputs = screen.getAllByRole('textbox')
+    for (let i = 0; i < 6; i++) {
+      await act(async () => {
+        fireEvent.change(inputs[i], { target: { value: '1' } })
+      })
+    }
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /xác thực/i }))
     })
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /gửi lại sau \d+s/i })).toBeDisabled()
+      expect(screen.getByRole('button', { name: /gửi lại mã otp/i })).toBeDisabled()
     })
+
+    await act(async () => {
+      resolveFn!({ reset_token: 'test-token' })
+    })
+  })
+
+  it('shows truthful feedback for a backend cooldown/rate-limit response', async () => {
+    const apiError = new Error('Rate limited') as Error & {
+      response: { status: number; data: { detail: string } }
+    }
+    const detail = 'Bạn đã yêu cầu mã OTP quá nhiều lần. Vui lòng thử lại sau.'
+    apiError.response = { status: 429, data: { detail } }
+    vi.mocked(authApi.forgotPassword).mockRejectedValue(apiError)
+
+    await act(async () => {
+      renderPage([{ pathname: '/verify-reset-otp', state: { email: mockEmail } }])
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /gửi lại mã otp/i }))
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(detail)).toBeInTheDocument()
+    })
+
+    const button = screen.getByRole('button', { name: /gửi lại mã otp/i })
+    expect(button).not.toBeDisabled()
+  })
+
+  it('does not claim delivery was confirmed after a generic HTTP 200', async () => {
+    vi.mocked(authApi.forgotPassword).mockResolvedValue({ message: 'ok' })
+
+    await act(async () => {
+      renderPage([{ pathname: '/verify-reset-otp', state: { email: mockEmail } }])
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /gửi lại mã otp/i }))
+    })
+
+    const status = await screen.findByRole('status')
+    expect(status).toHaveTextContent(/Nếu tài khoản tồn tại/i)
+    expect(status).not.toHaveTextContent(/đã gửi đến email của bạn/i)
+  })
+
+  it('does not introduce a frontend countdown or cooldown timer', async () => {
+    vi.mocked(authApi.forgotPassword).mockResolvedValue({ message: 'ok' })
+
+    await act(async () => {
+      renderPage([{ pathname: '/verify-reset-otp', state: { email: mockEmail } }])
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /gửi lại mã otp/i }))
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByText(/gửi lại sau \d+s/i)).not.toBeInTheDocument()
+    })
+    const button = screen.getByRole('button', { name: /gửi lại mã otp/i })
+    expect(button).not.toBeDisabled()
   })
 
   it('navigates to login page when clicking login link', () => {

@@ -1,4 +1,4 @@
-import { useState, type FormEvent, useEffect, useRef, useCallback } from 'react'
+import { useState, type FormEvent, useRef, useCallback } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { Loader2, AlertCircle, CheckCircle, Mail, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -11,7 +11,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { getFriendlyErrorMessage } from '@/utils/errors'
-import { verifyResetOtp } from '@/api/auth'
+import { forgotPassword, verifyResetOtp } from '@/api/auth'
 
 interface FormValues {
   otp: string
@@ -40,12 +40,16 @@ export function VerifyResetOtpPage() {
   const [values, setValues] = useState<FormValues>({ otp: '' })
   const [errors, setErrors] = useState<FormErrors>({})
   const [apiError, setApiError] = useState<string | null>(null)
+  const [resendNotice, setResendNotice] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
-  const [cooldown, setCooldown] = useState(0)
   const [resetToken, setResetToken] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [resending, setResending] = useState(false)
 
   const inputRefs = useRef<(HTMLInputElement | null)[]>([])
+  // Synchronous guard: blocks duplicate resend requests before React state
+  // updates (and before any await) can re-enable the button.
+  const resendInFlightRef = useRef(false)
 
   const focusInput = useCallback((index: number) => {
     if (index >= 0 && index < 6 && inputRefs.current[index]) {
@@ -131,6 +135,7 @@ export function VerifyResetOtpPage() {
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
+    if (resending) return
     setApiError(null)
 
     const validationErrors = validate(values)
@@ -152,38 +157,37 @@ export function VerifyResetOtpPage() {
   }
 
   const handleResend = async () => {
-    if (cooldown > 0) return
+    // Synchronous guards: ignore duplicate clicks and clicks while an OTP
+    // verification is in flight.
+    if (resendInFlightRef.current || submitting) return
 
+    if (!email) {
+      setResendNotice(null)
+      setApiError('Không xác định được email để gửi lại mã OTP. Vui lòng quay lại bước trước.')
+      return
+    }
+
+    resendInFlightRef.current = true
+    setResending(true)
     setApiError(null)
-    setSubmitting(true)
+    setResendNotice(null)
     try {
-      // The actual resend logic would be handled by navigating back to forgot password
-      // For now, we just reset the form
+      await forgotPassword(email)
       setValues({ otp: '' })
-      setApiError(null)
-      setCooldown(60)
+      // The backend returns the same generic response for unknown accounts,
+      // cooldown and transport failures. Never claim delivery was confirmed.
+      setResendNotice(
+        'Yêu cầu đã được xử lý. Nếu tài khoản tồn tại, bạn sẽ nhận được một mã OTP mới qua email.',
+      )
       // Focus first input after resend
       setTimeout(() => focusInput(0), 0)
     } catch (error) {
       setApiError(getFriendlyErrorMessage(error))
     } finally {
-      setSubmitting(false)
+      resendInFlightRef.current = false
+      setResending(false)
     }
   }
-
-  useEffect(() => {
-    if (cooldown > 0) {
-      const timer = setInterval(() => {
-        setCooldown((prev) => {
-          if (prev <= 1) {
-            return 0
-          }
-          return prev - 1
-        })
-      }, 1000)
-      return () => clearInterval(timer)
-    }
-  }, [cooldown])
 
   if (success && resetToken) {
     return (
@@ -252,7 +256,7 @@ export function VerifyResetOtpPage() {
                 className="text-center text-2xl font-mono tracking-widest"
                 autoComplete="one-time-code"
                 autoFocus={i === 0}
-                disabled={submitting}
+                disabled={submitting || resending}
               />
             ))}
           </div>
@@ -271,7 +275,7 @@ export function VerifyResetOtpPage() {
             </p>
           )}
 
-          <Button type="submit" className="w-full" isLoading={submitting} disabled={values.otp.length !== 6}>
+          <Button type="submit" className="w-full" isLoading={submitting} disabled={values.otp.length !== 6 || resending}>
             {submitting ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -294,12 +298,12 @@ export function VerifyResetOtpPage() {
             variant="outline"
             className="w-full"
             onClick={handleResend}
-            disabled={cooldown > 0 || submitting}
+            disabled={submitting || resending}
           >
-            {cooldown > 0 ? (
+            {resending ? (
               <>
-                <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                Gửi lại sau {cooldown}s
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                Đang gửi...
               </>
             ) : (
               <>
@@ -308,6 +312,12 @@ export function VerifyResetOtpPage() {
               </>
             )}
           </Button>
+          {resendNotice && (
+            <p role="status" className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+              <CheckCircle className="h-4 w-4" aria-hidden="true" />
+              {resendNotice}
+            </p>
+          )}
         </div>
 
         <p className="mt-4 text-center text-sm text-muted-foreground">

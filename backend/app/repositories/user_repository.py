@@ -28,6 +28,28 @@ class UserRepository(BaseRepository[User]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_email_for_update(self, email: str) -> User | None:
+        """Get a non-deleted user by email with SQL Server UPDLOCK/ROWLOCK.
+
+        Serializes competing password-reset OTP requests for the same account
+        for the lifetime of the caller's transaction. Soft-deleted accounts are
+        excluded so password reset remains unavailable to them.
+        """
+        stmt = (
+            select(User)
+            .with_hint(
+                User,
+                "WITH (UPDLOCK, ROWLOCK)",
+                "mssql",
+            )
+            .where(
+                User.email == email,
+                User.is_deleted == False,  # noqa: E712
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_with_profile(self, user_id: Any) -> User | None:
         stmt = (
             select(User)

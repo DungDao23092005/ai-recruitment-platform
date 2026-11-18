@@ -14,9 +14,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.services import account_email_service as module
 from app.services.account_email_service import (
     EVENT_ACCOUNT_UNLOCKED,
+    EVENT_PASSWORD_CHANGED,
     SUBJECT_ACCOUNT_DELETED,
     SUBJECT_ACCOUNT_LOCKED,
     SUBJECT_ACCOUNT_UNLOCKED,
+    SUBJECT_PASSWORD_CHANGED,
     AccountEmailService,
 )
 
@@ -326,6 +328,78 @@ def test_delete_scheduler_enqueues_rendered_primitives():
     assert kwargs["subject"] == SUBJECT_ACCOUNT_DELETED
     assert kwargs["idempotency_key"] == "account_deleted:1"
     signal.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Password-change confirmation
+# ---------------------------------------------------------------------------
+
+
+async def test_password_changed_email_has_expected_subject_and_no_secrets():
+    recorder, service = _service()
+
+    await service.send_password_changed_email(
+        to_email="user@example.com",
+        changed_at=UNLOCKED_AT,
+    )
+
+    assert len(recorder.calls) == 1
+    to_email, subject, html, text = recorder.calls[0]
+    assert to_email == "user@example.com"
+    assert subject == SUBJECT_PASSWORD_CHANGED
+    assert subject == "[AI Recruitment Platform] Mật khẩu của bạn đã được thay đổi"
+
+    for body in (html, text):
+        assert "Xin chào" in body
+        assert "thay đổi thành công" in body
+        assert "14:00 17/11/2026" in body
+        assert "mật khẩu mới" in body
+        assert "AI Recruitment Platform" in body
+        # No authentication secrets are ever embedded in the message.
+        assert "OTP" not in body
+        assert "reset_token" not in body
+        assert "reset-token" not in body
+        assert "password_changed" not in body
+
+    assert "#1d4ed8" in html
+
+
+def test_schedule_password_changed_confirmation_enqueues_outbox_row():
+    with patch.object(module, "enqueue_email", new=AsyncMock()) as enqueue, patch.object(
+        module, "signal_dispatch_after_commit"
+    ) as signal:
+        asyncio.run(
+            module.schedule_password_changed_confirmation(
+                MagicMock(),
+                to_email="user@example.com",
+                changed_at=UNLOCKED_AT,
+                idempotency_key="password_changed:u:r",
+            )
+        )
+
+    enqueue.assert_awaited_once()
+    kwargs = enqueue.call_args.kwargs
+    assert kwargs["event_type"] == EVENT_PASSWORD_CHANGED
+    assert kwargs["event_type"] == "password_changed_confirmation"
+    assert kwargs["to_email"] == "user@example.com"
+    assert kwargs["subject"] == SUBJECT_PASSWORD_CHANGED
+    assert kwargs["idempotency_key"] == "password_changed:u:r"
+    for body in (kwargs["html_body"], kwargs["text_body"]):
+        assert "thay đổi thành công" in body
+        assert "OTP" not in body
+    signal.assert_called_once()
+
+
+def test_schedule_password_changed_confirmation_noops_without_recipient():
+    with patch.object(module, "enqueue_email", new=AsyncMock()) as enqueue:
+        asyncio.run(
+            module.schedule_password_changed_confirmation(
+                MagicMock(),
+                to_email=None,
+                changed_at=UNLOCKED_AT,
+            )
+        )
+        enqueue.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

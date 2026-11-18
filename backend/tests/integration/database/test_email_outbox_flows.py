@@ -9,17 +9,23 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import func, select
 
+from app.core.password_reset import hash_otp, hash_reset_token
+from app.core.security import get_password_hash, verify_password
 from app.database.session import async_session_factory
 from app.domain.enums import OutboxStatus, UserRole
-from app.models import EmailOutbox, User
+from app.models import EmailOutbox, PasswordResetOTP, User
 from app.services.account_email_service import (
     EVENT_ACCOUNT_DELETED,
     EVENT_ACCOUNT_LOCKED,
+    EVENT_PASSWORD_CHANGED,
     SUBJECT_ACCOUNT_LOCKED,
+    SUBJECT_PASSWORD_CHANGED,
 )
 from app.services.admin_service import AdminService
 from app.services.auth_service import AuthService
@@ -123,6 +129,125 @@ class TestPasswordResetOtpIsNotOutboxed:
                 )
             # OTP values are transient and must never be persisted in the outbox.
             assert total == 0
+
+        run_async(_test())
+
+
+class TestPasswordChangedConfirmationOutbox:
+    async def _seed_user_and_token(self, session):
+        token = f"token-{uuid.uuid4()}"
+        original_password = "original-password-123"
+        user = await _seed_user(session)
+        original_hash = get_password_hash(original_password)
+        user.password_hash = original_hash
+        await session.flush()
+        record = PasswordResetOTP(
+            user_id=user.id,
+            email=user.email,
+            otp_hash=hash_otp("000000"),
+            reset_token_hash=hash_reset_token(token),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            attempts=0,
+            max_attempts=5,
+            is_used=True,
+        )
+        session.add(record)
+        await session.commit()
+        return (
+            user.id,
+            user.email,
+            record.id,
+            token,
+            original_hash,
+        )
+
+    def test_successful_reset_enqueues_confirmation_without_secrets(
+        self, run_async
+    ):
+        async def _test():
+            async with async_session_factory() as session:
+                (
+                    user_id,
+                    email,
+                    record_id,
+                    token,
+                    _,
+                ) = await self._seed_user_and_token(session)
+
+            async with async_session_factory() as session:
+                assert (
+                    await AuthService(session).reset_password(
+                        email, token, "brand-new-password-1"
+                    )
+                    is True
+                )
+
+            async with async_session_factory() as session:
+                rows = await _outbox_rows(session)
+                stored_user = await session.get(User, user_id)
+                stored_record = await session.get(PasswordResetOTP, record_id)
+
+            assert len(rows) == 1
+            row = rows[0]
+            assert row.event_type == EVENT_PASSWORD_CHANGED
+            assert row.to_email == email
+            assert row.subject == SUBJECT_PASSWORD_CHANGED
+            assert row.idempotency_key == (
+                f"password_changed:{user_id}:{record_id}"
+            )
+
+            combined = f"{row.html_body}\n{row.text_body}"
+            assert "thay đổi thành công" in combined
+            # The message must never leak the token, OTP or new password.
+            assert token not in combined
+            assert "OTP" not in combined
+            assert "brand-new-password-1" not in combined
+            assert stored_record.reset_token_used is True
+            assert verify_password(
+                "brand-new-password-1", stored_user.password_hash
+            )
+
+        run_async(_test())
+
+    def test_commit_failure_discards_confirmation_and_preserves_state(
+        self, run_async
+    ):
+        async def _test():
+            async with async_session_factory() as session:
+                (
+                    user_id,
+                    email,
+                    record_id,
+                    token,
+                    original_hash,
+                ) = await self._seed_user_and_token(session)
+
+            async with async_session_factory() as session:
+                service = AuthService(session)
+                with patch.object(
+                    session,
+                    "commit",
+                    new=AsyncMock(side_effect=RuntimeError("db down")),
+                ):
+                    with pytest.raises(RuntimeError, match="db down"):
+                        await service.reset_password(
+                            email, token, "brand-new-password-1"
+                        )
+
+            async with async_session_factory() as session:
+                total = int(
+                    (
+                        await session.execute(
+                            select(func.count()).select_from(EmailOutbox)
+                        )
+                    ).scalar_one()
+                )
+                stored_user = await session.get(User, user_id)
+                stored_record = await session.get(PasswordResetOTP, record_id)
+
+            assert total == 0
+            assert stored_user.password_hash == original_hash
+            assert stored_record.reset_token_used is False
 
         run_async(_test())
 

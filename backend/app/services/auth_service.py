@@ -9,7 +9,12 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.exceptions import ConflictException, ForbiddenException, LockedAccountException
+from app.core.exceptions import (
+    ConflictException,
+    EmailTransportError,
+    ForbiddenException,
+    LockedAccountException,
+)
 from app.core.password_reset import (
     dummy_otp_hash,
     dummy_otp_verify,
@@ -25,6 +30,9 @@ from app.domain.enums import UserRole
 from app.models import PasswordResetOTP, User
 from app.repositories import UserRepository
 from app.schemas.user import UserCreate
+from app.services.account_email_service import (
+    schedule_password_changed_confirmation,
+)
 from app.services.candidate_entitlement_service import CandidateEntitlementService
 from app.services.email_service import EmailService
 
@@ -97,36 +105,48 @@ class AuthService:
 
     async def forgot_password(self, email: str) -> None:
         """Request a password reset OTP for the given email.
-        
+
         Always returns the same generic response to prevent account enumeration.
+        Competing requests for the same account are serialized by the
+        ``UPDLOCK, ROWLOCK`` lookup, so only one OTP/cooldown state can win.
+
+        The OTP row is committed only after the provider accepts the message.
+        An expected transport failure rolls the pending OTP/cooldown state back
+        and still returns the generic response. Database failures are never
+        converted into that generic response.
         """
-        user = await self.users.get_by_email(email)
-        
+        user = await self.users.get_by_email_for_update(email)
+
         # Always return generic response to prevent account enumeration
         # but only proceed with OTP generation if user exists.
         if user is None:
+            # Release the lookup transaction/lock before the timing-equalizing
+            # bcrypt work.
+            await self.session.rollback()
             # Equivalent bcrypt work so the response time does not reveal
             # whether the account exists.
             dummy_otp_hash()
             return
-        
+
         # Check for existing active OTP with cooldown
         existing_otp = await self._get_active_otp(user.id)
         if existing_otp:
             time_since_created = datetime.now(timezone.utc) - existing_otp.created_at
             if time_since_created < timedelta(seconds=60):
-                # Cooldown active - still return generic response
+                # Cooldown active - still return generic response. Releasing the
+                # transaction also releases the account row lock.
+                await self.session.rollback()
                 dummy_otp_hash()
                 return
-        
+
         # Invalidate previous active OTPs for this user
         await self._invalidate_user_otps(user.id)
-        
+
         # Generate new OTP
         otp = generate_otp()
         otp_hash = hash_otp(otp)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
-        
+
         otp_record = PasswordResetOTP(
             user_id=user.id,
             email=user.email,
@@ -134,11 +154,26 @@ class AuthService:
             expires_at=expires_at,
         )
         self.session.add(otp_record)
-        
+
+        try:
+            # Make the pending insert visible to the transaction before the
+            # provider call, while still uncommitted.
+            await self.session.flush()
+            # Send OTP email. Delivery is not atomic with the database
+            # transaction: if the provider accepts the message but the commit
+            # below fails, the email may already have been sent.
+            await self.email_service.send_password_reset_otp(user.email, otp)
+        except EmailTransportError:
+            # Roll back the pending OTP and cooldown state, then return the same
+            # generic response as the nonexistent-account path.
+            await self.session.rollback()
+            return
+        except Exception:
+            await self.session.rollback()
+            raise
+
         try:
             await self.session.commit()
-            # Send OTP email
-            await self.email_service.send_password_reset_otp(user.email, otp)
         except Exception:
             await self.session.rollback()
             raise
@@ -259,36 +294,84 @@ class AuthService:
 
     async def reset_password(self, email: str, reset_token: str, new_password: str) -> bool:
         """Reset the user's password using the reset token.
-        
+
         Returns True if successful, False otherwise.
+
+        The newest reset-token record is always selected first, using only the
+        original eligibility predicates. Consumed/expired rows are never filtered
+        out before selection, so an older token cannot become eligible merely
+        because the newest record is no longer usable.
         """
         user = await self.users.get_by_email(email)
         if user is None:
             return False
-        
-        # Find the OTP record with this reset token
-        stmt = select(PasswordResetOTP).where(
-            PasswordResetOTP.user_id == user.id,
-            PasswordResetOTP.is_used == True,
-            PasswordResetOTP.reset_token_hash.isnot(None),
-        ).order_by(PasswordResetOTP.created_at.desc())
+
+        # Select the newest reset-token record. Do NOT filter on expiry or
+        # reset_token_used here: that would let an older record take over when
+        # the newest one is expired or already consumed.
+        stmt = (
+            select(PasswordResetOTP)
+            .where(
+                PasswordResetOTP.user_id == user.id,
+                PasswordResetOTP.is_used == True,
+                PasswordResetOTP.reset_token_hash.isnot(None),
+            )
+            .order_by(PasswordResetOTP.created_at.desc())
+            .limit(1)
+        )
         result = await self.session.execute(stmt)
-        otp_record = result.scalars().first()
-        
+        otp_record = result.scalar_one_or_none()
+
         if otp_record is None:
             return False
-        
+
         if not verify_reset_token(reset_token, otp_record.reset_token_hash):
             return False
-        
-        if datetime.now(timezone.utc) > otp_record.expires_at:
+
+        now = datetime.now(timezone.utc)
+        expires_at = otp_record.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if now > expires_at:
             return False
-        
-        # Update password and mark reset token as used
+        if otp_record.reset_token_used:
+            return False
+
+        # Atomically consume that exact record. Two concurrent requests using
+        # the same token can never both succeed: exactly one UPDATE affects a
+        # row, the loser observes zero affected rows.
+        consume_stmt = (
+            update(PasswordResetOTP)
+            .where(
+                PasswordResetOTP.id == otp_record.id,
+                PasswordResetOTP.user_id == user.id,
+                PasswordResetOTP.is_used == True,
+                PasswordResetOTP.reset_token_hash.isnot(None),
+                PasswordResetOTP.reset_token_used == False,
+                PasswordResetOTP.expires_at > now,
+            )
+            .values(reset_token_used=True)
+            .execution_options(synchronize_session=False)
+        )
+        consume_result = await self.session.execute(consume_stmt)
+        if consume_result.rowcount != 1:
+            # The token was consumed (or invalidated) by a concurrent request.
+            # Do not change the password or enqueue a confirmation.
+            await self.session.rollback()
+            return False
+
         user.password_hash = get_password_hash(new_password)
-        user.last_password_reset = datetime.now(timezone.utc)
-        otp_record.expires_at = datetime.now(timezone.utc)  # Invalidate reset token
-        
+        user.last_password_reset = now
+
+        # Same transaction as the token consumption and password update. The
+        # dispatch signal only fires after the root transaction commits.
+        await schedule_password_changed_confirmation(
+            self.session,
+            to_email=user.email,
+            changed_at=now,
+            idempotency_key=f"password_changed:{user.id}:{otp_record.id}",
+        )
+
         try:
             await self.session.commit()
             return True
