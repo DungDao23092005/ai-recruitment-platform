@@ -517,15 +517,17 @@ class TestFullRecruitmentLifecycleE2E:
             assert final_job.status == JobStatus.PUBLISHED
 
         pending_rows = run_async(_outbox_rows())
-        assert len(pending_rows) == 2, [
+        assert len(pending_rows) == 3, [
             (row.event_type, row.to_email, row.idempotency_key)
             for row in pending_rows
         ]
         assert {row.event_type for row in pending_rows} == {
+            EVENT_PAYMENT_RECEIPT,
             EVENT_INTERVIEW_LIFECYCLE,
             EVENT_APPLICATION_STATUS,
         }
         assert {row.idempotency_key for row in pending_rows} == {
+            f"payment_receipt:{internal_order_id}",
             f"interview:{interview_id}:scheduled",
             f"application-status:{application_id}:offered",
         }
@@ -533,7 +535,7 @@ class TestFullRecruitmentLifecycleE2E:
         assert all(row.attempts == 0 for row in pending_rows)
 
         rows_by_event = {row.event_type: row for row in pending_rows}
-        assert EVENT_PAYMENT_RECEIPT not in rows_by_event
+        assert rows_by_event[EVENT_PAYMENT_RECEIPT].to_email == recruiter_email
         assert rows_by_event[EVENT_INTERVIEW_LIFECYCLE].to_email == candidate_email
         assert rows_by_event[EVENT_APPLICATION_STATUS].to_email == candidate_email
         assert job_payload["title"] in (
@@ -548,11 +550,11 @@ class TestFullRecruitmentLifecycleE2E:
             batch_size=10,
         )
         sent_count = run_async(worker.process_due_messages())
-        assert sent_count == 2
-        assert transport.send_email.await_count == 2
+        assert sent_count == 3
+        assert transport.send_email.await_count == 3
 
         sent_rows = run_async(_outbox_rows())
-        assert len(sent_rows) == 2
+        assert len(sent_rows) == 3
         assert all(row.status == OutboxStatus.SENT.value for row in sent_rows)
         assert all(row.attempts == 1 for row in sent_rows)
         assert all(row.sent_at is not None for row in sent_rows)
@@ -560,5 +562,5 @@ class TestFullRecruitmentLifecycleE2E:
         assert all(row.last_error is None for row in sent_rows)
 
         recipients = [call.args[0] for call in transport.send_email.await_args_list]
-        assert recipients.count(recruiter_email) == 0
+        assert recipients.count(recruiter_email) == 1
         assert recipients.count(candidate_email) == 2
