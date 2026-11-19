@@ -33,14 +33,28 @@ from app.database.session import async_session_factory
 from app.domain.enums import (
     PaymentOrderStatus,
     PaymentProvider,
+    PaymentTransactionStatus,
     PlanAudience,
     SubscriptionScope,
     SubscriptionStatus,
     UserRole,
 )
-from app.models import PaymentOrder, RecruitmentPlan, Subscription, User
+from app.models import (
+    EmailOutbox,
+    Notification,
+    PaymentOrder,
+    PaymentTransaction,
+    RecruitmentPlan,
+    Subscription,
+    User,
+)
+from app.services.notification_service import (
+    SUBSCRIPTION_ACTIVATED_TYPE,
+    SUBSCRIPTION_ENTITY_TYPE,
+)
 from app.services.payment_providers.vnpay import VNPAYProvider
 from app.services.payment_service import PaymentService
+from app.services.subscription_email_service import EVENT_PAYMENT_RECEIPT
 from tests.integration.conftest import run
 
 
@@ -456,9 +470,10 @@ def test_p25_concurrent_ipn_activation_conflict_returns_409_or_serializes(
             plan = await _create_plan(session)
             await session.commit()
             user_id, company_id, plan_id = user.id, company.id, plan.id
+            purchaser_email = user.email
 
         async with async_session_factory() as session:
-            _, internal_order_id, _ = await PaymentService(
+            _, internal_order_id, pending_subscription_id = await PaymentService(
                 session
             ).create_company_vnpay_payment(
                 user_id=user_id,
@@ -469,7 +484,7 @@ def test_p25_concurrent_ipn_activation_conflict_returns_409_or_serializes(
 
         # Now seed an already-ACTIVE subscription for the same company to force a conflict on activation
         async with async_session_factory() as session:
-            await _create_company_subscription(
+            active_subscription = await _create_company_subscription(
                 session,
                 company_id=company_id,
                 user_id=user_id,
@@ -477,15 +492,73 @@ def test_p25_concurrent_ipn_activation_conflict_returns_409_or_serializes(
                 status=SubscriptionStatus.ACTIVE,
             )
             await session.commit()
+            active_subscription_id = active_subscription.id
 
+        receipt_idempotency_key = f"payment_receipt:{internal_order_id}"
         ipn_params = _build_signed_ipn(
             internal_order_id=internal_order_id, amount_vnd=500_000
         )
         async with async_session_factory() as s_ipn:
-            with pytest.raises(ConflictException):
-                await PaymentService(s_ipn).process_vnpay_ipn(
-                    ipn_params, "127.0.0.1"
+            response = await PaymentService(s_ipn).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert response == {
+                "RspCode": "99",
+                "Message": "Internal processing error",
+            }
+
+        async with async_session_factory() as check:
+            order = await check.scalar(
+                select(PaymentOrder).where(
+                    PaymentOrder.internal_order_id == internal_order_id
                 )
+            )
+            pending_subscription = await check.get(
+                Subscription, pending_subscription_id
+            )
+            active_subscription = await check.get(
+                Subscription, active_subscription_id
+            )
+
+            assert order.status == PaymentOrderStatus.PENDING
+            assert pending_subscription.status == SubscriptionStatus.PENDING
+            assert active_subscription.status == SubscriptionStatus.ACTIVE
+            assert active_subscription.id == active_subscription_id
+            assert active_subscription.company_id == company_id
+            assert active_subscription.user_id == user_id
+            assert active_subscription.plan_id == plan_id
+
+            successful_transactions = (
+                await check.execute(
+                    select(PaymentTransaction).where(
+                        PaymentTransaction.payment_order_id == order.id,
+                        PaymentTransaction.status == PaymentTransactionStatus.SUCCESS,
+                    )
+                )
+            ).scalars().all()
+            assert successful_transactions == []
+
+            activation_notifications = (
+                await check.execute(
+                    select(Notification).where(
+                        Notification.entity_type == SUBSCRIPTION_ENTITY_TYPE,
+                        Notification.entity_id == pending_subscription_id,
+                        Notification.notification_type == SUBSCRIPTION_ACTIVATED_TYPE,
+                    )
+                )
+            ).scalars().all()
+            assert activation_notifications == []
+
+            receipt_rows = (
+                await check.execute(
+                    select(EmailOutbox).where(
+                        EmailOutbox.event_type == EVENT_PAYMENT_RECEIPT,
+                        EmailOutbox.to_email == purchaser_email,
+                        EmailOutbox.idempotency_key == receipt_idempotency_key,
+                    )
+                )
+            ).scalars().all()
+            assert receipt_rows == []
 
     run_async(_run())
 
