@@ -27,6 +27,9 @@ SUBSCRIPTION_ACTIVATED_TYPE = "subscription_activated"
 SUBSCRIPTION_ENTITY_TYPE = "subscription"
 SUBSCRIPTION_ACTIVATED_TITLE = "Kích hoạt gói dịch vụ thành công"
 
+COMPANY_RETURNED_TO_FREE_TYPE = "company_returned_to_free"
+COMPANY_RETURNED_TO_FREE_TITLE = "Công ty đã quay lại gói miễn phí"
+
 SUBSCRIPTION_PLAN_CHANGED_TYPE = "subscription_plan_changed"
 SUBSCRIPTION_PLAN_CHANGED_TITLE = "Thay đổi gói dịch vụ"
 
@@ -72,8 +75,10 @@ class NotificationService:
         notification_type: str,
         entity_type: Optional[str] = None,
         entity_id: Optional[uuid.UUID] = None,
+        notification_id: Optional[uuid.UUID] = None,
     ) -> NotificationRead:
         notification = Notification(
+            id=notification_id,
             user_id=user_id,
             title=title,
             content=content,
@@ -123,6 +128,18 @@ class NotificationService:
             entity_id=user_id,
         )
 
+    @staticmethod
+    def _subscription_notification_id(
+        event: str,
+        user_id: uuid.UUID,
+        subscription_id: uuid.UUID,
+    ) -> uuid.UUID:
+        """Stable identity for a per-user, per-subscription lifecycle event."""
+        return uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{event}:{user_id}:{subscription_id}",
+        )
+
     async def notify_subscription_activated(
         self,
         user_id: uuid.UUID,
@@ -156,6 +173,9 @@ class NotificationService:
             notification_type=SUBSCRIPTION_ACTIVATED_TYPE,
             entity_type=SUBSCRIPTION_ENTITY_TYPE,
             entity_id=subscription_id,
+            notification_id=self._subscription_notification_id(
+                SUBSCRIPTION_ACTIVATED_TYPE, user_id, subscription_id
+            ),
         )
 
     async def notify_subscription_plan_changed(
@@ -201,6 +221,48 @@ class NotificationService:
             notification_type=SUBSCRIPTION_REVOKED_TYPE,
             entity_type=SUBSCRIPTION_ENTITY_TYPE,
             entity_id=subscription_id,
+        )
+
+    async def notify_company_returned_to_free(
+        self,
+        user_id: uuid.UUID,
+        paid_subscription_id: uuid.UUID,
+        plan_name: str | None = None,
+    ) -> NotificationRead | None:
+        """Notify an active Workspace Admin that a Paid subscription expired.
+
+        The expired subscription id is the entity id, so every distinct plan
+        period produces its own notification while retries for the same period
+        are suppressed. The message only states what the persisted transition
+        proves: the Paid plan ended and the Workspace is back on Free.
+        """
+        already_notified = await self.notifications.exists_by_entity(
+            user_id=user_id,
+            entity_type=SUBSCRIPTION_ENTITY_TYPE,
+            entity_id=paid_subscription_id,
+            notification_type=COMPANY_RETURNED_TO_FREE_TYPE,
+        )
+        if already_notified:
+            return None
+
+        subject = (
+            f'Gói "{plan_name}" của công ty'
+            if plan_name
+            else "Gói trả phí của công ty"
+        )
+        return await self.create_notification(
+            user_id=user_id,
+            title=COMPANY_RETURNED_TO_FREE_TITLE,
+            content=(
+                f"{subject} đã hết hạn. "
+                "Không gian làm việc đã quay lại gói miễn phí."
+            ),
+            notification_type=COMPANY_RETURNED_TO_FREE_TYPE,
+            entity_type=SUBSCRIPTION_ENTITY_TYPE,
+            entity_id=paid_subscription_id,
+            notification_id=self._subscription_notification_id(
+                COMPANY_RETURNED_TO_FREE_TYPE, user_id, paid_subscription_id
+            ),
         )
 
     @staticmethod

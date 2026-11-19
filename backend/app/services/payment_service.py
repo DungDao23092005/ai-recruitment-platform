@@ -19,6 +19,8 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.domain.enums import (
+    MembershipRole,
+    MembershipStatus,
     PaymentOrderStatus,
     PaymentProvider,
     PaymentTransactionStatus,
@@ -28,8 +30,17 @@ from app.domain.enums import (
     UserRole,
 )
 from app.domain.models.base import utc_now
-from app.models import PaymentOrder, PaymentTransaction, RecruitmentPlan, RecruiterProfile, Subscription, User
+from app.models import (
+    CompanyMembership,
+    PaymentOrder,
+    PaymentTransaction,
+    RecruitmentPlan,
+    RecruiterProfile,
+    Subscription,
+    User,
+)
 from app.repositories import (
+    CompanyMembershipRepository,
     PaymentOrderRepository,
     PaymentTransactionRepository,
     RecruitmentPlanRepository,
@@ -101,6 +112,9 @@ class PaymentService:
         self.payment_transactions = PaymentTransactionRepository(session)
         self.plans = RecruitmentPlanRepository(session)
         self.subscriptions = SubscriptionRepository(session)
+        self.company_memberships = CompanyMembershipRepository(
+            session, CompanyMembership
+        )
         self.vnpay = VNPAYProvider()
 
     def _generate_internal_order_id(self) -> str:
@@ -1206,16 +1220,27 @@ class PaymentService:
                 return {"RspCode": "99", "Message": "Internal processing error"}
             return {"RspCode": "00", "Message": "Confirm Success"}
 
-        # 8. Atomic Company activation (P25, P39)
-        await self._activate_company_subscription_for_payment(
-            payment_order=payment_order,
-            subscription=subscription,
-            provider_transaction_id=vnp_transaction_no,
-            provider_result_code=response_code,
-            provider_message=transaction_msg,
-            provider_request_id=params.get("vnp_BankTranNo"),
-            provider_response_metadata=str(params),
-        )
+        # 8. Atomic Company activation (P25, P39). Any activation or receipt
+        # failure rolls the whole unit of work back and is reported as an
+        # internal failure so VNPAY retries instead of treating it as success.
+        order_reference = payment_order.internal_order_id
+        try:
+            await self._activate_company_subscription_for_payment(
+                payment_order=payment_order,
+                subscription=subscription,
+                provider_transaction_id=vnp_transaction_no,
+                provider_result_code=response_code,
+                provider_message=transaction_msg,
+                provider_request_id=params.get("vnp_BankTranNo"),
+                provider_response_metadata=str(params),
+            )
+        except Exception:
+            await self.session.rollback()
+            logger.exception(
+                "Company IPN activation failed for order %s",
+                order_reference,
+            )
+            return {"RspCode": "99", "Message": "Internal processing error"}
         return {"RspCode": "00", "Message": "Confirm Success"}
 
     async def _activate_company_subscription_for_payment(
@@ -1300,6 +1325,63 @@ class PaymentService:
                 responded_at=now,
             )
             self.session.add(transaction)
+
+            # The receipt belongs to the purchaser only. It is built from the
+            # persisted primitives and enqueued in this same transaction.
+            receipt: PaymentReceipt | None = None
+            if payment_order.provider == PaymentProvider.VNPAY:
+                receipt = PaymentReceipt(
+                    amount=payment_order.amount,
+                    currency=payment_order.currency,
+                    order_reference=payment_order.internal_order_id,
+                    provider_transaction_id=provider_transaction_id,
+                    paid_at=now,
+                )
+
+            # Every currently active Workspace Admin is notified in-app. The
+            # purchaser gets the receipt independently, even when they are not
+            # an admin; non-admin members are never notified here.
+            notification_service = NotificationService(self.session)
+            memberships = await self.company_memberships.list_by_company(
+                company_id, include_revoked=False
+            )
+            admin_user_ids = [
+                membership.user_id
+                for membership in memberships
+                if membership.role == MembershipRole.ADMIN
+                and membership.status == MembershipStatus.ACTIVE
+            ]
+            for admin_user_id in admin_user_ids:
+                await notification_service.notify_subscription_activated(
+                    user_id=admin_user_id,
+                    subscription_id=subscription.id,
+                    plan_name=plan.name,
+                    expires_at=subscription.expires_at,
+                )
+
+            if receipt is not None:
+                # The receipt is part of the same atomic unit of work as the
+                # order, subscription, transaction and admin notices. A receipt
+                # enqueue failure propagates so the caller rolls everything back
+                # and the payment remains retryable.
+                await self.session.flush()
+                purchaser_email = (
+                    await self.session.execute(
+                        select(User.email).where(
+                            User.id == payment_order.user_id
+                        )
+                    )
+                ).scalar_one_or_none()
+                await schedule_payment_receipt_email(
+                    self.session,
+                    to_email=purchaser_email,
+                    plan_name=plan.name,
+                    expires_at=subscription.expires_at,
+                    receipt=receipt,
+                    idempotency_key=(
+                        f"payment_receipt:{receipt.order_reference}"
+                    ),
+                )
 
             await self.session.commit()
             await self.session.refresh(subscription)
@@ -1827,11 +1909,30 @@ class PaymentService:
     ) -> None:
         """Finalize a QueryDr-verified success inside a short locked transaction.
 
-        The lock hierarchy matches the IPN and checkout paths exactly: the
-        per-user lock is taken before the PaymentOrder row lock. The outbound
-        QueryDr HTTP request has already completed, so no DB lock is held across
-        the network call.
+        Candidate orders keep the per-user -> PaymentOrder lock hierarchy. A
+        Company order is routed through the Company activation path and takes
+        the Company applock before the PaymentOrder lock, matching Company IPN
+        and checkout. The outbound QueryDr HTTP request has already completed,
+        so no DB lock is held across the network call.
         """
+        is_company_order = (
+            getattr(payment_order, "scope", None)
+            == SubscriptionScope.COMPANY_RECRUITING
+            or getattr(payment_order, "company_id", None) is not None
+        )
+        company_id = await self._company_id_for_payment_order(payment_order)
+        if is_company_order or company_id is not None:
+            if company_id is None:
+                # A malformed Company order must never fall through to the
+                # Candidate/legacy personal activation path.
+                return
+            await self._finalize_reconciled_company_success(
+                payment_order,
+                body,
+                company_id,
+            )
+            return
+
         await self._lock_user(payment_order.user_id)
 
         locked = await self._lock_payment_order(payment_order.internal_order_id)
@@ -1857,6 +1958,105 @@ class PaymentService:
         try:
             await self._record_success_and_activate(
                 locked,
+                provider_transaction_id=provider_transaction_id,
+                provider_result_code=str(body.get("vnp_ResponseCode", "")),
+                provider_message="Reconciled via VNPAY QueryDr",
+                provider_request_id=body.get("vnp_BankTranNo"),
+                provider_response_metadata=str(body),
+            )
+        except Exception:
+            await self.session.rollback()
+
+    async def _company_id_for_payment_order(
+        self,
+        payment_order: PaymentOrder,
+    ) -> uuid.UUID | None:
+        """Resolve the owning company for a Company payment order, if any."""
+        company_id = getattr(payment_order, "company_id", None)
+        is_company_order = (
+            getattr(payment_order, "scope", None)
+            == SubscriptionScope.COMPANY_RECRUITING
+            or company_id is not None
+        )
+        if is_company_order and company_id is not None:
+            return company_id
+        if (
+            getattr(payment_order, "scope", None)
+            == SubscriptionScope.CANDIDATE_PERSONAL
+        ):
+            return None
+        if payment_order.subscription_id is None:
+            return company_id if is_company_order else None
+
+        subscription = await self.subscriptions.get_by_id_including_deleted(
+            payment_order.subscription_id
+        )
+        if subscription is None:
+            return company_id if is_company_order else None
+        if (
+            is_company_order
+            or getattr(subscription, "scope", None)
+            == SubscriptionScope.COMPANY_RECRUITING
+            or getattr(subscription, "company_id", None) is not None
+        ):
+            return subscription.company_id or company_id
+        return None
+
+    async def _finalize_reconciled_company_success(
+        self,
+        payment_order: PaymentOrder,
+        body: dict[str, Any],
+        company_id: uuid.UUID,
+    ) -> None:
+        """Finalize a QueryDr-verified Company payment atomically."""
+        try:
+            await self._acquire_company_applock(company_id)
+
+            locked = await self._lock_payment_order(
+                payment_order.internal_order_id
+            )
+            if locked is None or locked.status != PaymentOrderStatus.PENDING:
+                # Another request (e.g. a concurrent IPN) already finalized it.
+                await self.session.rollback()
+                return
+
+            if not self._querydr_reference_matches(locked, body):
+                await self.session.rollback()
+                return
+
+            if locked.company_id != company_id or locked.subscription_id is None:
+                await self.session.rollback()
+                return
+
+            subscription = await self._lock_subscription(
+                locked.subscription_id
+            )
+            if (
+                subscription is None
+                or subscription.company_id != company_id
+                or subscription.scope
+                != SubscriptionScope.COMPANY_RECRUITING
+            ):
+                await self.session.rollback()
+                return
+
+            provider_transaction_id = body.get("vnp_TransactionNo")
+
+            # Idempotency: never record a second transaction for the same
+            # provider id. Release the applock if another path recorded it.
+            if provider_transaction_id:
+                existing = (
+                    await self.payment_transactions.get_by_provider_transaction_id(
+                        provider_transaction_id
+                    )
+                )
+                if existing is not None:
+                    await self.session.rollback()
+                    return
+
+            await self._activate_company_subscription_for_payment(
+                payment_order=locked,
+                subscription=subscription,
                 provider_transaction_id=provider_transaction_id,
                 provider_result_code=str(body.get("vnp_ResponseCode", "")),
                 provider_message="Reconciled via VNPAY QueryDr",

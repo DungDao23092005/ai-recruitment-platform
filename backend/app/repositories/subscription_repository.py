@@ -319,21 +319,75 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         result = await self.session.execute(stmt)
         return max(0, result.rowcount or 0)
 
+    async def expire_stale_active_for_company_subscription(
+        self,
+        subscription_id: Any,
+        company_id: Any,
+        now: datetime,
+    ) -> int:
+        """Persist one exact Company Paid row's stale ``ACTIVE -> EXPIRED``.
+
+        The conditional update proves this row, company and scope are still the
+        ones selected by the bounded sweep before its lifecycle side effects run.
+        """
+        stmt = (
+            update(Subscription)
+            .where(
+                Subscription.id == subscription_id,
+                Subscription.company_id == company_id,
+                Subscription.scope == SubscriptionScope.COMPANY_RECRUITING,
+                self._stale_active_condition(now),
+            )
+            .values(status=SubscriptionStatus.EXPIRED)
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
+        return max(0, result.rowcount or 0)
+
+    async def expire_stale_active_for_candidate_subscription(
+        self,
+        subscription_id: Any,
+        user_id: Any,
+        now: datetime,
+    ) -> int:
+        """Persist one exact Candidate Paid row's stale ``ACTIVE -> EXPIRED``.
+
+        The conditional update proves this row, owner and scope are still the
+        ones selected by the bounded sweep before its lifecycle side effects run.
+        """
+        stmt = (
+            update(Subscription)
+            .where(
+                Subscription.id == subscription_id,
+                Subscription.user_id == user_id,
+                Subscription.company_id.is_(None),
+                Subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+                self._stale_active_condition(now),
+            )
+            .values(status=SubscriptionStatus.EXPIRED)
+            .execution_options(synchronize_session=False)
+        )
+        result = await self.session.execute(stmt)
+        return max(0, result.rowcount or 0)
+
     async def expire_stale_active(
         self,
         now: datetime,
         limit: Optional[int] = None,
     ) -> int:
-        """Atomically persist ``ACTIVE -> EXPIRED`` for stale rows.
+        """Atomically persist ``ACTIVE -> EXPIRED`` for stale legacy rows.
 
         Candidate ids only bound the batch and provide oldest-first ordering.
-        The outer UPDATE re-checks every expiration predicate at write time, so
-        a row renewed between candidate selection and the write is not expired.
-        No ORM instances are loaded, avoiding identity-map overwrites.
+        Both the candidate subquery and the outer UPDATE are restricted to
+        ``LEGACY_RECRUITER_PERSONAL`` so Company and Candidate rows are never
+        expired without their dedicated lifecycle handling.
         """
         stale_ids = (
             select(Subscription.id)
-            .where(self._stale_active_condition(now))
+            .where(
+                Subscription.scope == SubscriptionScope.LEGACY_RECRUITER_PERSONAL,
+                self._stale_active_condition(now),
+            )
             .order_by(Subscription.expires_at.asc(), Subscription.id.asc())
         )
         if limit is not None:
@@ -343,6 +397,7 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             update(Subscription)
             .where(
                 Subscription.id.in_(stale_ids),
+                Subscription.scope == SubscriptionScope.LEGACY_RECRUITER_PERSONAL,
                 self._stale_active_condition(now),
             )
             .values(status=SubscriptionStatus.EXPIRED)

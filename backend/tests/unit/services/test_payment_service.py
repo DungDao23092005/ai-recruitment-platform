@@ -5,6 +5,7 @@ import hmac
 import hashlib
 import urllib.parse
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,7 +14,16 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidTransitionException,
 )
-from app.domain.enums import PaymentOrderStatus, PaymentProvider, PaymentTransactionStatus, SubscriptionStatus, UserRole
+from app.domain.enums import (
+    MembershipRole,
+    MembershipStatus,
+    PaymentOrderStatus,
+    PaymentProvider,
+    PaymentTransactionStatus,
+    SubscriptionScope,
+    SubscriptionStatus,
+    UserRole,
+)
 from app.models import PaymentOrder, PaymentTransaction, RecruiterProfile, Subscription, User
 from app.repositories import SubscriptionRepository
 from app.services.payment_service import PaymentService
@@ -313,6 +323,7 @@ def _make_payment_service_session() -> MagicMock:
                 obj.id = uuid.uuid4()
 
     session.flush = AsyncMock(side_effect=_fake_flush)
+
     return session
 
 
@@ -2250,6 +2261,8 @@ class TestCompanyFreePaidUpgrade:
         service.subscriptions.expire_stale_active_for_company = AsyncMock()
         service.subscriptions.get_active_by_company_id = AsyncMock(return_value=free_sub)
         service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.company_memberships = AsyncMock()
+        service.company_memberships.list_by_company = AsyncMock(return_value=[])
 
         sub = await service._activate_company_subscription_for_payment(
             payment_order=order,
@@ -2265,3 +2278,404 @@ class TestCompanyFreePaidUpgrade:
         assert paid_sub.status == SubscriptionStatus.ACTIVE
         assert sub.status == SubscriptionStatus.ACTIVE
         session.commit.assert_awaited()
+
+
+class TestCompanyActivationNotificationsAndReceipt:
+    def _setup(
+        self,
+        *,
+        provider: PaymentProvider = PaymentProvider.VNPAY,
+        memberships: list[SimpleNamespace] | None = None,
+    ):
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+
+        company_id = uuid.uuid4()
+        purchaser_id = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        plan = _make_plan(uuid.uuid4(), price=299_000)
+        plan.name = "Professional"
+
+        paid_sub = Subscription(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            user_id=purchaser_id,
+            plan_id=plan.id,
+            status=SubscriptionStatus.PENDING,
+            is_free=False,
+            scope="company_recruiting",
+        )
+        order = PaymentOrder(
+            id=uuid.uuid4(),
+            user_id=purchaser_id,
+            company_id=company_id,
+            plan_id=plan.id,
+            subscription_id=paid_sub.id,
+            scope="company_recruiting",
+            amount=299_000,
+            currency="VND",
+            provider=provider,
+            internal_order_id="VNPAY_COMPANY_NOTIFY_001",
+            status=PaymentOrderStatus.PENDING,
+            expired_at=now + timedelta(minutes=15),
+        )
+
+        service.subscriptions.expire_stale_active_for_company = AsyncMock()
+        service.subscriptions.get_active_by_company_id = AsyncMock(return_value=None)
+        service.plans.get_active_by_id = AsyncMock(return_value=plan)
+        service.company_memberships = AsyncMock()
+        service.company_memberships.list_by_company = AsyncMock(
+            return_value=memberships or []
+        )
+
+        email_result = MagicMock()
+        email_result.scalar_one_or_none.return_value = "purchaser@example.com"
+        session.execute = AsyncMock(return_value=email_result)
+
+        return session, service, paid_sub, order, purchaser_id
+
+    def test_receipt_targets_purchaser_and_notifies_only_active_admins(
+        self, _patch_activation_notifier
+    ):
+        admin_a = uuid.uuid4()
+        admin_b = uuid.uuid4()
+        memberships = [
+            SimpleNamespace(
+                user_id=admin_a,
+                role=MembershipRole.ADMIN,
+                status=MembershipStatus.ACTIVE,
+            ),
+            SimpleNamespace(
+                user_id=admin_b,
+                role=MembershipRole.ADMIN,
+                status=MembershipStatus.ACTIVE,
+            ),
+            SimpleNamespace(
+                user_id=uuid.uuid4(),
+                role=MembershipRole.RECRUITER,
+                status=MembershipStatus.ACTIVE,
+            ),
+            SimpleNamespace(
+                user_id=uuid.uuid4(),
+                role=MembershipRole.INTERVIEWER,
+                status=MembershipStatus.ACTIVE,
+            ),
+            SimpleNamespace(
+                user_id=uuid.uuid4(),
+                role=MembershipRole.ADMIN,
+                status=MembershipStatus.REVOKED,
+            ),
+        ]
+        session, service, paid_sub, order, purchaser_id = self._setup(
+            memberships=memberships
+        )
+
+        with patch(
+            "app.services.payment_service.schedule_payment_receipt_email",
+            new_callable=AsyncMock,
+        ) as receipt_mock:
+            result = asyncio.run(
+                service._activate_company_subscription_for_payment(
+                    payment_order=order,
+                    subscription=paid_sub,
+                    provider_transaction_id="TXN_COMPANY_001",
+                    provider_result_code="00",
+                    provider_message="Success",
+                    provider_request_id="REQ_001",
+                    provider_response_metadata="{}",
+                )
+            )
+
+        assert result is paid_sub
+        notify_mock = (
+            _patch_activation_notifier.return_value.notify_subscription_activated
+        )
+        assert notify_mock.await_count == 2
+        notified_user_ids = {
+            call.kwargs["user_id"] for call in notify_mock.await_args_list
+        }
+        assert notified_user_ids == {admin_a, admin_b}
+        assert purchaser_id not in notified_user_ids
+        for call in notify_mock.await_args_list:
+            assert call.kwargs["subscription_id"] == paid_sub.id
+            assert call.kwargs["plan_name"] == "Professional"
+
+        receipt_mock.assert_awaited_once()
+        receipt_kwargs = receipt_mock.await_args.kwargs
+        assert receipt_kwargs["to_email"] == "purchaser@example.com"
+        assert receipt_kwargs["idempotency_key"] == (
+            "payment_receipt:VNPAY_COMPANY_NOTIFY_001"
+        )
+        assert receipt_kwargs["receipt"].amount == 299_000
+        assert receipt_kwargs["receipt"].currency == "VND"
+        session.commit.assert_awaited_once()
+
+    def test_receipt_still_sent_when_purchaser_is_not_an_admin(self):
+        session, service, paid_sub, order, _ = self._setup(memberships=[])
+
+        with patch(
+            "app.services.payment_service.schedule_payment_receipt_email",
+            new_callable=AsyncMock,
+        ) as receipt_mock:
+            asyncio.run(
+                service._activate_company_subscription_for_payment(
+                    payment_order=order,
+                    subscription=paid_sub,
+                    provider_transaction_id="TXN_COMPANY_002",
+                    provider_result_code="00",
+                    provider_message="Success",
+                    provider_request_id=None,
+                    provider_response_metadata="{}",
+                )
+            )
+
+        receipt_mock.assert_awaited_once()
+        assert receipt_mock.await_args.kwargs["to_email"] == "purchaser@example.com"
+
+    def test_non_vnpay_company_activation_sends_no_receipt(self):
+        session, service, paid_sub, order, _ = self._setup(
+            provider=PaymentProvider.MOMO
+        )
+
+        with patch(
+            "app.services.payment_service.schedule_payment_receipt_email",
+            new_callable=AsyncMock,
+        ) as receipt_mock:
+            asyncio.run(
+                service._activate_company_subscription_for_payment(
+                    payment_order=order,
+                    subscription=paid_sub,
+                    provider_transaction_id="TXN_COMPANY_003",
+                    provider_result_code="00",
+                    provider_message="Success",
+                    provider_request_id=None,
+                    provider_response_metadata="{}",
+                )
+            )
+
+        receipt_mock.assert_not_awaited()
+
+    def test_commit_failure_rolls_back_before_any_dispatch(self):
+        session, service, paid_sub, order, _ = self._setup(memberships=[])
+        session.commit = AsyncMock(side_effect=RuntimeError("db down"))
+
+        with patch(
+            "app.services.payment_service.schedule_payment_receipt_email",
+            new_callable=AsyncMock,
+        ) as receipt_mock:
+            with pytest.raises(RuntimeError):
+                asyncio.run(
+                    service._activate_company_subscription_for_payment(
+                        payment_order=order,
+                        subscription=paid_sub,
+                        provider_transaction_id="TXN_COMPANY_004",
+                        provider_result_code="00",
+                        provider_message="Success",
+                        provider_request_id=None,
+                        provider_response_metadata="{}",
+                    )
+                )
+
+        receipt_mock.assert_awaited_once()
+        session.rollback.assert_awaited_once()
+
+    def test_receipt_failure_rolls_back_entire_company_activation(
+        self, _patch_activation_notifier
+    ):
+        admin_id = uuid.uuid4()
+        memberships = [
+            SimpleNamespace(
+                user_id=admin_id,
+                role=MembershipRole.ADMIN,
+                status=MembershipStatus.ACTIVE,
+            )
+        ]
+        session, service, paid_sub, order, _ = self._setup(
+            memberships=memberships
+        )
+
+        with patch(
+            "app.services.payment_service.schedule_payment_receipt_email",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("outbox unavailable"),
+        ) as receipt_mock, pytest.raises(RuntimeError, match="outbox unavailable"):
+            asyncio.run(
+                service._activate_company_subscription_for_payment(
+                    payment_order=order,
+                    subscription=paid_sub,
+                    provider_transaction_id="TXN_COMPANY_005",
+                    provider_result_code="00",
+                    provider_message="Success",
+                    provider_request_id=None,
+                    provider_response_metadata="{}",
+                )
+            )
+
+        receipt_mock.assert_awaited_once()
+        session.commit.assert_not_awaited()
+        session.rollback.assert_awaited_once()
+        notifier = (
+            _patch_activation_notifier.return_value.notify_subscription_activated
+        )
+        notifier.assert_awaited_once()
+        assert notifier.await_args.kwargs["user_id"] == admin_id
+
+
+class TestCompanyPaymentFinalizationRouting:
+    @staticmethod
+    def _company_order_and_subscription():
+        company_id = uuid.uuid4()
+        plan_id = uuid.uuid4()
+        subscription = Subscription(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            user_id=uuid.uuid4(),
+            plan_id=plan_id,
+            scope=SubscriptionScope.COMPANY_RECRUITING,
+            is_free=False,
+            status=SubscriptionStatus.PENDING,
+        )
+        order = PaymentOrder(
+            id=uuid.uuid4(),
+            user_id=subscription.user_id,
+            company_id=company_id,
+            plan_id=plan_id,
+            subscription_id=subscription.id,
+            scope=SubscriptionScope.COMPANY_RECRUITING,
+            amount=499_000,
+            currency="VND",
+            provider=PaymentProvider.VNPAY,
+            internal_order_id="VNPAY_COMPANY_ROUTE_001",
+            status=PaymentOrderStatus.PENDING,
+        )
+        return company_id, subscription, order
+
+    def test_company_ipn_activation_failure_returns_99_after_rollback(self):
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        company_id, subscription, order = (
+            self._company_order_and_subscription()
+        )
+        service._acquire_company_applock = AsyncMock()
+        service._lock_payment_order = AsyncMock(return_value=order)
+        service._lock_subscription = AsyncMock(return_value=subscription)
+        service.payment_transactions.exists_by_provider_transaction_id = AsyncMock(
+            return_value=False
+        )
+        service.vnpay.parse_response_code = MagicMock(return_value=(True, "ok"))
+        service.vnpay.parse_transaction_status = MagicMock(
+            return_value=(True, "ok")
+        )
+        service._activate_company_subscription_for_payment = AsyncMock(
+            side_effect=RuntimeError("receipt outbox unavailable")
+        )
+
+        result = asyncio.run(
+            service._process_company_vnpay_ipn(
+                order,
+                {
+                    "vnp_Amount": str(order.amount * 100),
+                    "vnp_ResponseCode": "00",
+                    "vnp_TransactionStatus": "00",
+                    "vnp_TransactionNo": "TXN_COMPANY_FAIL_001",
+                    "vnp_BankTranNo": "BANK_001",
+                },
+                "127.0.0.1",
+            )
+        )
+
+        assert result == {
+            "RspCode": "99",
+            "Message": "Internal processing error",
+        }
+        session.rollback.assert_awaited_once()
+        service._acquire_company_applock.assert_awaited_once_with(company_id)
+        service._activate_company_subscription_for_payment.assert_awaited_once()
+
+    def test_company_querydr_takes_applock_before_order_and_company_path(self):
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        company_id, subscription, order = (
+            self._company_order_and_subscription()
+        )
+        calls: list[str] = []
+
+        async def _applock(locked_company_id):
+            calls.append(f"applock:{locked_company_id}")
+
+        async def _lock_order(internal_order_id):
+            calls.append(f"order:{internal_order_id}")
+            return order
+
+        async def _lock_subscription(subscription_id):
+            calls.append(f"subscription:{subscription_id}")
+            return subscription
+
+        async def _activate(**kwargs):
+            calls.append("activate-company")
+            return subscription
+
+        service._acquire_company_applock = AsyncMock(side_effect=_applock)
+        service._lock_payment_order = AsyncMock(side_effect=_lock_order)
+        service._lock_subscription = AsyncMock(
+            side_effect=_lock_subscription
+        )
+        service._activate_company_subscription_for_payment = AsyncMock(
+            side_effect=_activate
+        )
+        service._querydr_reference_matches = MagicMock(return_value=True)
+        service.payment_transactions.get_by_provider_transaction_id = AsyncMock(
+            return_value=None
+        )
+        service._lock_user = AsyncMock()
+
+        asyncio.run(
+            service._finalize_reconciled_success(
+                order,
+                {
+                    "vnp_ResponseCode": "00",
+                    "vnp_TransactionNo": "TXN_COMPANY_QUERYDR_001",
+                    "vnp_BankTranNo": "BANK_QR_001",
+                },
+            )
+        )
+
+        assert calls == [
+            f"applock:{company_id}",
+            f"order:{order.internal_order_id}",
+            f"subscription:{subscription.id}",
+            "activate-company",
+        ]
+        service._lock_user.assert_not_awaited()
+        service._activate_company_subscription_for_payment.assert_awaited_once()
+
+    def test_company_querydr_activation_failure_rolls_back(self):
+        session = _make_payment_service_session()
+        service = PaymentService(session)
+        company_id, subscription, order = (
+            self._company_order_and_subscription()
+        )
+        service._acquire_company_applock = AsyncMock()
+        service._lock_payment_order = AsyncMock(return_value=order)
+        service._lock_subscription = AsyncMock(return_value=subscription)
+        service._querydr_reference_matches = MagicMock(return_value=True)
+        service.payment_transactions.get_by_provider_transaction_id = AsyncMock(
+            return_value=None
+        )
+        service._activate_company_subscription_for_payment = AsyncMock(
+            side_effect=RuntimeError("receipt outbox unavailable")
+        )
+
+        asyncio.run(
+            service._finalize_reconciled_success(
+                order,
+                {
+                    "vnp_ResponseCode": "00",
+                    "vnp_TransactionNo": "TXN_COMPANY_QUERYDR_002",
+                },
+            )
+        )
+
+        session.rollback.assert_awaited_once()
+        service._activate_company_subscription_for_payment.assert_awaited_once()
+        service._acquire_company_applock.assert_awaited_once_with(company_id)

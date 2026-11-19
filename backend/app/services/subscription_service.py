@@ -15,6 +15,8 @@ from app.core.exceptions import (
     ValidationError,
 )
 from app.domain.enums import (
+    MembershipRole,
+    MembershipStatus,
     PlanAudience,
     SubscriptionScope,
     SubscriptionStatus,
@@ -24,6 +26,7 @@ from app.domain.enums import (
 )
 from app.domain.models.base import utc_now
 from app.models import (
+    CompanyMembership,
     PaymentOrder,
     RecruitmentPlan,
     RecruiterProfile,
@@ -32,6 +35,7 @@ from app.models import (
     User,
 )
 from app.repositories import (
+    CompanyMembershipRepository,
     PaymentOrderRepository,
     RecruitmentPlanRepository,
     SubscriptionRepository,
@@ -131,6 +135,9 @@ class SubscriptionService:
         self.subscriptions = SubscriptionRepository(session)
         self.plans = RecruitmentPlanRepository(session)
         self.payment_orders = PaymentOrderRepository(session)
+        self.company_memberships = CompanyMembershipRepository(
+            session, CompanyMembership
+        )
 
     async def get_current_active_subscription(
         self,
@@ -614,10 +621,11 @@ class SubscriptionService:
     ) -> int:
         """Check for expired subscriptions and persist their status.
 
-        Expiration is a lazy, database-level conditional update: rows are
-        selected oldest-first for the batch, then the UPDATE re-checks status,
-        soft-delete and ``expires_at <= now`` at write time so a concurrent
-        renewal cannot be overwritten with EXPIRED.
+        Expiration is a lazy, database-level conditional update. Company and
+        Candidate Paid rows are transitioned one exact record at a time, in
+        oldest-first order, and a row's lifecycle side effects run only when
+        its own conditional UPDATE affected exactly one row. The final sweep
+        handles only legacy Recruiter Personal rows.
         """
         if now is None:
             now = utc_now()
@@ -628,30 +636,78 @@ class SubscriptionService:
         expiring_company_paid = await self.subscriptions.get_stale_company_paid(
             now, limit=limit
         )
-        count = await self.subscriptions.expire_stale_active(now, limit=limit)
+
+        expired_company_paid: list[Subscription] = []
+        expired_candidate_paid: list[Subscription] = []
+        count = 0
+
+        for company_paid in expiring_company_paid:
+            if company_paid.company_id is None:
+                continue
+            row_count = (
+                await self.subscriptions.expire_stale_active_for_company_subscription(
+                    company_paid.id,
+                    company_paid.company_id,
+                    now,
+                )
+            )
+            if row_count == 1:
+                expired_company_paid.append(company_paid)
+                count += 1
+
+        for candidate_paid in expiring_candidate_paid:
+            row_count = (
+                await self.subscriptions.expire_stale_active_for_candidate_subscription(
+                    candidate_paid.id,
+                    candidate_paid.user_id,
+                    now,
+                )
+            )
+            if row_count == 1:
+                expired_candidate_paid.append(candidate_paid)
+                count += 1
+
+        count += await self.subscriptions.expire_stale_active(now, limit=limit)
+
+        if expired_candidate_paid:
+            notifications = NotificationService(self.session)
+            for candidate_paid in expired_candidate_paid:
+                await notifications.notify_candidate_returned_to_free(
+                    user_id=candidate_paid.user_id,
+                    paid_subscription_id=candidate_paid.id,
+                    reason="expired",
+                )
+
+        if expired_company_paid:
+            entitlement_service = CompanyEntitlementService(self.session)
+            notification_service = NotificationService(self.session)
+            for company_paid in expired_company_paid:
+                memberships = await self.company_memberships.list_by_company(
+                    company_paid.company_id,
+                    include_revoked=False,
+                )
+                plan_name = (
+                    company_paid.plan.name
+                    if company_paid.plan is not None
+                    else None
+                )
+                for membership in memberships:
+                    if (
+                        membership.role != MembershipRole.ADMIN
+                        or membership.status != MembershipStatus.ACTIVE
+                    ):
+                        continue
+                    await notification_service.notify_company_returned_to_free(
+                        user_id=membership.user_id,
+                        paid_subscription_id=company_paid.id,
+                        plan_name=plan_name,
+                    )
+
+                await entitlement_service.provision_company_free_subscription(
+                    company_paid.company_id, now=now
+                )
 
         if count > 0:
-            if expiring_candidate_paid:
-                notifications = NotificationService(self.session)
-                for candidate_paid in expiring_candidate_paid:
-                    await self.session.refresh(candidate_paid)
-                    if candidate_paid.status != SubscriptionStatus.EXPIRED:
-                        continue
-                    await notifications.notify_candidate_returned_to_free(
-                        user_id=candidate_paid.user_id,
-                        paid_subscription_id=candidate_paid.id,
-                        reason="expired",
-                    )
-            if expiring_company_paid:
-                entitlement_service = CompanyEntitlementService(self.session)
-                for company_paid in expiring_company_paid:
-                    await self.session.refresh(company_paid)
-                    if company_paid.status != SubscriptionStatus.EXPIRED:
-                        continue
-                    if company_paid.company_id is not None:
-                        await entitlement_service.provision_company_free_subscription(
-                            company_paid.company_id, now=now
-                        )
             try:
                 await self.session.commit()
             except Exception:

@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,10 +11,19 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidTransitionException,
 )
-from app.domain.enums import SubscriptionStatus, UserRole
+from app.domain.enums import (
+    MembershipRole,
+    MembershipStatus,
+    SubscriptionStatus,
+    UserRole,
+)
 from app.domain.models.base import utc_now
 from app.models import RecruitmentPlan, RecruiterProfile, Subscription, User
-from app.repositories import RecruitmentPlanRepository, SubscriptionRepository
+from app.repositories import (
+    CompanyMembershipRepository,
+    RecruitmentPlanRepository,
+    SubscriptionRepository,
+)
 from app.services.subscription_service import SubscriptionService
 
 
@@ -101,6 +111,8 @@ def make_service(session: MagicMock) -> SubscriptionService:
     service = SubscriptionService(session)
     service.subscriptions = AsyncMock(spec=SubscriptionRepository)
     service.plans = AsyncMock(spec=RecruitmentPlanRepository)
+    service.company_memberships = AsyncMock(spec=CompanyMembershipRepository)
+    service.company_memberships.list_by_company.return_value = []
     return service
 
 
@@ -115,6 +127,8 @@ def _patch_activation_notifier(monkeypatch):
     """
     mock_cls = MagicMock()
     mock_cls.return_value.notify_subscription_activated = AsyncMock()
+    mock_cls.return_value.notify_company_returned_to_free = AsyncMock()
+    mock_cls.return_value.notify_candidate_returned_to_free = AsyncMock()
     mock_cls.return_value.create_notification = AsyncMock()
     monkeypatch.setattr(
         "app.services.subscription_service.NotificationService", mock_cls
@@ -830,9 +844,12 @@ class TestCompanyPaidExpirationFallback:
 
         service.subscriptions.get_stale_candidate_paid = AsyncMock(return_value=[])
         service.subscriptions.get_stale_company_paid = AsyncMock(return_value=[paid_sub])
-        service.subscriptions.expire_stale_active = AsyncMock(return_value=1)
+        service.subscriptions.expire_stale_active_for_company_subscription = AsyncMock(
+            return_value=1
+        )
+        service.subscriptions.expire_stale_active = AsyncMock(return_value=0)
 
-        async def _refresh(sub):
+        async def _refresh(sub, **kwargs):
             sub.status = SubscriptionStatus.EXPIRED
 
         session.refresh.side_effect = _refresh
@@ -850,3 +867,307 @@ class TestCompanyPaidExpirationFallback:
                 company_id, now=now
             )
             session.commit.assert_awaited()
+
+
+class TestCompanyPaidExpirationNotifications:
+    @staticmethod
+    def _memberships(admin_ids, *, include_non_admins: bool = True):
+        memberships = [
+            SimpleNamespace(
+                user_id=admin_id,
+                role=MembershipRole.ADMIN,
+                status=MembershipStatus.ACTIVE,
+            )
+            for admin_id in admin_ids
+        ]
+        if include_non_admins:
+            memberships.extend(
+                [
+                    SimpleNamespace(
+                        user_id=uuid.uuid4(),
+                        role=MembershipRole.RECRUITER,
+                        status=MembershipStatus.ACTIVE,
+                    ),
+                    SimpleNamespace(
+                        user_id=uuid.uuid4(),
+                        role=MembershipRole.INTERVIEWER,
+                        status=MembershipStatus.ACTIVE,
+                    ),
+                    SimpleNamespace(
+                        user_id=uuid.uuid4(),
+                        role=MembershipRole.ADMIN,
+                        status=MembershipStatus.REVOKED,
+                    ),
+                ]
+            )
+        return memberships
+
+    def test_notifies_each_active_admin_for_the_transitioned_subscription(
+        self, _patch_activation_notifier
+    ):
+        session = make_session()
+        service = make_service(session)
+        company_id = uuid.uuid4()
+        now = utc_now()
+        admin_a, admin_b = uuid.uuid4(), uuid.uuid4()
+        paid_sub = Subscription(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            user_id=uuid.uuid4(),
+            plan_id=uuid.uuid4(),
+            status=SubscriptionStatus.ACTIVE,
+            is_free=False,
+            scope="company_recruiting",
+            expires_at=now - timedelta(days=1),
+        )
+
+        service.subscriptions.get_stale_candidate_paid = AsyncMock(return_value=[])
+        service.subscriptions.get_stale_company_paid = AsyncMock(
+            return_value=[paid_sub]
+        )
+        service.subscriptions.expire_stale_active_for_company_subscription = AsyncMock(
+            return_value=1
+        )
+        service.subscriptions.expire_stale_active = AsyncMock(return_value=0)
+        service.company_memberships.list_by_company = AsyncMock(
+            return_value=self._memberships([admin_a, admin_b])
+        )
+
+        async def _refresh(sub, **kwargs):
+            sub.status = SubscriptionStatus.EXPIRED
+
+        session.refresh.side_effect = _refresh
+
+        with patch(
+            "app.services.subscription_service.CompanyEntitlementService"
+        ) as entitlement_cls:
+            entitlement_cls.return_value.provision_company_free_subscription = (
+                AsyncMock()
+            )
+            count = asyncio.run(
+                service.check_and_expire_subscriptions(now=now)
+            )
+
+        assert count == 1
+        notify_mock = (
+            _patch_activation_notifier.return_value
+            .notify_company_returned_to_free
+        )
+        assert notify_mock.await_count == 2
+        assert {
+            call.kwargs["user_id"] for call in notify_mock.await_args_list
+        } == {admin_a, admin_b}
+        for call in notify_mock.await_args_list:
+            assert call.kwargs["paid_subscription_id"] == paid_sub.id
+        entitlement_cls.return_value.provision_company_free_subscription.assert_awaited_once_with(
+            company_id, now=now
+        )
+
+    def test_does_not_notify_when_the_row_was_not_transitioned(
+        self, _patch_activation_notifier
+    ):
+        session = make_session()
+        service = make_service(session)
+        company_id = uuid.uuid4()
+        now = utc_now()
+        paid_sub = Subscription(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            user_id=uuid.uuid4(),
+            plan_id=uuid.uuid4(),
+            status=SubscriptionStatus.ACTIVE,
+            is_free=False,
+            scope="company_recruiting",
+            expires_at=now - timedelta(days=1),
+        )
+
+        service.subscriptions.get_stale_candidate_paid = AsyncMock(return_value=[])
+        service.subscriptions.get_stale_company_paid = AsyncMock(
+            return_value=[paid_sub]
+        )
+        # A concurrent worker renewed this row, so the exact conditional
+        # UPDATE affects zero rows even though the row was selected earlier.
+        service.subscriptions.expire_stale_active_for_company_subscription = AsyncMock(
+            return_value=0
+        )
+        service.subscriptions.expire_stale_active = AsyncMock(return_value=0)
+        service.company_memberships.list_by_company = AsyncMock(
+            return_value=self._memberships([uuid.uuid4()])
+        )
+        session.refresh.side_effect = None
+
+        with patch(
+            "app.services.subscription_service.CompanyEntitlementService"
+        ) as entitlement_cls:
+            entitlement_cls.return_value.provision_company_free_subscription = (
+                AsyncMock()
+            )
+            asyncio.run(service.check_and_expire_subscriptions(now=now))
+
+        notify_mock = (
+            _patch_activation_notifier.return_value
+            .notify_company_returned_to_free
+        )
+        notify_mock.assert_not_awaited()
+        entitlement_cls.return_value.provision_company_free_subscription.assert_not_awaited()
+
+    def test_retry_for_the_same_subscription_uses_a_stable_notification_identity(
+        self, _patch_activation_notifier
+    ):
+        session = make_session()
+        service = make_service(session)
+        company_id = uuid.uuid4()
+        now = utc_now()
+        admin_id = uuid.uuid4()
+        paid_sub = Subscription(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            user_id=uuid.uuid4(),
+            plan_id=uuid.uuid4(),
+            status=SubscriptionStatus.ACTIVE,
+            is_free=False,
+            scope="company_recruiting",
+            expires_at=now - timedelta(days=1),
+        )
+
+        service.subscriptions.get_stale_candidate_paid = AsyncMock(return_value=[])
+        service.subscriptions.get_stale_company_paid = AsyncMock(
+            return_value=[paid_sub]
+        )
+        service.subscriptions.expire_stale_active_for_company_subscription = AsyncMock(
+            return_value=1
+        )
+        service.subscriptions.expire_stale_active = AsyncMock(return_value=0)
+        service.company_memberships.list_by_company = AsyncMock(
+            return_value=self._memberships([admin_id])
+        )
+
+        async def _refresh(sub, **kwargs):
+            sub.status = SubscriptionStatus.EXPIRED
+
+        session.refresh.side_effect = _refresh
+
+        with patch(
+            "app.services.subscription_service.CompanyEntitlementService"
+        ) as entitlement_cls:
+            entitlement_cls.return_value.provision_company_free_subscription = (
+                AsyncMock()
+            )
+            asyncio.run(service.check_and_expire_subscriptions(now=now))
+            asyncio.run(service.check_and_expire_subscriptions(now=now))
+
+        notify_mock = (
+            _patch_activation_notifier.return_value
+            .notify_company_returned_to_free
+        )
+        assert notify_mock.await_count == 2
+        identities = {
+            call.kwargs["paid_subscription_id"]
+            for call in notify_mock.await_args_list
+        }
+        assert identities == {paid_sub.id}
+
+    def test_processes_company_then_candidate_then_legacy_sweep(self, _patch_activation_notifier):
+        session = make_session()
+        service = make_service(session)
+        now = utc_now()
+        company_paid = Subscription(
+            id=uuid.uuid4(),
+            company_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            plan_id=uuid.uuid4(),
+            status=SubscriptionStatus.ACTIVE,
+            is_free=False,
+            scope="company_recruiting",
+            expires_at=now - timedelta(days=1),
+        )
+        candidate_paid = Subscription(
+            id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            plan_id=uuid.uuid4(),
+            status=SubscriptionStatus.ACTIVE,
+            is_free=False,
+            scope="candidate_personal",
+            expires_at=now - timedelta(days=1),
+        )
+        service.subscriptions.get_stale_company_paid = AsyncMock(
+            return_value=[company_paid]
+        )
+        service.subscriptions.get_stale_candidate_paid = AsyncMock(
+            return_value=[candidate_paid]
+        )
+
+        calls: list[str] = []
+
+        async def _expire_company(*args):
+            calls.append("company")
+            return 0
+
+        async def _expire_candidate(*args):
+            calls.append("candidate")
+            return 1
+
+        async def _expire_legacy(*args, **kwargs):
+            calls.append("legacy")
+            return 1
+
+        service.subscriptions.expire_stale_active_for_company_subscription = AsyncMock(
+            side_effect=_expire_company
+        )
+        service.subscriptions.expire_stale_active_for_candidate_subscription = AsyncMock(
+            side_effect=_expire_candidate
+        )
+        service.subscriptions.expire_stale_active = AsyncMock(
+            side_effect=_expire_legacy
+        )
+
+        count = asyncio.run(service.check_and_expire_subscriptions(now=now, limit=5))
+
+        assert calls == ["company", "candidate", "legacy"]
+        assert count == 2
+        service.subscriptions.get_stale_company_paid.assert_awaited_once_with(
+            now, limit=5
+        )
+        service.subscriptions.get_stale_candidate_paid.assert_awaited_once_with(
+            now, limit=5
+        )
+        service.subscriptions.expire_stale_active_for_company_subscription.assert_awaited_once_with(
+            company_paid.id, company_paid.company_id, now
+        )
+        service.subscriptions.expire_stale_active_for_candidate_subscription.assert_awaited_once_with(
+            candidate_paid.id, candidate_paid.user_id, now
+        )
+        service.subscriptions.expire_stale_active.assert_awaited_once_with(
+            now, limit=5
+        )
+        session.commit.assert_awaited_once()
+
+    def test_candidate_exact_zero_skips_notification(self, _patch_activation_notifier):
+        session = make_session()
+        service = make_service(session)
+        now = utc_now()
+        candidate_paid = Subscription(
+            id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            plan_id=uuid.uuid4(),
+            status=SubscriptionStatus.ACTIVE,
+            is_free=False,
+            scope="candidate_personal",
+            expires_at=now - timedelta(days=1),
+        )
+        service.subscriptions.get_stale_company_paid = AsyncMock(return_value=[])
+        service.subscriptions.get_stale_candidate_paid = AsyncMock(
+            return_value=[candidate_paid]
+        )
+        service.subscriptions.expire_stale_active_for_candidate_subscription = AsyncMock(
+            return_value=0
+        )
+        service.subscriptions.expire_stale_active = AsyncMock(return_value=0)
+
+        count = asyncio.run(service.check_and_expire_subscriptions(now=now))
+
+        assert count == 0
+        (
+            _patch_activation_notifier.return_value.notify_candidate_returned_to_free
+        ).assert_not_awaited()
+        session.commit.assert_not_awaited()

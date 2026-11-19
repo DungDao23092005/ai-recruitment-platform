@@ -7,6 +7,8 @@ from app.repositories import NotificationRepository
 from app.services.notification_service import (
     ACCOUNT_UNLOCKED_TITLE,
     ACCOUNT_UNLOCKED_TYPE,
+    COMPANY_RETURNED_TO_FREE_TITLE,
+    COMPANY_RETURNED_TO_FREE_TYPE,
     SUBSCRIPTION_ACTIVATED_TITLE,
     NotificationService,
     _format_expiry_date,
@@ -67,6 +69,10 @@ class TestNotifySubscriptionActivated:
         assert kwargs["notification_type"] == "subscription_activated"
         assert kwargs["entity_type"] == "subscription"
         assert kwargs["entity_id"] == sub_id
+        assert kwargs["notification_id"] == uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"subscription_activated:{user_id}:{sub_id}",
+        )
         assert "Professional" in kwargs["content"]
         assert "31/12/2026" in kwargs["content"]
 
@@ -168,6 +174,115 @@ class TestNotifySubscriptionRevoked:
 
         kwargs = service.create_notification.await_args.kwargs
         assert "Gói dịch vụ của bạn" in kwargs["content"]
+
+
+class TestNotifyCompanyReturnedToFree:
+    def test_builds_payload_with_expired_subscription_identity(self):
+        service = make_service()
+        service.notifications.exists_by_entity = AsyncMock(return_value=False)
+        user_id = uuid.uuid4()
+        sub_id = uuid.uuid4()
+
+        result = asyncio.run(
+            service.notify_company_returned_to_free(
+                user_id=user_id,
+                paid_subscription_id=sub_id,
+                plan_name="Professional",
+            )
+        )
+
+        assert result == "created"
+        service.notifications.exists_by_entity.assert_awaited_once_with(
+            user_id=user_id,
+            entity_type="subscription",
+            entity_id=sub_id,
+            notification_type=COMPANY_RETURNED_TO_FREE_TYPE,
+        )
+        kwargs = service.create_notification.await_args.kwargs
+        assert kwargs["user_id"] == user_id
+        assert kwargs["title"] == COMPANY_RETURNED_TO_FREE_TITLE
+        assert kwargs["notification_type"] == "company_returned_to_free"
+        assert kwargs["entity_type"] == "subscription"
+        assert kwargs["entity_id"] == sub_id
+        assert kwargs["notification_id"] == uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"company_returned_to_free:{user_id}:{sub_id}",
+        )
+        assert "Professional" in kwargs["content"]
+        assert "đã hết hạn" in kwargs["content"]
+        assert "gói miễn phí" in kwargs["content"]
+        # No quota figures are invented for an expiration event.
+        assert "hạn mức" not in kwargs["content"]
+
+    def test_skips_when_already_notified(self):
+        service = make_service()
+        service.notifications.exists_by_entity = AsyncMock(return_value=True)
+
+        result = asyncio.run(
+            service.notify_company_returned_to_free(
+                user_id=uuid.uuid4(),
+                paid_subscription_id=uuid.uuid4(),
+            )
+        )
+
+        assert result is None
+        service.create_notification.assert_not_awaited()
+
+    def test_distinct_subscriptions_get_distinct_ids(self):
+        service = make_service()
+        service.notifications.exists_by_entity = AsyncMock(return_value=False)
+        user_id = uuid.uuid4()
+        first_sub_id = uuid.uuid4()
+        second_sub_id = uuid.uuid4()
+
+        asyncio.run(
+            service.notify_company_returned_to_free(
+                user_id=user_id,
+                paid_subscription_id=first_sub_id,
+            )
+        )
+        first_id = service.create_notification.await_args.kwargs["notification_id"]
+        asyncio.run(
+            service.notify_company_returned_to_free(
+                user_id=user_id,
+                paid_subscription_id=second_sub_id,
+            )
+        )
+        second_id = service.create_notification.await_args.kwargs["notification_id"]
+
+        assert first_id != second_id
+
+
+class TestCreateNotificationDeterministicId:
+    def test_explicit_notification_id_is_persisted(self):
+        session = MagicMock()
+        session.add = MagicMock()
+        session.flush = AsyncMock()
+        explicit_id = uuid.uuid4()
+
+        async def _mock_refresh(instance):
+            instance.created_at = datetime.now(timezone.utc)
+            instance.is_read = False
+
+        session.refresh = AsyncMock(side_effect=_mock_refresh)
+        service = NotificationService(session)
+
+        with patch(
+            "app.services.notification_service.TransactionActionManager"
+        ):
+            result = asyncio.run(
+                service.create_notification(
+                    user_id=uuid.uuid4(),
+                    title="Tiêu đề",
+                    content="Nội dung",
+                    notification_type="test_type",
+                    notification_id=explicit_id,
+                )
+            )
+
+        added = session.add.call_args.args[0]
+        assert added.id == explicit_id
+        assert result.id == explicit_id
 
 
 class TestNotifyAccountUnlocked:

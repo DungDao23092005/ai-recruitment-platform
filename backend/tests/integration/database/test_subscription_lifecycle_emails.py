@@ -21,6 +21,9 @@ settings.VNPAY_HASH_SECRET = "testhashsecret123"
 
 from app.database.session import async_session_factory  # noqa: E402
 from app.domain.enums import (  # noqa: E402
+    CompanySize,
+    MembershipRole,
+    MembershipStatus,
     PaymentOrderStatus,
     PaymentProvider,
     PlanAudience,
@@ -28,7 +31,14 @@ from app.domain.enums import (  # noqa: E402
     SubscriptionStatus,
     UserRole,
 )
-from app.models import PaymentOrder, RecruitmentPlan, Subscription, User  # noqa: E402
+from app.models import (  # noqa: E402
+    Company,
+    CompanyMembership,
+    PaymentOrder,
+    RecruitmentPlan,
+    Subscription,
+    User,
+)
 from app.services.admin_subscription_service import AdminSubscriptionService  # noqa: E402
 from app.services.email_outbox_worker import (  # noqa: E402
     drain_default_worker_dispatch_tasks,
@@ -104,6 +114,74 @@ async def _seed_active_subscription(session, user, plan) -> Subscription:
     session.add(sub)
     await session.flush()
     return sub
+
+
+async def _seed_company(session) -> Company:
+    suffix = uuid.uuid4().hex[:10]
+    company = Company(
+        name=f"Company {suffix}",
+        slug=f"company-{suffix}",
+        tax_code=f"TAX{suffix}".upper(),
+        size=CompanySize.SME,
+    )
+    session.add(company)
+    await session.flush()
+    return company
+
+
+async def _seed_membership(
+    session,
+    company: Company,
+    user: User,
+    *,
+    role: MembershipRole = MembershipRole.ADMIN,
+    status: MembershipStatus = MembershipStatus.ACTIVE,
+) -> CompanyMembership:
+    membership = CompanyMembership(
+        company_id=company.id,
+        user_id=user.id,
+        role=role,
+        status=status,
+    )
+    session.add(membership)
+    await session.flush()
+    return membership
+
+
+async def _seed_company_pending_order(
+    session,
+    *,
+    tag: str,
+    purchaser: User,
+    company: Company,
+    plan: RecruitmentPlan,
+) -> PaymentOrder:
+    sub = Subscription(
+        user_id=purchaser.id,
+        company_id=company.id,
+        plan_id=plan.id,
+        scope=SubscriptionScope.COMPANY_RECRUITING,
+        is_free=False,
+        status=SubscriptionStatus.PENDING,
+    )
+    session.add(sub)
+    await session.flush()
+    order = PaymentOrder(
+        user_id=purchaser.id,
+        company_id=company.id,
+        plan_id=plan.id,
+        subscription_id=sub.id,
+        scope=SubscriptionScope.COMPANY_RECRUITING,
+        amount=plan.price,
+        currency="VND",
+        provider=PaymentProvider.VNPAY,
+        internal_order_id=f"VNPAY_COMPANY_{tag}_{uuid.uuid4().hex[:8]}",
+        status=PaymentOrderStatus.PENDING,
+        expired_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+    )
+    session.add(order)
+    await session.flush()
+    return order
 
 
 def _ipn_params(order: PaymentOrder, provider: VNPAYProvider) -> dict:
@@ -389,6 +467,105 @@ def test_vnpay_querydr_success_sends_enriched_receipt(run_async, email_spy):
     run_async(_run())
 
 
+def test_company_vnpay_ipn_sends_receipt_only_to_purchaser(run_async, email_spy):
+    async def _run():
+        async with async_session_factory() as setup:
+            plan = await _seed_plan(
+                setup,
+                price=499_000,
+                name="Company Professional",
+                plan_audience=PlanAudience.COMPANY,
+            )
+            company = await _seed_company(setup)
+            purchaser = await _seed_user(
+                setup, role=UserRole.RECRUITER, tag="purchaser"
+            )
+            admin = await _seed_user(setup, role=UserRole.RECRUITER, tag="admin")
+            await _seed_membership(
+                setup, company, purchaser, role=MembershipRole.RECRUITER
+            )
+            await _seed_membership(
+                setup, company, admin, role=MembershipRole.ADMIN
+            )
+            order = await _seed_company_pending_order(
+                setup,
+                tag="RCPT",
+                purchaser=purchaser,
+                company=company,
+                plan=plan,
+            )
+            await setup.commit()
+            order_id = order.id
+            purchaser_email = purchaser.email
+            admin_email = admin.email
+
+        provider = VNPAYProvider()
+        async with async_session_factory() as session:
+            order_row = await session.get(PaymentOrder, order_id)
+            result = await PaymentService(session).process_vnpay_ipn(
+                _ipn_params(order_row, provider), "127.0.0.1"
+            )
+            assert result["RspCode"] == "00", result
+            await drain_default_worker_dispatch_tasks(timeout=5)
+
+        assert email_spy.await_count == 1
+        to_email, subject, html, text = email_spy.await_args.args
+        assert to_email == purchaser_email
+        assert to_email != admin_email
+        assert subject == SUBJECT_PAYMENT_RECEIPT.format(
+            plan_name="Company Professional"
+        )
+        for body in (html, text):
+            assert "Company Professional" in body
+            assert "499.000 ₫" in body
+            assert order_row.internal_order_id in body
+
+    run_async(_run())
+
+
+def test_company_vnpay_failed_payment_sends_no_receipt(run_async, email_spy):
+    async def _run():
+        async with async_session_factory() as setup:
+            plan = await _seed_plan(
+                setup,
+                price=499_000,
+                name="Company Professional",
+                plan_audience=PlanAudience.COMPANY,
+            )
+            company = await _seed_company(setup)
+            purchaser = await _seed_user(
+                setup, role=UserRole.RECRUITER, tag="company-fail"
+            )
+            await _seed_membership(
+                setup, company, purchaser, role=MembershipRole.ADMIN
+            )
+            order = await _seed_company_pending_order(
+                setup,
+                tag="FAIL",
+                purchaser=purchaser,
+                company=company,
+                plan=plan,
+            )
+            await setup.commit()
+            order_id = order.id
+
+        provider = VNPAYProvider()
+        async with async_session_factory() as session:
+            order_row = await session.get(PaymentOrder, order_id)
+            params = _ipn_params(order_row, provider)
+            params["vnp_ResponseCode"] = "24"
+            params["vnp_TransactionStatus"] = "02"
+            params["vnp_SecureHash"] = provider.generate_secure_hash(params)
+            await PaymentService(session).process_vnpay_ipn(
+                params, "127.0.0.1"
+            )
+            await drain_default_worker_dispatch_tasks(timeout=5)
+
+        email_spy.assert_not_awaited()
+
+    run_async(_run())
+
+
 def test_vnpay_failed_payment_sends_no_receipt(run_async, email_spy):
     async def _run():
         async with async_session_factory() as setup:
@@ -428,5 +605,86 @@ def test_vnpay_invalid_signature_sends_no_receipt(run_async, email_spy):
             await drain_default_worker_dispatch_tasks(timeout=5)
 
         email_spy.assert_not_awaited()
+
+    run_async(_run())
+
+def test_company_vnpay_querydr_success_routes_through_company_activation(
+    run_async, email_spy
+):
+    async def _run():
+        async with async_session_factory() as setup:
+            plan = await _seed_plan(
+                setup,
+                price=499_000,
+                name="Company Professional",
+                plan_audience=PlanAudience.COMPANY,
+            )
+            company = await _seed_company(setup)
+            purchaser = await _seed_user(
+                setup, role=UserRole.RECRUITER, tag="company-querydr"
+            )
+            admin = await _seed_user(
+                setup, role=UserRole.RECRUITER, tag="company-querydr-admin"
+            )
+            await _seed_membership(
+                setup, company, purchaser, role=MembershipRole.RECRUITER
+            )
+            await _seed_membership(
+                setup, company, admin, role=MembershipRole.ADMIN
+            )
+            order = await _seed_company_pending_order(
+                setup,
+                tag="QRY",
+                purchaser=purchaser,
+                company=company,
+                plan=plan,
+            )
+            await setup.commit()
+            order_id = order.id
+            purchaser_email = purchaser.email
+            admin_email = admin.email
+
+        provider = VNPAYProvider()
+        async with async_session_factory() as session:
+            svc = PaymentService(session)
+            order_row = await session.get(PaymentOrder, order_id)
+            body = {
+                "vnp_ResponseCode": "00",
+                "vnp_TransactionStatus": "00",
+                "vnp_TmnCode": settings.VNPAY_TMN_CODE,
+                "vnp_TxnRef": order_row.internal_order_id,
+                "vnp_Amount": str(order_row.amount * 100),
+                "vnp_TransactionType": "01",
+                "vnp_TransactionNo": "COMPANY_QRY_9988",
+                "vnp_PayDate": "20260505101530",
+                "vnp_OrderInfo": "Query company transaction",
+            }
+            body["vnp_SecureHash"] = provider.generate_query_response_secure_hash(
+                body
+            )
+
+            with patch.object(
+                svc, "_send_querydr_request", new=AsyncMock(return_value=body)
+            ):
+                await svc._reconcile_pending_vnpay_payment(order_row)
+            await drain_default_worker_dispatch_tasks(timeout=5)
+
+        async with async_session_factory() as check:
+            order_row = await check.get(PaymentOrder, order_id)
+            assert order_row.status == PaymentOrderStatus.PAID
+            subscription = await check.get(
+                Subscription, order_row.subscription_id
+            )
+            assert subscription.status == SubscriptionStatus.ACTIVE
+
+        assert email_spy.await_count == 1
+        to_email, subject, html, text = email_spy.await_args.args
+        assert to_email == purchaser_email
+        assert to_email != admin_email
+        assert subject == SUBJECT_PAYMENT_RECEIPT.format(
+            plan_name="Company Professional"
+        )
+        assert "COMPANY_QRY_9988" in text
+        assert order_row.internal_order_id in html
 
     run_async(_run())
