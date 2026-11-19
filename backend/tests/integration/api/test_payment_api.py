@@ -28,9 +28,21 @@ from app.domain.enums import (
     SubscriptionStatus,
     PaymentProvider,
     PaymentOrderStatus,
+    PaymentTransactionStatus,
 )
-from app.models import Subscription, User
+from app.models import (
+    EmailOutbox,
+    Notification,
+    PaymentTransaction,
+    Subscription,
+    User,
+)
+from app.services.notification_service import (
+    SUBSCRIPTION_ACTIVATED_TYPE,
+    SUBSCRIPTION_ENTITY_TYPE,
+)
 from app.services.payment_service import PaymentService
+from app.services.subscription_email_service import EVENT_PAYMENT_RECEIPT
 from tests.integration import company_billing_helpers as cbh
 from app.schemas.payment import (
     VNPayCreatePaymentRequest,
@@ -1671,6 +1683,7 @@ def test_p39_database_error_during_company_activation_rolls_back_all_changes(
             plan = await cbh._create_plan(session, price=500_000)
             await session.commit()
             user_id, company_id, plan_id = user.id, company.id, plan.id
+            purchaser_email = user.email
 
         async with async_session_factory() as session:
             _, ref, sub_id = await PaymentService(
@@ -1688,10 +1701,13 @@ def test_p39_database_error_during_company_activation_rolls_back_all_changes(
                 raise RuntimeError("simulated db failure")
 
             s.commit = failing_commit
-            with pytest.raises(RuntimeError, match="simulated db failure"):
-                await PaymentService(s).process_vnpay_ipn(
-                    ipn_params, "127.0.0.1"
-                )
+            response = await PaymentService(s).process_vnpay_ipn(
+                ipn_params, "127.0.0.1"
+            )
+            assert response == {
+                "RspCode": "99",
+                "Message": "Internal processing error",
+            }
 
         async with async_session_factory() as check:
             order = await check.scalar(
@@ -1702,6 +1718,38 @@ def test_p39_database_error_during_company_activation_rolls_back_all_changes(
             sub = await check.get(Subscription, sub_id)
             assert order.status == PaymentOrderStatus.PENDING
             assert sub.status == SubscriptionStatus.PENDING
+
+            successful_transactions = (
+                await check.execute(
+                    select(PaymentTransaction).where(
+                        PaymentTransaction.payment_order_id == order.id,
+                        PaymentTransaction.status == PaymentTransactionStatus.SUCCESS,
+                    )
+                )
+            ).scalars().all()
+            assert successful_transactions == []
+
+            activation_notifications = (
+                await check.execute(
+                    select(Notification).where(
+                        Notification.entity_type == SUBSCRIPTION_ENTITY_TYPE,
+                        Notification.entity_id == sub_id,
+                        Notification.notification_type == SUBSCRIPTION_ACTIVATED_TYPE,
+                    )
+                )
+            ).scalars().all()
+            assert activation_notifications == []
+
+            receipt_rows = (
+                await check.execute(
+                    select(EmailOutbox).where(
+                        EmailOutbox.event_type == EVENT_PAYMENT_RECEIPT,
+                        EmailOutbox.to_email == purchaser_email,
+                        EmailOutbox.idempotency_key == f"payment_receipt:{ref}",
+                    )
+                )
+            ).scalars().all()
+            assert receipt_rows == []
 
     run_async(_run())
 
