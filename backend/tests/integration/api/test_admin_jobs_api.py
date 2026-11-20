@@ -70,6 +70,7 @@ class TestAdminJobsList:
         assert len(data["items"]) == 3
         assert data["skip"] == 0
         assert data["limit"] == 10
+        assert all(item["company_name"] == company["name"] for item in data["items"])
 
     def test_pagination_skip_0_limit_2(self, admin_client, jobs):
         resp = run(admin_client.get(f"{API_V1}/admin/jobs?skip=0&limit=2"))

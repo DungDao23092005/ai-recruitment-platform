@@ -6,6 +6,7 @@ import { AdminJobsPage } from './AdminJobsPage'
 import { AuthProvider } from '@/contexts/AuthContext'
 import * as adminApi from '@/api/admin'
 import * as authApi from '@/api/auth'
+import * as jobsApi from '@/api/jobs'
 import type { User } from '@/types/auth'
 
 const adminUser: User = {
@@ -76,8 +77,15 @@ vi.mock('@/api/auth', () => ({
   getCurrentUser: vi.fn(),
 }))
 
+vi.mock('@/api/jobs', () => ({
+  updateMyJobStatus: vi.fn(),
+  deleteMyJob: vi.fn(),
+}))
+
 const mockedGetAdminJobs = vi.mocked(adminApi.getAdminJobs)
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
+const mockedUpdateMyJobStatus = vi.mocked(jobsApi.updateMyJobStatus)
+const mockedDeleteMyJob = vi.mocked(jobsApi.deleteMyJob)
 
 function renderAdminJobsPage(user: User | null = adminUser) {
   mockedGetCurrentUser.mockResolvedValue(user)
@@ -90,6 +98,8 @@ function renderAdminJobsPage(user: User | null = adminUser) {
       <AuthProvider>
         <Routes>
           <Route path="/admin/jobs" element={<AdminJobsPage />} />
+          <Route path="/admin/jobs/:id/edit" element={<div data-testid="admin-job-edit-page">Trang sửa tin tuyển dụng</div>} />
+          <Route path="/admin/jobs/:id/applicants" element={<div data-testid="admin-job-applicants-page">Trang ứng viên</div>} />
         </Routes>
       </AuthProvider>
     </MemoryRouter>,
@@ -265,5 +275,335 @@ describe('AdminJobsPage', () => {
       expect(screen.getByText('Job 11')).toBeInTheDocument()
     })
     expect(screen.getByText('Trang 2 / 2')).toBeInTheDocument()
+  })
+
+  describe('Status Change (MOD-03)', () => {
+    it('clicking the status-change button opens the status dialog for the selected job', async () => {
+      mockedGetAdminJobs.mockResolvedValue({
+        items: mockJobs,
+        total: mockJobs.length,
+        skip: 0,
+        limit: 10,
+      })
+
+      renderAdminJobsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Đổi trạng thái Senior Frontend Engineer' }))
+
+      expect(screen.getByRole('heading', { name: 'Đổi trạng thái tin tuyển dụng' })).toBeInTheDocument()
+      expect(screen.getByText(/Chọn trạng thái mới cho tin tuyển dụng/)).toBeInTheDocument()
+    })
+
+    it('displays only permitted status transitions for the selected job', async () => {
+      mockedGetAdminJobs.mockResolvedValue({
+        items: mockJobs,
+        total: mockJobs.length,
+        skip: 0,
+        limit: 10,
+      })
+
+      renderAdminJobsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      })
+
+      // job-1 status is published -> permitted transition is only 'closed' (Đã đóng)
+      fireEvent.click(screen.getByRole('button', { name: 'Đổi trạng thái Senior Frontend Engineer' }))
+
+      expect(screen.getByRole('option', { name: 'Đã đóng' })).toBeInTheDocument()
+      expect(screen.queryByRole('option', { name: 'Đã đăng' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('option', { name: 'Bản nháp' })).not.toBeInTheDocument()
+
+      // Close dialog
+      fireEvent.click(screen.getByRole('button', { name: 'Hủy' }))
+      await waitFor(() => {
+        expect(screen.queryByRole('heading', { name: 'Đổi trạng thái tin tuyển dụng' })).not.toBeInTheDocument()
+      })
+
+      // job-2 status is draft -> permitted transition is only 'published' (Đã đăng)
+      fireEvent.click(screen.getByRole('button', { name: 'Đổi trạng thái Backend Developer' }))
+
+      expect(screen.getByRole('option', { name: 'Đã đăng' })).toBeInTheDocument()
+      expect(screen.queryByRole('option', { name: 'Đã đóng' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('option', { name: 'Bản nháp' })).not.toBeInTheDocument()
+    })
+
+    it('disables the status-change button for an expired job with no permitted transitions', async () => {
+      const expiredJob = {
+        ...mockJobs[0],
+        id: 'job-expired',
+        title: 'Expired DevOps Role',
+        status: 'expired' as const,
+      }
+
+      mockedGetAdminJobs.mockResolvedValue({
+        items: [expiredJob],
+        total: 1,
+        skip: 0,
+        limit: 10,
+      })
+
+      renderAdminJobsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Expired DevOps Role')).toBeInTheDocument()
+      })
+
+      const statusButton = screen.getByRole('button', { name: 'Đổi trạng thái Expired DevOps Role' })
+      expect(statusButton).toBeDisabled()
+    })
+
+    it('canceling status dialog closes the dialog and does not call updateMyJobStatus', async () => {
+      mockedGetAdminJobs.mockResolvedValue({
+        items: mockJobs,
+        total: mockJobs.length,
+        skip: 0,
+        limit: 10,
+      })
+
+      renderAdminJobsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Đổi trạng thái Senior Frontend Engineer' }))
+      expect(screen.getByRole('heading', { name: 'Đổi trạng thái tin tuyển dụng' })).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Hủy' }))
+
+      await waitFor(() => {
+        expect(screen.queryByRole('heading', { name: 'Đổi trạng thái tin tuyển dụng' })).not.toBeInTheDocument()
+      })
+      expect(mockedUpdateMyJobStatus).not.toHaveBeenCalled()
+    })
+
+    it('selecting a permitted status and confirming calls updateMyJobStatus, closes dialog, and reloads job list', async () => {
+      mockedGetAdminJobs.mockResolvedValue({
+        items: mockJobs,
+        total: mockJobs.length,
+        skip: 0,
+        limit: 10,
+      })
+      mockedUpdateMyJobStatus.mockResolvedValue({
+        ...mockJobs[0],
+        status: 'closed',
+      } as any)
+
+      renderAdminJobsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Đổi trạng thái Senior Frontend Engineer' }))
+
+      // Select has 'closed' by default for published job
+      const select = screen.getByRole('combobox')
+      expect(select).toHaveValue('closed')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cập nhật' }))
+
+      await waitFor(() => {
+        expect(mockedUpdateMyJobStatus).toHaveBeenCalledWith('job-1', 'closed')
+      })
+
+      await waitFor(() => {
+        expect(screen.queryByRole('heading', { name: 'Đổi trạng thái tin tuyển dụng' })).not.toBeInTheDocument()
+      })
+
+      // Reload occurs
+      expect(mockedGetAdminJobs).toHaveBeenCalledTimes(2)
+    })
+
+    it('displays inline error message when updateMyJobStatus fails', async () => {
+      mockedGetAdminJobs.mockResolvedValue({
+        items: mockJobs,
+        total: mockJobs.length,
+        skip: 0,
+        limit: 10,
+      })
+      mockedUpdateMyJobStatus.mockRejectedValue({
+        response: {
+          status: 400,
+          data: { detail: 'Status transition forbidden' },
+        },
+      })
+
+      renderAdminJobsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Đổi trạng thái Senior Frontend Engineer' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Cập nhật' }))
+
+      await waitFor(() => {
+        expect(screen.getByText('Status transition forbidden')).toBeInTheDocument()
+      })
+
+      // Dialog stays open
+      expect(screen.getByRole('heading', { name: 'Đổi trạng thái tin tuyển dụng' })).toBeInTheDocument()
+    })
+  })
+
+  describe('Job Deletion (MOD-03)', () => {
+    it('clicking delete opens confirmation dialog displaying correct job title', async () => {
+      mockedGetAdminJobs.mockResolvedValue({
+        items: mockJobs,
+        total: mockJobs.length,
+        skip: 0,
+        limit: 10,
+      })
+
+      renderAdminJobsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Xóa tin tuyển dụng Senior Frontend Engineer' }))
+
+      expect(screen.getByRole('heading', { name: 'Xóa tin tuyển dụng' })).toBeInTheDocument()
+      expect(screen.getByText(/Bạn có chắc chắn muốn xóa tin tuyển dụng/)).toBeInTheDocument()
+      expect(screen.getByText('Xác nhận xóa tin tuyển dụng này?')).toBeInTheDocument()
+    })
+
+    it('canceling delete dialog closes dialog and does not call deleteMyJob', async () => {
+      mockedGetAdminJobs.mockResolvedValue({
+        items: mockJobs,
+        total: mockJobs.length,
+        skip: 0,
+        limit: 10,
+      })
+
+      renderAdminJobsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Xóa tin tuyển dụng Senior Frontend Engineer' }))
+      expect(screen.getByRole('heading', { name: 'Xóa tin tuyển dụng' })).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Hủy' }))
+
+      await waitFor(() => {
+        expect(screen.queryByRole('heading', { name: 'Xóa tin tuyển dụng' })).not.toBeInTheDocument()
+      })
+
+      expect(mockedDeleteMyJob).not.toHaveBeenCalled()
+    })
+
+    it('confirming deletion calls deleteMyJob with job id, closes dialog, and reloads job list', async () => {
+      mockedGetAdminJobs.mockResolvedValue({
+        items: mockJobs,
+        total: mockJobs.length,
+        skip: 0,
+        limit: 10,
+      })
+      mockedDeleteMyJob.mockResolvedValue(undefined as any)
+
+      renderAdminJobsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Xóa tin tuyển dụng Senior Frontend Engineer' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Xóa' }))
+
+      await waitFor(() => {
+        expect(mockedDeleteMyJob).toHaveBeenCalledWith('job-1')
+      })
+
+      await waitFor(() => {
+        expect(screen.queryByRole('heading', { name: 'Xóa tin tuyển dụng' })).not.toBeInTheDocument()
+      })
+
+      // Reload occurs
+      expect(mockedGetAdminJobs).toHaveBeenCalledTimes(2)
+    })
+
+    it('shows alert error when deleteMyJob fails', async () => {
+      const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {})
+      mockedGetAdminJobs.mockResolvedValue({
+        items: mockJobs,
+        total: mockJobs.length,
+        skip: 0,
+        limit: 10,
+      })
+      mockedDeleteMyJob.mockRejectedValue({
+        response: {
+          status: 400,
+          data: { detail: 'Cannot delete active job' },
+        },
+      })
+
+      renderAdminJobsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Xóa tin tuyển dụng Senior Frontend Engineer' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Xóa' }))
+
+      await waitFor(() => {
+        expect(alertSpy).toHaveBeenCalledWith('Cannot delete active job')
+      })
+
+      alertSpy.mockRestore()
+    })
+  })
+
+  describe('Admin Navigation (MOD-03)', () => {
+    it('edit action navigates to /admin/jobs/:id/edit', async () => {
+      mockedGetAdminJobs.mockResolvedValue({
+        items: mockJobs,
+        total: mockJobs.length,
+        skip: 0,
+        limit: 10,
+      })
+
+      renderAdminJobsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Sửa tin tuyển dụng Senior Frontend Engineer' }))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('admin-job-edit-page')).toBeInTheDocument()
+      })
+    })
+
+    it('applicants action navigates to /admin/jobs/:id/applicants', async () => {
+      mockedGetAdminJobs.mockResolvedValue({
+        items: mockJobs,
+        total: mockJobs.length,
+        skip: 0,
+        limit: 10,
+      })
+
+      renderAdminJobsPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Xem ứng viên Senior Frontend Engineer' }))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('admin-job-applicants-page')).toBeInTheDocument()
+      })
+    })
   })
 })

@@ -43,6 +43,11 @@ class Job(Base, TimestampMixin, SoftDeleteMixin):
     )
 
     company: Mapped[Company] = relationship(back_populates="jobs")
+
+    @property
+    def company_name(self) -> str | None:
+        """Return the related company's name if available."""
+        return self.company.name if self.company else None
     job_skills: Mapped[list[JobSkill]] = relationship(
         back_populates="job",
         cascade="all, delete-orphan",

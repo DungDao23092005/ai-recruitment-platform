@@ -69,6 +69,7 @@ describe('NotificationsPage', () => {
           <Routes>
             <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/candidate/applications" element={<div data-testid="candidate-applications-page">Candidate Applications Page</div>} />
+            <Route path="/candidate/interviews" element={<div data-testid="candidate-interviews-page">Candidate Interviews Page</div>} />
             <Route path="/recruiter/jobs/:jobId/applicants" element={<div data-testid="recruiter-applicants-page">Recruiter Applicants Page</div>} />
             <Route path="/recruiter/jobs" element={<div data-testid="recruiter-jobs-page">Recruiter Jobs Page</div>} />
             <Route path="/admin/jobs/:jobId/applicants" element={<div data-testid="admin-job-applicants-page">Admin Job Applicants Page</div>} />
@@ -665,7 +666,7 @@ describe('NotificationsPage', () => {
       expect(mockNavigate).not.toHaveBeenCalled();
     });
 
-    it('Candidate: interview notification navigates to /candidate/applications', async () => {
+    it('Candidate: interview notification navigates to /candidate/interviews', async () => {
       vi.mocked(useAuth).mockReturnValue(
         mockUser('candidate')
       );
@@ -686,8 +687,9 @@ describe('NotificationsPage', () => {
         expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('2');
       });
 
-      // Should navigate to candidate applications
-      expect(mockNavigate).toHaveBeenCalledWith('/candidate/applications');
+      // Should navigate to candidate interviews
+      expect(mockNavigate).toHaveBeenCalledWith('/candidate/interviews');
+      expect(mockNavigate).not.toHaveBeenCalledWith('/candidate/applications');
     });
 
     // ===== PHASE 1: ALREADY-READ NAVIGATION =====
@@ -1076,6 +1078,539 @@ describe('NotificationsPage', () => {
         expect(applicationsApi.getApplicationDetail).toHaveBeenCalledWith('app-1');
         expect(mockNavigate).toHaveBeenCalledWith('/recruiter/jobs/test-job-id/applicants');
         expect(mockNavigate).not.toHaveBeenCalledWith('/interviewer/interviews');
+      });
+    });
+  });
+
+  describe('Notification Navigation & Localization (Task 3)', () => {
+    describe('A. Candidate Interview Navigation', () => {
+      it('navigates to /candidate/interviews and not /candidate/applications for unread interview notification', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'cand-int-nav-1',
+            title: 'Interview Scheduled',
+            content: 'Your interview is scheduled',
+            notification_type: 'interview_scheduled',
+            entity_type: 'interview',
+            entity_id: 'int-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+        vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+          id: 'cand-int-nav-1',
+          title: 'Interview Scheduled',
+          content: 'Your interview is scheduled',
+          notification_type: 'interview_scheduled',
+          entity_type: 'interview',
+          entity_id: 'int-1',
+          is_read: true,
+          created_at: new Date().toISOString(),
+        });
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByText('Interview Scheduled')).toBeInTheDocument();
+        });
+
+        await screen.getByText('Interview Scheduled').click();
+
+        await waitFor(() => {
+          expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('cand-int-nav-1');
+        });
+
+        expect(mockNavigate).toHaveBeenCalledWith('/candidate/interviews');
+        expect(mockNavigate).not.toHaveBeenCalledWith('/candidate/applications');
+      });
+
+      it('navigates to /candidate/interviews for already-read interview notification without calling markNotificationRead', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'cand-int-read-1',
+            title: 'Already Read Interview',
+            content: 'Your interview is scheduled',
+            notification_type: 'interview_scheduled',
+            entity_type: 'interview',
+            entity_id: 'int-1',
+            is_read: true,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByText('Already Read Interview')).toBeInTheDocument();
+        });
+
+        await screen.getByText('Already Read Interview').click();
+
+        expect(vi.mocked(notificationsApi.markNotificationRead)).not.toHaveBeenCalled();
+        expect(mockNavigate).toHaveBeenCalledWith('/candidate/interviews');
+        expect(mockNavigate).not.toHaveBeenCalledWith('/candidate/applications');
+      });
+    });
+
+    describe('B. All 11 Localized Notification Types', () => {
+      const localizedTypes = [
+        { type: 'application_submitted', label: 'Nộp đơn thành công', variantClass: 'text-success' },
+        { type: 'offer_accepted', label: 'Chấp nhận lời mời', variantClass: 'text-success' },
+        { type: 'offer_declined', label: 'Từ chối lời mời', variantClass: 'text-warning' },
+        { type: 'interview_assigned', label: 'Phân công phỏng vấn', variantClass: 'text-info' },
+        { type: 'interview_unassigned', label: 'Hủy phân công', variantClass: 'text-warning' },
+        { type: 'evaluation_submitted', label: 'Đánh giá phỏng vấn', variantClass: 'text-info' },
+        { type: 'company_returned_to_free', label: 'Hết hạn gói dịch vụ', variantClass: 'text-warning' },
+        { type: 'candidate_paid_quota_exhausted', label: 'Hết hạn mức trả phí', variantClass: 'text-warning' },
+        { type: 'candidate_free_quota_exhausted', label: 'Hết hạn mức miễn phí', variantClass: 'text-warning' },
+        { type: 'candidate_returned_to_free', label: 'Quay lại gói miễn phí', variantClass: 'text-warning' },
+        { type: 'account_unlocked', label: 'Mở khóa tài khoản', variantClass: 'text-success' },
+      ] as const;
+
+      localizedTypes.forEach(({ type, label, variantClass }) => {
+        it(`renders correct Vietnamese label and badge variant for ${type}`, async () => {
+          vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+          vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+            {
+              id: `notif-${type}`,
+              title: `Notification Title for ${type}`,
+              content: `Content for ${type}`,
+              notification_type: type,
+              entity_type: 'application',
+              entity_id: 'app-1',
+              is_read: false,
+              created_at: new Date().toISOString(),
+            },
+          ]);
+
+          renderPage();
+
+          await waitFor(() => {
+            expect(screen.getByText(`Notification Title for ${type}`)).toBeInTheDocument();
+          });
+
+          // Verify Vietnamese label is rendered
+          const badgeElement = screen.getByText(label);
+          expect(badgeElement).toBeInTheDocument();
+
+          // Verify badge class contains expected variant style
+          expect(badgeElement.className).toContain(variantClass);
+
+          // Verify raw snake_case identifier is NOT displayed
+          expect(screen.queryByText(type)).not.toBeInTheDocument();
+        });
+      });
+    });
+
+    describe('C. Entity Label Mapping', () => {
+      it('renders "Hạn mức AI" for candidate_quota entity type', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'quota-notif',
+            title: 'Hết hạn mức',
+            content: 'Bạn đã dùng hết lượt',
+            notification_type: 'candidate_free_quota_exhausted',
+            entity_type: 'candidate_quota',
+            entity_id: 'quota-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByText('Hết hạn mức')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('Hạn mức AI')).toBeInTheDocument();
+      });
+
+      it('renders "Tài khoản" for user entity type', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'user-notif',
+            title: 'Tài khoản đã mở khóa',
+            content: 'Chào mừng trở lại',
+            notification_type: 'account_unlocked',
+            entity_type: 'user',
+            entity_id: 'user-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByText('Tài khoản đã mở khóa')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('Tài khoản')).toBeInTheDocument();
+      });
+    });
+
+    describe('D. Candidate Chevron Visibility', () => {
+      it('shows chevron for candidate application notification with entity ID', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'cand-app-notif',
+            title: 'Application Update',
+            content: 'Status changed',
+            notification_type: 'application_status_changed',
+            entity_type: 'application',
+            entity_id: 'app-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        const { container } = renderPage();
+        await waitFor(() => {
+          expect(screen.getByText('Application Update')).toBeInTheDocument();
+        });
+        expect(screen.getByTestId('notification-chevron')).toBeInTheDocument();
+        expect(container.querySelector('svg.lucide-chevron-right')).not.toBeNull();
+      });
+
+      it('shows chevron for candidate interview notification', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'cand-int-notif',
+            title: 'Interview Invite',
+            content: 'Interview details',
+            notification_type: 'interview_scheduled',
+            entity_type: 'interview',
+            entity_id: 'int-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        const { container } = renderPage();
+        await waitFor(() => {
+          expect(screen.getByText('Interview Invite')).toBeInTheDocument();
+        });
+        expect(screen.getByTestId('notification-chevron')).toBeInTheDocument();
+        expect(container.querySelector('svg.lucide-chevron-right')).not.toBeNull();
+      });
+
+      it('shows chevron for candidate subscription notification', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'cand-sub-notif',
+            title: 'Subscription Active',
+            content: 'Plan active',
+            notification_type: 'subscription_activated',
+            entity_type: 'subscription',
+            entity_id: 'sub-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        const { container } = renderPage();
+        await waitFor(() => {
+          expect(screen.getByText('Subscription Active')).toBeInTheDocument();
+        });
+        expect(screen.getByTestId('notification-chevron')).toBeInTheDocument();
+        expect(container.querySelector('svg.lucide-chevron-right')).not.toBeNull();
+      });
+
+      it('hides chevron for quota notification', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'quota-chevron-notif',
+            title: 'Quota Warning',
+            content: 'Quota exhausted',
+            notification_type: 'candidate_paid_quota_exhausted',
+            entity_type: 'candidate_quota',
+            entity_id: 'quota-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        const { container } = renderPage();
+        await waitFor(() => {
+          expect(screen.getByText('Quota Warning')).toBeInTheDocument();
+        });
+        expect(screen.queryByTestId('notification-chevron')).not.toBeInTheDocument();
+        expect(container.querySelector('svg.lucide-chevron-right')).toBeNull();
+      });
+
+      it('hides chevron for account unlock notification', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'unlock-chevron-notif',
+            title: 'Account Unlocked',
+            content: 'Unlocked',
+            notification_type: 'account_unlocked',
+            entity_type: 'user',
+            entity_id: 'user-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        const { container } = renderPage();
+        await waitFor(() => {
+          expect(screen.getByText('Account Unlocked')).toBeInTheDocument();
+        });
+        expect(screen.queryByTestId('notification-chevron')).not.toBeInTheDocument();
+        expect(container.querySelector('svg.lucide-chevron-right')).toBeNull();
+      });
+    });
+
+    describe('E. Interviewer Chevron Visibility', () => {
+      it('shows chevron for interview notification when active workspace role is interviewer', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(useOptionalWorkspace).mockReturnValue({
+          workspaces: [{ id: 'ws-1', company_id: 'c1', company_name: 'Co', role: 'interviewer', is_active: true }],
+          selectedWorkspace: { id: 'ws-1', company_id: 'c1', company_name: 'Co', role: 'interviewer', is_active: true },
+          isLoading: false,
+          error: null,
+          selectWorkspace: vi.fn(),
+          refreshWorkspaces: vi.fn(),
+        } as any);
+
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'int-ws-notif',
+            title: 'Assigned Interview',
+            content: 'Interview assignment',
+            notification_type: 'interview_assigned',
+            entity_type: 'interview',
+            entity_id: 'int-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        const { container } = renderPage();
+        await waitFor(() => {
+          expect(screen.getByText('Assigned Interview')).toBeInTheDocument();
+        });
+        expect(screen.getByTestId('notification-chevron')).toBeInTheDocument();
+        expect(container.querySelector('svg.lucide-chevron-right')).not.toBeNull();
+      });
+
+      it('hides chevron for non-interview notification when active workspace role is interviewer', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(useOptionalWorkspace).mockReturnValue({
+          workspaces: [{ id: 'ws-1', company_id: 'c1', company_name: 'Co', role: 'interviewer', is_active: true }],
+          selectedWorkspace: { id: 'ws-1', company_id: 'c1', company_name: 'Co', role: 'interviewer', is_active: true },
+          isLoading: false,
+          error: null,
+          selectWorkspace: vi.fn(),
+          refreshWorkspaces: vi.fn(),
+        } as any);
+
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'app-ws-notif',
+            title: 'Application Notif for Interviewer',
+            content: 'Interviewer has no application route',
+            notification_type: 'new_application',
+            entity_type: 'application',
+            entity_id: 'app-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        const { container } = renderPage();
+        await waitFor(() => {
+          expect(screen.getByText('Application Notif for Interviewer')).toBeInTheDocument();
+        });
+        expect(screen.queryByTestId('notification-chevron')).not.toBeInTheDocument();
+        expect(container.querySelector('svg.lucide-chevron-right')).toBeNull();
+      });
+    });
+
+    describe('F. Recruiter & Admin Chevron Visibility', () => {
+      it('shows chevron for recruiter application notification with valid entity ID', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'rec-app-notif',
+            title: 'Recruiter App',
+            content: 'New applicant',
+            notification_type: 'new_application',
+            entity_type: 'application',
+            entity_id: 'app-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+        await waitFor(() => {
+          expect(screen.getByText('Recruiter App')).toBeInTheDocument();
+        });
+        expect(screen.getByTestId('notification-chevron')).toBeInTheDocument();
+      });
+
+      it('shows chevron for recruiter interview notification with valid entity ID', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'rec-int-notif',
+            title: 'Recruiter Interview',
+            content: 'Scheduled',
+            notification_type: 'interview_scheduled',
+            entity_type: 'interview',
+            entity_id: 'int-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+        await waitFor(() => {
+          expect(screen.getByText('Recruiter Interview')).toBeInTheDocument();
+        });
+        expect(screen.getByTestId('notification-chevron')).toBeInTheDocument();
+      });
+
+      it('hides chevron for recruiter interview notification when entity ID is missing', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'rec-no-id-notif',
+            title: 'Recruiter Interview No ID',
+            content: 'No entity ID',
+            notification_type: 'interview_scheduled',
+            entity_type: 'interview',
+            entity_id: null,
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+        await waitFor(() => {
+          expect(screen.getByText('Recruiter Interview No ID')).toBeInTheDocument();
+        });
+        expect(screen.queryByTestId('notification-chevron')).not.toBeInTheDocument();
+      });
+
+      it('shows chevron for platform admin interview notification with valid entity ID', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('admin'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'admin-int-notif',
+            title: 'Admin Interview',
+            content: 'Scheduled',
+            notification_type: 'interview_scheduled',
+            entity_type: 'interview',
+            entity_id: 'int-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+        await waitFor(() => {
+          expect(screen.getByText('Admin Interview')).toBeInTheDocument();
+        });
+        expect(screen.getByTestId('notification-chevron')).toBeInTheDocument();
+      });
+
+      it('hides chevron for recruiter/admin with quota or account unlock notification', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'rec-quota-notif',
+            title: 'Quota Warning',
+            content: 'Quota exhausted',
+            notification_type: 'candidate_paid_quota_exhausted',
+            entity_type: 'candidate_quota',
+            entity_id: 'quota-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+          {
+            id: 'rec-unlock-notif',
+            title: 'Account Unlocked',
+            content: 'Unlocked',
+            notification_type: 'account_unlocked',
+            entity_type: 'user',
+            entity_id: 'user-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+        await waitFor(() => {
+          expect(screen.getByText('Quota Warning')).toBeInTheDocument();
+          expect(screen.getByText('Account Unlocked')).toBeInTheDocument();
+        });
+        expect(screen.queryAllByTestId('notification-chevron')).toHaveLength(0);
+      });
+    });
+
+    describe('G. Quota Click Behavior', () => {
+      const quotaTypes = [
+        'candidate_paid_quota_exhausted',
+        'candidate_free_quota_exhausted',
+        'candidate_returned_to_free',
+      ] as const;
+
+      quotaTypes.forEach((quotaType) => {
+        it(`clicking ${quotaType} does not navigate and preserves mark-as-read`, async () => {
+          vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+          vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+            {
+              id: `notif-${quotaType}`,
+              title: `Quota Title for ${quotaType}`,
+              content: `Content for ${quotaType}`,
+              notification_type: quotaType,
+              entity_type: 'candidate_quota',
+              entity_id: 'quota-1',
+              is_read: false,
+              created_at: new Date().toISOString(),
+            },
+          ]);
+          vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+            id: `notif-${quotaType}`,
+            title: `Quota Title for ${quotaType}`,
+            content: `Content for ${quotaType}`,
+            notification_type: quotaType,
+            entity_type: 'candidate_quota',
+            entity_id: 'quota-1',
+            is_read: true,
+            created_at: new Date().toISOString(),
+          });
+
+          renderPage();
+
+          await waitFor(() => {
+            expect(screen.getByText(`Quota Title for ${quotaType}`)).toBeInTheDocument();
+          });
+
+          await screen.getByText(`Quota Title for ${quotaType}`).click();
+
+          // Mark as read was called
+          await waitFor(() => {
+            expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith(`notif-${quotaType}`);
+          });
+
+          // Must NOT navigate anywhere
+          expect(mockNavigate).not.toHaveBeenCalled();
+          expect(mockNavigate).not.toHaveBeenCalledWith('/plans');
+          expect(mockNavigate).not.toHaveBeenCalledWith('/candidate/portal');
+        });
       });
     });
   });

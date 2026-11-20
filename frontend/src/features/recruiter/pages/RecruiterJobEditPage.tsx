@@ -116,7 +116,7 @@ export function RecruiterJobEditPage({ backPath = '/recruiter/jobs' }: Recruiter
             title="Không tìm thấy tin tuyển dụng"
             description="Tin tuyển dụng có thể đã bị xóa hoặc bạn không có quyền truy cập."
           >
-            <Link to="/recruiter/jobs">
+            <Link to={backPath}>
               <Button>
                 <ChevronLeft className="h-4 w-4" aria-hidden="true" />
                 Quay lại danh sách

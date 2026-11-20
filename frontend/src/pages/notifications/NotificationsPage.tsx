@@ -38,6 +38,8 @@ const ENTITY_LABELS: Record<string, string> = {
   application: 'Đơn ứng tuyển',
   interview: 'Phỏng vấn',
   subscription: 'Gói dịch vụ',
+  candidate_quota: 'Hạn mức AI',
+  user: 'Tài khoản',
 };
 
 function NotificationSkeleton() {
@@ -68,31 +70,70 @@ function formatDate(dateString: string): string {
   });
 }
 
-function getEntityRoute(entityType: string | null, entityId: string | null, userRole: UserRole): string | null {
-  if (!entityType || !entityId) return null;
+export function getEntityRoute(entityType: string | null, entityId: string | null, userRole: UserRole): string | null {
+  if (!entityType) return null;
 
   switch (entityType) {
     case 'application':
-      if (userRole === 'recruiter') {
-        return null;
-      }
-      if (userRole === 'admin') {
+      if (!entityId || userRole === 'recruiter' || userRole === 'admin') {
         return null;
       }
       return `/candidate/applications?id=${encodeURIComponent(entityId)}`;
     case 'interview':
-      if (userRole === 'recruiter') {
+      if (userRole === 'recruiter' || userRole === 'admin') {
         return null;
       }
-      if (userRole === 'admin') {
-        return null;
-      }
-      return `/candidate/applications`;
+      return `/candidate/interviews`;
     case 'subscription':
       return `/plans`;
     default:
       return null;
   }
+}
+
+export function isNotificationNavigable(
+  notification: Notification,
+  userRole?: UserRole,
+  workspaceRole?: string | null
+): boolean {
+  // All candidate_quota notifications are non-navigable for every role
+  if (notification.entity_type === 'candidate_quota') {
+    return false;
+  }
+
+  // user / account_unlocked notifications are non-navigable
+  if (notification.entity_type === 'user' || notification.notification_type === 'account_unlocked') {
+    return false;
+  }
+
+  // Active workspace interviewer
+  if (workspaceRole === 'interviewer') {
+    return notification.entity_type === 'interview';
+  }
+
+  // Recruiter and Platform Admin
+  if (userRole === 'recruiter' || userRole === 'admin') {
+    if (notification.entity_type === 'application' || notification.entity_type === 'interview') {
+      return Boolean(notification.entity_id);
+    }
+    if (notification.entity_type === 'subscription') {
+      return true;
+    }
+    return false;
+  }
+
+  // Candidate (or default role)
+  if (notification.entity_type === 'application') {
+    return Boolean(notification.entity_id);
+  }
+  if (notification.entity_type === 'interview') {
+    return true;
+  }
+  if (notification.entity_type === 'subscription') {
+    return true;
+  }
+
+  return false;
 }
 
 export function NotificationsPage() {
@@ -147,6 +188,10 @@ export function NotificationsPage() {
 
     // Helper to resolve and navigate
     const resolveAndNavigate = async () => {
+      if (!isNotificationNavigable(notification, userRole, workspaceRole)) {
+        return;
+      }
+
       if (
         workspaceRole === 'interviewer' &&
         notification.entity_type === 'interview'
@@ -324,6 +369,11 @@ export function NotificationsPage() {
                 key={notification.id}
                 notification={notification}
                 onClick={() => handleMarkRead(notification)}
+                isNavigable={isNotificationNavigable(
+                  notification,
+                  currentUser?.role,
+                  workspace?.selectedWorkspace?.role
+                )}
               />
             ))}
           </div>
@@ -351,17 +401,16 @@ export function NotificationsPage() {
 interface NotificationCardProps {
   notification: Notification;
   onClick: () => void;
+  isNavigable?: boolean;
 }
 
-function NotificationCard({ notification, onClick }: NotificationCardProps) {
+function NotificationCard({ notification, onClick, isNavigable = false }: NotificationCardProps) {
   const EntityIcon = notification.entity_type
     ? ENTITY_ICONS[notification.entity_type] || MessageSquare
     : MessageSquare;
   const entityLabel = notification.entity_type
     ? ENTITY_LABELS[notification.entity_type] || 'Đối tượng'
     : 'Đối tượng';
-
-  const hasEntityRoute = !!getEntityRoute(notification.entity_type, notification.entity_id, 'candidate');
 
   return (
     <Card
@@ -418,8 +467,11 @@ function NotificationCard({ notification, onClick }: NotificationCardProps) {
             </div>
           </div>
 
-          {hasEntityRoute && (
-            <div className="flex items-center justify-center text-muted-foreground">
+          {isNavigable && (
+            <div
+              className="flex items-center justify-center text-muted-foreground"
+              data-testid="notification-chevron"
+            >
               <ChevronRight className="h-4 w-4" aria-hidden="true" />
             </div>
           )}
@@ -429,28 +481,42 @@ function NotificationCard({ notification, onClick }: NotificationCardProps) {
   );
 }
 
-function getBadgeVariant(type: string): 'success' | 'warning' | 'info' | 'destructive' | 'neutral' {
+export function getBadgeVariant(type: string): 'success' | 'warning' | 'info' | 'destructive' | 'neutral' {
   switch (type) {
     case 'application_status_changed':
     case 'interview_scheduled':
     case 'interview_confirmed':
     case 'subscription_activated':
+    case 'application_submitted':
+    case 'offer_accepted':
+    case 'account_unlocked':
       return 'success';
+
     case 'interview_updated':
     case 'new_application':
     case 'subscription_plan_changed':
+    case 'interview_assigned':
+    case 'evaluation_submitted':
       return 'info';
+
     case 'interview_cancelled':
     case 'application_withdrawn':
     case 'interview_declined':
     case 'subscription_revoked':
+    case 'offer_declined':
+    case 'interview_unassigned':
+    case 'company_returned_to_free':
+    case 'candidate_paid_quota_exhausted':
+    case 'candidate_free_quota_exhausted':
+    case 'candidate_returned_to_free':
       return 'warning';
+
     default:
       return 'neutral';
   }
 }
 
-function formatNotificationType(type: string): string {
+export function formatNotificationType(type: string): string {
   const typeMap: Record<string, string> = {
     application_status_changed: 'Cập nhật trạng thái',
     interview_scheduled: 'Lịch phỏng vấn mới',
@@ -463,6 +529,17 @@ function formatNotificationType(type: string): string {
     subscription_activated: 'Kích hoạt gói',
     subscription_plan_changed: 'Đổi gói dịch vụ',
     subscription_revoked: 'Thu hồi gói dịch vụ',
+    application_submitted: 'Nộp đơn thành công',
+    offer_accepted: 'Chấp nhận lời mời',
+    offer_declined: 'Từ chối lời mời',
+    interview_assigned: 'Phân công phỏng vấn',
+    interview_unassigned: 'Hủy phân công',
+    evaluation_submitted: 'Đánh giá phỏng vấn',
+    company_returned_to_free: 'Hết hạn gói dịch vụ',
+    candidate_paid_quota_exhausted: 'Hết hạn mức trả phí',
+    candidate_free_quota_exhausted: 'Hết hạn mức miễn phí',
+    candidate_returned_to_free: 'Quay lại gói miễn phí',
+    account_unlocked: 'Mở khóa tài khoản',
   };
   return typeMap[type] || type;
 }

@@ -30,11 +30,18 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
-function renderAt(path: string) {
+function renderAt(path: string, backPath?: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        <Route path="/recruiter/jobs/:id/edit" element={<RecruiterJobEditPage />} />
+        <Route
+          path="/recruiter/jobs/:id/edit"
+          element={backPath !== undefined ? <RecruiterJobEditPage backPath={backPath} /> : <RecruiterJobEditPage />}
+        />
+        <Route
+          path="/admin/jobs/:id/edit"
+          element={backPath !== undefined ? <RecruiterJobEditPage backPath={backPath} /> : <RecruiterJobEditPage />}
+        />
       </Routes>
     </MemoryRouter>,
   )
@@ -71,6 +78,46 @@ describe('RecruiterJobEditPage', () => {
       expect(
         screen.getByText('Không tìm thấy tin tuyển dụng'),
       ).toBeInTheDocument()
+    })
+  })
+
+  it('with default props, not-found EmptyState back link points to /recruiter/jobs', async () => {
+    const error = new Error('Not Found')
+    Object.assign(error, { response: { status: 404 } })
+    mockedGetMyJobById.mockRejectedValue(error)
+
+    renderAt('/recruiter/jobs/job-missing/edit')
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Không tìm thấy tin tuyển dụng'),
+      ).toBeInTheDocument()
+    })
+
+    const backLinks = screen.getAllByRole('link', { name: /Quay lại danh sách/i })
+    expect(backLinks.length).toBeGreaterThanOrEqual(1)
+    backLinks.forEach((link) => {
+      expect(link).toHaveAttribute('href', '/recruiter/jobs')
+    })
+  })
+
+  it('with backPath="/admin/jobs", not-found EmptyState back link points to /admin/jobs', async () => {
+    const error = new Error('Not Found')
+    Object.assign(error, { response: { status: 404 } })
+    mockedGetMyJobById.mockRejectedValue(error)
+
+    renderAt('/admin/jobs/job-missing/edit', '/admin/jobs')
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Không tìm thấy tin tuyển dụng'),
+      ).toBeInTheDocument()
+    })
+
+    const backLinks = screen.getAllByRole('link', { name: /Quay lại danh sách/i })
+    expect(backLinks.length).toBeGreaterThanOrEqual(1)
+    backLinks.forEach((link) => {
+      expect(link).toHaveAttribute('href', '/admin/jobs')
     })
   })
 
