@@ -11,12 +11,33 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidTransitionException,
 )
-from app.domain.enums import ApplicationStatus, InterviewStatus, InterviewType, UserRole
-from app.models import Application, Interview, Job
+from app.domain import hiring
+from app.domain.enums import (
+    ApplicationStatus,
+    InterviewStatus,
+    InterviewType,
+    MembershipRole,
+    MembershipStatus,
+    UserRole,
+)
+from app.models import Application, CompanyMembership, Interview, Job, User
 from app.repositories import ApplicationRepository, InterviewRepository
+from app.schemas.interview import InterviewUpdate
 from app.services.interview_service import InterviewService
 from app.services.job_service import JobService
-from app.services.notification_service import NotificationService
+from app.services.notification_service import (
+    INTERVIEW_CANCELLED_TITLE,
+    INTERVIEW_CANCELLED_TYPE,
+    INTERVIEW_CONFIRMED_TITLE,
+    INTERVIEW_CONFIRMED_TYPE,
+    INTERVIEW_DECLINED_TITLE,
+    INTERVIEW_DECLINED_TYPE,
+    INTERVIEW_UPDATED_TITLE,
+    INTERVIEW_UPDATED_TYPE,
+    NotificationService,
+    candidate_interview_response_notification_id,
+    interview_schedule_notification_id,
+)
 from app.services.user_service import UserService
 
 
@@ -285,6 +306,262 @@ class TestScheduleInterviewFlush:
 
         assert notification_entity_id == interview_id, \
             f"entity_id ({notification_entity_id}) does not match interview.id ({interview_id})"
+
+
+class TestInterviewLifecycleNotifications:
+    @pytest.mark.asyncio
+    async def test_update_interview_notifies_candidate_and_assigned_interviewers(self, monkeypatch):
+        session = make_session()
+        service = InterviewService(session)
+
+        interview_id = uuid.uuid4()
+        application_id = uuid.uuid4()
+        candidate_user_id = uuid.uuid4()
+        company_id = uuid.uuid4()
+        interviewer_user_id = uuid.uuid4()
+
+        now = datetime.now(timezone.utc)
+        original_time = now + timedelta(days=2)
+        new_time = now + timedelta(days=3)
+
+        interview = MagicMock(
+            id=interview_id,
+            application_id=application_id,
+            scheduled_at=original_time,
+            duration_minutes=60,
+            interview_type=InterviewType.TECHNICAL,
+            meeting_url="https://meet.old.com",
+            location="Room 1",
+            notes="Notes",
+            status=InterviewStatus.SCHEDULED,
+        )
+
+        application = MagicMock(
+            id=application_id,
+            job_id=uuid.uuid4(),
+            candidate_id=uuid.uuid4(),
+            job=MagicMock(company_id=company_id, title="Lead Dev"),
+            candidate=MagicMock(user_id=candidate_user_id, user=MagicMock(email="cand@test.com")),
+        )
+
+        service.interviews.get_by_id_with_application = AsyncMock(return_value=interview)
+        service.applications.get_by_id_with_candidate_job_company_and_recruiters = AsyncMock(return_value=application)
+
+        interviewer_user = User(id=interviewer_user_id, email="interviewer@corp.com", is_active=True)
+        service.assignments.list_active_by_interview = AsyncMock(return_value=[MagicMock(user_id=interviewer_user_id)])
+        service.users.get_by_id = AsyncMock(return_value=interviewer_user)
+
+        activity_record = MagicMock(id=uuid.uuid4())
+        record_activity_mock = AsyncMock(return_value=activity_record)
+        monkeypatch.setattr("app.services.interview_service.record_activity", record_activity_mock)
+
+        emails_scheduled = []
+        async def _mock_schedule_interview_email(*args, **kwargs):
+            emails_scheduled.append(kwargs)
+        async def _mock_schedule_interviewer_email(*args, **kwargs):
+            emails_scheduled.append(kwargs)
+
+        monkeypatch.setattr("app.services.interview_service.schedule_interview_email", _mock_schedule_interview_email)
+        monkeypatch.setattr("app.services.interview_service.schedule_interviewer_schedule_change_email", _mock_schedule_interviewer_email)
+
+        notifications_created = []
+        class FakeNotificationService:
+            def __init__(self, s):
+                self.session = s
+                self.notifications = MagicMock()
+                self.notifications.get_by_id_and_user = AsyncMock(return_value=None)
+            async def create_notification(self, **kwargs):
+                notifications_created.append(kwargs)
+                return MagicMock()
+
+        monkeypatch.setattr("app.services.interview_service.NotificationService", FakeNotificationService)
+        monkeypatch.setattr("app.services.interview_service.JobService.get_recruiter_job_by_id", AsyncMock())
+        monkeypatch.setattr("app.services.interview_service.InterviewRead.model_validate", lambda v: v)
+        monkeypatch.setattr("app.services.interview_service.schedule_application_pipeline_event", AsyncMock())
+
+        update_data = InterviewUpdate(
+            scheduled_at=new_time,
+            meeting_url="https://meet.new.com",
+        )
+
+        await service.update_interview(
+            current_user=make_user(),
+            interview_id=interview_id,
+            data=update_data,
+        )
+
+        # 1. Activity recorded
+        record_activity_mock.assert_awaited_once()
+
+        # 2. In-App notifications: 1 to candidate, 1 to active interviewer
+        assert len(notifications_created) == 2
+        cand_notif = next(n for n in notifications_created if n["user_id"] == candidate_user_id)
+        assert cand_notif["notification_type"] == INTERVIEW_UPDATED_TYPE
+        assert cand_notif["notification_id"] == interview_schedule_notification_id("updated", candidate_user_id, activity_record.id)
+
+        int_notif = next(n for n in notifications_created if n["user_id"] == interviewer_user_id)
+        assert int_notif["notification_type"] == INTERVIEW_UPDATED_TYPE
+        assert int_notif["notification_id"] == interview_schedule_notification_id("rescheduled", interviewer_user_id, activity_record.id)
+
+        # 3. Emails: 1 to candidate, 1 to active interviewer
+        assert len(emails_scheduled) == 2
+        cand_email = next(e for e in emails_scheduled if e["to_email"] == "cand@test.com")
+        assert str(activity_record.id) in cand_email["idempotency_key"]
+
+        int_email = next(e for e in emails_scheduled if e["to_email"] == "interviewer@corp.com")
+        assert str(activity_record.id) in int_email["idempotency_key"]
+
+    @pytest.mark.asyncio
+    async def test_candidate_confirm_notifies_admins_recruiters_in_app_only_no_email_option_a(self, monkeypatch):
+        session = make_session()
+        service = InterviewService(session)
+
+        interview_id = uuid.uuid4()
+        application_id = uuid.uuid4()
+        candidate_user_id = uuid.uuid4()
+        company_id = uuid.uuid4()
+        recruiter_id = uuid.uuid4()
+
+        interview = MagicMock(
+            id=interview_id,
+            application_id=application_id,
+            status=InterviewStatus.SCHEDULED,
+            scheduled_at=datetime.now(timezone.utc) + timedelta(days=2),
+        )
+
+        application = MagicMock(
+            id=application_id,
+            candidate_id=uuid.uuid4(),
+            job=MagicMock(company_id=company_id, title="DevOps Engineer"),
+            candidate=MagicMock(id=uuid.uuid4(), user_id=candidate_user_id, full_name="Candidate A"),
+        )
+
+        user_with_profile = MagicMock(candidate_profile=MagicMock(id=application.candidate_id))
+        monkeypatch.setattr("app.services.interview_service.UserService.get_user_with_profile", AsyncMock(return_value=user_with_profile))
+
+        service.applications.get_by_id_with_candidate_job_company_and_recruiters = AsyncMock(return_value=application)
+        service.interviews.get_by_id_with_application = AsyncMock(return_value=interview)
+
+        recruiter_user = User(id=recruiter_id, email="recruiter@corp.com", is_active=True)
+        service._get_active_company_recruitment_recipients = AsyncMock(return_value=[recruiter_user])
+
+        activity_record = MagicMock(id=uuid.uuid4())
+        record_activity_mock = AsyncMock(return_value=activity_record)
+        monkeypatch.setattr("app.services.interview_service.record_activity", record_activity_mock)
+
+        emails_scheduled = []
+        async def _mock_schedule_email(*args, **kwargs):
+            emails_scheduled.append(kwargs)
+        monkeypatch.setattr("app.services.interview_service.schedule_interview_declined_recruiter_email", _mock_schedule_email)
+
+        notifications_created = []
+        class FakeNotificationService:
+            def __init__(self, s):
+                self.session = s
+                self.notifications = MagicMock()
+                self.notifications.get_by_id_and_user = AsyncMock(return_value=None)
+            async def create_notification(self, **kwargs):
+                notifications_created.append(kwargs)
+                return MagicMock()
+
+        monkeypatch.setattr("app.services.interview_service.NotificationService", FakeNotificationService)
+        monkeypatch.setattr("app.services.interview_service.CandidateInterviewRead.model_validate", lambda v: v)
+        monkeypatch.setattr("app.services.interview_service.schedule_application_pipeline_event", AsyncMock())
+
+        await service.candidate_action_interview(
+            current_user=SimpleNamespace(id=candidate_user_id),
+            application_id=application_id,
+            interview_id=interview_id,
+            action="confirm",
+        )
+
+        # In-App notification sent to active recruiter/admin
+        assert len(notifications_created) == 1
+        assert notifications_created[0]["user_id"] == recruiter_id
+        assert notifications_created[0]["notification_type"] == INTERVIEW_CONFIRMED_TYPE
+        assert notifications_created[0]["title"] == INTERVIEW_CONFIRMED_TITLE
+
+        # Option A: NO email to recruiter on confirm, NO notification to interviewers
+        assert len(emails_scheduled) == 0
+
+    @pytest.mark.asyncio
+    async def test_candidate_decline_notifies_admins_recruiters_in_app_and_email_option_a(self, monkeypatch):
+        session = make_session()
+        service = InterviewService(session)
+
+        interview_id = uuid.uuid4()
+        application_id = uuid.uuid4()
+        candidate_user_id = uuid.uuid4()
+        company_id = uuid.uuid4()
+        recruiter_id = uuid.uuid4()
+
+        interview = MagicMock(
+            id=interview_id,
+            application_id=application_id,
+            status=InterviewStatus.SCHEDULED,
+            scheduled_at=datetime.now(timezone.utc) + timedelta(days=2),
+            candidate_notes="Cannot attend",
+        )
+
+        application = MagicMock(
+            id=application_id,
+            candidate_id=uuid.uuid4(),
+            job=MagicMock(company_id=company_id, title="DevOps Engineer"),
+            candidate=MagicMock(id=uuid.uuid4(), user_id=candidate_user_id, full_name="Candidate A"),
+        )
+
+        user_with_profile = MagicMock(candidate_profile=MagicMock(id=application.candidate_id))
+        monkeypatch.setattr("app.services.interview_service.UserService.get_user_with_profile", AsyncMock(return_value=user_with_profile))
+
+        service.applications.get_by_id_with_candidate_job_company_and_recruiters = AsyncMock(return_value=application)
+        service.interviews.get_by_id_with_application = AsyncMock(return_value=interview)
+        service._reconcile_application_interview_stage = AsyncMock(return_value=False)
+
+        recruiter_user = User(id=recruiter_id, email="recruiter@corp.com", is_active=True)
+        service._get_active_company_recruitment_recipients = AsyncMock(return_value=[recruiter_user])
+
+        activity_record = MagicMock(id=uuid.uuid4())
+        record_activity_mock = AsyncMock(return_value=activity_record)
+        monkeypatch.setattr("app.services.interview_service.record_activity", record_activity_mock)
+
+        emails_scheduled = []
+        async def _mock_schedule_email(*args, **kwargs):
+            emails_scheduled.append(kwargs)
+        monkeypatch.setattr("app.services.interview_service.schedule_interview_declined_recruiter_email", _mock_schedule_email)
+
+        notifications_created = []
+        class FakeNotificationService:
+            def __init__(self, s):
+                self.session = s
+                self.notifications = MagicMock()
+                self.notifications.get_by_id_and_user = AsyncMock(return_value=None)
+            async def create_notification(self, **kwargs):
+                notifications_created.append(kwargs)
+                return MagicMock()
+
+        monkeypatch.setattr("app.services.interview_service.NotificationService", FakeNotificationService)
+        monkeypatch.setattr("app.services.interview_service.CandidateInterviewRead.model_validate", lambda v: v)
+        monkeypatch.setattr("app.services.interview_service.schedule_application_pipeline_event", AsyncMock())
+
+        await service.candidate_action_interview(
+            current_user=SimpleNamespace(id=candidate_user_id),
+            application_id=application_id,
+            interview_id=interview_id,
+            action="decline",
+            candidate_notes="Cannot attend",
+        )
+
+        # 1. In-App notification sent to active recruiter/admin
+        assert len(notifications_created) == 1
+        assert notifications_created[0]["user_id"] == recruiter_id
+        assert notifications_created[0]["notification_type"] == INTERVIEW_DECLINED_TYPE
+        assert notifications_created[0]["title"] == INTERVIEW_DECLINED_TITLE
+
+        # 2. On decline, transactional Email Outbox is scheduled for recruiter
+        assert len(emails_scheduled) == 1
+        assert emails_scheduled[0]["to_email"] == "recruiter@corp.com"
+        assert emails_scheduled[0]["job_title"] == "DevOps Engineer"
+        assert f"interview-declined:{interview_id}:{recruiter_id}:{activity_record.id}" == emails_scheduled[0]["idempotency_key"]
 
 
 if __name__ == "__main__":

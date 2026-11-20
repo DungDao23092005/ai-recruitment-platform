@@ -11,12 +11,21 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidTransitionException,
 )
-from app.domain.enums import ApplicationStatus, InterviewStatus, InterviewType, UserRole
+from app.domain.enums import (
+    ApplicationStatus,
+    InterviewStatus,
+    InterviewType,
+    MembershipRole,
+    MembershipStatus,
+    UserRole,
+)
 from app.models import Application, Interview, Job, Resume
 from app.repositories import (
     ApplicationRepository,
+    CompanyMembershipRepository,
     JobRepository,
     ResumeRepository,
+    UserRepository,
 )
 from app.services.application_service import ApplicationService
 
@@ -28,6 +37,8 @@ def make_session() -> MagicMock:
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
     session.flush = AsyncMock()
+    session.execute = AsyncMock()
+    session.get = AsyncMock(return_value=None)
     return session
 
 
@@ -134,6 +145,23 @@ def make_service(session) -> ApplicationService:
     service.jobs = AsyncMock(spec=JobRepository)
     service.resumes = AsyncMock(spec=ResumeRepository)
     service.resumes.get_primary_by_candidate.return_value = make_resume()
+    service.memberships = AsyncMock(spec=CompanyMembershipRepository)
+    service.users = AsyncMock(spec=UserRepository)
+    default_recruiter = SimpleNamespace(
+        id=uuid.uuid4(),
+        email="recruiter@example.com",
+        role=UserRole.RECRUITER,
+        is_active=True,
+    )
+    default_membership = SimpleNamespace(
+        id=uuid.uuid4(),
+        company_id=uuid.uuid4(),
+        user_id=default_recruiter.id,
+        user=default_recruiter,
+        role=MembershipRole.RECRUITER,
+        status=MembershipStatus.ACTIVE,
+    )
+    service.memberships.list_by_company.return_value = [default_membership]
     return service
 
 
@@ -1629,6 +1657,99 @@ class TestListMyApplicationsWithJobId:
             candidate_id, job_id
         )
 
+
+class TestApplicationSubmissionNotifications:
+    @patch("app.services.application_service.NotificationService")
+    def test_apply_job_candidate_and_recruiter_notifications(self, mock_notif_cls):
+        notifications_created = []
+        async def _mock_create_notif(**kwargs):
+            notifications_created.append(kwargs)
+        mock_notif_cls.return_value.create_notification = _mock_create_notif
+        mock_notif_cls.return_value.notifications = MagicMock()
+        mock_notif_cls.return_value.notifications.get_by_id_and_user = AsyncMock(return_value=None)
+
+        session = make_session()
+        service = make_service(session)
+        job = make_job()
+        service.jobs.get_job_with_company_and_recruiters.return_value = job
+        service.applications.get_by_candidate_and_job.return_value = None
+
+        candidate_id = uuid.uuid4()
+        candidate_user_id = uuid.uuid4()
+        candidate_profile = MagicMock(id=candidate_id, user_id=candidate_user_id, user=MagicMock(email="cand@test.com"))
+        mock_res = MagicMock()
+        mock_res.scalar_one_or_none.return_value = candidate_profile
+        session.execute = AsyncMock(return_value=mock_res)
+
+        admin_user = SimpleNamespace(id=uuid.uuid4(), email="admin@corp.com", is_active=True)
+        recruiter_user = SimpleNamespace(id=uuid.uuid4(), email="recruiter@corp.com", is_active=True)
+        service._get_active_company_recruitment_recipients = AsyncMock(return_value=[admin_user, recruiter_user])
+
+        emails_scheduled = []
+        async def _mock_email(*args, **kwargs):
+            emails_scheduled.append(kwargs)
+
+        with patch("app.services.application_service.schedule_application_submission_email", _mock_email):
+            app = asyncio.run(service.apply_job(candidate_id=candidate_id, job_id=job.id))
+
+        assert app is not None
+        # Candidate received email
+        assert len(emails_scheduled) == 1
+        assert emails_scheduled[0]["to_email"] == "cand@test.com"
+        assert f"application-submission:{app.id}" == emails_scheduled[0]["idempotency_key"]
+
+        # Notifications: 1 candidate in-app + 2 recruiter/admin in-app
+        assert len(notifications_created) == 3
+        cand_notif = next(n for n in notifications_created if n["user_id"] == candidate_user_id)
+        assert cand_notif["notification_type"] == "application_submitted"
+        assert cand_notif["entity_type"] == "application"
+        assert cand_notif["entity_id"] == app.id
+
+        recruiter_notifs = [n for n in notifications_created if n["user_id"] in {admin_user.id, recruiter_user.id}]
+        assert len(recruiter_notifs) == 2
+        for rn in recruiter_notifs:
+            assert rn["notification_type"] == "new_application"
+            assert rn["entity_type"] == "application"
+            assert rn["entity_id"] == app.id
+
+
+class TestStatusChangeNotificationVietnamese:
+    @patch("app.services.application_service.NotificationService")
+    def test_status_change_uses_vietnamese_labels(self, mock_notif_cls):
+        notifications_created = []
+        async def _mock_create_notif(**kwargs):
+            notifications_created.append(kwargs)
+        mock_notif_cls.return_value.create_notification = _mock_create_notif
+        mock_notif_cls.return_value.notifications = MagicMock()
+        mock_notif_cls.return_value.notifications.get_by_id_and_user = AsyncMock(return_value=None)
+
+        session = make_session()
+        service = make_service(session)
+        candidate_user_id = uuid.uuid4()
+        application = make_application(status=ApplicationStatus.UNDER_REVIEW)
+        application.candidate.user_id = candidate_user_id
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
+        service.applications.try_update_status = AsyncMock(return_value=True)
+
+        job = make_job()
+        with patch("app.services.application_service.JobService") as mock_js, \
+             patch("app.services.application_service.record_activity", AsyncMock(return_value=MagicMock(id=uuid.uuid4()))), \
+             patch("app.services.application_service.schedule_application_status_email", AsyncMock()), \
+             patch("app.services.application_service.schedule_application_pipeline_event", AsyncMock()):
+            mock_js.return_value.get_recruiter_job_by_id = AsyncMock(return_value=job)
+            asyncio.run(service.update_application_status(
+                current_user=make_user(),
+                application_id=application.id,
+                new_status=ApplicationStatus.SHORTLISTED,
+            ))
+
+        assert len(notifications_created) == 1
+        notif = notifications_created[0]
+        assert notif["user_id"] == candidate_user_id
+        assert notif["notification_type"] == "application_status_changed"
+        assert "Đang xem xét" in notif["content"]
+        assert "Lọt vòng ngắn" in notif["content"]
+
     def test_list_my_applications_with_job_id_no_interviews(self):
         """Test that applications without interviews still work correctly."""
         session = make_session()
@@ -1669,3 +1790,96 @@ class TestListMyApplicationsWithJobId:
         service.applications.get_by_candidate_and_job.assert_awaited_once_with(
             candidate_id, job_id
         )
+
+
+class TestApplicationSubmissionNotifications:
+    @patch("app.services.application_service.NotificationService")
+    def test_apply_job_candidate_and_recruiter_notifications(self, mock_notif_cls):
+        notifications_created = []
+        async def _mock_create_notif(**kwargs):
+            notifications_created.append(kwargs)
+        mock_notif_cls.return_value.create_notification = _mock_create_notif
+        mock_notif_cls.return_value.notifications = MagicMock()
+        mock_notif_cls.return_value.notifications.get_by_id_and_user = AsyncMock(return_value=None)
+
+        session = make_session()
+        service = make_service(session)
+        job = make_job()
+        service.jobs.get_job_with_company_and_recruiters.return_value = job
+        service.applications.get_by_candidate_and_job.return_value = None
+
+        candidate_id = uuid.uuid4()
+        candidate_user_id = uuid.uuid4()
+        candidate_profile = MagicMock(id=candidate_id, user_id=candidate_user_id, user=MagicMock(email="cand@test.com"))
+        mock_res = MagicMock()
+        mock_res.scalar_one_or_none.return_value = candidate_profile
+        session.execute = AsyncMock(return_value=mock_res)
+
+        admin_user = SimpleNamespace(id=uuid.uuid4(), email="admin@corp.com", is_active=True)
+        recruiter_user = SimpleNamespace(id=uuid.uuid4(), email="recruiter@corp.com", is_active=True)
+        service._get_active_company_recruitment_recipients = AsyncMock(return_value=[admin_user, recruiter_user])
+
+        emails_scheduled = []
+        async def _mock_email(*args, **kwargs):
+            emails_scheduled.append(kwargs)
+
+        with patch("app.services.application_service.schedule_application_submission_email", _mock_email):
+            app = asyncio.run(service.apply_job(candidate_id=candidate_id, job_id=job.id))
+
+        assert app is not None
+        # Candidate received email
+        assert len(emails_scheduled) == 1
+        assert emails_scheduled[0]["to_email"] == "cand@test.com"
+        assert f"application-submission:{app.id}" == emails_scheduled[0]["idempotency_key"]
+
+        # Notifications: 1 candidate in-app + 2 recruiter/admin in-app
+        assert len(notifications_created) == 3
+        cand_notif = next(n for n in notifications_created if n["user_id"] == candidate_user_id)
+        assert cand_notif["notification_type"] == "application_submitted"
+        assert cand_notif["entity_type"] == "application"
+        assert cand_notif["entity_id"] == app.id
+
+        recruiter_notifs = [n for n in notifications_created if n["user_id"] in {admin_user.id, recruiter_user.id}]
+        assert len(recruiter_notifs) == 2
+        for rn in recruiter_notifs:
+            assert rn["notification_type"] == "new_application"
+            assert rn["entity_type"] == "application"
+            assert rn["entity_id"] == app.id
+
+
+class TestStatusChangeNotificationVietnamese:
+    @patch("app.services.application_service.NotificationService")
+    def test_status_change_uses_vietnamese_labels(self, mock_notif_cls):
+        notifications_created = []
+        async def _mock_create_notif(**kwargs):
+            notifications_created.append(kwargs)
+        mock_notif_cls.return_value.create_notification = _mock_create_notif
+        mock_notif_cls.return_value.notifications = MagicMock()
+        mock_notif_cls.return_value.notifications.get_by_id_and_user = AsyncMock(return_value=None)
+
+        session = make_session()
+        service = make_service(session)
+        candidate_user_id = uuid.uuid4()
+        application = make_application(status=ApplicationStatus.UNDER_REVIEW)
+        application.candidate.user_id = candidate_user_id
+        service.applications.get_by_id_with_candidate_user_and_job.return_value = application
+        service.applications.try_update_status = AsyncMock(return_value=True)
+
+        job = make_job()
+        with patch("app.services.application_service.JobService") as mock_js, \
+             patch("app.services.application_service.record_activity", AsyncMock(return_value=MagicMock(id=uuid.uuid4()))), \
+             patch("app.services.application_service.schedule_application_status_email", AsyncMock()), \
+             patch("app.services.application_service.schedule_application_pipeline_event", AsyncMock()):
+            mock_js.return_value.get_recruiter_job_by_id = AsyncMock(return_value=job)
+            asyncio.run(service.update_application_status(
+                current_user=make_user(),
+                application_id=application.id,
+                new_status=ApplicationStatus.SHORTLISTED,
+            ))
+
+        assert len(notifications_created) == 1
+        notif = notifications_created[0]
+        assert notif["user_id"] == candidate_user_id
+        assert notif["notification_type"] == "application_status_changed"
+        assert "Đang xem xét" in notif["content"]
+        assert "Lọt vòng ngắn" in notif["content"]

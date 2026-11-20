@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import EntityNotFoundException
 from app.core.pubsub import pubsub_manager
-from app.models import Notification, User
+from app.models import CompanyMembership, Notification, User
 from app.repositories import NotificationRepository
 from app.schemas.notification import NotificationRead
 from app.services.transaction_action_manager import TransactionActionManager
@@ -44,6 +45,70 @@ CANDIDATE_FREE_QUOTA_EXHAUSTED_TITLE = "Đã hết hạn mức AI miễn phí"
 CANDIDATE_RETURNED_TO_FREE_TYPE = "candidate_returned_to_free"
 CANDIDATE_RETURNED_TO_FREE_TITLE = "Tài khoản đã quay lại gói miễn phí"
 
+# Pipeline entity types
+APPLICATION_ENTITY_TYPE = "application"
+INTERVIEW_ENTITY_TYPE = "interview"
+
+# Pipeline notification types and titles
+NEW_APPLICATION_TYPE = "new_application"
+NEW_APPLICATION_TITLE = "Đơn ứng tuyển mới"
+
+APPLICATION_SUBMITTED_TYPE = "application_submitted"
+APPLICATION_SUBMITTED_TITLE = "Nộp đơn ứng tuyển thành công"
+
+APPLICATION_STATUS_CHANGED_TYPE = "application_status_changed"
+APPLICATION_STATUS_CHANGED_TITLE = "Cập nhật trạng thái đơn ứng tuyển"
+
+APPLICATION_WITHDRAWN_TYPE = "application_withdrawn"
+APPLICATION_WITHDRAWN_TITLE = "Ứng viên rút đơn"
+
+OFFER_ACCEPTED_TYPE = "offer_accepted"
+OFFER_ACCEPTED_TITLE = "Ứng viên chấp nhận lời mời làm việc"
+
+OFFER_DECLINED_TYPE = "offer_declined"
+OFFER_DECLINED_TITLE = "Ứng viên từ chối lời mời làm việc"
+
+INTERVIEW_SCHEDULED_TYPE = "interview_scheduled"
+INTERVIEW_SCHEDULED_TITLE = "Lịch phỏng vấn mới"
+
+INTERVIEW_UPDATED_TYPE = "interview_updated"
+INTERVIEW_UPDATED_TITLE = "Cập nhật lịch phỏng vấn"
+
+INTERVIEW_CANCELLED_TYPE = "interview_cancelled"
+INTERVIEW_CANCELLED_TITLE = "Phỏng vấn bị hủy"
+
+INTERVIEW_CONFIRMED_TYPE = "interview_confirmed"
+INTERVIEW_CONFIRMED_TITLE = "Ứng viên xác nhận phỏng vấn"
+
+INTERVIEW_DECLINED_TYPE = "interview_declined"
+INTERVIEW_DECLINED_TITLE = "Ứng viên từ chối phỏng vấn"
+
+INTERVIEW_ASSIGNED_TYPE = "interview_assigned"
+INTERVIEW_ASSIGNED_TITLE = "Phân công phỏng vấn"
+
+INTERVIEW_UNASSIGNED_TYPE = "interview_unassigned"
+INTERVIEW_UNASSIGNED_TITLE = "Hủy phân công phỏng vấn"
+
+EVALUATION_SUBMITTED_TYPE = "evaluation_submitted"
+EVALUATION_SUBMITTED_TITLE = "Đánh giá phỏng vấn mới"
+
+APPLICATION_STATUS_VIETNAMESE_LABELS: dict[str, str] = {
+    "applied": "Đã nộp",
+    "under_review": "Đang xem xét",
+    "shortlisted": "Lọt vòng ngắn",
+    "interviewing": "Đang phỏng vấn",
+    "offered": "Đã gửi đề nghị",
+    "accepted": "Đã chấp nhận",
+    "rejected": "Từ chối",
+    "withdrawn": "Đã rút đơn",
+}
+
+
+def get_application_status_label(status: object) -> str:
+    """Return the Vietnamese localized label for an application status."""
+    val = status.value if hasattr(status, "value") else str(status)
+    return APPLICATION_STATUS_VIETNAMESE_LABELS.get(val, val)
+
 
 def _format_expiry_date(expires_at: datetime | None) -> str:
     """Render an activation expiry date in Vietnam local time (dd/mm/yyyy).
@@ -60,6 +125,80 @@ def _format_expiry_date(expires_at: datetime | None) -> str:
         else expires_at.replace(tzinfo=timezone.utc)
     )
     return aware.astimezone(VIETNAM_TZ).strftime("%d/%m/%Y")
+
+
+def application_status_notification_id(
+    user_id: uuid.UUID,
+    activity_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    """Deterministic identity for an application status change notification."""
+    suffix = f":{activity_id}" if activity_id is not None else ""
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"application_status_changed:{user_id}{suffix}",
+    )
+
+
+def interview_schedule_notification_id(
+    event: str,
+    user_id: uuid.UUID,
+    activity_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    """Occurrence-aware identity for interview reschedule or cancellation."""
+    suffix = f":{activity_id}" if activity_id is not None else ""
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"interview_{event}:{user_id}{suffix}",
+    )
+
+
+def interview_assignment_notification_id(
+    event: str,
+    user_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+) -> uuid.UUID:
+    """Lifecycle identity for interviewer assignment or unassignment."""
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"interview_{event}:{user_id}:{assignment_id}",
+    )
+
+
+def evaluation_submission_notification_id(
+    user_id: uuid.UUID,
+    evaluation_id: uuid.UUID,
+) -> uuid.UUID:
+    """Deterministic identity for interview evaluation submission notification."""
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"evaluation_submitted:{user_id}:{evaluation_id}",
+    )
+
+
+def offer_response_notification_id(
+    action: str,
+    user_id: uuid.UUID,
+    application_id: uuid.UUID,
+    activity_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    suffix = f":{activity_id}" if activity_id is not None else ""
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"offer_{action}:{user_id}:{application_id}{suffix}",
+    )
+
+
+def candidate_interview_response_notification_id(
+    action: str,
+    user_id: uuid.UUID,
+    interview_id: uuid.UUID,
+    activity_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    suffix = f":{activity_id}" if activity_id is not None else ""
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"interview_{action}:{user_id}:{interview_id}{suffix}",
+    )
 
 
 class NotificationService:
@@ -138,6 +277,83 @@ class NotificationService:
         return uuid.uuid5(
             uuid.NAMESPACE_URL,
             f"{event}:{user_id}:{subscription_id}",
+        )
+
+    application_status_notification_id = staticmethod(application_status_notification_id)
+    interview_schedule_notification_id = staticmethod(interview_schedule_notification_id)
+    interview_assignment_notification_id = staticmethod(interview_assignment_notification_id)
+    evaluation_submission_notification_id = staticmethod(evaluation_submission_notification_id)
+    offer_response_notification_id = staticmethod(offer_response_notification_id)
+    candidate_interview_response_notification_id = staticmethod(candidate_interview_response_notification_id)
+
+    async def get_active_recruiter_and_admin_users(
+        self,
+        company_id: uuid.UUID,
+    ) -> list[User]:
+        """Resolve active company recruiters and admins strictly via CompanyMembership."""
+        from app.domain.enums import MembershipRole, MembershipStatus
+        from app.repositories.company_membership_repository import (
+            CompanyMembershipRepository,
+        )
+        from app.repositories.user_repository import UserRepository
+
+        membership_repo = CompanyMembershipRepository(self.session, CompanyMembership)
+        memberships = await membership_repo.list_by_company(
+            company_id, include_revoked=False
+        )
+        seen_user_ids: set[uuid.UUID] = set()
+        recipients: list[User] = []
+        user_repo: UserRepository | None = None
+
+        for m in memberships:
+            if m.role not in {MembershipRole.ADMIN, MembershipRole.RECRUITER}:
+                continue
+            if m.status != MembershipStatus.ACTIVE:
+                continue
+            if not m.user_id:
+                continue
+            user = m.user
+            if user is None:
+                if user_repo is None:
+                    user_repo = UserRepository(self.session, User)
+                user = await user_repo.get_by_id(m.user_id)
+            if user is None or not user.is_active or getattr(user, "is_deleted", False):
+                continue
+            if user.id in seen_user_ids:
+                continue
+            seen_user_ids.add(user.id)
+            recipients.append(user)
+        return recipients
+
+    async def create_idempotent_notification(
+        self,
+        *,
+        user_id: uuid.UUID,
+        title: str,
+        content: str,
+        notification_type: str,
+        entity_type: Optional[str] = None,
+        entity_id: Optional[uuid.UUID] = None,
+        notification_id: Optional[uuid.UUID] = None,
+    ) -> NotificationRead | None:
+        """Create notification with exact identity deduplication via get_by_id_and_user."""
+        if notification_id is not None:
+            res = self.notifications.get_by_id_and_user(
+                notification_id=notification_id,
+                user_id=user_id,
+            )
+            existing = await res if inspect.isawaitable(res) else None
+            if existing is not None:
+                return NotificationRead.model_validate(existing)
+
+        return await self.create_notification(
+            user_id=user_id,
+            title=title,
+            content=content,
+            notification_type=notification_type,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            notification_id=notification_id,
         )
 
     async def notify_subscription_activated(

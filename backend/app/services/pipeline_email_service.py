@@ -31,6 +31,11 @@ from app.services.notification_service import VIETNAM_TZ
 
 EVENT_APPLICATION_STATUS = "application_status_changed"
 EVENT_INTERVIEW_LIFECYCLE = "interview_lifecycle"
+EVENT_APPLICATION_SUBMITTED = "application_submitted"
+EVENT_OFFER_RESPONSE = "offer_response"
+EVENT_INTERVIEW_DECLINED_RECRUITER = "interview_declined_recruiter"
+EVENT_INTERVIEWER_ASSIGNMENT = "interviewer_assignment"
+EVENT_INTERVIEWER_SCHEDULE_CHANGE = "interviewer_schedule_change"
 
 _FONT = "Arial,Helvetica,sans-serif"
 
@@ -238,6 +243,270 @@ async def schedule_interview_email(
     await enqueue_email(
         session,
         event_type=EVENT_INTERVIEW_LIFECYCLE,
+        to_email=to_email,
+        subject=f"[AI Recruitment Platform] {title}",
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)
+
+
+async def schedule_application_submission_email(
+    session: AsyncSession,
+    *,
+    to_email: Optional[str],
+    job_title: str,
+    candidate_name: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+) -> None:
+    """Enqueue confirmation email to candidate upon successful application submission."""
+    if not to_email:
+        return
+
+    title = "Xác nhận nộp đơn ứng tuyển"
+    intro = (
+        "Cảm ơn bạn đã nộp đơn ứng tuyển. "
+        "Hồ sơ của bạn đã được chuyển đến nhà tuyển dụng để xem xét."
+    )
+    closing = "Nhà tuyển dụng sẽ xem xét hồ sơ và phản hồi trong thời gian sớm nhất."
+    extra_rows: list[tuple[str, str]] = []
+    if candidate_name:
+        extra_rows.append(("Ứng viên", candidate_name))
+
+    html, text = _render(
+        header_bg="#1d4ed8",
+        badge_bg="#dbeafe",
+        badge_text="#1e40af",
+        badge_label="Ứng tuyển thành công",
+        title=title,
+        intro=intro,
+        job_title=job_title,
+        extra_rows=extra_rows,
+        closing=closing,
+    )
+    await enqueue_email(
+        session,
+        event_type=EVENT_APPLICATION_SUBMITTED,
+        to_email=to_email,
+        subject=f"[AI Recruitment Platform] {title}",
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)
+
+
+async def schedule_offer_response_recruiter_email(
+    session: AsyncSession,
+    *,
+    to_email: Optional[str],
+    job_title: str,
+    candidate_name: Optional[str] = None,
+    action: str,
+    idempotency_key: Optional[str] = None,
+) -> None:
+    """Enqueue notification email to recruiter/admin when candidate accepts or declines offer."""
+    if not to_email:
+        return
+
+    if action == "accept":
+        title = "Ứng viên chấp nhận lời mời làm việc"
+        badge_label = "Chấp nhận lời mời"
+        name_str = f"Ứng viên {candidate_name}" if candidate_name else "Ứng viên"
+        intro = f"{name_str} đã chấp nhận lời mời làm việc cho vị trí {job_title}."
+        closing = "Vui lòng liên hệ với ứng viên để trao đổi các bước tiếp nhận công việc."
+    else:
+        title = "Ứng viên từ chối lời mời làm việc"
+        badge_label = "Từ chối lời mời"
+        name_str = f"Ứng viên {candidate_name}" if candidate_name else "Ứng viên"
+        intro = f"{name_str} đã từ chối lời mời làm việc cho vị trí {job_title}."
+        closing = "Bạn có thể xem lại quy trình tuyển dụng và cân nhắc các ứng viên khác."
+
+    extra_rows: list[tuple[str, str]] = []
+    if candidate_name:
+        extra_rows.append(("Ứng viên", candidate_name))
+
+    html, text = _render(
+        header_bg="#1d4ed8",
+        badge_bg="#dbeafe",
+        badge_text="#1e40af",
+        badge_label=badge_label,
+        title=title,
+        intro=intro,
+        job_title=job_title,
+        extra_rows=extra_rows,
+        closing=closing,
+    )
+    await enqueue_email(
+        session,
+        event_type=EVENT_OFFER_RESPONSE,
+        to_email=to_email,
+        subject=f"[AI Recruitment Platform] {title}",
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)
+
+
+async def schedule_interview_declined_recruiter_email(
+    session: AsyncSession,
+    *,
+    to_email: Optional[str],
+    job_title: str,
+    candidate_name: Optional[str] = None,
+    scheduled_at: datetime | None = None,
+    candidate_notes: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+) -> None:
+    """Enqueue notification email to recruiter/admin when candidate declines an interview."""
+    if not to_email:
+        return
+
+    title = "Ứng viên từ chối phỏng vấn"
+    name_str = f"Ứng viên {candidate_name}" if candidate_name else "Ứng viên"
+    intro = f"{name_str} đã từ chối tham gia buổi phỏng vấn cho vị trí {job_title}."
+    closing = "Vui lòng liên hệ lại với ứng viên nếu cần sắp xếp lại lịch hoặc cập nhật trạng thái hồ sơ."
+
+    extra_rows: list[tuple[str, str]] = []
+    if candidate_name:
+        extra_rows.append(("Ứng viên", candidate_name))
+    if scheduled_at is not None:
+        extra_rows.append(("Thời gian ban đầu", _format_datetime(scheduled_at)))
+    if candidate_notes:
+        extra_rows.append(("Lý do từ chối", candidate_notes))
+
+    html, text = _render(
+        header_bg="#b91c1c",
+        badge_bg="#fee2e2",
+        badge_text="#991b1b",
+        badge_label="Từ chối phỏng vấn",
+        title=title,
+        intro=intro,
+        job_title=job_title,
+        extra_rows=extra_rows,
+        closing=closing,
+    )
+    await enqueue_email(
+        session,
+        event_type=EVENT_INTERVIEW_DECLINED_RECRUITER,
+        to_email=to_email,
+        subject=f"[AI Recruitment Platform] {title}",
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)
+
+
+async def schedule_interviewer_assignment_email(
+    session: AsyncSession,
+    *,
+    to_email: Optional[str],
+    job_title: str,
+    scheduled_at: datetime | None = None,
+    location: Optional[str] = None,
+    meeting_url: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+) -> None:
+    """Enqueue notification email to assigned interviewer."""
+    if not to_email:
+        return
+
+    title = "Phân công phỏng vấn"
+    intro = f"Bạn đã được phân công tham gia buổi phỏng vấn cho vị trí {job_title}."
+    closing = "Vui lòng kiểm tra thông tin và chuẩn bị tham gia buổi phỏng vấn đúng giờ."
+
+    extra_rows: list[tuple[str, str]] = []
+    if scheduled_at is not None:
+        extra_rows.append(("Thời gian", _format_datetime(scheduled_at)))
+    if meeting_url:
+        extra_rows.append(("Link phỏng vấn", meeting_url))
+    if location:
+        extra_rows.append(("Địa điểm", location))
+
+    html, text = _render(
+        header_bg="#0f766e",
+        badge_bg="#ccfbf1",
+        badge_text="#115e59",
+        badge_label="Phân công phỏng vấn",
+        title=title,
+        intro=intro,
+        job_title=job_title,
+        extra_rows=extra_rows,
+        closing=closing,
+    )
+    await enqueue_email(
+        session,
+        event_type=EVENT_INTERVIEWER_ASSIGNMENT,
+        to_email=to_email,
+        subject=f"[AI Recruitment Platform] {title}",
+        html_body=html,
+        text_body=text,
+        idempotency_key=idempotency_key,
+    )
+    signal_dispatch_after_commit(session)
+
+
+async def schedule_interviewer_schedule_change_email(
+    session: AsyncSession,
+    *,
+    to_email: Optional[str],
+    job_title: str,
+    scheduled_at: datetime | None = None,
+    event: str = "rescheduled",
+    location: Optional[str] = None,
+    meeting_url: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+) -> None:
+    """Enqueue notification email to assigned interviewer for reschedule or cancellation."""
+    if event not in {"rescheduled", "cancelled"}:
+        raise ValueError(f"Unsupported interviewer schedule change event: {event!r}")
+    if not to_email:
+        return
+
+    if event == "rescheduled":
+        title = "Lịch phỏng vấn đã thay đổi"
+        badge_label = "Lịch phỏng vấn thay đổi"
+        badge_bg = "#ccfbf1"
+        badge_text = "#115e59"
+        header_bg = "#0f766e"
+        intro = f"Buổi phỏng vấn cho vị trí {job_title} mà bạn được phân công đã được cập nhật lịch mới."
+        closing = "Vui lòng kiểm tra lại thời gian và sắp xếp tham gia."
+        extra_rows: list[tuple[str, str]] = []
+        if scheduled_at is not None:
+            extra_rows.append(("Thời gian mới", _format_datetime(scheduled_at)))
+        if meeting_url:
+            extra_rows.append(("Link phỏng vấn", meeting_url))
+        if location:
+            extra_rows.append(("Địa điểm", location))
+    else:
+        title = "Phỏng vấn đã bị hủy"
+        badge_label = "Hủy phỏng vấn"
+        badge_bg = "#fee2e2"
+        badge_text = "#991b1b"
+        header_bg = "#b91c1c"
+        intro = f"Buổi phỏng vấn cho vị trí {job_title} mà bạn được phân công đã bị hủy."
+        closing = "Buổi phỏng vấn đã được hủy trên hệ thống. Bạn không cần tham gia buổi phỏng vấn này nữa."
+        extra_rows = []
+        if scheduled_at is not None:
+            extra_rows.append(("Thời gian đã lên lịch", _format_datetime(scheduled_at)))
+
+    html, text = _render(
+        header_bg=header_bg,
+        badge_bg=badge_bg,
+        badge_text=badge_text,
+        badge_label=badge_label,
+        title=title,
+        intro=intro,
+        job_title=job_title,
+        extra_rows=extra_rows,
+        closing=closing,
+    )
+    await enqueue_email(
+        session,
+        event_type=EVENT_INTERVIEWER_SCHEDULE_CHANGE,
         to_email=to_email,
         subject=f"[AI Recruitment Platform] {title}",
         html_body=html,

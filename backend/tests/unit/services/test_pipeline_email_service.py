@@ -119,3 +119,188 @@ class TestInterviewEmail:
                 event="teleport",
             )
         assert enqueue_spy == []
+
+
+class TestApplicationSubmissionEmail:
+    @pytest.mark.asyncio
+    async def test_enqueues_application_submission_email(self, enqueue_spy):
+        await module.schedule_application_submission_email(
+            MagicMock(),
+            to_email="candidate@example.com",
+            job_title="Backend Engineer",
+            candidate_name="Nguyen Van A",
+            idempotency_key="app-sub-123",
+        )
+
+        assert len(enqueue_spy) == 1
+        call = enqueue_spy[0]
+        assert call["event_type"] == module.EVENT_APPLICATION_SUBMITTED
+        assert call["to_email"] == "candidate@example.com"
+        assert call["idempotency_key"] == "app-sub-123"
+        assert "Backend Engineer" in call["html_body"]
+        assert "Nguyen Van A" in call["html_body"]
+
+    @pytest.mark.asyncio
+    async def test_silent_without_recipient(self, enqueue_spy):
+        await module.schedule_application_submission_email(
+            MagicMock(),
+            to_email=None,
+            job_title="Backend Engineer",
+        )
+        assert enqueue_spy == []
+
+
+class TestOfferResponseRecruiterEmail:
+    @pytest.mark.asyncio
+    async def test_enqueues_offer_accepted(self, enqueue_spy):
+        await module.schedule_offer_response_recruiter_email(
+            MagicMock(),
+            to_email="recruiter@example.com",
+            job_title="Backend Engineer",
+            candidate_name="Nguyen Van A",
+            action="accept",
+            idempotency_key="offer-acc-1",
+        )
+
+        assert len(enqueue_spy) == 1
+        call = enqueue_spy[0]
+        assert call["event_type"] == module.EVENT_OFFER_RESPONSE
+        assert call["to_email"] == "recruiter@example.com"
+        assert call["idempotency_key"] == "offer-acc-1"
+        assert "chấp nhận" in call["html_body"]
+        assert "Backend Engineer" in call["html_body"]
+
+    @pytest.mark.asyncio
+    async def test_enqueues_offer_declined(self, enqueue_spy):
+        await module.schedule_offer_response_recruiter_email(
+            MagicMock(),
+            to_email="recruiter@example.com",
+            job_title="Backend Engineer",
+            candidate_name="Nguyen Van A",
+            action="decline",
+            idempotency_key="offer-dec-1",
+        )
+
+        assert len(enqueue_spy) == 1
+        call = enqueue_spy[0]
+        assert call["event_type"] == module.EVENT_OFFER_RESPONSE
+        assert call["to_email"] == "recruiter@example.com"
+        assert call["idempotency_key"] == "offer-dec-1"
+        assert "từ chối" in call["html_body"]
+
+    @pytest.mark.asyncio
+    async def test_silent_without_recipient(self, enqueue_spy):
+        await module.schedule_offer_response_recruiter_email(
+            MagicMock(),
+            to_email=None,
+            job_title="Backend Engineer",
+            candidate_name="Nguyen Van A",
+            action="accepted",
+        )
+        assert enqueue_spy == []
+
+
+class TestInterviewDeclinedRecruiterEmail:
+    @pytest.mark.asyncio
+    async def test_enqueues_interview_declined_recruiter_email(self, enqueue_spy):
+        await module.schedule_interview_declined_recruiter_email(
+            MagicMock(),
+            to_email="recruiter@example.com",
+            job_title="Backend Engineer",
+            candidate_name="Nguyen Van A",
+            idempotency_key="int-dec-rec-1",
+        )
+
+        assert len(enqueue_spy) == 1
+        call = enqueue_spy[0]
+        assert call["event_type"] == module.EVENT_INTERVIEW_DECLINED_RECRUITER
+        assert call["to_email"] == "recruiter@example.com"
+        assert call["idempotency_key"] == "int-dec-rec-1"
+        assert "từ chối" in call["html_body"]
+        assert "Backend Engineer" in call["html_body"]
+
+    @pytest.mark.asyncio
+    async def test_silent_without_recipient(self, enqueue_spy):
+        await module.schedule_interview_declined_recruiter_email(
+            MagicMock(),
+            to_email=None,
+            job_title="Backend Engineer",
+        )
+        assert enqueue_spy == []
+
+
+class TestInterviewerAssignmentEmail:
+    @pytest.mark.asyncio
+    async def test_enqueues_interviewer_assignment_email(self, enqueue_spy):
+        scheduled_at = datetime(2026, 3, 15, 9, 30, tzinfo=timezone.utc)
+        await module.schedule_interviewer_assignment_email(
+            MagicMock(),
+            to_email="interviewer@example.com",
+            job_title="Backend Engineer",
+            scheduled_at=scheduled_at,
+            meeting_url="https://meet.google.com/xyz-abc",
+            location="Room 101",
+            idempotency_key="assign-1",
+        )
+
+        assert len(enqueue_spy) == 1
+        call = enqueue_spy[0]
+        assert call["event_type"] == module.EVENT_INTERVIEWER_ASSIGNMENT
+        assert call["to_email"] == "interviewer@example.com"
+        assert call["idempotency_key"] == "assign-1"
+        assert "Backend Engineer" in call["html_body"]
+        assert "https://meet.google.com/xyz-abc" in call["html_body"]
+        assert "Room 101" in call["html_body"]
+
+    @pytest.mark.asyncio
+    async def test_silent_without_recipient(self, enqueue_spy):
+        await module.schedule_interviewer_assignment_email(
+            MagicMock(),
+            to_email=None,
+            job_title="Backend Engineer",
+        )
+        assert enqueue_spy == []
+
+
+class TestInterviewerScheduleChangeEmail:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("event", ["rescheduled", "cancelled"])
+    async def test_enqueues_interviewer_schedule_change(self, enqueue_spy, event):
+        scheduled_at = datetime(2026, 3, 16, 14, 0, tzinfo=timezone.utc)
+        await module.schedule_interviewer_schedule_change_email(
+            MagicMock(),
+            to_email="interviewer@example.com",
+            job_title="Backend Engineer",
+            scheduled_at=scheduled_at,
+            meeting_url="https://meet.example.com",
+            event=event,
+            idempotency_key=f"change-{event}",
+        )
+
+        assert len(enqueue_spy) == 1
+        call = enqueue_spy[0]
+        assert call["event_type"] == module.EVENT_INTERVIEWER_SCHEDULE_CHANGE
+        assert call["to_email"] == "interviewer@example.com"
+        assert call["idempotency_key"] == f"change-{event}"
+        assert "Backend Engineer" in call["html_body"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_event(self, enqueue_spy):
+        with pytest.raises(ValueError):
+            await module.schedule_interviewer_schedule_change_email(
+                MagicMock(),
+                to_email="interviewer@example.com",
+                job_title="Backend Engineer",
+                event="unknown_event",
+            )
+        assert enqueue_spy == []
+
+    @pytest.mark.asyncio
+    async def test_silent_without_recipient(self, enqueue_spy):
+        await module.schedule_interviewer_schedule_change_email(
+            MagicMock(),
+            to_email=None,
+            job_title="Backend Engineer",
+            event="rescheduled",
+        )
+        assert enqueue_spy == []

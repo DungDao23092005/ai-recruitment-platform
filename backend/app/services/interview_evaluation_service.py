@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import inspect
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +16,7 @@ from app.core.exceptions import (
 )
 from app.domain import hiring
 from app.domain.enums import MembershipRole, MembershipStatus
-from app.models import Interview, InterviewEvaluation, User
+from app.models import Application, Interview, InterviewEvaluation, User
 from app.models.interview_evaluation import (
     EVALUATION_STATUS_DRAFT,
     EVALUATION_STATUS_SUBMITTED,
@@ -31,11 +34,33 @@ from app.schemas.interview_evaluation import (
 from app.services.application_access import require_recruiter_application
 from app.services.application_activity_service import record_activity
 from app.services.interview_access import require_workspace_interview
+from app.services.notification_service import (
+    EVALUATION_SUBMITTED_TITLE,
+    EVALUATION_SUBMITTED_TYPE,
+    NotificationService,
+    evaluation_submission_notification_id,
+)
 from app.services.workspace_service import WorkspaceContext
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def _check_existing_notification(
+    notification_service: NotificationService,
+    notification_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> Any:
+    repo = getattr(notification_service, "notifications", None)
+    if repo is not None and hasattr(repo, "get_by_id_and_user"):
+        res = repo.get_by_id_and_user(
+            notification_id=notification_id,
+            user_id=user_id,
+        )
+        if inspect.isawaitable(res):
+            return await res
+    return None
 
 
 class InterviewEvaluationService:
@@ -359,6 +384,52 @@ class InterviewEvaluationService:
                     "status": EVALUATION_STATUS_SUBMITTED,
                 },
             )
+
+            # Resolve company & notify active workspace admins and recruiters in-app
+            company_id = None
+            job_title = "N/A"
+            try:
+                stmt = (
+                    select(Application)
+                    .options(selectinload(Application.job))
+                    .where(Application.id == evaluation.application_id)
+                )
+                res = await self.session.execute(stmt)
+                app_obj = res.scalar_one_or_none()
+                if app_obj and app_obj.job:
+                    company_id = app_obj.job.company_id
+                    job_title = app_obj.job.title or "N/A"
+            except Exception:
+                pass
+
+            if company_id:
+                notification_service = NotificationService(self.session)
+                recipients = (
+                    await notification_service.get_active_recruiter_and_admin_users(
+                        company_id
+                    )
+                )
+                for recipient in recipients:
+                    notif_id = evaluation_submission_notification_id(
+                        recipient.id,
+                        evaluation.id,
+                    )
+                    existing = await _check_existing_notification(
+                        notification_service,
+                        notif_id,
+                        recipient.id,
+                    )
+                    if existing is None:
+                        await notification_service.create_notification(
+                            user_id=recipient.id,
+                            title=EVALUATION_SUBMITTED_TITLE,
+                            content=f"Đã có đánh giá phỏng vấn mới cho vị trí {job_title}.",
+                            notification_type=EVALUATION_SUBMITTED_TYPE,
+                            entity_type="interview",
+                            entity_id=evaluation.interview_id,
+                            notification_id=notif_id,
+                        )
+
             await self.session.commit()
         except ConflictException:
             raise

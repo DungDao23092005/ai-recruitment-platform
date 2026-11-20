@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import uuid
 from contextlib import suppress
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 
 from pydantic import ValidationError
 from sqlalchemy import delete, select, update
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
@@ -24,19 +26,30 @@ from app.domain.enums import (
     ApplicationStatus,
     InterviewStatus,
     JobStatus,
+    MembershipRole,
+    MembershipStatus,
     UserRole,
 )
 from app.domain.models import Application as DomainApplication
 from app.domain.models.base import DomainException, utc_now
-from app.models import Application, Job, Resume, User
+from app.models import (
+    Application,
+    CandidateProfile,
+    CompanyMembership,
+    Job,
+    Resume,
+    User,
+)
 from app.models.ai_match_explanation import (
     AIMatchExplanationApplicationLease,
     AIMatchExplanationIdempotency,
 )
 from app.repositories import (
     ApplicationRepository,
+    CompanyMembershipRepository,
     JobRepository,
     ResumeRepository,
+    UserRepository,
 )
 from app.schemas.ai_explanation import ApplicationMatchExplanationResponse
 from app.schemas.ai_job import ParsedJobSchema
@@ -55,8 +68,29 @@ from app.services.match_explanation_coordinator import (
     hash_idempotency_key,
 )
 from app.services.match_explanation_service import MatchExplanationService
-from app.services.notification_service import NotificationService
-from app.services.pipeline_email_service import schedule_application_status_email
+from app.services.notification_service import (
+    APPLICATION_STATUS_CHANGED_TITLE,
+    APPLICATION_STATUS_CHANGED_TYPE,
+    APPLICATION_SUBMITTED_TITLE,
+    APPLICATION_SUBMITTED_TYPE,
+    APPLICATION_WITHDRAWN_TITLE,
+    APPLICATION_WITHDRAWN_TYPE,
+    NEW_APPLICATION_TITLE,
+    NEW_APPLICATION_TYPE,
+    OFFER_ACCEPTED_TITLE,
+    OFFER_ACCEPTED_TYPE,
+    OFFER_DECLINED_TITLE,
+    OFFER_DECLINED_TYPE,
+    NotificationService,
+    application_status_notification_id,
+    get_application_status_label,
+    offer_response_notification_id,
+)
+from app.services.pipeline_email_service import (
+    schedule_application_status_email,
+    schedule_application_submission_email,
+    schedule_offer_response_recruiter_email,
+)
 from app.services.pipeline_realtime import (
     ACTION_APPLICATION_CREATED,
     ACTION_APPLICATION_STATUS_CHANGED,
@@ -155,12 +189,66 @@ class _ApplicationMatchInputs:
     job_vector: list[float] | None
 
 
+async def _check_existing_notification(
+    notification_service: NotificationService,
+    notification_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> Any:
+    repo = getattr(notification_service, "notifications", None)
+    if repo is not None and hasattr(repo, "get_by_id_and_user"):
+        res = repo.get_by_id_and_user(
+            notification_id=notification_id,
+            user_id=user_id,
+        )
+        if inspect.isawaitable(res):
+            return await res
+    return None
+
+
 class ApplicationService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.applications = ApplicationRepository(session, Application)
         self.jobs = JobRepository(session, Job)
         self.resumes = ResumeRepository(session, Resume)
+        self.memberships = CompanyMembershipRepository(session, CompanyMembership)
+        self.users = UserRepository(session, User)
+
+    async def _get_active_company_recruitment_recipients(
+        self, company_id: uuid.UUID | None
+    ) -> list[User]:
+        if not company_id:
+            return []
+        try:
+            res = self.memberships.list_by_company(
+                company_id, include_revoked=False
+            )
+            memberships = await res if inspect.isawaitable(res) else (res or [])
+        except Exception:
+            memberships = []
+        seen_user_ids: set[uuid.UUID] = set()
+        recipients: list[User] = []
+        for m in memberships:
+            if m.role not in {MembershipRole.ADMIN, MembershipRole.RECRUITER}:
+                continue
+            if m.status != MembershipStatus.ACTIVE:
+                continue
+            if not m.user_id:
+                continue
+            user = m.user
+            if user is None:
+                try:
+                    res = self.users.get_by_id(m.user_id)
+                    user = await res if inspect.isawaitable(res) else res
+                except Exception:
+                    user = None
+            if user is None or not user.is_active or getattr(user, "is_deleted", False):
+                continue
+            if user.id in seen_user_ids:
+                continue
+            seen_user_ids.add(user.id)
+            recipients.append(user)
+        return recipients
 
     async def apply_job(
         self,
@@ -200,18 +288,98 @@ class ApplicationService:
         self.session.add(application)
         await self.session.flush()
         try:
-            # Notify recruiter(s) about new application BEFORE commit
             notification_service = NotificationService(self.session)
-            if job.company and job.company.recruiters:
-                for recruiter in job.company.recruiters:
-                    if recruiter.user_id:
+
+            # Resolve candidate user identity and details for confirmation
+            candidate_profile = getattr(resume, "candidate", None)
+            if candidate_profile is None:
+                stmt = (
+                    select(CandidateProfile)
+                    .options(selectinload(CandidateProfile.user))
+                    .where(CandidateProfile.id == candidate_id)
+                )
+                try:
+                    res = await self.session.execute(stmt)
+                    candidate_profile = res.scalar_one_or_none()
+                    if asyncio.iscoroutine(candidate_profile):
+                        candidate_profile.close()
+                        candidate_profile = None
+                except Exception:
+                    candidate_profile = None
+
+            candidate_user_id = None
+            candidate_email = None
+            candidate_name = None
+            if candidate_profile is not None and not asyncio.iscoroutine(candidate_profile):
+                candidate_user_id = getattr(candidate_profile, "user_id", None)
+                if asyncio.iscoroutine(candidate_user_id):
+                    candidate_user_id = None
+                candidate_name = getattr(candidate_profile, "full_name", None)
+                if getattr(candidate_profile, "user", None) and not asyncio.iscoroutine(candidate_profile.user):
+                    candidate_email = getattr(candidate_profile.user, "email", None)
+                elif candidate_user_id:
+                    try:
+                        cand_user = await self.users.get_by_id(candidate_user_id)
+                        candidate_email = getattr(cand_user, "email", None) if cand_user else None
+                    except Exception:
+                        pass
+
+            # Candidate in-app confirmation
+            if candidate_user_id:
+                cand_notif_id = uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"application_submitted:{candidate_user_id}:{application.id}",
+                )
+                cand_existing = await _check_existing_notification(
+                    notification_service,
+                    cand_notif_id,
+                    candidate_user_id,
+                )
+                if cand_existing is None:
+                    await notification_service.create_notification(
+                        user_id=candidate_user_id,
+                        title=APPLICATION_SUBMITTED_TITLE,
+                        content=f"Bạn đã nộp đơn ứng tuyển thành công cho vị trí {job.title}.",
+                        notification_type=APPLICATION_SUBMITTED_TYPE,
+                        entity_type="application",
+                        entity_id=application.id,
+                        notification_id=cand_notif_id,
+                    )
+
+            # Candidate transactional email confirmation
+            await schedule_application_submission_email(
+                self.session,
+                to_email=candidate_email,
+                job_title=job.title,
+                candidate_name=candidate_name,
+                idempotency_key=f"application-submission:{application.id}",
+            )
+
+            # Notify active company recruiters & admins in-app only (no email)
+            company_id = job.company_id
+            if company_id:
+                recruiter_users = await self._get_active_company_recruitment_recipients(
+                    company_id
+                )
+                for recruiter in recruiter_users:
+                    notif_id = uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"new_application:{recruiter.id}:{application.id}",
+                    )
+                    existing = await _check_existing_notification(
+                        notification_service,
+                        notif_id,
+                        recruiter.id,
+                    )
+                    if existing is None:
                         await notification_service.create_notification(
-                            user_id=recruiter.user_id,
-                            title="Đơn ứng tuyển mới",
+                            user_id=recruiter.id,
+                            title=NEW_APPLICATION_TITLE,
                             content=f"Ứng viên đã nộp đơn cho vị trí {job.title}",
-                            notification_type="new_application",
+                            notification_type=NEW_APPLICATION_TYPE,
                             entity_type="application",
                             entity_id=application.id,
+                            notification_id=notif_id,
                         )
 
             await schedule_application_pipeline_event(
@@ -220,6 +388,7 @@ class ApplicationService:
                 action=ACTION_APPLICATION_CREATED,
                 from_status=None,
                 to_status=ApplicationStatus.APPLIED,
+                candidate_user_id=candidate_user_id,
             )
 
             await self.session.commit()
@@ -315,7 +484,7 @@ class ApplicationService:
             candidate.user.email if candidate and candidate.user else None
         )
         try:
-            await record_activity(
+            activity = await record_activity(
                 self.session,
                 application_id=application_id,
                 actor_id=current_user.id,
@@ -323,6 +492,7 @@ class ApplicationService:
                 from_status=old_status.value,
                 to_status=new_status.value,
             )
+            activity_id = getattr(activity, "id", None)
 
             # Durably enqueue a candidate email for outcome statuses (offer /
             # accepted / rejected); other statuses are silent. Never contacts
@@ -340,14 +510,30 @@ class ApplicationService:
             # Notify candidate about status change BEFORE commit
             notification_service = NotificationService(self.session)
             if candidate_user_id:
-                await notification_service.create_notification(
-                    user_id=candidate_user_id,
-                    title="Cập nhật trạng thái đơn ứng tuyển",
-                    content=f"Đơn ứng tuyển của bạn cho vị trí {job_title} đã thay đổi từ {old_status.value} sang {new_status.value}",
-                    notification_type="application_status_changed",
-                    entity_type="application",
-                    entity_id=application.id,
+                notification_id = application_status_notification_id(
+                    candidate_user_id,
+                    activity_id,
                 )
+                existing = await _check_existing_notification(
+                    notification_service,
+                    notification_id,
+                    candidate_user_id,
+                )
+                if existing is None:
+                    old_label = get_application_status_label(old_status.value)
+                    new_label = get_application_status_label(new_status.value)
+                    await notification_service.create_notification(
+                        user_id=candidate_user_id,
+                        title=APPLICATION_STATUS_CHANGED_TITLE,
+                        content=(
+                            f"Đơn ứng tuyển của bạn cho vị trí {job_title} "
+                            f"đã thay đổi từ {old_label} sang {new_label}"
+                        ),
+                        notification_type=APPLICATION_STATUS_CHANGED_TYPE,
+                        entity_type="application",
+                        entity_id=application.id,
+                        notification_id=notification_id,
+                    )
 
             await schedule_application_pipeline_event(
                 self.session,
@@ -439,7 +625,7 @@ class ApplicationService:
             notification_type = "offer_declined"
 
         try:
-            await record_activity(
+            activity = await record_activity(
                 self.session,
                 application_id=application_id,
                 actor_id=current_user.id,
@@ -449,21 +635,48 @@ class ApplicationService:
                 note=notes,
             )
 
+            activity_id = getattr(activity, "id", None)
+            activity_suffix = f":{activity_id}" if activity_id else ""
             notification_service = NotificationService(self.session)
-            if (
-                application.job
-                and application.job.company
-                and application.job.company.recruiters
-            ):
-                for recruiter in application.job.company.recruiters:
-                    if recruiter.user_id:
+            company_id = application.job.company_id if application.job else None
+            candidate_name = getattr(application.candidate, "full_name", None)
+            if company_id:
+                recruiter_users = await self._get_active_company_recruitment_recipients(
+                    company_id
+                )
+                for recruiter in recruiter_users:
+                    notif_id = offer_response_notification_id(
+                        action,
+                        recruiter.id,
+                        application.id,
+                        activity_id,
+                    )
+                    existing = await _check_existing_notification(
+                        notification_service,
+                        notif_id,
+                        recruiter.id,
+                    )
+                    if existing is None:
                         await notification_service.create_notification(
-                            user_id=recruiter.user_id,
+                            user_id=recruiter.id,
                             title=notification_title,
                             content=notification_content,
                             notification_type=notification_type,
                             entity_type="application",
                             entity_id=application.id,
+                            notification_id=notif_id,
+                        )
+
+                    if recruiter.email:
+                        await schedule_offer_response_recruiter_email(
+                            self.session,
+                            to_email=recruiter.email,
+                            job_title=job_title,
+                            candidate_name=candidate_name,
+                            action=action,
+                            idempotency_key=(
+                                f"offer-{action}:{application.id}:{recruiter.id}{activity_suffix}"
+                            ),
                         )
 
             await schedule_application_pipeline_event(
@@ -546,7 +759,7 @@ class ApplicationService:
 
         application.status = ApplicationStatus.WITHDRAWN
         try:
-            await record_activity(
+            activity = await record_activity(
                 self.session,
                 application_id=application_id,
                 actor_id=current_user.id,
@@ -555,18 +768,35 @@ class ApplicationService:
                 to_status=ApplicationStatus.WITHDRAWN.value,
             )
 
-            # Notify recruiter(s) about application withdrawal BEFORE commit
+            # Notify active recruiters & admins about application withdrawal BEFORE commit (In-App only)
             notification_service = NotificationService(self.session)
-            if application.job and application.job.company and application.job.company.recruiters:
-                for recruiter in application.job.company.recruiters:
-                    if recruiter.user_id:
+            company_id = application.job.company_id if application.job else None
+            job_title = application.job.title if application.job else "N/A"
+            activity_id = getattr(activity, "id", None)
+            activity_suffix = f":{activity_id}" if activity_id else ""
+            if company_id:
+                recruiter_users = await self._get_active_company_recruitment_recipients(
+                    company_id
+                )
+                for recruiter in recruiter_users:
+                    notif_id = uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"application_withdrawn:{recruiter.id}:{application.id}{activity_suffix}",
+                    )
+                    existing = await _check_existing_notification(
+                        notification_service,
+                        notif_id,
+                        recruiter.id,
+                    )
+                    if existing is None:
                         await notification_service.create_notification(
-                            user_id=recruiter.user_id,
-                            title="Ứng viên rút đơn",
-                            content=f"Ứng viên đã rút đơn ứng tuyển cho vị trí {application.job.title}",
-                            notification_type="application_withdrawn",
+                            user_id=recruiter.id,
+                            title=APPLICATION_WITHDRAWN_TITLE,
+                            content=f"Ứng viên đã rút đơn ứng tuyển cho vị trí {job_title}",
+                            notification_type=APPLICATION_WITHDRAWN_TYPE,
                             entity_type="application",
                             entity_id=application.id,
+                            notification_id=notif_id,
                         )
 
             await schedule_application_pipeline_event(

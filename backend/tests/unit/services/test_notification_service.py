@@ -3,15 +3,26 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.domain.enums import MembershipRole, MembershipStatus
+from app.models import CompanyMembership, Notification, User
 from app.repositories import NotificationRepository
+from app.schemas.notification import NotificationRead
 from app.services.notification_service import (
     ACCOUNT_UNLOCKED_TITLE,
     ACCOUNT_UNLOCKED_TYPE,
+    APPLICATION_STATUS_VIETNAMESE_LABELS,
     COMPANY_RETURNED_TO_FREE_TITLE,
     COMPANY_RETURNED_TO_FREE_TYPE,
     SUBSCRIPTION_ACTIVATED_TITLE,
     NotificationService,
     _format_expiry_date,
+    application_status_notification_id,
+    candidate_interview_response_notification_id,
+    evaluation_submission_notification_id,
+    get_application_status_label,
+    interview_assignment_notification_id,
+    interview_schedule_notification_id,
+    offer_response_notification_id,
 )
 
 
@@ -341,3 +352,247 @@ class TestNotifyAccountUnlocked:
         assert callable(args[1])
         assert result.title == "Tiêu đề"
         assert result.notification_type == "test_type"
+
+
+class TestVietnameseStatusLabels:
+    def test_all_standard_statuses_have_vietnamese_labels(self):
+        assert get_application_status_label("applied") == "Đã nộp"
+        assert get_application_status_label("under_review") == "Đang xem xét"
+        assert get_application_status_label("shortlisted") == "Lọt vòng ngắn"
+        assert get_application_status_label("interviewing") == "Đang phỏng vấn"
+        assert get_application_status_label("offered") == "Đã gửi đề nghị"
+        assert get_application_status_label("accepted") == "Đã chấp nhận"
+        assert get_application_status_label("rejected") == "Từ chối"
+        assert get_application_status_label("withdrawn") == "Đã rút đơn"
+
+    def test_unknown_status_fallback(self):
+        assert get_application_status_label("non_existent_status") == "non_existent_status"
+
+
+class TestDeterministicNotificationIDs:
+    def test_application_status_notification_id_deterministic(self):
+        user_id = uuid.uuid4()
+        activity_id = uuid.uuid4()
+        id1 = application_status_notification_id(user_id, activity_id)
+        id2 = application_status_notification_id(user_id, activity_id)
+        assert id1 == id2
+        assert isinstance(id1, uuid.UUID)
+
+        # Different activity creates distinct notification ID
+        other_activity = uuid.uuid4()
+        id3 = application_status_notification_id(user_id, other_activity)
+        assert id1 != id3
+
+    def test_interview_schedule_notification_id_deterministic(self):
+        user_id = uuid.uuid4()
+        activity_id = uuid.uuid4()
+        id1 = interview_schedule_notification_id("rescheduled", user_id, activity_id)
+        id2 = interview_schedule_notification_id("rescheduled", user_id, activity_id)
+        assert id1 == id2
+
+        # Rescheduled vs cancelled creates distinct IDs
+        id_cancelled = interview_schedule_notification_id("cancelled", user_id, activity_id)
+        assert id1 != id_cancelled
+
+        # Repeated reschedule cycle T1 -> T2 -> T1 creates distinct ID per activity
+        act1 = uuid.uuid4()
+        act2 = uuid.uuid4()
+        assert (
+            interview_schedule_notification_id("rescheduled", user_id, act1)
+            != interview_schedule_notification_id("rescheduled", user_id, act2)
+        )
+
+    def test_interview_assignment_notification_id_lifecycle(self):
+        user_id = uuid.uuid4()
+        assignment_id_1 = uuid.uuid4()
+        assignment_id_2 = uuid.uuid4()
+
+        assign_1 = interview_assignment_notification_id("assigned", user_id, assignment_id_1)
+        unassign_1 = interview_assignment_notification_id("unassigned", user_id, assignment_id_1)
+        assert assign_1 != unassign_1
+
+        # Reassignment produces a new assignment ID, hence a distinct notification ID
+        assign_2 = interview_assignment_notification_id("assigned", user_id, assignment_id_2)
+        assert assign_1 != assign_2
+
+    def test_evaluation_submission_notification_id_deterministic(self):
+        user_id = uuid.uuid4()
+        eval_id = uuid.uuid4()
+        id1 = evaluation_submission_notification_id(user_id, eval_id)
+        id2 = evaluation_submission_notification_id(user_id, eval_id)
+        assert id1 == id2
+        assert id1 != evaluation_submission_notification_id(uuid.uuid4(), eval_id)
+
+    def test_offer_response_notification_id_deterministic(self):
+        user_id = uuid.uuid4()
+        app_id = uuid.uuid4()
+        act_id = uuid.uuid4()
+
+        id_acc = offer_response_notification_id("accepted", user_id, app_id, act_id)
+        id_dec = offer_response_notification_id("declined", user_id, app_id, act_id)
+        assert id_acc != id_dec
+
+    def test_candidate_interview_response_notification_id_deterministic(self):
+        user_id = uuid.uuid4()
+        int_id = uuid.uuid4()
+        act_id = uuid.uuid4()
+
+        id_conf = candidate_interview_response_notification_id("confirmed", user_id, int_id, act_id)
+        id_dec = candidate_interview_response_notification_id("declined", user_id, int_id, act_id)
+        assert id_conf != id_dec
+
+
+class TestCreateIdempotentNotification:
+    def test_returns_existing_without_creating_new(self):
+        service = make_service()
+        user_id = uuid.uuid4()
+        notif_id = uuid.uuid4()
+
+        existing_row = Notification(
+            id=notif_id,
+            user_id=user_id,
+            title="Existing",
+            content="Already there",
+            notification_type="existing_type",
+            is_read=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        service.notifications.get_by_id_and_user = AsyncMock(return_value=existing_row)
+
+        result = asyncio.run(
+            service.create_idempotent_notification(
+                user_id=user_id,
+                title="New title",
+                content="New content",
+                notification_type="existing_type",
+                notification_id=notif_id,
+            )
+        )
+
+        assert result is not None
+        assert result.id == notif_id
+        service.notifications.get_by_id_and_user.assert_awaited_once_with(
+            notification_id=notif_id,
+            user_id=user_id,
+        )
+        service.create_notification.assert_not_awaited()
+
+    def test_creates_when_not_existing(self):
+        service = make_service()
+        user_id = uuid.uuid4()
+        notif_id = uuid.uuid4()
+
+        service.notifications.get_by_id_and_user = AsyncMock(return_value=None)
+        created_read = NotificationRead(
+            id=notif_id,
+            user_id=user_id,
+            title="New title",
+            content="New content",
+            notification_type="type_x",
+            is_read=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        service.create_notification = AsyncMock(return_value=created_read)
+
+        result = asyncio.run(
+            service.create_idempotent_notification(
+                user_id=user_id,
+                title="New title",
+                content="New content",
+                notification_type="type_x",
+                notification_id=notif_id,
+            )
+        )
+
+        assert result == created_read
+        service.create_notification.assert_awaited_once()
+
+
+class TestGetActiveRecruiterAndAdminUsers:
+    def test_filters_authoritative_company_memberships(self):
+        session = MagicMock()
+        service = NotificationService(session)
+        company_id = uuid.uuid4()
+
+        active_admin = User(id=uuid.uuid4(), email="admin@corp.com", is_active=True)
+        active_recruiter = User(id=uuid.uuid4(), email="recruiter@corp.com", is_active=True)
+        inactive_user = User(id=uuid.uuid4(), email="inactive@corp.com", is_active=False)
+        deleted_user = User(id=uuid.uuid4(), email="deleted@corp.com", is_active=True, is_deleted=True)
+        interviewer_user = User(id=uuid.uuid4(), email="interviewer@corp.com", is_active=True)
+
+        m_admin = CompanyMembership(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            user_id=active_admin.id,
+            role=MembershipRole.ADMIN,
+            status=MembershipStatus.ACTIVE,
+            user=active_admin,
+        )
+        m_recruiter = CompanyMembership(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            user_id=active_recruiter.id,
+            role=MembershipRole.RECRUITER,
+            status=MembershipStatus.ACTIVE,
+            user=active_recruiter,
+        )
+        m_revoked = CompanyMembership(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            user_id=uuid.uuid4(),
+            role=MembershipRole.ADMIN,
+            status=MembershipStatus.REVOKED,
+            user=None,
+        )
+        m_revoked_recruiter = CompanyMembership(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            user_id=uuid.uuid4(),
+            role=MembershipRole.RECRUITER,
+            status=MembershipStatus.REVOKED,
+            user=None,
+        )
+        m_inactive_user = CompanyMembership(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            user_id=inactive_user.id,
+            role=MembershipRole.ADMIN,
+            status=MembershipStatus.ACTIVE,
+            user=inactive_user,
+        )
+        m_deleted_user = CompanyMembership(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            user_id=deleted_user.id,
+            role=MembershipRole.RECRUITER,
+            status=MembershipStatus.ACTIVE,
+            user=deleted_user,
+        )
+        m_interviewer = CompanyMembership(
+            id=uuid.uuid4(),
+            company_id=company_id,
+            user_id=interviewer_user.id,
+            role=MembershipRole.INTERVIEWER,
+            status=MembershipStatus.ACTIVE,
+            user=interviewer_user,
+        )
+
+        all_memberships = [
+            m_admin,
+            m_recruiter,
+            m_revoked,
+            m_revoked_recruiter,
+            m_inactive_user,
+            m_deleted_user,
+            m_interviewer,
+        ]
+
+        with patch("app.repositories.company_membership_repository.CompanyMembershipRepository") as MockMemRepo, \
+             patch("app.repositories.user_repository.UserRepository") as MockUserRepo:
+            MockMemRepo.return_value.list_by_company = AsyncMock(return_value=all_memberships)
+
+            recipients = asyncio.run(service.get_active_recruiter_and_admin_users(company_id))
+
+        assert len(recipients) == 2
+        recipient_ids = {r.id for r in recipients}
+        assert recipient_ids == {active_admin.id, active_recruiter.id}

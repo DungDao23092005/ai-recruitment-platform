@@ -16,7 +16,13 @@ from app.models import (
     EmailOutbox,
     InterviewAssignment,
     InterviewEvaluation,
+    Notification,
     Resume,
+)
+from app.services.notification_service import (
+    INTERVIEW_ASSIGNED_TYPE,
+    INTERVIEW_UNASSIGNED_TYPE,
+    interview_assignment_notification_id,
 )
 from tests.integration.api.conftest import API_V1, PASSWORD, apply_job_with_resume
 
@@ -962,3 +968,190 @@ class TestInterviewerScorecardWorkflow:
             run_async(submitted_peer.aclose())
             run_async(draft_peer.aclose())
             run_async(target_client.aclose())
+
+
+class TestInterviewAssignmentNotificationsLifecycle:
+    def test_assignment_unassignment_and_reassignment_notifications_and_emails(
+        self, client, recruiter_client, candidate_client, run_async
+    ):
+        company, _, application = _setup_application(
+            recruiter_client, candidate_client, run_async
+        )
+        interview = _schedule_interview(
+            recruiter_client, run_async, application["id"]
+        )
+        interviewer, interviewer_email = _invite_member(
+            recruiter_client,
+            client,
+            run_async,
+            company["id"],
+            "interviewer",
+        )
+        headers = {"X-Company-ID": company["id"]}
+        try:
+            members_resp = run_async(
+                recruiter_client.get(
+                    f"{API_V1}/workspaces/members", headers=headers
+                )
+            )
+            assert members_resp.status_code == 200, members_resp.text
+            interviewer_member = next(
+                member
+                for member in members_resp.json()
+                if member["role"] == "interviewer"
+            )
+            interviewer_user_id = interviewer_member["user_id"]
+
+            # 1. Assign interviewer -> in-app notification + email outbox
+            assigned = run_async(
+                recruiter_client.post(
+                    f"{API_V1}/interviews/{interview['id']}/assignments",
+                    headers=headers,
+                    json={"user_id": interviewer_user_id},
+                )
+            )
+            assert assigned.status_code == 201, assigned.text
+            assignment_1_id = assigned.json()["id"]
+
+            async def _verify_assignment_records():
+                async with async_session_factory() as session:
+                    notifs = list(
+                        (
+                            await session.execute(
+                                select(Notification).where(
+                                    Notification.user_id == uuid.UUID(interviewer_user_id)
+                                )
+                            )
+                        ).scalars().all()
+                    )
+                    assert len(notifs) == 1
+                    assert notifs[0].notification_type == INTERVIEW_ASSIGNED_TYPE
+                    assert notifs[0].entity_type == "interview"
+                    assert notifs[0].entity_id == uuid.UUID(interview["id"])
+                    expected_notif_id = interview_assignment_notification_id(
+                        "assigned", interviewer_user_id, assignment_1_id
+                    )
+                    assert notifs[0].id == expected_notif_id
+
+                    emails = list(
+                        (
+                            await session.execute(
+                                select(EmailOutbox).where(
+                                    EmailOutbox.to_email == interviewer_email,
+                                    EmailOutbox.event_type == "interviewer_assignment",
+                                )
+                            )
+                        ).scalars().all()
+                    )
+                    assert len(emails) == 1
+                    assert emails[0].idempotency_key == f"interview-assignment:{assignment_1_id}"
+
+            run_async(_verify_assignment_records())
+
+            # 2. Duplicate assignment attempt -> 409 and no duplicate notification/email
+            duplicate = run_async(
+                recruiter_client.post(
+                    f"{API_V1}/interviews/{interview['id']}/assignments",
+                    headers=headers,
+                    json={"user_id": interviewer_user_id},
+                )
+            )
+            assert duplicate.status_code == 409
+
+            # 3. Unassign interviewer -> in-app notification ONLY (no unassignment email)
+            unassigned = run_async(
+                recruiter_client.delete(
+                    f"{API_V1}/interviews/{interview['id']}/assignments/{assignment_1_id}",
+                    headers=headers,
+                )
+            )
+            assert unassigned.status_code == 204, unassigned.text
+
+            async def _verify_unassignment_records():
+                async with async_session_factory() as session:
+                    notifs = list(
+                        (
+                            await session.execute(
+                                select(Notification).where(
+                                    Notification.user_id == uuid.UUID(interviewer_user_id)
+                                ).order_by(Notification.created_at.asc())
+                            )
+                        ).scalars().all()
+                    )
+                    assert len(notifs) == 2
+                    unassign_notif = notifs[1]
+                    assert unassign_notif.notification_type == INTERVIEW_UNASSIGNED_TYPE
+                    assert unassign_notif.entity_type == "interview"
+                    assert unassign_notif.entity_id == uuid.UUID(interview["id"])
+                    expected_unassign_id = interview_assignment_notification_id(
+                        "unassigned", interviewer_user_id, assignment_1_id
+                    )
+                    assert unassign_notif.id == expected_unassign_id
+
+                    emails = list(
+                        (
+                            await session.execute(
+                                select(EmailOutbox).where(
+                                    EmailOutbox.to_email == interviewer_email
+                                )
+                            )
+                        ).scalars().all()
+                    )
+                    # Verify no email outbox exists for unassignment
+                    assert not any("unassign" in e.event_type.lower() for e in emails)
+                    assignment_emails = [e for e in emails if e.event_type == "interviewer_assignment"]
+                    assert len(assignment_emails) == 1
+
+            run_async(_verify_unassignment_records())
+
+            # 4. Reassign interviewer -> creates brand new assignment row, new notif, new email
+            reassigned = run_async(
+                recruiter_client.post(
+                    f"{API_V1}/interviews/{interview['id']}/assignments",
+                    headers=headers,
+                    json={"user_id": interviewer_user_id},
+                )
+            )
+            assert reassigned.status_code == 201, reassigned.text
+            assignment_2_id = reassigned.json()["id"]
+            assert assignment_2_id != assignment_1_id
+
+            async def _verify_reassignment_records():
+                async with async_session_factory() as session:
+                    notifs = list(
+                        (
+                            await session.execute(
+                                select(Notification).where(
+                                    Notification.user_id == uuid.UUID(interviewer_user_id)
+                                ).order_by(Notification.created_at.asc())
+                            )
+                        ).scalars().all()
+                    )
+                    assert len(notifs) == 3
+                    reassign_notif = notifs[2]
+                    assert reassign_notif.notification_type == INTERVIEW_ASSIGNED_TYPE
+                    assert reassign_notif.entity_type == "interview"
+                    assert reassign_notif.entity_id == uuid.UUID(interview["id"])
+                    expected_reassign_id = interview_assignment_notification_id(
+                        "assigned", interviewer_user_id, assignment_2_id
+                    )
+                    assert reassign_notif.id == expected_reassign_id
+
+                    emails = list(
+                        (
+                            await session.execute(
+                                select(EmailOutbox).where(
+                                    EmailOutbox.to_email == interviewer_email,
+                                    EmailOutbox.event_type == "interviewer_assignment",
+                                ).order_by(EmailOutbox.created_at.asc())
+                            )
+                        ).scalars().all()
+                    )
+                    assert len(emails) == 2
+                    assert emails[0].idempotency_key == f"interview-assignment:{assignment_1_id}"
+                    assert emails[1].idempotency_key == f"interview-assignment:{assignment_2_id}"
+
+            run_async(_verify_reassignment_records())
+
+        finally:
+            run_async(interviewer.aclose())

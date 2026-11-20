@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -10,11 +11,18 @@ from app.core.exceptions import (
     InvalidTransitionException,
 )
 from app.domain import hiring
-from app.domain.enums import ApplicationStatus, InterviewStatus, InterviewType
+from app.domain.enums import (
+    ApplicationStatus,
+    InterviewStatus,
+    InterviewType,
+    MembershipRole,
+    MembershipStatus,
+)
 from app.domain.models import Application as DomainApplication
 from app.domain.models.base import DomainException
 from app.models import (
     Application,
+    CompanyMembership,
     Interview,
     InterviewAssignment,
     Job,
@@ -23,9 +31,11 @@ from app.models import (
 )
 from app.repositories import (
     ApplicationRepository,
+    CompanyMembershipRepository,
     InterviewAssignmentRepository,
     InterviewRepository,
     ResumeRepository,
+    UserRepository,
 )
 from app.schemas.interview import (
     AssignedInterviewRead,
@@ -44,8 +54,24 @@ from app.services.pii_masking import mask_email, mask_parsed_resume, mask_phone
 from app.services.application_activity_service import record_activity
 from app.services.interview_access import require_workspace_interview
 from app.services.job_service import JobService
-from app.services.notification_service import NotificationService
-from app.services.pipeline_email_service import schedule_interview_email
+from app.services.notification_service import (
+    INTERVIEW_CANCELLED_TITLE,
+    INTERVIEW_CANCELLED_TYPE,
+    INTERVIEW_CONFIRMED_TITLE,
+    INTERVIEW_CONFIRMED_TYPE,
+    INTERVIEW_DECLINED_TITLE,
+    INTERVIEW_DECLINED_TYPE,
+    INTERVIEW_UPDATED_TITLE,
+    INTERVIEW_UPDATED_TYPE,
+    NotificationService,
+    candidate_interview_response_notification_id,
+    interview_schedule_notification_id,
+)
+from app.services.pipeline_email_service import (
+    schedule_interview_email,
+    schedule_interview_declined_recruiter_email,
+    schedule_interviewer_schedule_change_email,
+)
 from app.services.pipeline_realtime import (
     ACTION_INTERVIEW_CANCELLED,
     ACTION_INTERVIEW_CONFIRMED,
@@ -56,6 +82,22 @@ from app.services.pipeline_realtime import (
 )
 from app.services.user_service import UserService
 from app.services.workspace_service import WorkspaceContext
+
+
+async def _check_existing_notification(
+    notification_service: NotificationService,
+    notification_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> Any:
+    repo = getattr(notification_service, "notifications", None)
+    if repo is not None and hasattr(repo, "get_by_id_and_user"):
+        res = repo.get_by_id_and_user(
+            notification_id=notification_id,
+            user_id=user_id,
+        )
+        if inspect.isawaitable(res):
+            return await res
+    return None
 
 # An interview in any of these states still requires the application to remain
 # in the INTERVIEWING stage. Declined/cancelled outcomes are terminal, while
@@ -86,6 +128,67 @@ class InterviewService:
         self.interviews = InterviewRepository(session, Interview)
         self.applications = ApplicationRepository(session, Application)
         self.assignments = InterviewAssignmentRepository(session)
+        self.memberships = CompanyMembershipRepository(session, CompanyMembership)
+        self.users = UserRepository(session, User)
+
+    async def _get_active_company_recruitment_recipients(
+        self, company_id: uuid.UUID | None
+    ) -> list[User]:
+        if not company_id:
+            return []
+        try:
+            res = self.memberships.list_by_company(
+                company_id, include_revoked=False
+            )
+            memberships = await res if inspect.isawaitable(res) else (res or [])
+        except Exception:
+            memberships = []
+        seen_user_ids: set[uuid.UUID] = set()
+        recipients: list[User] = []
+        for m in memberships:
+            if m.role not in {MembershipRole.ADMIN, MembershipRole.RECRUITER}:
+                continue
+            if m.status != MembershipStatus.ACTIVE:
+                continue
+            if not m.user_id:
+                continue
+            user = m.user
+            if user is None:
+                try:
+                    res = self.users.get_by_id(m.user_id)
+                    user = await res if inspect.isawaitable(res) else res
+                except Exception:
+                    user = None
+            if user is None or not user.is_active or getattr(user, "is_deleted", False):
+                continue
+            if user.id in seen_user_ids:
+                continue
+            seen_user_ids.add(user.id)
+            recipients.append(user)
+        return recipients
+
+    async def _get_active_assigned_interviewer_users(
+        self, interview_id: uuid.UUID
+    ) -> list[User]:
+        try:
+            res = self.assignments.list_active_by_interview(interview_id)
+            assignments = await res if inspect.isawaitable(res) else (res or [])
+        except Exception:
+            assignments = []
+        seen_user_ids: set[uuid.UUID] = set()
+        interviewers: list[User] = []
+        for a in assignments:
+            if not a.user_id or a.user_id in seen_user_ids:
+                continue
+            try:
+                res = self.users.get_by_id(a.user_id)
+                user = await res if inspect.isawaitable(res) else res
+            except Exception:
+                user = None
+            if user and user.is_active and not getattr(user, "is_deleted", False):
+                seen_user_ids.add(user.id)
+                interviewers.append(user)
+        return interviewers
 
     @staticmethod
     def _as_utc(value: datetime) -> datetime:
@@ -240,7 +343,7 @@ class InterviewService:
                 raise InvalidTransitionException(str(exc)) from exc
             application.status = domain.status
 
-        job_title = application.job.title if application.job else "N/A"
+        job_title = getattr(application.job, "title", "N/A") if application.job else "N/A"
 
         try:
             if application.status != previous_app_status:
@@ -370,6 +473,22 @@ class InterviewService:
             )
 
         original_scheduled_at = interview.scheduled_at
+        original_duration = interview.duration_minutes
+        original_meeting_url = interview.meeting_url
+        original_location = interview.location
+
+        is_in_progress = self._as_utc(original_scheduled_at) <= now
+
+        schedule_affecting_changed = False
+        if not is_in_progress:
+            if data.scheduled_at is not None and data.scheduled_at != original_scheduled_at:
+                schedule_affecting_changed = True
+            if data.duration_minutes is not None and data.duration_minutes != original_duration:
+                schedule_affecting_changed = True
+            if data.meeting_url is not None and str(data.meeting_url) != (original_meeting_url or ""):
+                schedule_affecting_changed = True
+            if data.location is not None and data.location != (original_location or ""):
+                schedule_affecting_changed = True
 
         # Update fields
         if data.scheduled_at is not None:
@@ -385,18 +504,20 @@ class InterviewService:
         if data.notes is not None:
             interview.notes = data.notes
 
-        rescheduled = interview.scheduled_at != original_scheduled_at
-        job_title = application.job.title if application.job else "N/A"
+        job_title = getattr(application.job, "title", "N/A") if application.job else "N/A"
+        candidate_user_id = getattr(application.candidate, "user_id", None) if application.candidate else None
 
         try:
-            if rescheduled:
-                await record_activity(
+            activity = None
+            if schedule_affecting_changed:
+                activity = await record_activity(
                     self.session,
                     application_id=interview.application_id,
                     actor_id=current_user.id,
                     action_type=hiring.INTERVIEW_RESCHEDULED,
                     metadata={"interview_id": str(interview.id)},
                 )
+                activity_id = getattr(activity, "id", None)
                 await schedule_interview_email(
                     self.session,
                     to_email=self._candidate_email(application),
@@ -404,23 +525,80 @@ class InterviewService:
                     scheduled_at=interview.scheduled_at,
                     event="rescheduled",
                     idempotency_key=(
-                        f"interview:{interview.id}:rescheduled:"
-                        f"{interview.scheduled_at.isoformat()}"
+                        f"interview:{interview.id}:rescheduled:{activity_id or interview.scheduled_at.isoformat()}"
                     ),
                 )
 
-            # Notify candidate about interview update BEFORE commit
             notification_service = NotificationService(self.session)
-            candidate_user_id = application.candidate.user_id if application.candidate else None
+            activity_id = getattr(activity, "id", None)
             if candidate_user_id:
-                await notification_service.create_notification(
-                    user_id=candidate_user_id,
-                    title="Cập nhật lịch phỏng vấn",
-                    content=f"Lịch phỏng vấn cho vị trí {job_title} đã được cập nhật. Thời gian mới: {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}",
-                    notification_type="interview_updated",
-                    entity_type="interview",
-                    entity_id=interview.id,
+                cand_notif_id = interview_schedule_notification_id(
+                    "updated",
+                    candidate_user_id,
+                    activity_id,
                 )
+                existing = await _check_existing_notification(
+                    notification_service,
+                    cand_notif_id,
+                    candidate_user_id,
+                )
+                if existing is None:
+                    await notification_service.create_notification(
+                        user_id=candidate_user_id,
+                        title=INTERVIEW_UPDATED_TITLE,
+                        content=(
+                            f"Lịch phỏng vấn cho vị trí {job_title} đã được cập nhật. "
+                            f"Thời gian mới: {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}"
+                        ),
+                        notification_type=INTERVIEW_UPDATED_TYPE,
+                        entity_type="interview",
+                        entity_id=interview.id,
+                        notification_id=cand_notif_id,
+                    )
+
+            # Active assigned interviewers receive In-App + Email on schedule change
+            if schedule_affecting_changed and activity_id:
+                assigned_interviewers = await self._get_active_assigned_interviewer_users(
+                    interview.id
+                )
+                for interviewer in assigned_interviewers:
+                    int_notif_id = interview_schedule_notification_id(
+                        "rescheduled",
+                        interviewer.id,
+                        activity_id,
+                    )
+                    int_existing = await _check_existing_notification(
+                        notification_service,
+                        int_notif_id,
+                        interviewer.id,
+                    )
+                    if int_existing is None:
+                        await notification_service.create_notification(
+                            user_id=interviewer.id,
+                            title=INTERVIEW_UPDATED_TITLE,
+                            content=(
+                                f"Lịch phỏng vấn cho vị trí {job_title} đã được cập nhật. "
+                                f"Thời gian mới: {interview.scheduled_at.strftime('%d/%m/%Y %H:%M')}"
+                            ),
+                            notification_type=INTERVIEW_UPDATED_TYPE,
+                            entity_type="interview",
+                            entity_id=interview.id,
+                            notification_id=int_notif_id,
+                        )
+
+                    if interviewer.email:
+                        await schedule_interviewer_schedule_change_email(
+                            self.session,
+                            to_email=interviewer.email,
+                            job_title=job_title,
+                            scheduled_at=interview.scheduled_at,
+                            event="rescheduled",
+                            location=interview.location,
+                            meeting_url=interview.meeting_url,
+                            idempotency_key=(
+                                f"interviewer:{interviewer.id}:interview:{interview.id}:rescheduled:{activity_id}"
+                            ),
+                        )
 
             await schedule_application_pipeline_event(
                 self.session,
@@ -485,14 +663,19 @@ class InterviewService:
 
         previous_app_status = application.status
 
+        # Active assigned interviewers to notify
+        assigned_interviewers = await self._get_active_assigned_interviewer_users(
+            interview.id
+        )
+
         # Set status to CANCELLED and soft delete
         interview.status = InterviewStatus.CANCELLED
         await self.interviews.soft_delete(interview)
 
-        job_title = application.job.title if application.job else "N/A"
+        job_title = getattr(application.job, "title", "N/A") if application.job else "N/A"
 
         try:
-            await record_activity(
+            activity = await record_activity(
                 self.session,
                 application_id=interview.application_id,
                 actor_id=current_user.id,
@@ -537,14 +720,61 @@ class InterviewService:
                         "Đang xem xét vì không còn buổi phỏng vấn nào đang "
                         "hoạt động."
                     )
-                await notification_service.create_notification(
-                    user_id=candidate_user_id,
-                    title="Phỏng vấn bị hủy",
-                    content=content,
-                    notification_type="interview_cancelled",
-                    entity_type="interview",
-                    entity_id=interview.id,
+                cand_notif_id = interview_schedule_notification_id(
+                    "cancelled",
+                    candidate_user_id,
+                    activity.id,
                 )
+                cand_existing = await _check_existing_notification(
+                    notification_service,
+                    cand_notif_id,
+                    candidate_user_id,
+                )
+                if cand_existing is None:
+                    await notification_service.create_notification(
+                        user_id=candidate_user_id,
+                        title=INTERVIEW_CANCELLED_TITLE,
+                        content=content,
+                        notification_type=INTERVIEW_CANCELLED_TYPE,
+                        entity_type="interview",
+                        entity_id=interview.id,
+                        notification_id=cand_notif_id,
+                    )
+
+            # Active assigned interviewers receive In-App + Email for cancellation
+            for interviewer in assigned_interviewers:
+                int_notif_id = interview_schedule_notification_id(
+                    "cancelled",
+                    interviewer.id,
+                    activity.id,
+                )
+                int_existing = await _check_existing_notification(
+                    notification_service,
+                    int_notif_id,
+                    interviewer.id,
+                )
+                if int_existing is None:
+                    await notification_service.create_notification(
+                        user_id=interviewer.id,
+                        title=INTERVIEW_CANCELLED_TITLE,
+                        content=f"Buổi phỏng vấn cho vị trí {job_title} đã bị hủy.",
+                        notification_type=INTERVIEW_CANCELLED_TYPE,
+                        entity_type="interview",
+                        entity_id=interview.id,
+                        notification_id=int_notif_id,
+                    )
+
+                if interviewer.email:
+                    await schedule_interviewer_schedule_change_email(
+                        self.session,
+                        to_email=interviewer.email,
+                        job_title=job_title,
+                        scheduled_at=interview.scheduled_at,
+                        event="cancelled",
+                        idempotency_key=(
+                            f"interviewer:{interviewer.id}:interview:{interview.id}:cancelled:{activity.id}"
+                        ),
+                    )
 
             await schedule_application_pipeline_event(
                 self.session,
@@ -638,7 +868,7 @@ class InterviewService:
             }
             if action == "decline" and interview.candidate_notes:
                 activity_metadata["candidate_notes"] = interview.candidate_notes
-            await record_activity(
+            activity = await record_activity(
                 self.session,
                 application_id=application_id,
                 actor_id=current_user.id,
@@ -676,18 +906,50 @@ class InterviewService:
                         "động."
                     )
 
-            # Notify recruiter(s) about candidate confirm/decline BEFORE commit
+            # Notify active workspace recruiters & admins about candidate confirm/decline BEFORE commit
             notification_service = NotificationService(self.session)
-            if application.job and application.job.company and application.job.company.recruiters:
-                for recruiter in application.job.company.recruiters:
-                    if recruiter.user_id:
+            company_id = getattr(application.job, "company_id", None) if application.job else None
+            job_title = getattr(application.job, "title", "N/A") if application.job else "N/A"
+            candidate_name = getattr(application.candidate, "full_name", None) if application.candidate else None
+            if company_id:
+                recruiter_users = await self._get_active_company_recruitment_recipients(
+                    company_id
+                )
+                for recruiter in recruiter_users:
+                    notif_id = candidate_interview_response_notification_id(
+                        action,
+                        recruiter.id,
+                        interview.id,
+                        activity.id,
+                    )
+                    existing = await _check_existing_notification(
+                        notification_service,
+                        notif_id,
+                        recruiter.id,
+                    )
+                    if existing is None:
                         await notification_service.create_notification(
-                            user_id=recruiter.user_id,
+                            user_id=recruiter.id,
                             title=notification_title,
                             content=notification_content,
                             notification_type=notification_type,
                             entity_type="application",
                             entity_id=application.id,
+                            notification_id=notif_id,
+                        )
+
+                    # On decline, also enqueue transactional Email Outbox notification
+                    if action == "decline" and recruiter.email:
+                        await schedule_interview_declined_recruiter_email(
+                            self.session,
+                            to_email=recruiter.email,
+                            job_title=job_title,
+                            candidate_name=candidate_name,
+                            scheduled_at=interview.scheduled_at,
+                            candidate_notes=interview.candidate_notes,
+                            idempotency_key=(
+                                f"interview-declined:{interview.id}:{recruiter.id}:{activity.id}"
+                            ),
                         )
 
             await schedule_application_pipeline_event(
