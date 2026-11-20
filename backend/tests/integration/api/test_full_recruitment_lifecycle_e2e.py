@@ -36,7 +36,9 @@ from app.services.job_service import JobService
 from app.services.payment_providers.vnpay import VNPAYProvider
 from app.services.pipeline_email_service import (
     EVENT_APPLICATION_STATUS,
+    EVENT_APPLICATION_SUBMITTED,
     EVENT_INTERVIEW_LIFECYCLE,
+    EVENT_OFFER_RESPONSE,
 )
 from app.services.subscription_email_service import EVENT_PAYMENT_RECEIPT
 from tests.integration.api.conftest import API_V1, PASSWORD
@@ -517,31 +519,51 @@ class TestFullRecruitmentLifecycleE2E:
             assert final_job.status == JobStatus.PUBLISHED
 
         pending_rows = run_async(_outbox_rows())
-        assert len(pending_rows) == 3, [
+        assert len(pending_rows) == 5, [
             (row.event_type, row.to_email, row.idempotency_key)
             for row in pending_rows
         ]
         assert {row.event_type for row in pending_rows} == {
             EVENT_PAYMENT_RECEIPT,
+            EVENT_APPLICATION_SUBMITTED,
             EVENT_INTERVIEW_LIFECYCLE,
             EVENT_APPLICATION_STATUS,
+            EVENT_OFFER_RESPONSE,
         }
+        rows_by_event = {row.event_type: row for row in pending_rows}
+        offer_key = rows_by_event[EVENT_OFFER_RESPONSE].idempotency_key
         assert {row.idempotency_key for row in pending_rows} == {
             f"payment_receipt:{internal_order_id}",
+            f"application-submission:{application_id}",
             f"interview:{interview_id}:scheduled",
             f"application-status:{application_id}:offered",
+            offer_key,
         }
+        assert offer_key.startswith(f"offer-accept:{application_id}:")
+        offer_key_parts = offer_key.split(":")
+        assert len(offer_key_parts) == 4
+        assert offer_key_parts[0] == "offer-accept"
+        assert offer_key_parts[1] == str(application_id)
+        uuid.UUID(offer_key_parts[2])
+        uuid.UUID(offer_key_parts[3])
+
         assert all(row.status == OutboxStatus.PENDING.value for row in pending_rows)
         assert all(row.attempts == 0 for row in pending_rows)
 
-        rows_by_event = {row.event_type: row for row in pending_rows}
         assert rows_by_event[EVENT_PAYMENT_RECEIPT].to_email == recruiter_email
+        assert rows_by_event[EVENT_APPLICATION_SUBMITTED].to_email == candidate_email
         assert rows_by_event[EVENT_INTERVIEW_LIFECYCLE].to_email == candidate_email
         assert rows_by_event[EVENT_APPLICATION_STATUS].to_email == candidate_email
+        assert rows_by_event[EVENT_OFFER_RESPONSE].to_email == recruiter_email
+
         assert job_payload["title"] in (
             rows_by_event[EVENT_INTERVIEW_LIFECYCLE].text_body
         )
         assert job_payload["title"] in rows_by_event[EVENT_APPLICATION_STATUS].text_body
+        assert job_payload["title"] in (
+            rows_by_event[EVENT_APPLICATION_SUBMITTED].text_body
+        )
+        assert job_payload["title"] in rows_by_event[EVENT_OFFER_RESPONSE].text_body
 
         transport = SimpleNamespace(send_email=AsyncMock())
         worker = EmailOutboxWorker(
@@ -550,11 +572,11 @@ class TestFullRecruitmentLifecycleE2E:
             batch_size=10,
         )
         sent_count = run_async(worker.process_due_messages())
-        assert sent_count == 3
-        assert transport.send_email.await_count == 3
+        assert sent_count == 5
+        assert transport.send_email.await_count == 5
 
         sent_rows = run_async(_outbox_rows())
-        assert len(sent_rows) == 3
+        assert len(sent_rows) == 5
         assert all(row.status == OutboxStatus.SENT.value for row in sent_rows)
         assert all(row.attempts == 1 for row in sent_rows)
         assert all(row.sent_at is not None for row in sent_rows)
@@ -562,5 +584,5 @@ class TestFullRecruitmentLifecycleE2E:
         assert all(row.last_error is None for row in sent_rows)
 
         recipients = [call.args[0] for call in transport.send_email.await_args_list]
-        assert recipients.count(recruiter_email) == 1
-        assert recipients.count(candidate_email) == 2
+        assert recipients.count(recruiter_email) == 2
+        assert recipients.count(candidate_email) == 3
