@@ -36,11 +36,15 @@ def make_application(
     status: ApplicationStatus = ApplicationStatus.INTERVIEWING,
 ) -> SimpleNamespace:
     candidate_user_id = uuid.uuid4()
+    company_id = uuid.uuid4()
+    recruiter_id = uuid.uuid4()
     job = SimpleNamespace(
         id=uuid.uuid4(),
+        company_id=company_id,
         title="Backend Engineer",
         company=SimpleNamespace(
-            recruiters=[SimpleNamespace(user_id=uuid.uuid4())]
+            id=company_id,
+            recruiters=[SimpleNamespace(user_id=recruiter_id)],
         ),
     )
     return SimpleNamespace(
@@ -126,6 +130,9 @@ def side_effects(monkeypatch):
     )
     monkeypatch.setattr(f"{MODULE}.schedule_interview_email", schedule_email)
     monkeypatch.setattr(
+        f"{MODULE}.schedule_interview_declined_recruiter_email", schedule_email
+    )
+    monkeypatch.setattr(
         f"{MODULE}.NotificationService", FakeNotificationService
     )
     monkeypatch.setattr(
@@ -195,6 +202,15 @@ class TestCandidateDeclineReconciliation:
         patch_candidate_profile(monkeypatch, application)
         service, session = build_service(
             application, interview, remaining=[interview]
+        )
+        recruiter_id = application.job.company.recruiters[0].user_id
+        recruiter_user = SimpleNamespace(
+            id=recruiter_id,
+            email="recruiter@example.com",
+            is_active=True,
+        )
+        service._get_active_company_recruitment_recipients = AsyncMock(
+            return_value=[recruiter_user]
         )
         candidate = SimpleNamespace(id=application.candidate.user_id)
 
