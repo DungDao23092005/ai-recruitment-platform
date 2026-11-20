@@ -18,6 +18,7 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { ErrorBanner } from '@/components/ui/error-banner';
 import { PageHeader } from '@/components/common/PageHeader';
 import { useAuth } from '@/contexts/AuthContext';
+import { useOptionalWorkspace } from '@/contexts/WorkspaceContext';
 import { getNotifications, markNotificationRead, markAllNotificationsRead } from '@/api/notifications';
 import { getApplicationDetail } from '@/api/applications';
 import { getInterview } from '@/api/interviews';
@@ -96,6 +97,7 @@ function getEntityRoute(entityType: string | null, entityId: string | null, user
 
 export function NotificationsPage() {
   const { isAuthenticated, isLoading: authLoading, currentUser } = useAuth();
+  const workspace = useOptionalWorkspace();
   const navigate = useNavigate();
   const { unreadCount, decrement, increment, setUnreadCount } = useUnreadCountStore();
 
@@ -104,6 +106,8 @@ export function NotificationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
+
+  const isWorkspaceLoading = currentUser?.role === 'recruiter' && Boolean(workspace?.isLoading);
 
   const fetchNotifications = async (pageNum: number = 1, append = false) => {
     try {
@@ -133,11 +137,24 @@ export function NotificationsPage() {
   const retry = () => fetchNotifications(1, false);
 
   const handleMarkRead = async (notification: Notification) => {
+    if (currentUser?.role === 'recruiter' && workspace?.isLoading) {
+      return;
+    }
+
     // Separate read handling from navigation
     const userRole = currentUser?.role;
+    const workspaceRole = workspace?.selectedWorkspace?.role;
 
     // Helper to resolve and navigate
     const resolveAndNavigate = async () => {
+      if (
+        workspaceRole === 'interviewer' &&
+        notification.entity_type === 'interview'
+      ) {
+        navigate('/interviewer/interviews');
+        return;
+      }
+
       if (notification.entity_type === 'application' && notification.entity_id && userRole === 'recruiter') {
         try {
           const application = await getApplicationDetail(notification.entity_id);
@@ -274,7 +291,7 @@ export function NotificationsPage() {
         title="Thông báo"
         description={`Bạn có ${unreadCount} thông báo chưa đọc`}
         actions={
-          unreadCount > 0 ? (
+          unreadCount > 0 && !isWorkspaceLoading ? (
             <Button variant="outline" size="sm" onClick={handleMarkAllRead}>
               <Check className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
               Đánh dấu tất cả đã đọc
@@ -287,8 +304,8 @@ export function NotificationsPage() {
         <ErrorBanner message={error} onRetry={retry} className="mb-6" />
       )}
 
-      {loading ? (
-        <div className="space-y-4">
+      {loading || isWorkspaceLoading ? (
+        <div className="space-y-4" data-testid="notifications-skeleton">
           {[...Array(5)].map((_, i) => (
             <NotificationSkeleton key={i} />
           ))}

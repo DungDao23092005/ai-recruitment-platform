@@ -4,6 +4,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NotificationsPage } from '@/pages/notifications/NotificationsPage';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
+import { useOptionalWorkspace } from '@/contexts/WorkspaceContext';
 import * as notificationsApi from '@/api/notifications';
 import * as applicationsApi from '@/api/applications';
 import * as interviewsApi from '@/api/interviews';
@@ -15,6 +16,11 @@ vi.mock('@/api/interviews');
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: vi.fn(),
   AuthProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+vi.mock('@/contexts/WorkspaceContext', () => ({
+  useOptionalWorkspace: vi.fn(),
+  useWorkspace: vi.fn(),
+  WorkspaceProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
 vi.mock('@/stores/useUnreadCountStore', () => ({
@@ -46,11 +52,19 @@ describe('NotificationsPage', () => {
       increment: vi.fn(),
       setUnreadCount: vi.fn(),
     });
+    vi.mocked(useOptionalWorkspace).mockReturnValue({
+      workspaces: [],
+      selectedWorkspace: null,
+      isLoading: false,
+      error: null,
+      selectWorkspace: vi.fn(),
+      refreshWorkspaces: vi.fn(),
+    });
   });
 
   const renderPage = (initialEntries = ['/notifications']) => {
     return render(
-      <MemoryRouter initialEntries={['/notifications']}>
+      <MemoryRouter initialEntries={initialEntries}>
         <AuthProvider>
           <Routes>
             <Route path="/notifications" element={<NotificationsPage />} />
@@ -59,7 +73,7 @@ describe('NotificationsPage', () => {
             <Route path="/recruiter/jobs" element={<div data-testid="recruiter-jobs-page">Recruiter Jobs Page</div>} />
             <Route path="/admin/jobs/:jobId/applicants" element={<div data-testid="admin-job-applicants-page">Admin Job Applicants Page</div>} />
             <Route path="/admin/jobs" element={<div data-testid="admin-jobs-page">Admin Jobs Page</div>} />
-            <Route path="/candidate/applications" element={<div data-testid="candidate-applications-page">Candidate Applications Page</div>} />
+            <Route path="/interviewer/interviews" element={<div data-testid="interviewer-interviews-page">Interviewer Interviews Page</div>} />
             <Route path="*" element={<div>Not Found</div>} />
           </Routes>
         </AuthProvider>
@@ -124,6 +138,14 @@ describe('NotificationsPage', () => {
       decrement: vi.fn(),
       increment: vi.fn(),
       setUnreadCount: vi.fn(),
+    });
+    vi.mocked(useOptionalWorkspace).mockReturnValue({
+      workspaces: [],
+      selectedWorkspace: null,
+      isLoading: false,
+      error: null,
+      selectWorkspace: vi.fn(),
+      refreshWorkspaces: vi.fn(),
     });
   });
 
@@ -808,6 +830,253 @@ describe('NotificationsPage', () => {
       });
 
       expect(mockNavigate).toHaveBeenCalledWith('/plans');
+    });
+  });
+
+  describe('Interviewer workspace-role-aware notification navigation (NOTIF-01)', () => {
+    const mockWorkspace = (role: 'admin' | 'recruiter' | 'interviewer' | null, isLoading = false) => ({
+      workspaces: role
+        ? [
+            {
+              id: 'ws-1',
+              company_id: 'comp-1',
+              company_name: 'Acme Corp',
+              role,
+              is_active: true,
+            },
+          ]
+        : [],
+      selectedWorkspace: role
+        ? {
+            id: 'ws-1',
+            company_id: 'comp-1',
+            company_name: 'Acme Corp',
+            role,
+            is_active: true,
+          }
+        : null,
+      isLoading,
+      error: null,
+      selectWorkspace: vi.fn(),
+      refreshWorkspaces: vi.fn(),
+    });
+
+    beforeEach(() => {
+      vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+      vi.mocked(useOptionalWorkspace).mockReturnValue(mockWorkspace('interviewer'));
+      vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+        id: 'int-notif-1',
+        title: 'Interview Notification',
+        content: 'Interview notification details',
+        notification_type: 'interview_assigned',
+        entity_type: 'interview',
+        entity_id: 'interview-123',
+        is_read: true,
+        created_at: new Date().toISOString(),
+      });
+      vi.mocked(applicationsApi.getApplicationDetail).mockResolvedValue({
+        id: 'app-1',
+        job_id: 'test-job-id',
+        title: 'Test Job',
+        company: { name: 'Test Company' },
+        status: 'published',
+      });
+      vi.mocked(interviewsApi.getInterview).mockResolvedValue({
+        id: 'interview-123',
+        application_id: 'app-1',
+        scheduled_at: new Date().toISOString(),
+        duration_minutes: 60,
+        interview_type: 'technical',
+        status: 'scheduled',
+      });
+    });
+
+    describe('A. All 4 Interview Notification Types with interviewer workspace role', () => {
+      const interviewNotificationTypes = [
+        'interview_assigned',
+        'interview_unassigned',
+        'interview_updated',
+        'interview_cancelled',
+      ] as const;
+
+      interviewNotificationTypes.forEach((notifType) => {
+        it(`navigates to /interviewer/interviews for ${notifType} without calling recruiter APIs`, async () => {
+          vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+            {
+              id: `notif-${notifType}`,
+              title: `Interview ${notifType}`,
+              content: `Details for ${notifType}`,
+              notification_type: notifType,
+              entity_type: 'interview',
+              entity_id: 'interview-123',
+              is_read: false,
+              created_at: new Date().toISOString(),
+            },
+          ]);
+
+          renderPage();
+
+          await waitFor(() => {
+            expect(screen.getByText(`Interview ${notifType}`)).toBeInTheDocument();
+          });
+
+          await screen.getByText(`Interview ${notifType}`).click();
+
+          await waitFor(() => {
+            expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith(`notif-${notifType}`);
+          });
+
+          expect(mockNavigate).toHaveBeenCalledWith('/interviewer/interviews');
+          expect(interviewsApi.getInterview).not.toHaveBeenCalled();
+          expect(applicationsApi.getApplicationDetail).not.toHaveBeenCalled();
+          expect(mockNavigate).not.toHaveBeenCalledWith('/recruiter/jobs');
+          expect(mockNavigate).not.toHaveBeenCalledWith(expect.stringContaining('/recruiter/jobs/'));
+        });
+      });
+    });
+
+    describe('B. Already-Read Interview Notification', () => {
+      it('navigates directly to /interviewer/interviews without calling mark-read or recruiter APIs', async () => {
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'read-interview-notif',
+            title: 'Already Read Interview',
+            content: 'Interview has already been read',
+            notification_type: 'interview_assigned',
+            entity_type: 'interview',
+            entity_id: 'interview-123',
+            is_read: true,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByText('Already Read Interview')).toBeInTheDocument();
+        });
+
+        await screen.getByText('Already Read Interview').click();
+
+        expect(mockNavigate).toHaveBeenCalledWith('/interviewer/interviews');
+        expect(notificationsApi.markNotificationRead).not.toHaveBeenCalled();
+        expect(interviewsApi.getInterview).not.toHaveBeenCalled();
+        expect(applicationsApi.getApplicationDetail).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('C. Workspace Loading Guard', () => {
+      it('renders skeleton UI, suppresses mark-all-read action, and does not expose clickable cards while workspace is loading', async () => {
+        vi.mocked(useOptionalWorkspace).mockReturnValue(mockWorkspace(null, true));
+        vi.mocked(useUnreadCountStore).mockReturnValue({
+          unreadCount: 3,
+          decrement: vi.fn(),
+          increment: vi.fn(),
+          setUnreadCount: vi.fn(),
+        });
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'loading-notif-1',
+            title: 'Pending Workspace Notification',
+            content: 'Should not be clickable yet',
+            notification_type: 'interview_assigned',
+            entity_type: 'interview',
+            entity_id: 'interview-123',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByTestId('notifications-skeleton')).toBeInTheDocument();
+        });
+
+        // Cards must not be rendered while workspace is loading
+        expect(screen.queryByText('Pending Workspace Notification')).not.toBeInTheDocument();
+
+        // Mark all as read button must be suppressed
+        expect(screen.queryByText('Đánh dấu tất cả đã đọc')).not.toBeInTheDocument();
+
+        // Recruiter APIs must not be called
+        expect(interviewsApi.getInterview).not.toHaveBeenCalled();
+        expect(applicationsApi.getApplicationDetail).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('D. Recruiter Invariance', () => {
+      it('preserves existing recruiter interview navigation when active workspace role is recruiter', async () => {
+        vi.mocked(useOptionalWorkspace).mockReturnValue(mockWorkspace('recruiter'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'recruiter-interview-notif',
+            title: 'Recruiter Interview Update',
+            content: 'Recruiter should see applicants page',
+            notification_type: 'interview_assigned',
+            entity_type: 'interview',
+            entity_id: 'interview-123',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByText('Recruiter Interview Update')).toBeInTheDocument();
+        });
+
+        await screen.getByText('Recruiter Interview Update').click();
+
+        await waitFor(() => {
+          expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('recruiter-interview-notif');
+        });
+
+        expect(interviewsApi.getInterview).toHaveBeenCalledWith('interview-123');
+        expect(applicationsApi.getApplicationDetail).toHaveBeenCalledWith('app-1');
+        expect(mockNavigate).toHaveBeenCalledWith('/recruiter/jobs/test-job-id/applicants');
+        expect(mockNavigate).not.toHaveBeenCalledWith('/interviewer/interviews');
+      });
+    });
+
+    describe('E. Unresolved Workspace', () => {
+      it('does not throw, does not infer interviewer from notification type, and preserves recruiter fallback', async () => {
+        // Workspace loaded but no workspace is selected (unresolved)
+        vi.mocked(useOptionalWorkspace).mockReturnValue(mockWorkspace(null, false));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'unresolved-ws-interview-notif',
+            title: 'Unresolved Workspace Interview',
+            content: 'Notice type is interview_assigned but workspace is null',
+            notification_type: 'interview_assigned',
+            entity_type: 'interview',
+            entity_id: 'interview-123',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByText('Unresolved Workspace Interview')).toBeInTheDocument();
+        });
+
+        // Clicking the notification card should not throw
+        await screen.getByText('Unresolved Workspace Interview').click();
+
+        await waitFor(() => {
+          expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('unresolved-ws-interview-notif');
+        });
+
+        // Must NOT infer interviewer role from notification_type="interview_assigned"
+        // Must preserve existing recruiter navigation
+        expect(interviewsApi.getInterview).toHaveBeenCalledWith('interview-123');
+        expect(applicationsApi.getApplicationDetail).toHaveBeenCalledWith('app-1');
+        expect(mockNavigate).toHaveBeenCalledWith('/recruiter/jobs/test-job-id/applicants');
+        expect(mockNavigate).not.toHaveBeenCalledWith('/interviewer/interviews');
+      });
     });
   });
 });
