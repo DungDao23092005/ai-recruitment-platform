@@ -18,6 +18,7 @@ from app.database.session import async_session_factory
 from app.models import EmailOutbox
 from app.services.pipeline_email_service import (
     EVENT_APPLICATION_STATUS,
+    EVENT_APPLICATION_SUBMITTED,
     EVENT_INTERVIEW_LIFECYCLE,
 )
 from tests.integration.api.conftest import API_V1, apply_job_with_resume
@@ -250,6 +251,12 @@ class TestCandidateTimeline:
 class TestOutboxAtomicity:
     def test_invalid_transition_writes_nothing(self, pipeline, recruiter_client, run_async):
         app_id = pipeline["application"]["id"]
+        initial_rows = run_async(_outbox_rows())
+        initial_ids = {row.id for row in initial_rows}
+        assert len(initial_rows) == 1
+        assert initial_rows[0].event_type == EVENT_APPLICATION_SUBMITTED
+        assert initial_rows[0].idempotency_key == f"application-submission:{app_id}"
+
         # applied -> offered is not a canonical/domain transition.
         resp = _set_status(recruiter_client, run_async, app_id, "offered")
         assert resp.status_code == 400, resp.text
@@ -258,7 +265,8 @@ class TestOutboxAtomicity:
             recruiter_client.get(f"{API_V1}/applications/{app_id}/activities")
         )
         assert activities.json() == []
-        assert run_async(_outbox_rows()) == []
+        after_ids = {row.id for row in run_async(_outbox_rows())}
+        assert after_ids == initial_ids
 
     def test_offered_enqueues_single_outbox_row(
         self, pipeline, recruiter_client, candidate_client, run_async
@@ -291,14 +299,20 @@ class TestOutboxAtomicity:
 
     def test_intermediate_status_does_not_email(self, pipeline, recruiter_client, run_async):
         app_id = pipeline["application"]["id"]
+        initial_ids = {row.id for row in run_async(_outbox_rows())}
         for value in ("under_review", "shortlisted", "interviewing"):
             assert _set_status(recruiter_client, run_async, app_id, value).status_code == 200
-        assert run_async(_outbox_rows()) == []
+        after_ids = {row.id for row in run_async(_outbox_rows())}
+        assert after_ids == initial_ids
 
     def test_interview_scheduled_enqueues_outbox_row(self, pipeline, recruiter_client, run_async):
         app_id = pipeline["application"]["id"]
+        initial_rows = run_async(_outbox_rows())
+        initial_ids = {row.id for row in initial_rows}
+
         _schedule_interview(recruiter_client, run_async, app_id)
 
-        rows = run_async(_outbox_rows())
-        assert len(rows) == 1
-        assert rows[0].event_type == EVENT_INTERVIEW_LIFECYCLE
+        after_rows = run_async(_outbox_rows())
+        new_rows = [row for row in after_rows if row.id not in initial_ids]
+        assert len(new_rows) == 1
+        assert new_rows[0].event_type == EVENT_INTERVIEW_LIFECYCLE
