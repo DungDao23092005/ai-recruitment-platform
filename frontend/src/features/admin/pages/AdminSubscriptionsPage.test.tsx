@@ -449,4 +449,255 @@ describe('AdminSubscriptionsPage', () => {
       })
     })
   })
+
+  it('opens revoke modal without parent detail modal (single dialog mounted)', async () => {
+    render(<AdminSubscriptionsPage />)
+    await waitFor(() => {
+      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /xem chi tiết thuê bao buyer@example.com/i,
+      }),
+    )
+    const detailDialog = await screen.findByRole('dialog', {
+      name: /chi tiết thuê bao/i,
+    })
+    expect(detailDialog).toBeInTheDocument()
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+
+    fireEvent.click(
+      within(detailDialog).getByRole('button', {
+        name: /thu hồi thuê bao sub-1/i,
+      }),
+    )
+
+    const revokeDialog = await screen.findByRole('dialog', {
+      name: /thu hồi gói thuê bao/i,
+    })
+    expect(revokeDialog).toBeInTheDocument()
+    expect(
+      screen.queryByRole('dialog', { name: /chi tiết thuê bao/i }),
+    ).not.toBeInTheDocument()
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+  })
+
+  it('cancelling revoke modal restores existing detail context without unnecessary refetch', async () => {
+    render(<AdminSubscriptionsPage />)
+    await waitFor(() => {
+      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /xem chi tiết thuê bao buyer@example.com/i,
+      }),
+    )
+    const detailDialog = await screen.findByRole('dialog', {
+      name: /chi tiết thuê bao/i,
+    })
+    expect(within(detailDialog).getByText('Lịch sử thay đổi (audit trail)')).toBeInTheDocument()
+    expect(within(detailDialog).getByText('Khách yêu cầu nâng cấp')).toBeInTheDocument()
+    expect(within(detailDialog).getByText('Gói cũ')).toBeInTheDocument()
+    expect(getAdminSubscription).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(
+      within(detailDialog).getByRole('button', {
+        name: /thu hồi thuê bao sub-1/i,
+      }),
+    )
+
+    const revokeDialog = await screen.findByRole('dialog', {
+      name: /thu hồi gói thuê bao/i,
+    })
+    expect(revokeDialog).toBeInTheDocument()
+
+    // Click Cancel ("Hủy")
+    fireEvent.click(within(revokeDialog).getByRole('button', { name: /hủy/i }))
+
+    // Revoke dialog disappears
+    expect(
+      screen.queryByRole('dialog', { name: /thu hồi gói thuê bao/i }),
+    ).not.toBeInTheDocument()
+
+    // Detail dialog returns
+    const restoredDetailDialog = screen.getByRole('dialog', {
+      name: /chi tiết thuê bao/i,
+    })
+    expect(restoredDetailDialog).toBeInTheDocument()
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+
+    // Data is preserved
+    expect(
+      within(restoredDetailDialog).getByText('Lịch sử thay đổi (audit trail)'),
+    ).toBeInTheDocument()
+    expect(
+      within(restoredDetailDialog).getByText('Khách yêu cầu nâng cấp'),
+    ).toBeInTheDocument()
+    expect(within(restoredDetailDialog).getByText('Gói cũ')).toBeInTheDocument()
+
+    // No additional detail API refetch was triggered
+    expect(getAdminSubscription).toHaveBeenCalledTimes(1)
+  })
+
+  it('successful revocation refetches detail and triggers parent list refresh callback', async () => {
+    render(<AdminSubscriptionsPage />)
+    await waitFor(() => {
+      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+    })
+    expect(getAdminSubscriptions).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /xem chi tiết thuê bao buyer@example.com/i,
+      }),
+    )
+    const detailDialog = await screen.findByRole('dialog', {
+      name: /chi tiết thuê bao/i,
+    })
+    expect(getAdminSubscription).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(
+      within(detailDialog).getByRole('button', {
+        name: /thu hồi thuê bao sub-1/i,
+      }),
+    )
+
+    const revokeDialog = await screen.findByRole('dialog', {
+      name: /thu hồi gói thuê bao/i,
+    })
+    fireEvent.change(within(revokeDialog).getByLabelText(/lý do thu hồi/i), {
+      target: { value: 'Thu hồi hợp lệ từ kiểm thử' },
+    })
+    fireEvent.click(
+      within(revokeDialog).getByRole('button', { name: /xác nhận thu hồi/i }),
+    )
+
+    await waitFor(() => {
+      expect(revokeAdminSubscription).toHaveBeenCalledWith('sub-1', {
+        reason: 'Thu hồi hợp lệ từ kiểm thử',
+      })
+    })
+
+    // Detail data is refetched
+    await waitFor(() => {
+      expect(getAdminSubscription).toHaveBeenCalledTimes(2)
+    })
+
+    // Parent list refresh callback was triggered (refetches list via refreshSignal)
+    await waitFor(() => {
+      expect(getAdminSubscriptions).toHaveBeenCalledTimes(2)
+    })
+
+    // Detail dialog is restored and revoke dialog is closed
+    expect(
+      screen.queryByRole('dialog', { name: /thu hồi gói thuê bao/i }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('dialog', { name: /chi tiết thuê bao/i }),
+    ).toBeInTheDocument()
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+  })
+
+  it('preserves error handling when revocation API call fails', async () => {
+    vi.mocked(revokeAdminSubscription).mockRejectedValueOnce(
+      new Error('Lỗi máy chủ khi thu hồi'),
+    )
+
+    render(<AdminSubscriptionsPage />)
+    await waitFor(() => {
+      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /xem chi tiết thuê bao buyer@example.com/i,
+      }),
+    )
+    const detailDialog = await screen.findByRole('dialog', {
+      name: /chi tiết thuê bao/i,
+    })
+
+    fireEvent.click(
+      within(detailDialog).getByRole('button', {
+        name: /thu hồi thuê bao sub-1/i,
+      }),
+    )
+
+    const revokeDialog = await screen.findByRole('dialog', {
+      name: /thu hồi gói thuê bao/i,
+    })
+    fireEvent.change(within(revokeDialog).getByLabelText(/lý do thu hồi/i), {
+      target: { value: 'Thu hồi sẽ gặp lỗi máy chủ' },
+    })
+    fireEvent.click(
+      within(revokeDialog).getByRole('button', { name: /xác nhận thu hồi/i }),
+    )
+
+    // Error banner is rendered inside the revoke dialog
+    expect(
+      await within(revokeDialog).findByRole('alert'),
+    ).toBeInTheDocument()
+
+    // Revoke dialog remains open and detail dialog remains absent
+    expect(revokeDialog).toBeInTheDocument()
+    expect(
+      screen.queryByRole('dialog', { name: /chi tiết thuê bao/i }),
+    ).not.toBeInTheDocument()
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+
+    // No detail refetch occurred
+    expect(getAdminSubscription).toHaveBeenCalledTimes(1)
+  })
+
+  it('pressing Escape in revoke modal closes only revoke modal and restores detail dialog', async () => {
+    render(<AdminSubscriptionsPage />)
+    await waitFor(() => {
+      expect(screen.getByText('buyer@example.com')).toBeInTheDocument()
+    })
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: /xem chi tiết thuê bao buyer@example.com/i,
+      }),
+    )
+    const detailDialog = await screen.findByRole('dialog', {
+      name: /chi tiết thuê bao/i,
+    })
+
+    fireEvent.click(
+      within(detailDialog).getByRole('button', {
+        name: /thu hồi thuê bao sub-1/i,
+      }),
+    )
+
+    const revokeDialog = await screen.findByRole('dialog', {
+      name: /thu hồi gói thuê bao/i,
+    })
+    expect(revokeDialog).toBeInTheDocument()
+    expect(
+      screen.queryByRole('dialog', { name: /chi tiết thuê bao/i }),
+    ).not.toBeInTheDocument()
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+
+    // Press Escape once
+    fireEvent.keyDown(document, { key: 'Escape', code: 'Escape' })
+
+    // Revoke dialog is closed
+    expect(
+      screen.queryByRole('dialog', { name: /thu hồi gói thuê bao/i }),
+    ).not.toBeInTheDocument()
+
+    // Detail dialog returns and remains open
+    const restoredDetailDialog = screen.getByRole('dialog', {
+      name: /chi tiết thuê bao/i,
+    })
+    expect(restoredDetailDialog).toBeInTheDocument()
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+
+    // Press Escape a second time closes the detail dialog completely
+    fireEvent.keyDown(document, { key: 'Escape', code: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
 })

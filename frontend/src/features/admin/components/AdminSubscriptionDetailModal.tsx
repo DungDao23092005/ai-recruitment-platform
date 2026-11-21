@@ -114,6 +114,21 @@ export function AdminSubscriptionDetailModal({
     onRevoked?.()
   }
 
+  if (revokeTarget) {
+    return (
+      <AdminSubscriptionRevokeModal
+        subscription={{
+          id: revokeTarget.id,
+          user_email: detail.user_email,
+          user_id: detail.user_id,
+          plan_name: revokeTarget.plan_name,
+        }}
+        onClose={() => setRevokeTarget(null)}
+        onSuccess={handleRevoked}
+      />
+    )
+  }
+
   return (
     <Modal
       onClose={onClose}
@@ -333,19 +348,6 @@ export function AdminSubscriptionDetailModal({
           <RefreshCw className="h-4 w-4 animate-spin" aria-hidden="true" />
           Đang tải chi tiết...
         </div>
-      ) : null}
-
-      {revokeTarget ? (
-        <AdminSubscriptionRevokeModal
-          subscription={{
-            id: revokeTarget.id,
-            user_email: detail.user_email,
-            user_id: detail.user_id,
-            plan_name: revokeTarget.plan_name,
-          }}
-          onClose={() => setRevokeTarget(null)}
-          onSuccess={handleRevoked}
-        />
       ) : null}
     </Modal>
   )
