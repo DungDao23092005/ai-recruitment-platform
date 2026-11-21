@@ -91,7 +91,7 @@ async def create_vnpay_payment(
     return_url = settings.VNPAY_RETURN_URL
     if not return_url:
         base_url = str(request.base_url).rstrip("/") if request else ""
-        return_url = f"{base_url}/payment-result"
+        return_url = f"{base_url}/api/v1/payments/vnpay/return"
 
     resolved_company_header: str | None = (
         x_company_id if isinstance(x_company_id, str) else None
@@ -265,11 +265,7 @@ async def vnpay_return(
     )
 
     # Determine frontend redirect URL
-    frontend_base = (
-        settings.BACKEND_CORS_ORIGINS[0]
-        if settings.BACKEND_CORS_ORIGINS
-        else "http://localhost:5173"
-    )
+    frontend_base = settings.FRONTEND_URL.rstrip("/")
     redirect_url = f"{frontend_base}/payment-result"
 
     # Add status parameters to redirect URL

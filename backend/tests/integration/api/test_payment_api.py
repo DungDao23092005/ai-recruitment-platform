@@ -484,6 +484,102 @@ class TestPaymentAPICreate:
         # (The test verifies the flow, not the exact amount in response)
 
 
+class TestPaymentAPIVNPayReturnUrl:
+    """VNPAY return URL routing: backend handler and frontend redirect origin."""
+
+    def test_create_uses_backend_return_route_when_unconfigured(
+        self, candidate_client, test_plan, monkeypatch,
+    ):
+        """With no explicit VNPAY_RETURN_URL, VNPAY returns to the backend route."""
+        from unittest.mock import AsyncMock, patch
+        from app.core.config import settings
+        from app.services.payment_service import PaymentService
+
+        monkeypatch.setattr(settings, "VNPAY_RETURN_URL", "")
+        create = AsyncMock(
+            return_value=(
+                "https://sandbox.vnpayment.vn/pay?param=value",
+                "VNPAY_20240101_120000_ABCD1234",
+                uuid.uuid4(),
+            )
+        )
+        with patch.object(PaymentService, "create_vnpay_payment", new=create):
+            response = _post(
+                candidate_client,
+                "/api/v1/payments/vnpay/create",
+                json={"plan_id": str(test_plan.id)},
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        return_url = create.call_args.kwargs["return_url"]
+        assert return_url == "http://testserver/api/v1/payments/vnpay/return"
+        assert "/payment-result" not in return_url
+
+    def test_create_preserves_configured_return_url(
+        self, candidate_client, test_plan, monkeypatch,
+    ):
+        """An explicitly configured VNPAY_RETURN_URL is passed through unchanged."""
+        from unittest.mock import AsyncMock, patch
+        from app.core.config import settings
+        from app.services.payment_service import PaymentService
+
+        configured = "https://merchant.example/vnpay/return"
+        monkeypatch.setattr(settings, "VNPAY_RETURN_URL", configured)
+        create = AsyncMock(
+            return_value=(
+                "https://sandbox.vnpayment.vn/pay?param=value",
+                "VNPAY_20240101_120000_ABCD1234",
+                uuid.uuid4(),
+            )
+        )
+        with patch.object(PaymentService, "create_vnpay_payment", new=create):
+            response = _post(
+                candidate_client,
+                "/api/v1/payments/vnpay/create",
+                json={"plan_id": str(test_plan.id)},
+            )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        assert create.call_args.kwargs["return_url"] == configured
+
+    def test_return_redirects_to_configured_frontend_url(
+        self, candidate_client, monkeypatch,
+    ):
+        """Return handler redirects to FRONTEND_URL, not BACKEND_CORS_ORIGINS[0]."""
+        from urllib.parse import parse_qs, urlparse
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "FRONTEND_URL", "http://frontend.example:5173/")
+        monkeypatch.setattr(
+            settings,
+            "BACKEND_CORS_ORIGINS",
+            ["http://cors.example:9999"],
+        )
+
+        response = _get(
+            candidate_client,
+            "/api/v1/payments/vnpay/return",
+            params={
+                "vnp_ResponseCode": "24",
+                "vnp_TransactionStatus": "02",
+                "vnp_TransactionNo": "123456",
+            },
+        )
+
+        assert response.status_code == status.HTTP_302_FOUND
+        location = response.headers["location"]
+        parsed = urlparse(location)
+        assert f"{parsed.scheme}://{parsed.netloc}" == "http://frontend.example:5173"
+        assert parsed.path == "/payment-result"
+        assert "cors.example" not in location
+
+        query = parse_qs(parsed.query)
+        assert query["success"] == ["false"]
+        assert query["vnp_ResponseCode"] == ["24"]
+        assert query["vnp_TransactionStatus"] == ["02"]
+        assert query["vnp_TransactionNo"] == ["123456"]
+
+
 @pytest.fixture
 def active_subscription_factory(run_async, candidate_client):
     """Create an ACTIVE subscription (and its plan) for the authenticated candidate."""
@@ -783,10 +879,12 @@ class TestPaymentAPIDelete:
     def test_return_invalid_signature(
         self, candidate_client,
     ):
-        """Invalid signature → redirect."""
+        """Invalid signature → redirect, never marked successful."""
         response = _get(candidate_client, "/api/v1/payments/vnpay/return")
         assert response.status_code == status.HTTP_302_FOUND
-        assert "payment-result" in response.headers.get("location", "")
+        location = response.headers.get("location", "")
+        assert "payment-result" in location
+        assert "success=false" in location
 
     def test_return_unknown_txnref(
         self, candidate_client,
