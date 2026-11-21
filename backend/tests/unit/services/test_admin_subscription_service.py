@@ -16,6 +16,7 @@ from app.core.exceptions import (
 from app.domain.enums import (
     PaymentOrderStatus,
     PaymentProvider,
+    PlanAudience,
     SubscriptionAuditAction,
     SubscriptionScope,
     SubscriptionStatus,
@@ -28,7 +29,10 @@ from app.repositories import (
     SubscriptionAuditLogRepository,
     SubscriptionRepository,
 )
-from app.repositories.subscription_repository import AdminSubscriptionRepresentative
+from app.repositories.subscription_repository import (
+    AdminSubscriptionDiagnostics,
+    AdminSubscriptionRepresentative,
+)
 from app.services.admin_subscription_service import (
     AdminSubscriptionService,
     _effective_status,
@@ -60,6 +64,7 @@ def make_plan(**overrides):
         "id": uuid.uuid4(),
         "name": "Gói mới",
         "plan_audience": None,
+        "is_free": False,
         "duration_days": 60,
         "max_job_posts": 2,
         "max_candidate_searches": 2,
@@ -341,7 +346,7 @@ class TestListItemMapping:
         item = service._to_list_item(
             sub,
             total_subscriptions=3,
-            active_count=2,
+            has_multiple_active=True,
             has_unresolved_payment=True,
             incident=incident,
             now=now,
@@ -364,7 +369,7 @@ class TestListItemMapping:
         sub = make_subscription()
 
         item = service._to_list_item(
-            sub, total_subscriptions=1, active_count=1, now=utc_now()
+            sub, total_subscriptions=1, has_multiple_active=False, now=utc_now()
         )
 
         assert item.has_multiple_active is False
@@ -497,7 +502,10 @@ class TestListSubscriptionsWiring:
         sub = make_subscription(user_id=user_id)
         reps = [
             AdminSubscriptionRepresentative(
-                subscription=sub, total_subscriptions=2, active_count=1
+                subscription=sub,
+                total_subscriptions=2,
+                active_count=2,
+                has_multiple_active=False,
             )
         ]
         service.subscriptions.list_admin = AsyncMock(return_value=(reps, 7))
@@ -512,9 +520,33 @@ class TestListSubscriptionsWiring:
         assert len(items) == 1
         assert items[0].id == sub.id
         assert items[0].total_subscriptions == 2
+        # Two active rows (Candidate Paid + Free) are not a conflict. The raw
+        # active count must never be used as the conflict flag.
         assert items[0].has_multiple_active is False
         assert items[0].has_unresolved_payment is True
         service.subscriptions.list_admin.assert_awaited_once()
+
+    def test_list_propagates_repository_conflict_flag(self):
+        service = make_service()
+        user_id = uuid.uuid4()
+        sub = make_subscription(user_id=user_id)
+        reps = [
+            AdminSubscriptionRepresentative(
+                subscription=sub,
+                total_subscriptions=2,
+                active_count=2,
+                has_multiple_active=True,
+            )
+        ]
+        service.subscriptions.list_admin = AsyncMock(return_value=(reps, 1))
+        service.payment_orders.list_active_pending_user_ids = AsyncMock(
+            return_value=set()
+        )
+        service.payment_orders.list_entitlement_incidents = AsyncMock(return_value=[])
+
+        items, _total = asyncio.run(service.list_subscriptions(skip=0, limit=10))
+
+        assert items[0].has_multiple_active is True
 
     def test_empty_representatives_skip_payment_queries(self):
         service = make_service()
@@ -559,7 +591,15 @@ class TestGetDetailWiring:
             return_value=representative
         )
         service.subscriptions.count_by_user_ids = AsyncMock(
-            return_value={user_id: (2, 1)}
+            return_value={
+                user_id: AdminSubscriptionDiagnostics(
+                    total_subscriptions=2,
+                    active_count=2,
+                    active_candidate_paid=1,
+                    active_candidate_free=1,
+                    has_multiple_active=False,
+                )
+            }
         )
         service.subscriptions.get_by_user_id = AsyncMock(
             return_value=[representative, target]
@@ -576,6 +616,7 @@ class TestGetDetailWiring:
         assert detail.subscription.id == representative.id
         assert detail.subscription.user_email == "detail@example.com"
         assert detail.subscription.total_subscriptions == 2
+        assert detail.subscription.has_multiple_active is False
         history_ids = {item.id for item in detail.history}
         assert {representative.id, target.id} <= history_ids
         target_item = next(item for item in detail.history if item.id == target.id)
@@ -593,7 +634,15 @@ class TestGetDetailWiring:
         )
         service.subscriptions.get_representative_for_user = AsyncMock(return_value=None)
         service.subscriptions.count_by_user_ids = AsyncMock(
-            return_value={user_id: (1, 0)}
+            return_value={
+                user_id: AdminSubscriptionDiagnostics(
+                    total_subscriptions=1,
+                    active_count=0,
+                    active_candidate_paid=0,
+                    active_candidate_free=0,
+                    has_multiple_active=False,
+                )
+            }
         )
         service.subscriptions.get_by_user_id = AsyncMock(return_value=[target])
         service.payment_orders.list_by_subscription_ids = AsyncMock(return_value=[])
@@ -614,6 +663,114 @@ class TestGetDetailWiring:
             asyncio.run(service.get_detail(uuid.uuid4()))
 
 
+class TestActiveConflictRules:
+    @pytest.mark.parametrize(
+        ("paid", "free", "other", "expected"),
+        [
+            (1, 0, 0, False),
+            (0, 1, 0, False),
+            (1, 1, 0, False),
+            (2, 0, 0, True),
+            (0, 2, 0, True),
+            (1, 0, 1, True),
+            (1, 1, 1, True),
+            (0, 0, 1, False),
+            (0, 0, 2, True),
+        ],
+    )
+    def test_genuine_conflict_matrix(self, paid, free, other, expected):
+        assert (
+            SubscriptionRepository._has_genuine_active_conflict(paid, free, other)
+            is expected
+        )
+
+
+class TestCheckActiveOverlap:
+    def _service_with(self, *subscriptions):
+        service = make_service()
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = list(subscriptions)
+        service.session.execute = AsyncMock(return_value=result)
+        return service
+
+    def _candidate_plan(self, *, is_free: bool):
+        return make_plan(
+            plan_audience=PlanAudience.CANDIDATE,
+            is_free=is_free,
+        )
+
+    def _candidate_sub(self, *, is_free: bool):
+        return make_subscription(
+            scope=SubscriptionScope.CANDIDATE_PERSONAL,
+            is_free=is_free,
+        )
+
+    def test_paid_target_allows_active_candidate_free(self):
+        free = self._candidate_sub(is_free=True)
+        service = self._service_with(free)
+
+        overlap = asyncio.run(
+            service._check_active_overlap(
+                uuid.uuid4(), utc_now(), self._candidate_plan(is_free=False)
+            )
+        )
+
+        assert overlap is None
+
+    def test_free_target_allows_active_candidate_paid(self):
+        paid = self._candidate_sub(is_free=False)
+        service = self._service_with(paid)
+
+        overlap = asyncio.run(
+            service._check_active_overlap(
+                uuid.uuid4(), utc_now(), self._candidate_plan(is_free=True)
+            )
+        )
+
+        assert overlap is None
+
+    def test_candidate_target_rejects_same_tier(self):
+        paid = self._candidate_sub(is_free=False)
+        service = self._service_with(paid)
+
+        overlap = asyncio.run(
+            service._check_active_overlap(
+                uuid.uuid4(), utc_now(), self._candidate_plan(is_free=False)
+            )
+        )
+
+        assert overlap is paid
+
+    def test_candidate_target_rejects_incompatible_scope(self):
+        legacy = make_subscription(
+            scope=SubscriptionScope.LEGACY_RECRUITER_PERSONAL,
+            is_free=False,
+        )
+        service = self._service_with(legacy)
+
+        overlap = asyncio.run(
+            service._check_active_overlap(
+                uuid.uuid4(), utc_now(), self._candidate_plan(is_free=False)
+            )
+        )
+
+        assert overlap is legacy
+
+    def test_non_candidate_target_preserves_any_active_conflict(self):
+        candidate_free = self._candidate_sub(is_free=True)
+        service = self._service_with(candidate_free)
+
+        overlap = asyncio.run(
+            service._check_active_overlap(
+                uuid.uuid4(),
+                utc_now(),
+                make_plan(plan_audience=PlanAudience.COMPANY, is_free=False),
+            )
+        )
+
+        assert overlap is candidate_free
+
+
 class TestProvisionStaleExpiration:
     def test_expires_stale_active_before_overlap_and_activation(self):
         service = make_service()
@@ -632,9 +789,10 @@ class TestProvisionStaleExpiration:
             assert expire_user_id == user_id
             return 1
 
-        async def check_overlap(overlap_user_id, _now):
+        async def check_overlap(overlap_user_id, _now, target_plan):
             calls.append("overlap")
             assert overlap_user_id == user_id
+            assert target_plan is plan
             return None
 
         service._lock_user = lock_user

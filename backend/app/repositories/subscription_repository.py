@@ -21,6 +21,23 @@ from app.repositories.base import BaseRepository
 
 
 @dataclass(frozen=True)
+class AdminSubscriptionDiagnostics:
+    """Per-user subscription counts used by the admin list and detail.
+
+    ``has_multiple_active`` is a genuine conflict flag, not a raw row count:
+    one active Candidate Paid and one active Candidate Free are an intentional
+    coexistence pair and do not conflict. Any other combination of two or more
+    effective-active rows does.
+    """
+
+    total_subscriptions: int
+    active_count: int
+    active_candidate_paid: int
+    active_candidate_free: int
+    has_multiple_active: bool
+
+
+@dataclass(frozen=True)
 class AdminSubscriptionRepresentative:
     """One representative subscription per user for the admin list.
 
@@ -32,6 +49,7 @@ class AdminSubscriptionRepresentative:
     subscription: Subscription
     total_subscriptions: int
     active_count: int
+    has_multiple_active: bool = False
 
 
 class SubscriptionRepository(BaseRepository[Subscription]):
@@ -544,6 +562,31 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             else_=5,
         )
 
+    def _candidate_tier_priority_expression(self):
+        """Prefer Candidate Paid over Candidate Free, only within that scope.
+
+        Other scopes keep their existing ranking. Using a CASE rather than a
+        global ``is_free`` ordering prevents Company or Legacy Recruiter
+        representatives from being reordered.
+        """
+        return case(
+            (
+                and_(
+                    Subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+                    Subscription.is_free == False,  # noqa: E712
+                ),
+                0,
+            ),
+            (
+                and_(
+                    Subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+                    Subscription.is_free == True,  # noqa: E712
+                ),
+                1,
+            ),
+            else_=0,
+        )
+
     def _representative_subquery(self, now: datetime):
         """Subquery selecting exactly one ``rank_num = 1`` row per user.
 
@@ -552,10 +595,12 @@ class SubscriptionRepository(BaseRepository[Subscription]):
         subscription as the representative.
         """
         rank_tier = self._rank_tier_expression(now)
+        candidate_tier_priority = self._candidate_tier_priority_expression()
         rank_num = func.row_number().over(
             partition_by=Subscription.user_id,
             order_by=(
                 rank_tier,
+                candidate_tier_priority,
                 Subscription.created_at.desc(),
                 Subscription.id.desc(),
             ),
@@ -688,25 +733,52 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             subscription = subs_by_id.get(subscription_id)
             if subscription is None:
                 continue
-            total_subscriptions, active_count = diagnostics.get(uid, (0, 0))
+            counts = diagnostics.get(uid)
+            if counts is None:
+                counts = AdminSubscriptionDiagnostics(0, 0, 0, 0, False)
             representatives.append(
                 AdminSubscriptionRepresentative(
                     subscription=subscription,
-                    total_subscriptions=total_subscriptions,
-                    active_count=active_count,
+                    total_subscriptions=counts.total_subscriptions,
+                    active_count=counts.active_count,
+                    has_multiple_active=counts.has_multiple_active,
                 )
             )
         return representatives, total
+
+    @staticmethod
+    def _has_genuine_active_conflict(
+        active_candidate_paid: int,
+        active_candidate_free: int,
+        active_other: int,
+    ) -> bool:
+        """Apply the Candidate coexistence rules to effective-active counts.
+
+        Candidate Paid + Candidate Free is one intentional pair. Multiple rows
+        in the same Candidate tier conflict, and Candidate rows conflict with
+        any other active scope. Other scopes keep the prior ``>= 2`` behavior.
+        """
+        candidate_total = active_candidate_paid + active_candidate_free
+        return (
+            active_candidate_paid > 1
+            or active_candidate_free > 1
+            or (
+                active_other >= 1
+                and (candidate_total >= 1 or active_other >= 2)
+            )
+        )
 
     async def count_by_user_ids(
         self,
         user_ids: list[Any],
         now: Optional[datetime] = None,
-    ) -> dict[Any, tuple[int, int]]:
-        """Batch ``{user_id: (total_subscriptions, active_count)}`` for users.
+    ) -> dict[Any, AdminSubscriptionDiagnostics]:
+        """Batch per-user subscription diagnostics.
 
-        ``active_count`` counts effective ACTIVE subscriptions (live
-        entitlement). One grouped query avoids N+1 and never duplicates rows.
+        Returns ``{user_id: AdminSubscriptionDiagnostics}``. Counts distinguish
+        Candidate Paid, Candidate Free and every other active scope so callers
+        can compute the genuine conflict flag instead of using a raw row count.
+        One grouped query avoids N+1 and never duplicates rows.
         """
         if not user_ids:
             return {}
@@ -715,8 +787,30 @@ class SubscriptionRepository(BaseRepository[Subscription]):
 
             now = utc_now()
 
-        active_flag = case(
-            (self._effective_active_condition(now), 1),
+        effective_active = self._effective_active_condition(now)
+        active_flag = case((effective_active, 1), else_=0)
+        candidate_paid_flag = case(
+            (
+                and_(
+                    effective_active,
+                    Subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+                    Subscription.company_id.is_(None),
+                    Subscription.is_free == False,  # noqa: E712
+                ),
+                1,
+            ),
+            else_=0,
+        )
+        candidate_free_flag = case(
+            (
+                and_(
+                    effective_active,
+                    Subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL,
+                    Subscription.company_id.is_(None),
+                    Subscription.is_free == True,  # noqa: E712
+                ),
+                1,
+            ),
             else_=0,
         )
         stmt = (
@@ -724,6 +818,8 @@ class SubscriptionRepository(BaseRepository[Subscription]):
                 Subscription.user_id,
                 func.count().label("total"),
                 func.sum(active_flag).label("active"),
+                func.sum(candidate_paid_flag).label("candidate_paid"),
+                func.sum(candidate_free_flag).label("candidate_free"),
             )
             .where(
                 Subscription.is_deleted == False,  # noqa: E712
@@ -732,10 +828,24 @@ class SubscriptionRepository(BaseRepository[Subscription]):
             .group_by(Subscription.user_id)
         )
         result = await self.session.execute(stmt)
-        return {
-            row[0]: (int(row[1]), int(row[2] or 0))
-            for row in result.all()
-        }
+        diagnostics: dict[Any, AdminSubscriptionDiagnostics] = {}
+        for row in result.all():
+            active_count = int(row[2] or 0)
+            candidate_paid = int(row[3] or 0)
+            candidate_free = int(row[4] or 0)
+            active_other = active_count - candidate_paid - candidate_free
+            diagnostics[row[0]] = AdminSubscriptionDiagnostics(
+                total_subscriptions=int(row[1]),
+                active_count=active_count,
+                active_candidate_paid=candidate_paid,
+                active_candidate_free=candidate_free,
+                has_multiple_active=self._has_genuine_active_conflict(
+                    candidate_paid,
+                    candidate_free,
+                    active_other,
+                ),
+            )
+        return diagnostics
 
     async def get_representative_for_user(
         self,

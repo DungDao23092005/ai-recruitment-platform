@@ -5,7 +5,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
@@ -13,7 +13,12 @@ from app.core.exceptions import (
     EntityNotFoundException,
     InvalidTransitionException,
 )
-from app.domain.enums import SubscriptionAuditAction, SubscriptionStatus
+from app.domain.enums import (
+    PlanAudience,
+    SubscriptionAuditAction,
+    SubscriptionScope,
+    SubscriptionStatus,
+)
 from app.domain.models.base import utc_now
 from app.models import PaymentOrder, Subscription, SubscriptionAuditLog, User
 from app.repositories import (
@@ -120,7 +125,7 @@ class AdminSubscriptionService:
                 self._to_list_item(
                     rep.subscription,
                     total_subscriptions=rep.total_subscriptions,
-                    active_count=rep.active_count,
+                    has_multiple_active=rep.has_multiple_active,
                     has_unresolved_payment=has_unresolved,
                     incident=incident,
                     now=now,
@@ -146,7 +151,13 @@ class AdminSubscriptionService:
             representative = sub
 
         counts = await self.subscriptions.count_by_user_ids([user_id], now)
-        total_subscriptions, active_count = counts.get(user_id, (0, 0))
+        diagnostics = counts.get(user_id)
+        total_subscriptions = (
+            diagnostics.total_subscriptions if diagnostics is not None else 0
+        )
+        has_multiple_active = (
+            diagnostics.has_multiple_active if diagnostics is not None else False
+        )
         payments_diag = await self._payment_diagnostics([user_id], now)
         has_unresolved, incident = payments_diag.get(user_id, (False, None))
 
@@ -163,7 +174,7 @@ class AdminSubscriptionService:
             subscription=self._to_list_item(
                 representative,
                 total_subscriptions=total_subscriptions,
-                active_count=active_count,
+                has_multiple_active=has_multiple_active,
                 has_unresolved_payment=has_unresolved,
                 incident=incident,
                 now=now,
@@ -195,7 +206,7 @@ class AdminSubscriptionService:
         now = utc_now()
         await self.subscriptions.expire_stale_active_for_user(user_id, now)
 
-        existing_active = await self._check_active_overlap(user_id, now)
+        existing_active = await self._check_active_overlap(user_id, now, plan)
         if existing_active is not None:
             raise ConflictException(
                 f"User already has an active subscription (id: {existing_active.id})"
@@ -509,15 +520,53 @@ class AdminSubscriptionService:
         self,
         user_id: uuid.UUID,
         now: datetime,
+        plan=None,
     ) -> Optional[Subscription]:
+        """Return an effective-active subscription that blocks provisioning.
+
+        Candidate plans follow the coexistence contract: the opposite Candidate
+        tier may stay active, the same tier conflicts, and any non-Candidate
+        active subscription conflicts. For Candidate targets, ``expires_at IS
+        NULL`` is treated as active. Other plan audiences preserve the prior
+        overlap behavior unchanged.
+        """
+        target_is_candidate = (
+            plan is not None
+            and getattr(plan, "plan_audience", None) == PlanAudience.CANDIDATE
+        )
+        expiry_condition = (
+            or_(
+                Subscription.expires_at.is_(None),
+                Subscription.expires_at > now,
+            )
+            if target_is_candidate
+            else Subscription.expires_at > now
+        )
         stmt = select(Subscription).where(
             Subscription.user_id == user_id,
             Subscription.is_deleted == False,  # noqa: E712
             Subscription.status == SubscriptionStatus.ACTIVE,
-            Subscription.expires_at > now,
+            expiry_condition,
         )
         result = await self.session.execute(stmt)
-        return result.scalar_one_or_none()
+        active_subscriptions = list(result.scalars().all())
+        if not active_subscriptions:
+            return None
+
+        if not target_is_candidate:
+            return active_subscriptions[0]
+
+        target_is_free = bool(getattr(plan, "is_free", False))
+        for subscription in active_subscriptions:
+            is_candidate = (
+                subscription.scope == SubscriptionScope.CANDIDATE_PERSONAL
+                and subscription.company_id is None
+            )
+            if not is_candidate:
+                return subscription
+            if bool(subscription.is_free) == target_is_free:
+                return subscription
+        return None
 
     async def _commit_and_refresh(self, sub: Subscription) -> None:
         try:
@@ -532,7 +581,7 @@ class AdminSubscriptionService:
         sub: Subscription,
         *,
         total_subscriptions: int = 1,
-        active_count: int = 0,
+        has_multiple_active: bool = False,
         has_unresolved_payment: bool = False,
         incident: Optional[PaymentOrder] = None,
         now: Optional[datetime] = None,
@@ -579,7 +628,7 @@ class AdminSubscriptionService:
             candidate_searches_used=sub.candidate_searches_used,
             ai_features_used=sub.ai_features_used,
             total_subscriptions=total_subscriptions,
-            has_multiple_active=active_count >= 2,
+            has_multiple_active=has_multiple_active,
             has_unresolved_payment=has_unresolved_payment,
             is_entitlement_incident=incident is not None,
             incident_subscription_id=(

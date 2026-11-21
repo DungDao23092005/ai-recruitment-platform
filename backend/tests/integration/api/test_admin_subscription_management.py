@@ -1053,31 +1053,36 @@ class TestOneRowPerUserRanking:
         refs = {p["internal_order_id"] for h in detail["history"] for p in h["payments"]}
         assert {o1, o2} <= refs
 
-    def test_two_active_picks_newest_and_flags_multiple(self, admin_client, run_async):
+    def test_candidate_paid_and_free_coexist_without_conflict(
+        self, admin_client, run_async
+    ):
         prefix = f"onerow-i-{uuid.uuid4().hex[:8]}"
         free_plan, paid_plan = run(_create_candidate_free_and_paid_plans())
         user_id = run(_create_candidate_user(prefix))
         now = utc_now()
-        older = run(
+        older_paid = run(
             _active_candidate_subscription(
-                user_id, free_plan, created_at=now - timedelta(days=5)
+                user_id, paid_plan, created_at=now - timedelta(days=5)
             )
         )
-        newer = run(
-            _active_candidate_subscription(user_id, paid_plan, created_at=now)
+        newer_free = run(
+            _active_candidate_subscription(user_id, free_plan, created_at=now)
         )
 
         body = _list(admin_client, run_async, prefix)
         item = body["items"][0]
-        assert item["id"] == newer
-        assert item["has_multiple_active"] is True
+        # Candidate Paid wins even when it is older than Candidate Free.
+        assert item["id"] == older_paid
+        assert item["has_multiple_active"] is False
         assert item["total_subscriptions"] == 2
 
         detail = _detail(admin_client, run_async, item["id"])
+        assert detail["subscription"]["id"] == older_paid
+        assert detail["subscription"]["has_multiple_active"] is False
         active_ids = {
             h["id"] for h in detail["history"] if h["status"] == "active"
         }
-        assert {older, newer} <= active_ids
+        assert {older_paid, newer_free} <= active_ids
 
     def test_only_cancelled_and_expired_picks_most_recent(
         self, admin_client, run_async
@@ -1232,8 +1237,12 @@ class TestOneRowPerUserRanking:
         first = _list(admin_client, run_async, prefix)
         second = _list(admin_client, run_async, prefix)
         assert first["items"][0]["id"] == second["items"][0]["id"]
-        assert first["items"][0]["id"] in ids
-        assert first["items"][0]["has_multiple_active"] is True
+        # Equal timestamps still prefer the paid candidate tier.
+        assert first["items"][0]["id"] == ids[1]
+        assert first["items"][0]["has_multiple_active"] is False
+
+        detail = _detail(admin_client, run_async, first["items"][0]["id"])
+        assert detail["subscription"]["has_multiple_active"] is False
 
     def test_detail_returns_plan_names_history_payments_and_audit(
         self, admin_client, run_async
@@ -1323,3 +1332,122 @@ class TestOneRowPerUserRanking:
             n["notification_type"] == "subscription_revoked"
             for n in notifications.json()
         )
+
+
+class TestAdminSubscriptionConflictDetection:
+    """Candidate coexistence vs genuine cross-scope conflicts."""
+
+    def test_candidate_with_legacy_recruiter_is_a_genuine_conflict(
+        self, admin_client, run_async
+    ):
+        prefix = f"conflict-a-{uuid.uuid4().hex[:8]}"
+        free_plan, _paid_plan = run(_create_candidate_free_and_paid_plans())
+        plan = _create_plan(admin_client, run_async)
+        user_id = run(_create_candidate_user(prefix))
+        candidate_id = run(_active_candidate_subscription(user_id, free_plan))
+        legacy_id = run(_active_subscription(user_id, plan["id"]))
+
+        body = _list(admin_client, run_async, prefix)
+        assert body["total"] == 1
+        item = body["items"][0]
+        assert item["has_multiple_active"] is True
+        assert item["total_subscriptions"] == 2
+
+        detail = _detail(admin_client, run_async, item["id"])
+        assert detail["subscription"]["has_multiple_active"] is True
+        active_ids = {
+            h["id"] for h in detail["history"] if h["status"] == "active"
+        }
+        assert {candidate_id, legacy_id} <= active_ids
+
+    def test_expires_at_null_still_counts_as_active(self, admin_client, run_async):
+        prefix = f"conflict-b-{uuid.uuid4().hex[:8]}"
+        free_plan, _paid_plan = run(_create_candidate_free_and_paid_plans())
+        plan = _create_plan(admin_client, run_async)
+        user_id = run(_create_candidate_user(prefix))
+        run(_active_candidate_subscription(user_id, free_plan))
+        run(
+            _insert_subscription(
+                user_id,
+                plan["id"],
+                SubscriptionStatus.ACTIVE,
+                expires_at=None,
+            )
+        )
+
+        body = _list(admin_client, run_async, prefix)
+        item = body["items"][0]
+        # If NULL expiry were ignored, only the Candidate Free row would count
+        # and this cross-scope pair would incorrectly look conflict-free.
+        assert item["has_multiple_active"] is True
+
+    def test_two_active_other_scopes_keep_existing_conflict_behavior(
+        self, admin_client, run_async
+    ):
+        from tests.integration import company_billing_helpers as cbh
+
+        prefix = f"conflict-c-{uuid.uuid4().hex[:8]}"
+        plan = _create_plan(admin_client, run_async)
+        user_id = run(_create_recruiter_user(prefix))
+
+        async def _seed_company_subscription() -> None:
+            async with async_session_factory() as session:
+                company = await cbh._create_company(session)
+                await cbh._create_company_subscription(
+                    session,
+                    company_id=company.id,
+                    user_id=uuid.UUID(user_id),
+                    plan_id=uuid.UUID(plan["id"]),
+                )
+                await session.commit()
+
+        run(_seed_company_subscription())
+        run(_active_subscription(user_id, plan["id"]))
+
+        body = _list(admin_client, run_async, prefix)
+        item = body["items"][0]
+        assert item["has_multiple_active"] is True
+        assert item["total_subscriptions"] == 2
+
+    def test_revoke_paid_preserves_free_and_free_entitlement_resumes(
+        self, admin_client, candidate_client, run_async
+    ):
+        _free_plan, paid_plan = run(_create_candidate_free_and_paid_plans())
+        user_id = _user_id_from_client(candidate_client)
+
+        async def _active_free_id() -> str:
+            async with async_session_factory() as session:
+                free = await session.scalar(
+                    select(Subscription).where(
+                        Subscription.user_id == uuid.UUID(user_id),
+                        Subscription.scope
+                        == SubscriptionScope.CANDIDATE_PERSONAL,
+                        Subscription.is_free == True,  # noqa: E712
+                        Subscription.status == SubscriptionStatus.ACTIVE,
+                    )
+                )
+                assert free is not None
+                return str(free.id)
+
+        free_id = run(_active_free_id())
+        paid_id = run(_active_candidate_subscription(user_id, paid_plan))
+
+        revoked = run_async(
+            admin_client.post(
+                f"{API_V1}/admin/subscriptions/{paid_id}/revoke",
+                json={"reason": "Thu hồi gói Candidate Paid đã hết hạn"},
+            )
+        )
+        assert revoked.status_code == 200, revoked.text
+        assert revoked.json()["status"] == "cancelled"
+
+        assert run(_load_subscription(paid_id)).status == SubscriptionStatus.CANCELLED
+        assert run(_load_subscription(free_id)).status == SubscriptionStatus.ACTIVE
+
+        entitlement = run_async(
+            candidate_client.get(f"{API_V1}/subscriptions/candidate/me")
+        )
+        assert entitlement.status_code == 200, entitlement.text
+        body = entitlement.json()
+        assert body["effective_tier"] == "free"
+        assert body["effective_subscription"]["id"] == free_id
