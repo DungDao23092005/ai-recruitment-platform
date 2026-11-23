@@ -95,24 +95,49 @@ export function ForgotPasswordPage() {
         <CardHeader>
           <CardTitle className="font-display text-xl font-bold flex items-center gap-2">
             <CheckCircle className="h-5 w-5 text-success" aria-hidden="true" />
-            Đã gửi email
+            Yêu cầu đã được ghi nhận
           </CardTitle>
           <CardDescription>
-            Nếu tài khoản tồn tại, mã OTP đã được gửi đến email của bạn.
+            Nếu email của bạn đã được đăng ký trong hệ thống, hướng dẫn đặt lại mật khẩu sẽ được gửi đến hộp thư. Vui lòng kiểm tra cả thư mục Spam/Junk.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Vui lòng kiểm tra hộp thư đến (và thư rác) để lấy mã OTP 6 chữ số.
+            Mã OTP (nếu được gửi) có hiệu lực trong 5 phút.
           </p>
-          <p className="text-sm text-muted-foreground">
-            Mã OTP có hiệu lực trong 5 phút.
-          </p>
-          <Link to="/verify-reset-otp" state={{ email: values.email }} className="block text-center">
-            <Button variant="outline" className="w-full">
-              Tiếp tục đến trang xác thực OTP
+          <div className="space-y-2 pt-2">
+            <Link
+              to="/verify-reset-otp"
+              state={{ email: values.email.trim() }}
+              className="block"
+            >
+              <Button variant="outline" className="w-full">
+                Đã nhận được mã OTP? Nhập mã xác thực
+              </Button>
+            </Link>
+            <Button
+              type="button"
+              variant="ghost"
+              className="w-full"
+              onClick={() => {
+                setSuccess(false)
+                setValues({ email: '' })
+                setErrors({})
+                setApiError(null)
+                setCooldown(0)
+              }}
+            >
+              Nhập email khác
             </Button>
-          </Link>
+          </div>
+          <div className="text-center pt-2">
+            <Link
+              to="/login"
+              className="text-sm font-medium text-primary underline underline-offset-4"
+            >
+              Quay lại đăng nhập
+            </Link>
+          </div>
         </CardContent>
       </Card>
     )

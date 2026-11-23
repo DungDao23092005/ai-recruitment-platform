@@ -347,7 +347,7 @@ export function WorkspaceMembersPage() {
                   name="invite-email"
                   label="Địa chỉ email đồng nghiệp"
                   placeholder="dongnghiep@company.com"
-                  helperText="Người nhận sẽ nhận được email lời mời và thông báo trong ứng dụng."
+                  helperText="Chỉ có thể mời đồng nghiệp đã có tài khoản trên hệ thống."
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   required
@@ -422,7 +422,7 @@ export function WorkspaceMembersPage() {
               <div className="flex items-start gap-2.5 rounded-lg border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
                 <Info className="h-4 w-4 shrink-0 text-primary mt-0.5" aria-hidden="true" />
                 <p>
-                  Lời mời có thời hạn 7 ngày và chỉ dùng được một lần. Người nhận chưa có tài khoản sẽ được hướng dẫn đăng ký tài khoản mới khi mở liên kết lời mời.
+                  Lời mời có thời hạn 7 ngày và chỉ dùng được một lần. Người được mời cần có tài khoản hợp lệ trong hệ thống để tham gia công ty.
                 </p>
               </div>
 

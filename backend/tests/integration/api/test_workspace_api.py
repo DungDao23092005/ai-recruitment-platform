@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 import uuid
 
 import httpx
 import pytest
 from sqlalchemy import select
 
+from app.database.base_class import utc_now
 from app.database.session import async_session_factory
 from app.domain.enums import InvitationStatus, MembershipRole, MembershipStatus
 from app.main import app
 from app.models import CompanyInvitation, CompanyMembership, EmailOutbox, User
+from app.services.workspace_service import hash_invitation_token
 from tests.integration.api.conftest import API_V1, PASSWORD
 
 pytestmark = pytest.mark.integration
@@ -266,6 +269,7 @@ class TestWorkspaceInvitationFlow:
     ):
         _create_company(recruiter_client, run_async)
         invitee_email = f"intended-{uuid.uuid4()}@example.com"
+        intended_user = _register_and_login(client, run_async, invitee_email)
         wrong_email = f"wrong-{uuid.uuid4()}@example.com"
         wrong_user = _register_and_login(client, run_async, wrong_email)
 
@@ -285,6 +289,7 @@ class TestWorkspaceInvitationFlow:
         )
         assert response.status_code == 403
         run_async(wrong_user.aclose())
+        run_async(intended_user.aclose())
 
     def test_in_app_discovery_and_accept_cross_channel(
         self, client, recruiter_client, run_async
@@ -426,16 +431,27 @@ class TestWorkspaceInvitationFlow:
     ):
         company = _create_company(recruiter_client, run_async)
         invitee_email = f"newly-registered-{uuid.uuid4()}@example.com"
+        me_resp = run_async(recruiter_client.get(f"{API_V1}/auth/me"))
+        assert me_resp.status_code == 200, me_resp.text
+        recruiter_user_id = uuid.UUID(me_resp.json()["id"])
 
-        # 1. Recruiter creates invitation before recipient is registered
-        created = run_async(
-            recruiter_client.post(
-                f"{API_V1}/workspaces/invitations",
-                json={"email": invitee_email, "role": "recruiter"},
-            )
-        )
-        assert created.status_code == 201, created.text
-        invitation_id = created.json()["id"]
+        # 1. Historical pre-existing invitation seeded in database before recipient registered
+        async def _seed_invitation():
+            async with async_session_factory() as session:
+                inv = CompanyInvitation(
+                    company_id=uuid.UUID(company["id"]),
+                    email=invitee_email,
+                    role=MembershipRole.RECRUITER,
+                    token_hash=hash_invitation_token("preexisting-token"),
+                    status=InvitationStatus.PENDING,
+                    invited_by_id=recruiter_user_id,
+                    expires_at=utc_now() + timedelta(days=7),
+                )
+                session.add(inv)
+                await session.commit()
+                return str(inv.id)
+
+        invitation_id = run_async(_seed_invitation())
 
         # 2. Recipient registers and logs in
         invitee = _register_and_login(client, run_async, invitee_email)
@@ -634,6 +650,77 @@ class TestWorkspaceInvitationFlow:
         )
         assert accept_resp.status_code == 409, accept_resp.text
         run_async(invitee.aclose())
+
+    def test_admin_invitation_to_unknown_email_returns_404_and_persists_nothing(
+        self, recruiter_client, run_async
+    ):
+        company = _create_company(recruiter_client, run_async)
+        unknown_email = f"unknown-{uuid.uuid4()}@example.com"
+
+        resp = run_async(
+            recruiter_client.post(
+                f"{API_V1}/workspaces/invitations",
+                json={"email": unknown_email, "role": "recruiter"},
+            )
+        )
+        assert resp.status_code == 404, resp.text
+        assert resp.json()["detail"] == "Tài khoản với email này không tồn tại trong hệ thống."
+
+        async def _check_db():
+            async with async_session_factory() as session:
+                inv = await session.scalar(
+                    select(CompanyInvitation).where(
+                        CompanyInvitation.email == unknown_email
+                    )
+                )
+                assert inv is None
+                outbox = await session.scalar(
+                    select(EmailOutbox).where(
+                        EmailOutbox.to_email == unknown_email
+                    )
+                )
+                assert outbox is None
+
+        run_async(_check_db())
+
+    def test_admin_invitation_to_inactive_account_returns_403(
+        self, client, recruiter_client, run_async
+    ):
+        company = _create_company(recruiter_client, run_async)
+        locked_email = f"locked-{uuid.uuid4()}@example.com"
+        locked_client = _register_and_login(client, run_async, locked_email)
+
+        async def _lock_account():
+            async with async_session_factory() as session:
+                user = await session.scalar(
+                    select(User).where(User.email == locked_email)
+                )
+                assert user is not None
+                user.is_active = False
+                await session.commit()
+
+        run_async(_lock_account())
+
+        resp = run_async(
+            recruiter_client.post(
+                f"{API_V1}/workspaces/invitations",
+                json={"email": locked_email, "role": "recruiter"},
+            )
+        )
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"] == "Tài khoản này đang bị khóa và không thể nhận lời mời."
+
+        async def _check_no_invitation():
+            async with async_session_factory() as session:
+                inv = await session.scalar(
+                    select(CompanyInvitation).where(
+                        CompanyInvitation.email == locked_email
+                    )
+                )
+                assert inv is None
+
+        run_async(_check_no_invitation())
+        run_async(locked_client.aclose())
 
     def test_concurrent_accept_vs_decline(
         self, client, recruiter_client, run_async

@@ -1,3 +1,4 @@
+
 import json
 import asyncio
 import uuid
@@ -58,10 +59,14 @@ def make_session() -> MagicMock:
     return session
 
 
-def make_company(company_id: uuid.UUID | None = None) -> Company:
+def make_company(
+    company_id: uuid.UUID | None = None,
+    *,
+    name: str = "Acme Corp",
+) -> Company:
     company = Company(
         id=company_id or uuid.uuid4(),
-        name="Acme Corp",
+        name=name,
         slug="acme-corp",
         tax_code="123456789",
     )
@@ -75,13 +80,14 @@ def make_user(
     *,
     email: str = "user@example.com",
     role: UserRole = UserRole.RECRUITER,
+    is_active: bool = True,
 ) -> User:
     user = User(
         id=user_id or uuid.uuid4(),
         email=email,
         password_hash="hashed",
         role=role,
-        is_active=True,
+        is_active=is_active,
     )
     user.created_at = utc_now()
     user.updated_at = utc_now()
@@ -363,7 +369,10 @@ class TestCreateInvitation:
             company, admin, role=MembershipRole.ADMIN
         )
         service.invitations.expire_stale.return_value = 0
-        service.users.get_by_email.return_value = None
+        service.users.get_by_email.return_value = make_user(
+            email="invitee@example.com", is_active=True
+        )
+        service.memberships.get_active.return_value = None
         service.invitations.get_pending_by_company_email.return_value = None
 
         captured = {}
@@ -398,8 +407,84 @@ class TestCreateInvitation:
         email_kwargs = enqueue.await_args.kwargs
         assert email_kwargs["event_type"] == "company_invitation"
         assert email_kwargs["to_email"] == "invitee@example.com"
+        assert "Lời mời tham gia công ty" in email_kwargs["subject"]
+        assert "Chấp nhận lời mời" in email_kwargs["html_body"]
+        assert "Từ chối lời mời" in email_kwargs["html_body"]
+        assert "(GMT+7)" in email_kwargs["html_body"]
         assert "#token=" in email_kwargs["text_body"]
+        assert "(GMT+7)" in email_kwargs["text_body"]
         session.commit.assert_awaited_once()
+
+    def test_unknown_account_raises_entity_not_found(self):
+        session = make_session()
+        service = make_service(session)
+        admin = make_user()
+        company = make_company()
+        context = service_context(
+            company, admin, role=MembershipRole.ADMIN
+        )
+        service.invitations.expire_stale.return_value = 0
+        service.users.get_by_email.return_value = None
+
+        with patch("app.services.workspace_service.enqueue_email", new=AsyncMock()) as mock_enqueue:
+            with pytest.raises(EntityNotFoundException) as exc_info:
+                asyncio.run(
+                    service.create_invitation(
+                        context,
+                        InvitationCreate(email="unknown@example.com"),
+                    )
+                )
+            assert "Tài khoản với email này không tồn tại trong hệ thống." in str(exc_info.value)
+            session.add.assert_not_called()
+            mock_enqueue.assert_not_called()
+            service.notifications.notify_company_invitation.assert_not_called()
+
+    def test_inactive_account_raises_forbidden(self):
+        session = make_session()
+        service = make_service(session)
+        admin = make_user()
+        company = make_company()
+        context = service_context(
+            company, admin, role=MembershipRole.ADMIN
+        )
+        service.invitations.expire_stale.return_value = 0
+        service.users.get_by_email.return_value = make_user(
+            email="locked@example.com", is_active=False
+        )
+
+        with patch("app.services.workspace_service.enqueue_email", new=AsyncMock()) as mock_enqueue:
+            with pytest.raises(ForbiddenException) as exc_info:
+                asyncio.run(
+                    service.create_invitation(
+                        context,
+                        InvitationCreate(email="locked@example.com"),
+                    )
+                )
+            assert "Tài khoản này đang bị khóa và không thể nhận lời mời." in str(exc_info.value)
+            session.add.assert_not_called()
+            mock_enqueue.assert_not_called()
+            service.notifications.notify_company_invitation.assert_not_called()
+
+    def test_soft_deleted_account_raises_entity_not_found(self):
+        session = make_session()
+        service = make_service(session)
+        admin = make_user()
+        company = make_company()
+        context = service_context(
+            company, admin, role=MembershipRole.ADMIN
+        )
+        service.invitations.expire_stale.return_value = 0
+        # UserRepository.get_by_email returns None for is_deleted=True
+        service.users.get_by_email.return_value = None
+
+        with pytest.raises(EntityNotFoundException):
+            asyncio.run(
+                service.create_invitation(
+                    context,
+                    InvitationCreate(email="deleted@example.com"),
+                )
+            )
+        session.add.assert_not_called()
 
     def test_existing_active_member_conflicts(self):
         service = make_service(make_session())
@@ -410,7 +495,7 @@ class TestCreateInvitation:
         )
         service.invitations.expire_stale.return_value = 0
         service.users.get_by_email.return_value = make_user(
-            email="member@example.com"
+            email="member@example.com", is_active=True
         )
         service.memberships.get_active.return_value = MagicMock()
 
@@ -430,7 +515,10 @@ class TestCreateInvitation:
             company, admin, role=MembershipRole.ADMIN
         )
         service.invitations.expire_stale.return_value = 0
-        service.users.get_by_email.return_value = None
+        service.users.get_by_email.return_value = make_user(
+            email="invitee@example.com", is_active=True
+        )
+        service.memberships.get_active.return_value = None
         service.invitations.get_pending_by_company_email.return_value = (
             MagicMock()
         )
@@ -454,6 +542,88 @@ class TestCreateInvitation:
                     InvitationCreate(email="invitee@example.com"),
                 )
             )
+
+    def test_invitation_email_vietnamese_content_and_gmt7_formatting(self):
+        session = make_session()
+        service = make_service(session)
+        admin = make_user(email="admin@company.com", role=UserRole.RECRUITER)
+        company = make_company(name="Cong Ty Cong Nghe")
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+
+        service.invitations.expire_stale.return_value = 0
+        service.users.get_by_email.return_value = make_user(
+            email="developer@example.com", is_active=True
+        )
+        service.memberships.get_active.return_value = None
+        service.invitations.get_pending_by_company_email.return_value = None
+
+        def assign_defaults():
+            invitation = session.add.call_args.args[0]
+            invitation.id = uuid.uuid4()
+            invitation.created_at = utc_now()
+            invitation.updated_at = utc_now()
+
+        session.flush.side_effect = assign_defaults
+
+        with patch("app.services.workspace_service.enqueue_email", new=AsyncMock()) as mock_enqueue:
+            asyncio.run(
+                service.create_invitation(
+                    context,
+                    InvitationCreate(email="developer@example.com", role=MembershipRole.INTERVIEWER),
+                )
+            )
+            mock_enqueue.assert_awaited_once()
+            kwargs = mock_enqueue.await_args.kwargs
+            assert kwargs["subject"] == "Lời mời tham gia công ty Cong Ty Cong Nghe - AI Recruitment Platform"
+            assert "Người phỏng vấn" in kwargs["html_body"]
+            assert "Người phỏng vấn" in kwargs["text_body"]
+            assert "Cong Ty Cong Nghe" in kwargs["html_body"]
+            assert "admin@company.com" in kwargs["html_body"]
+            assert "developer@example.com" in kwargs["html_body"]
+            assert "(GMT+7)" in kwargs["html_body"]
+            assert "Chấp nhận lời mời" in kwargs["html_body"]
+            assert "Từ chối lời mời" in kwargs["html_body"]
+            assert "action=accept" in kwargs["html_body"]
+            assert "action=decline" in kwargs["html_body"]
+            assert "Liên kết lời mời này chỉ có hiệu lực một lần" in kwargs["html_body"]
+            assert "Email được gửi tự động từ AI Recruitment Platform." in kwargs["html_body"]
+
+    def test_invitation_email_html_escaping(self):
+        session = make_session()
+        service = make_service(session)
+        admin = make_user(email="<script>alert(1)</script>@company.com", role=UserRole.RECRUITER)
+        company = make_company(name="<Evil & Sons Ltd>")
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+
+        service.invitations.expire_stale.return_value = 0
+        service.users.get_by_email.return_value = make_user(
+            email="innocent@example.com", is_active=True
+        )
+        service.memberships.get_active.return_value = None
+        service.invitations.get_pending_by_company_email.return_value = None
+
+        def assign_defaults():
+            invitation = session.add.call_args.args[0]
+            invitation.id = uuid.uuid4()
+            invitation.created_at = utc_now()
+            invitation.updated_at = utc_now()
+
+        session.flush.side_effect = assign_defaults
+
+        with patch("app.services.workspace_service.enqueue_email", new=AsyncMock()) as mock_enqueue:
+            asyncio.run(
+                service.create_invitation(
+                    context,
+                    InvitationCreate(email="innocent@example.com", role=MembershipRole.ADMIN),
+                )
+            )
+            mock_enqueue.assert_awaited_once()
+            kwargs = mock_enqueue.await_args.kwargs
+            assert "<Evil & Sons Ltd>" not in kwargs["html_body"]
+            assert "&lt;Evil &amp; Sons Ltd&gt;" in kwargs["html_body"]
+            assert "<script>alert(1)</script>" not in kwargs["html_body"]
+            assert "&lt;script&gt;alert(1)&lt;/script&gt;" in kwargs["html_body"]
+            assert "Quản trị viên" in kwargs["html_body"]
 
 
 class TestPreviewInvitation:
@@ -1224,7 +1394,10 @@ class TestInvitationEmailAndNotificationCreation:
         context = service_context(company, user, role=MembershipRole.ADMIN)
 
         service.invitations.list_by_company.return_value = []
-        service.users.get_by_email.return_value = None
+        service.users.get_by_email.return_value = make_user(
+            email="newuser@example.com", is_active=True
+        )
+        service.memberships.get_active.return_value = None
 
         def assign_defaults():
             if session.add.call_args:
@@ -1997,3 +2170,81 @@ class TestSSEClassificationAndStreamDispatch:
             joined = "".join(chunks)
             assert f"event: {INVITATION_REVOKED_EVENT}" in joined
             assert inv_revocation["invitation_id"] in joined
+
+
+class TestFrontendUrlConfigValidation:
+    def test_valid_http_and_https_url(self):
+        from app.core.config import Settings
+        s1 = Settings(FRONTEND_URL="http://example.com", ENVIRONMENT="development")
+        assert s1.FRONTEND_URL == "http://example.com"
+        s2 = Settings(FRONTEND_URL="https://app.example.com", ENVIRONMENT="development")
+        assert s2.FRONTEND_URL == "https://app.example.com"
+
+    def test_trailing_slash_normalized(self):
+        from app.core.config import Settings
+        s = Settings(FRONTEND_URL="https://app.example.com/", ENVIRONMENT="development")
+        assert s.FRONTEND_URL == "https://app.example.com"
+
+    def test_invalid_scheme_or_format_rejected(self):
+        from app.core.config import Settings
+        with pytest.raises(ValueError):
+            Settings(FRONTEND_URL="ftp://invalid.com", ENVIRONMENT="development")
+        with pytest.raises(ValueError):
+            Settings(FRONTEND_URL="not-a-url", ENVIRONMENT="development")
+
+    def test_development_localhost_accepted(self):
+        from app.core.config import Settings
+        s1 = Settings(FRONTEND_URL="http://localhost:5173", ENVIRONMENT="development")
+        assert s1.FRONTEND_URL == "http://localhost:5173"
+        s2 = Settings(FRONTEND_URL="http://127.0.0.1:3000", ENVIRONMENT="development")
+        assert s2.FRONTEND_URL == "http://127.0.0.1:3000"
+
+    def test_production_localhost_rejected(self):
+        from app.core.config import Settings
+        with pytest.raises(ValueError) as exc:
+            Settings(
+                FRONTEND_URL="http://localhost:5173",
+                ENVIRONMENT="production",
+                BACKEND_CORS_ORIGINS=["https://recruitment.company.com"],
+                SECRET_KEY="production-secret-key-that-is-long-enough",
+            )
+        assert "cannot be localhost or a loopback address in production" in str(exc.value)
+
+    def test_production_loopback_ip_rejected(self):
+        from app.core.config import Settings
+        with pytest.raises(ValueError) as exc:
+            Settings(
+                FRONTEND_URL="http://127.0.0.1:3000",
+                ENVIRONMENT="production",
+                BACKEND_CORS_ORIGINS=["https://recruitment.company.com"],
+                SECRET_KEY="production-secret-key-that-is-long-enough",
+            )
+        assert "cannot be localhost or a loopback address in production" in str(exc.value)
+
+        with pytest.raises(ValueError) as exc:
+            Settings(
+                FRONTEND_URL="http://[::1]:3000",
+                ENVIRONMENT="production",
+                BACKEND_CORS_ORIGINS=["https://recruitment.company.com"],
+                SECRET_KEY="production-secret-key-that-is-long-enough",
+            )
+        assert "cannot be localhost or a loopback address in production" in str(exc.value)
+
+        with pytest.raises(ValueError) as exc:
+            Settings(
+                FRONTEND_URL="http://0.0.0.0:8000",
+                ENVIRONMENT="production",
+                BACKEND_CORS_ORIGINS=["https://recruitment.company.com"],
+                SECRET_KEY="production-secret-key-that-is-long-enough",
+            )
+        assert "cannot be localhost or a loopback address in production" in str(exc.value)
+
+    def test_production_public_url_accepted(self):
+        from app.core.config import Settings
+        s = Settings(
+            FRONTEND_URL="https://recruitment.company.com/",
+            ENVIRONMENT="production",
+            BACKEND_CORS_ORIGINS=["https://recruitment.company.com"],
+            SECRET_KEY="production-secret-key-that-is-long-enough",
+        )
+        assert s.FRONTEND_URL == "https://recruitment.company.com"

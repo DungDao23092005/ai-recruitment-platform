@@ -109,9 +109,109 @@ describe('ForgotPasswordPage', () => {
     await screen.getByRole('button', { name: /gửi mã otp/i }).click()
 
     await waitFor(() => {
-      expect(screen.getByText('Đã gửi email')).toBeInTheDocument()
-      expect(screen.getByText('Nếu tài khoản tồn tại, mã OTP đã được gửi đến email của bạn.')).toBeInTheDocument()
+      expect(screen.getByText('Yêu cầu đã được ghi nhận')).toBeInTheDocument()
+      expect(screen.getByText('Nếu email của bạn đã được đăng ký trong hệ thống, hướng dẫn đặt lại mật khẩu sẽ được gửi đến hộp thư. Vui lòng kiểm tra cả thư mục Spam/Junk.')).toBeInTheDocument()
     })
+  })
+
+  it('successful submission does not automatically navigate to OTP verification route', async () => {
+    mockUseAuth.mockReturnValue({
+      isAuthenticated: false,
+      isLoading: false,
+      currentUser: null,
+      token: null,
+      login: vi.fn(),
+      logout: vi.fn(),
+    })
+
+    vi.mocked(authApi.forgotPassword).mockResolvedValue({ message: 'Success' })
+
+    render(
+      <MemoryRouter initialEntries={['/forgot-password']}>
+        <AuthProvider>
+          <Routes>
+            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+            <Route path="/verify-reset-otp" element={<div data-testid="otp-page">OTP Page</div>} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>
+    )
+
+    const input = screen.getByLabelText('Email')
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'test@example.com' } })
+    })
+
+    await screen.getByRole('button', { name: /gửi mã otp/i }).click()
+
+    await waitFor(() => {
+      expect(screen.getByText('Yêu cầu đã được ghi nhận')).toBeInTheDocument()
+    })
+    // Confirms it stays on forgot-password success card, does NOT navigate
+    expect(screen.queryByTestId('otp-page')).not.toBeInTheDocument()
+  })
+
+  it('allows user to enter another email from the success view', async () => {
+    mockUseAuth.mockReturnValue({
+      isAuthenticated: false,
+      isLoading: false,
+      currentUser: null,
+      token: null,
+      login: vi.fn(),
+      logout: vi.fn(),
+    })
+
+    vi.mocked(authApi.forgotPassword).mockResolvedValue({ message: 'Success' })
+
+    renderWithRouter(<ForgotPasswordPage />)
+
+    const input = screen.getByLabelText('Email')
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'test@example.com' } })
+    })
+
+    await screen.getByRole('button', { name: /gửi mã otp/i }).click()
+
+    await waitFor(() => {
+      expect(screen.getByText('Yêu cầu đã được ghi nhận')).toBeInTheDocument()
+    })
+
+    const resetBtn = screen.getByRole('button', { name: /nhập email khác/i })
+    await act(async () => {
+      fireEvent.click(resetBtn)
+    })
+
+    expect(screen.getByLabelText('Email')).toHaveValue('')
+    expect(screen.getByRole('button', { name: /gửi mã otp/i })).toBeInTheDocument()
+  })
+
+  it('manual OTP action explicitly links to verification route with email state', async () => {
+    mockUseAuth.mockReturnValue({
+      isAuthenticated: false,
+      isLoading: false,
+      currentUser: null,
+      token: null,
+      login: vi.fn(),
+      logout: vi.fn(),
+    })
+
+    vi.mocked(authApi.forgotPassword).mockResolvedValue({ message: 'Success' })
+
+    renderWithRouter(<ForgotPasswordPage />)
+
+    const input = screen.getByLabelText('Email')
+    await act(async () => {
+      fireEvent.change(input, { target: { value: 'user@example.com' } })
+    })
+
+    await screen.getByRole('button', { name: /gửi mã otp/i }).click()
+
+    await waitFor(() => {
+      expect(screen.getByText('Yêu cầu đã được ghi nhận')).toBeInTheDocument()
+    })
+
+    const otpLink = screen.getByRole('link', { name: /đã nhận được mã otp\? nhập mã xác thực/i })
+    expect(otpLink).toHaveAttribute('href', '/verify-reset-otp')
   })
 
   it('shows error message on API failure', async () => {
@@ -165,7 +265,7 @@ describe('ForgotPasswordPage', () => {
 
     // Component shows success state after submission
     await waitFor(() => {
-      expect(screen.getByText('Đã gửi email')).toBeInTheDocument()
+      expect(screen.getByText('Yêu cầu đã được ghi nhận')).toBeInTheDocument()
     })
   })
 
@@ -192,7 +292,7 @@ describe('ForgotPasswordPage', () => {
 
     // Component shows success state after submission, button is not visible in success view
     await waitFor(() => {
-      expect(screen.getByText('Đã gửi email')).toBeInTheDocument()
+      expect(screen.getByText('Yêu cầu đã được ghi nhận')).toBeInTheDocument()
     })
   })
 

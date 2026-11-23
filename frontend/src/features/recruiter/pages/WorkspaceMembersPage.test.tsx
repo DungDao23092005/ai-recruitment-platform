@@ -416,8 +416,8 @@ describe('WorkspaceMembersPage', () => {
       expect(screen.getByText('Mời thành viên mới')).toBeInTheDocument()
       expect(screen.getByText('Gửi lời mời tham gia không gian làm việc của công ty qua email.')).toBeInTheDocument()
       expect(screen.getByLabelText(/Địa chỉ email đồng nghiệp/i)).toBeInTheDocument()
-      expect(screen.getByText('Người nhận sẽ nhận được email lời mời và thông báo trong ứng dụng.')).toBeInTheDocument()
-      expect(screen.getByText('Lời mời có thời hạn 7 ngày và chỉ dùng được một lần. Người nhận chưa có tài khoản sẽ được hướng dẫn đăng ký tài khoản mới khi mở liên kết lời mời.')).toBeInTheDocument()
+      expect(screen.getByText('Chỉ có thể mời đồng nghiệp đã có tài khoản trên hệ thống.')).toBeInTheDocument()
+      expect(screen.getByText('Lời mời có thời hạn 7 ngày và chỉ dùng được một lần. Người được mời cần có tài khoản hợp lệ trong hệ thống để tham gia công ty.')).toBeInTheDocument()
 
       const radioGroup = screen.getByRole('radiogroup', { name: 'Chọn vai trò thành viên' })
       expect(radioGroup).toBeInTheDocument()
@@ -539,6 +539,25 @@ describe('WorkspaceMembersPage', () => {
       await waitFor(() => {
         expect(screen.getByRole('alert')).toHaveTextContent('A pending invitation already exists for this email')
         expect(emailInput).toHaveValue('dup@example.com')
+      })
+    })
+
+    it('displays localized unknown account error inline and preserves entered email', async () => {
+      vi.mocked(workspacesApi.createWorkspaceInvitation).mockRejectedValueOnce({
+        response: { status: 404, data: { detail: 'Tài khoản với email này không tồn tại trong hệ thống.' } },
+      })
+
+      renderComponent()
+
+      const emailInput = screen.getByLabelText(/Địa chỉ email đồng nghiệp/i)
+      fireEvent.change(emailInput, { target: { value: 'notfound@example.com' } })
+
+      const submitBtn = screen.getByRole('button', { name: /Gửi lời mời tham gia/i })
+      fireEvent.click(submitBtn)
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toHaveTextContent('Tài khoản với email này không tồn tại trong hệ thống.')
+        expect(emailInput).toHaveValue('notfound@example.com')
       })
     })
   })

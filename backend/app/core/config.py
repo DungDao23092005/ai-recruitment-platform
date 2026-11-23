@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import re
 from typing import Annotated, Optional
@@ -178,6 +179,37 @@ class Settings(BaseSettings):
                 f"ENVIRONMENT must be one of {', '.join(VALID_ENVIRONMENTS)}, got: {value!r}"
             )
         return value
+
+    @field_validator("FRONTEND_URL")
+    @classmethod
+    def validate_frontend_url(cls, value: str, info: ValidationInfo) -> str:
+        if not value or not isinstance(value, str):
+            raise ValueError("FRONTEND_URL must be a non-empty string")
+
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not (parsed.netloc or parsed.hostname):
+            raise ValueError(
+                f"Invalid FRONTEND_URL, must be an absolute HTTP or HTTPS URL: {value!r}"
+            )
+
+        normalized = value.rstrip("/")
+
+        host = (parsed.hostname or "").lower()
+        is_loopback = host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+        if not is_loopback and host:
+            try:
+                ip = ipaddress.ip_address(host)
+                is_loopback = ip.is_loopback or ip.is_unspecified
+            except ValueError:
+                pass
+
+        env = info.data.get("ENVIRONMENT", "development") if info.data else "development"
+        if env == "production" and is_loopback:
+            raise ValueError(
+                f"FRONTEND_URL '{value}' cannot be localhost or a loopback address in production"
+            )
+
+        return normalized
 
     @field_validator("BACKEND_CORS_ORIGINS", mode="before")
     @classmethod

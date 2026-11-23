@@ -345,14 +345,22 @@ class WorkspaceService:
         )
 
         existing_user = await self.users.get_by_email(email)
-        if existing_user is not None:
-            membership = await self.memberships.get_active(
-                existing_user.id, context.company_id
+        if existing_user is None:
+            raise EntityNotFoundException(
+                "Tài khoản với email này không tồn tại trong hệ thống."
             )
-            if membership is not None:
-                raise ConflictException(
-                    "This user is already an active member of the workspace"
-                )
+        if not existing_user.is_active:
+            raise ForbiddenException(
+                "Tài khoản này đang bị khóa và không thể nhận lời mời."
+            )
+
+        membership = await self.memberships.get_active(
+            existing_user.id, context.company_id
+        )
+        if membership is not None:
+            raise ConflictException(
+                "This user is already an active member of the workspace"
+            )
 
         pending = await self.invitations.get_pending_by_company_email(
             context.company_id, email
@@ -382,13 +390,12 @@ class WorkspaceService:
                 company_name=context.company.name,
                 inviter_email=context.user.email,
             )
-            if existing_user is not None:
-                await self._create_invitation_notification_idempotent(
-                    user_id=existing_user.id,
-                    invitation_id=invitation.id,
-                    company_name=context.company.name,
-                    role=invitation.role,
-                )
+            await self._create_invitation_notification_idempotent(
+                user_id=existing_user.id,
+                invitation_id=invitation.id,
+                company_name=context.company.name,
+                role=invitation.role,
+            )
             await self.session.commit()
         except IntegrityError:
             await self.session.rollback()
@@ -1033,34 +1040,171 @@ class WorkspaceService:
     ) -> None:
         accept_url = build_invitation_url(token, action="accept")
         decline_url = build_invitation_url(token, action="decline")
+
+        expires_dt = invitation.expires_at
+        if expires_dt.tzinfo is None:
+            expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+        try:
+            from zoneinfo import ZoneInfo
+            expires_vn = expires_dt.astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
+        except Exception:
+            expires_vn = expires_dt.astimezone(timezone(timedelta(hours=7)))
+        expires_str = expires_vn.strftime("%d/%m/%Y %H:%M (GMT+7)")
+
+        role_label = {
+            MembershipRole.ADMIN: "Quản trị viên",
+            MembershipRole.RECRUITER: "Nhà tuyển dụng",
+            MembershipRole.INTERVIEWER: "Người phỏng vấn",
+        }.get(
+            invitation.role,
+            str(
+                invitation.role.value
+                if hasattr(invitation.role, "value")
+                else invitation.role
+            ),
+        )
+
         safe_company = html.escape(company_name)
+        safe_inviter = html.escape(inviter_email)
+        safe_recipient = html.escape(invitation.email)
+        safe_role = html.escape(role_label)
+        safe_expires = html.escape(expires_str)
         safe_accept_url = html.escape(accept_url, quote=True)
         safe_decline_url = html.escape(decline_url, quote=True)
-        role_label = {
-            MembershipRole.ADMIN: "Admin",
-            MembershipRole.RECRUITER: "Recruiter",
-            MembershipRole.INTERVIEWER: "Interviewer",
-        }[invitation.role]
+
+        html_body = f"""<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lời mời tham gia công ty</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; line-height: 1.6;">
+  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f8fafc; padding: 32px 16px;">
+    <tr>
+      <td align="center">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 600px; background-color: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+          <!-- Header -->
+          <tr>
+            <td style="padding: 24px 32px; background-color: #2563eb; color: #ffffff; text-align: center;">
+              <h1 style="margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.025em;">AI Recruitment Platform</h1>
+            </td>
+          </tr>
+          <!-- Body Content -->
+          <tr>
+            <td style="padding: 32px 32px 24px 32px;">
+              <h2 style="margin: 0 0 16px 0; font-size: 22px; font-weight: 700; color: #0f172a; text-align: center;">Bạn được mời tham gia công ty!</h2>
+              <p style="margin: 0 0 24px 0; font-size: 15px; color: #475569; text-align: center;">
+                Chào bạn, bạn nhận được lời mời tham gia vào không gian làm việc của công ty trên AI Recruitment Platform.
+              </p>
+
+              <!-- Info Card -->
+              <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 28px;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                      <tr>
+                        <td style="padding: 6px 0; font-size: 14px; color: #64748b; width: 140px; vertical-align: top;"><strong>Công ty:</strong></td>
+                        <td style="padding: 6px 0; font-size: 14px; color: #0f172a; font-weight: 600;">{safe_company}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 6px 0; font-size: 14px; color: #64748b; vertical-align: top;"><strong>Người mời:</strong></td>
+                        <td style="padding: 6px 0; font-size: 14px; color: #0f172a;">{safe_inviter}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 6px 0; font-size: 14px; color: #64748b; vertical-align: top;"><strong>Email nhận:</strong></td>
+                        <td style="padding: 6px 0; font-size: 14px; color: #0f172a;">{safe_recipient}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 6px 0; font-size: 14px; color: #64748b; vertical-align: top;"><strong>Vai trò:</strong></td>
+                        <td style="padding: 6px 0; font-size: 14px; color: #2563eb; font-weight: 600;">{safe_role}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 6px 0; font-size: 14px; color: #64748b; vertical-align: top;"><strong>Hết hạn lúc:</strong></td>
+                        <td style="padding: 6px 0; font-size: 14px; color: #0f172a;">{safe_expires}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- CTA Buttons -->
+              <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 28px;">
+                <tr>
+                  <td align="center">
+                    <table border="0" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td align="center" style="border-radius: 6px; background-color: #2563eb; padding: 0 8px;">
+                          <a href="{safe_accept_url}" target="_blank" style="display: inline-block; padding: 12px 28px; font-size: 15px; font-weight: 600; color: #ffffff; text-decoration: none; border-radius: 6px;">Chấp nhận lời mời</a>
+                        </td>
+                        <td width="16"></td>
+                        <td align="center" style="border-radius: 6px; background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 0 8px;">
+                          <a href="{safe_decline_url}" target="_blank" style="display: inline-block; padding: 12px 28px; font-size: 15px; font-weight: 600; color: #475569; text-decoration: none; border-radius: 6px;">Từ chối lời mời</a>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Security Notice -->
+              <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #fefce8; border: 1px solid #fef08a; border-radius: 6px; margin-bottom: 24px;">
+                <tr>
+                  <td style="padding: 12px 16px; font-size: 13px; color: #713f12; line-height: 1.5;">
+                    Liên kết lời mời này chỉ có hiệu lực một lần và dành riêng cho địa chỉ email được mời. Nếu bạn không mong đợi thư này, vui lòng bỏ qua.
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Fallback Links -->
+              <div style="font-size: 12px; color: #94a3b8; line-height: 1.5; border-top: 1px solid #f1f5f9; padding-top: 16px;">
+                <p style="margin: 0 0 6px 0;">Nếu nút bấm trên không hoạt động, bạn có thể truy cập trực tiếp các liên kết sau:</p>
+                <p style="margin: 0 0 4px 0; word-break: break-all;">Chấp nhận: <a href="{safe_accept_url}" style="color: #2563eb; text-decoration: underline;">{safe_accept_url}</a></p>
+                <p style="margin: 0; word-break: break-all;">Từ chối: <a href="{safe_decline_url}" style="color: #64748b; text-decoration: underline;">{safe_decline_url}</a></p>
+              </div>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 20px 32px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; text-align: center;">
+              <p style="margin: 0; font-size: 12px; color: #64748b;">Email được gửi tự động từ AI Recruitment Platform.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+        text_body = (
+            f"AI Recruitment Platform\n"
+            f"========================================\n\n"
+            f"Bạn được mời tham gia công ty!\n\n"
+            f"Chào bạn, bạn nhận được lời mời tham gia vào không gian làm việc của công ty trên AI Recruitment Platform.\n\n"
+            f"Thông tin lời mời:\n"
+            f"- Công ty: {company_name}\n"
+            f"- Người mời: {inviter_email}\n"
+            f"- Email nhận: {invitation.email}\n"
+            f"- Vai trò: {role_label}\n"
+            f"- Hết hạn lúc: {expires_str}\n\n"
+            f"Để phản hồi lời mời, vui lòng truy cập một trong các liên kết sau:\n\n"
+            f"Chấp nhận lời mời:\n"
+            f"{accept_url}\n\n"
+            f"Từ chối lời mời:\n"
+            f"{decline_url}\n\n"
+            f"Lưu ý bảo mật:\n"
+            f"Liên kết lời mời này chỉ có hiệu lực một lần và dành riêng cho địa chỉ email được mời. Nếu bạn không mong đợi thư này, vui lòng bỏ qua.\n\n"
+            f"----------------------------------------\n"
+            f"Email được gửi tự động từ AI Recruitment Platform."
+        )
+
         await enqueue_email(
             self.session,
             event_type="company_invitation",
             to_email=invitation.email,
-            subject=f"You are invited to join {company_name}",
-            html_body=(
-                f"<p>{html.escape(inviter_email)} invited you to join "
-                f"<strong>{safe_company}</strong> as {role_label}.</p>"
-                f'<p><a href="{safe_accept_url}">Chấp nhận lời mời</a> &nbsp;|&nbsp; '
-                f'<a href="{safe_decline_url}">Từ chối lời mời</a></p>'
-                f"<p>This link expires on "
-                f"{invitation.expires_at.strftime('%Y-%m-%d %H:%M UTC')}.</p>"
-            ),
-            text_body=(
-                f"{inviter_email} invited you to join {company_name} "
-                f"as {role_label}.\n\n"
-                f"Chấp nhận lời mời: {accept_url}\n"
-                f"Từ chối lời mời: {decline_url}\n\n"
-                f"This link expires on "
-                f"{invitation.expires_at.strftime('%Y-%m-%d %H:%M UTC')}."
-            ),
+            subject=f"Lời mời tham gia công ty {company_name} - AI Recruitment Platform",
+            html_body=html_body,
+            text_body=text_body,
             idempotency_key=f"company-invitation:{invitation.id}",
         )
