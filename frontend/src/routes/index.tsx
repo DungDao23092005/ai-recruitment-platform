@@ -185,6 +185,7 @@ export function AppRouter() {
               <ProtectedByRole allowedRoles={['recruiter']}>
                 <WorkspaceRoleGuard
                   allowedRoles={['admin', 'recruiter', 'interviewer']}
+                  showRecruiterWorkspaceOnboarding
                 >
                   <MyInterviewsPage />
                 </WorkspaceRoleGuard>

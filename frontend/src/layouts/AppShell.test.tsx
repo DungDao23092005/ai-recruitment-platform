@@ -207,6 +207,29 @@ describe('AppShell sidebar', () => {
     expect(within(nav).queryByText('Thành viên')).not.toBeInTheDocument()
   })
 
+  it('renders recruiter navigation with company link when recruiter has no active workspace', async () => {
+    renderShell('recruiter', '/recruiter/portal')
+
+    await waitFor(() => {
+      expect(getAppNav()).toBeInTheDocument()
+      expect(mockedGetWorkspaces).toHaveBeenCalled()
+    })
+
+    const nav = getAppNav()
+    expect(within(nav).getByText('Tổng quan')).toBeInTheDocument()
+    expect(within(nav).getByText('Công ty')).toBeInTheDocument()
+    expect(within(nav).getByText('Tin tuyển dụng')).toBeInTheDocument()
+    expect(within(nav).getByText('Đăng tin mới')).toBeInTheDocument()
+    expect(within(nav).getByText('Phân tích')).toBeInTheDocument()
+    expect(within(nav).getByText('Lịch phỏng vấn')).toBeInTheDocument()
+    expect(within(nav).getByText('Gói dịch vụ')).toBeInTheDocument()
+    expect(within(nav).getByText('Gói & Thanh toán')).toBeInTheDocument()
+    expect(within(nav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
+    expect(within(nav).getByText('Hồ sơ cá nhân')).toBeInTheDocument()
+    expect(within(nav).getByText('Trợ lý AI')).toBeInTheDocument()
+    expect(within(nav).queryByText('Thành viên')).not.toBeInTheDocument()
+  })
+
   it('renders interviewer workspace navigation with only assigned interviews, notifications and profile', async () => {
     renderShell('recruiter', '/interviewer/interviews', 'interviewer')
 

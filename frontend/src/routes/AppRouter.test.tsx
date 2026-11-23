@@ -118,6 +118,7 @@ vi.mock('@/api/workspaces', () => ({
   revokeWorkspaceMember: vi.fn(),
   previewInvitation: vi.fn(),
   acceptInvitation: vi.fn(),
+  getMyInvitations: vi.fn().mockResolvedValue([]),
 }))
 
 vi.mock('@/api/subscriptions', () => ({
@@ -244,6 +245,7 @@ beforeEach(async () => {
   const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
   mockedWorkspaces.getWorkspaces.mockResolvedValue([])
   mockedWorkspaces.getWorkspaceMembers.mockResolvedValue([])
+  mockedWorkspaces.getMyInvitations.mockResolvedValue([])
   const mockedSubscriptions = vi.mocked(await import('@/api/subscriptions'))
   mockedSubscriptions.getMySubscription.mockResolvedValue(null)
   mockedSubscriptions.getCompanySubscription.mockResolvedValue(null)
@@ -855,21 +857,138 @@ describe('AppRouter interview schedule routes', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('blocks a recruiter without an active workspace from the interview schedule', async () => {
+  it('shows no-company empty state when recruiter has no workspace and no pending invitations', async () => {
+    setUser('recruiter')
+    const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
+    const mockedInterviews = vi.mocked(await import('@/api/interviews'))
+    mockedWorkspaces.getWorkspaces.mockResolvedValue([])
+    mockedWorkspaces.getMyInvitations.mockResolvedValue([])
+
+    renderAt('/interviewer/interviews')
+
+    await waitFor(() => {
+      expect(screen.getByText('Chưa có công ty làm việc')).toBeInTheDocument()
+      expect(
+        screen.getByText(
+          'Lịch phỏng vấn chỉ hiển thị khi bạn tham gia hoặc tạo một công ty.',
+        ),
+      ).toBeInTheDocument()
+    })
+    const createCompanyButton = screen.getByRole('button', {
+      name: 'Tạo công ty',
+    })
+    expect(createCompanyButton).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Xem lời mời tham gia công ty' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('heading', { name: /Tìm đúng công việc/ }),
+    ).not.toBeInTheDocument()
+    expect(mockedInterviews.listMyAssignedInterviews).not.toHaveBeenCalled()
+
+    fireEvent.click(createCompanyButton)
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: 'Quản lý công ty' }),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('shows no-company empty state with invitations button when recruiter has pending invitations', async () => {
+    setUser('recruiter')
+    const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
+    const mockedInterviews = vi.mocked(await import('@/api/interviews'))
+    mockedWorkspaces.getWorkspaces.mockResolvedValue([])
+    mockedWorkspaces.getMyInvitations.mockResolvedValue([
+      {
+        id: 'inv-1',
+        company_id: 'company-1',
+        company_name: 'Acme Corp',
+        company_slug: 'acme-corp',
+        role: 'recruiter',
+        status: 'pending',
+        expires_at: '2026-12-31T00:00:00Z',
+        created_at: '2026-01-01T00:00:00Z',
+        can_accept: true,
+        can_decline: true,
+      },
+    ])
+
+    renderAt('/interviewer/interviews')
+
+    await waitFor(() => {
+      expect(screen.getByText('Chưa có công ty làm việc')).toBeInTheDocument()
+      expect(
+        screen.getByText(
+          'Lịch phỏng vấn chỉ hiển thị khi bạn tham gia hoặc tạo một công ty. Bạn có lời mời tham gia công ty đang chờ phản hồi.',
+        ),
+      ).toBeInTheDocument()
+    })
+    const viewInvitationsBtn = screen.getByRole('button', {
+      name: 'Xem lời mời tham gia công ty',
+    })
+    expect(viewInvitationsBtn).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Tạo công ty' }),
+    ).toBeInTheDocument()
+    expect(mockedInterviews.listMyAssignedInterviews).not.toHaveBeenCalled()
+
+    fireEvent.click(viewInvitationsBtn)
+    await waitFor(() => {
+      expect(
+        screen.getByText('Lời mời tham gia công ty'),
+      ).toBeInTheDocument()
+    })
+  })
+
+  it('preserves loading behavior and does not prematurely show empty state or redirect while workspace context is loading', async () => {
+    setUser('recruiter')
+    const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
+    let resolveWorkspaces!: (value: unknown) => void
+    const pendingWorkspaces = new Promise((resolve) => {
+      resolveWorkspaces = resolve
+    })
+    mockedWorkspaces.getWorkspaces.mockReturnValue(pendingWorkspaces as never)
+    mockedWorkspaces.getMyInvitations.mockResolvedValue([])
+
+    renderAt('/interviewer/interviews')
+
+    // While loading, should not show empty state or redirect to home
+    expect(screen.queryByText('Chưa có công ty làm việc')).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('heading', { name: /Tìm đúng công việc/ }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('heading', { name: 'Lịch phỏng vấn của tôi' }),
+    ).not.toBeInTheDocument()
+
+    // Resolve workspace fetch
+    resolveWorkspaces([])
+    await waitFor(() => {
+      expect(screen.getByText('Chưa có công ty làm việc')).toBeInTheDocument()
+    })
+  })
+
+  it('preserves existing redirect to home for recruiter without active workspace on routes without onboarding prop', async () => {
     setUser('recruiter')
     const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
     mockedWorkspaces.getWorkspaces.mockResolvedValue([])
 
-    renderAt('/interviewer/interviews')
-
+    // /interviewer/profile without workspace redirects to /
+    renderAt('/interviewer/profile')
     await waitFor(() => {
       expect(
         screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
       ).toBeInTheDocument()
     })
-    expect(
-      screen.queryByRole('heading', { name: 'Lịch phỏng vấn của tôi' }),
-    ).not.toBeInTheDocument()
+
+    // /recruiter/billing without workspace redirects to /
+    renderAt('/recruiter/billing')
+    await waitFor(() => {
+      expect(
+        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
+      ).toBeInTheDocument()
+    })
   })
 })
 

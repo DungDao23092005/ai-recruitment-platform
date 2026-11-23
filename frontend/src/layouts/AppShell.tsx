@@ -114,8 +114,9 @@ function useAppNav(
   }
   if (role === 'recruiter') {
     const isCompanyAdmin = workspaceRole === 'admin'
+    const canManageCompany = isCompanyAdmin || !workspaceRole
     const recruitmentItems: NavItem[] = [
-      ...(isCompanyAdmin
+      ...(canManageCompany
         ? [{ to: '/recruiter/company', label: 'Công ty', icon: Building }]
         : []),
       { to: '/recruiter/jobs', label: 'Tin tuyển dụng', icon: Briefcase, end: true },
