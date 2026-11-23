@@ -94,12 +94,24 @@ export function JobForm({
       job?.workplace_type ?? initialValues?.workplace_type ?? 'on_site',
     location: job?.location ?? initialValues?.location ?? '',
     status: initialValues?.status ?? job?.status ?? 'draft',
-    required_skills: initialValues?.required_skills ?? job?.required_skills?.join(', ') ?? '',
-    preferred_skills: initialValues?.preferred_skills ?? job?.preferred_skills?.join(', ') ?? '',
-    minimum_years_experience: initialValues?.minimum_years_experience ?? job?.minimum_years_experience?.toString() ?? '',
-    education_level: initialValues?.education_level ?? job?.education_level ?? '',
-    duration_days: initialValues?.duration_days ?? job?.expiration_duration_days ?? 30,
+    required_skills:
+      initialValues?.required_skills ??
+      (job?.required_skills?.length
+        ? job.required_skills.join(', ')
+        : job?.skills?.join(', ') ?? ''),
+    preferred_skills:
+      initialValues?.preferred_skills ??
+      (job?.preferred_skills?.join(', ') ?? ''),
+    minimum_years_experience:
+      initialValues?.minimum_years_experience ??
+      (job?.minimum_years_experience != null
+        ? String(job.minimum_years_experience)
+        : ''),
+    education_level:
+      initialValues?.education_level ?? (job?.education_level ?? ''),
+    duration_days: initialValues?.duration_days ?? 30,
   })
+  const [selectedExtensionDays, setSelectedExtensionDays] = useState<number | null>(null)
   const [errors, setErrors] = useState<FormErrors>({})
   const [apiError, setApiError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
@@ -137,8 +149,8 @@ export function JobForm({
           minimum_years_experience: minimumYearsExperience,
           education_level: educationLevel,
         }
-        if (job.status === 'published' && values.duration_days) {
-          updatePayload.duration_days = values.duration_days
+        if (job.status === 'published' && selectedExtensionDays != null) {
+          updatePayload.duration_days = selectedExtensionDays
         }
         const updated = await apiClient.patch<Job, Job>(
           `/jobs/mine/${job.id}`,
@@ -328,28 +340,98 @@ export function JobForm({
               Mặc định 30 ngày. Thời gian đăng tối đa 90 ngày.
             </p>
           </div>
-        ) : job?.status === 'published' ? (
-          <div className="rounded-md border p-3 space-y-2">
-            <p className="text-sm font-medium">Gia hạn thời gian tuyển dụng</p>
-            {job.expires_at ? (
-              <p className="text-xs text-muted-foreground">
-                Hạn hiện tại: {new Date(job.expires_at).toLocaleDateString('vi-VN')}
-              </p>
-            ) : null}
-            <div className="flex flex-wrap items-center gap-2">
-              {[14, 30].map((days) => (
-                <Button
-                  key={days}
-                  type="button"
-                  variant={values.duration_days === days ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => updateField('duration_days', days)}
-                >
-                  +{days} ngày
-                </Button>
-              ))}
-            </div>
-          </div>
+        ) : job && (job.status === 'published' || job.status === 'expired') ? (
+          (() => {
+            const isJobExpired =
+              job.status === 'expired' ||
+              Boolean(job.expires_at && new Date(job.expires_at) <= new Date())
+
+            if (isJobExpired) {
+              return (
+                <div className="rounded-md border p-3 space-y-2">
+                  <p className="text-sm font-medium">Gia hạn thời gian tuyển dụng</p>
+                  <p className="text-xs font-medium text-destructive">
+                    Tin tuyển dụng này đã hết hạn, không thể gia hạn.
+                  </p>
+                </div>
+              )
+            }
+
+            const basePubDate = job.published_at
+              ? new Date(job.published_at)
+              : job.created_at
+                ? new Date(job.created_at)
+                : new Date()
+            const maxExpiryDate = new Date(
+              basePubDate.getTime() + 90 * 24 * 60 * 60 * 1000,
+            )
+            const currentExpiryDate = job.expires_at
+              ? new Date(job.expires_at)
+              : new Date()
+
+            const getResultingExpiry = (days: number) => {
+              return new Date(
+                currentExpiryDate.getTime() + days * 24 * 60 * 60 * 1000,
+              )
+            }
+
+            const canExtend14 = getResultingExpiry(14) <= maxExpiryDate
+            const canExtend30 = getResultingExpiry(30) <= maxExpiryDate
+
+            return (
+              <div className="rounded-md border p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">
+                    Gia hạn thời gian tuyển dụng
+                  </p>
+                  {job.expires_at ? (
+                    <span className="text-xs text-muted-foreground">
+                      Hạn hiện tại:{' '}
+                      {new Date(job.expires_at).toLocaleDateString('vi-VN')}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {[14, 30].map((days) => {
+                    const canExtend = days === 14 ? canExtend14 : canExtend30
+                    const isSelected = selectedExtensionDays === days
+                    return (
+                      <Button
+                        key={days}
+                        type="button"
+                        variant={isSelected ? 'default' : 'outline'}
+                        size="sm"
+                        disabled={!canExtend}
+                        onClick={() =>
+                          setSelectedExtensionDays(isSelected ? null : days)
+                        }
+                        title={
+                          !canExtend
+                            ? 'Vượt quá giới hạn tối đa 90 ngày'
+                            : undefined
+                        }
+                      >
+                        +{days} ngày
+                      </Button>
+                    )
+                  })}
+                </div>
+                {selectedExtensionDays != null ? (
+                  <p className="text-xs font-medium text-primary">
+                    Hạn mới dự kiến:{' '}
+                    {getResultingExpiry(selectedExtensionDays).toLocaleDateString(
+                      'vi-VN',
+                    )}
+                  </p>
+                ) : null}
+                {(!canExtend14 || !canExtend30) && (
+                  <p className="text-xs text-muted-foreground">
+                    Thời hạn đăng tối đa là 90 ngày kể từ ngày đăng tin lần đầu.
+                  </p>
+                )}
+              </div>
+            )
+          })()
         ) : null}
       </div>
 

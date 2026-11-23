@@ -49,6 +49,30 @@ function formatPostedDate(dateString: string): string {
   })
 }
 
+function formatExpiryInfo(expiresAtString?: string | null): {
+  deadlineText: string
+  remainingText: string | null
+} {
+  if (!expiresAtString) {
+    return { deadlineText: '', remainingText: null }
+  }
+  const expDate = new Date(expiresAtString)
+  if (Number.isNaN(expDate.getTime())) {
+    return { deadlineText: '', remainingText: null }
+  }
+  const deadlineText = `Hạn nộp: ${expDate.toLocaleDateString('vi-VN')}`
+  const now = new Date()
+  const diffMs = expDate.getTime() - now.getTime()
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
+  if (diffDays <= 0) {
+    return { deadlineText, remainingText: null }
+  }
+  if (diffDays === 1) {
+    return { deadlineText, remainingText: 'Còn 1 ngày (hôm nay)' }
+  }
+  return { deadlineText, remainingText: `Còn ${diffDays} ngày` }
+}
+
 function companyMonogram(companyName: string): string {
   const trimmed = companyName.trim()
   if (!trimmed) {
@@ -325,6 +349,7 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
     job.status === 'expired' ||
     Boolean(job.expires_at && new Date(job.expires_at) <= new Date())
   const isJobOpen = job.status === 'published' && !isExpired
+  const expiryInfo = formatExpiryInfo(job.expires_at)
   const isCandidate = currentUser?.role === 'candidate'
   const isResumeLoading = isCandidate && resumeState.kind === 'loading'
   const isResumeMissing = isCandidate && resumeState.kind === 'missing'
@@ -425,8 +450,13 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
                   <div>
                     <p className="text-xs text-muted-foreground">Hạn nộp hồ sơ</p>
                     <p className="text-sm font-medium">
-                      {new Date(job.expires_at).toLocaleDateString('vi-VN')}
+                      {expiryInfo.deadlineText}
                     </p>
+                    {expiryInfo.remainingText && !isExpired ? (
+                      <p className="text-xs text-primary font-medium">
+                        {expiryInfo.remainingText}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
               ) : null}

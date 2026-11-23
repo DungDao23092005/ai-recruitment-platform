@@ -32,6 +32,10 @@ from app.services.subscription_realtime import (
     ADMIN_SUBSCRIPTIONS_CHANNEL,
     ADMIN_SUBSCRIPTION_CHANGED_EVENT,
 )
+from app.services.job_realtime import (
+    JOBS_PUBLIC_CHANNEL,
+    JOB_LISTING_UPDATED_EVENT,
+)
 from app.services.pipeline_realtime import (
     CANDIDATE_PIPELINE_UPDATED_EVENT,
     PIPELINE_UPDATED_EVENT,
@@ -251,7 +255,7 @@ async def notification_stream(
     user_id_str = str(user_id)
     personal_channel = f"notifications:user:{user_id_str}"
     company_channel = None
-    channels = [personal_channel]
+    channels = [personal_channel, JOBS_PUBLIC_CHANNEL]
     if is_admin:
         channels.append(ADMIN_SUBSCRIPTIONS_CHANNEL)
         channels.append(ADMIN_EMAILS_CHANNEL)
@@ -293,6 +297,8 @@ async def notification_stream(
                                 event_name = ADMIN_SUBSCRIPTION_CHANGED_EVENT
                             elif channel == ADMIN_EMAILS_CHANNEL:
                                 event_name = EMAIL_OUTBOX_UPDATED_EVENT
+                            elif channel == JOBS_PUBLIC_CHANNEL:
+                                event_name = JOB_LISTING_UPDATED_EVENT
                             elif (
                                 company_channel is not None
                                 and channel == company_channel

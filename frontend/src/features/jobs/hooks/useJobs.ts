@@ -1,6 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { getJobs } from '@/api/jobs'
+import {
+  JOB_LISTING_UPDATED_DOM_EVENT,
+  STREAM_CONNECTED_DOM_EVENT,
+} from '@/hooks/useNotificationStream'
 import type { Job, JobType, WorkplaceType } from '@/types/job'
 
 export interface JobFiltersState {
@@ -42,10 +46,13 @@ export function useJobs(): UseJobsResult {
   })
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const load = useCallback(async () => {
-    setIsLoading(true)
-    setError(null)
+  const load = useCallback(async (silent = false) => {
+    if (!silent) {
+      setIsLoading(true)
+      setError(null)
+    }
     try {
       const data = await getJobs({
         skip: (page - 1) * PAGE_SIZE,
@@ -65,14 +72,49 @@ export function useJobs(): UseJobsResult {
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Unable to load jobs'
-      setError(message)
+      if (!silent) {
+        setError(message)
+      }
     } finally {
-      setIsLoading(false)
+      if (!silent) {
+        setIsLoading(false)
+      }
     }
   }, [page, filters])
 
   useEffect(() => {
     void load()
+  }, [load])
+
+  useEffect(() => {
+    const handleSilentRefresh = () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current)
+      }
+      debounceTimerRef.current = setTimeout(() => {
+        debounceTimerRef.current = null
+        void load(true)
+      }, 300)
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleSilentRefresh()
+      }
+    }
+
+    window.addEventListener(JOB_LISTING_UPDATED_DOM_EVENT, handleSilentRefresh)
+    window.addEventListener(STREAM_CONNECTED_DOM_EVENT, handleSilentRefresh)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current)
+      }
+      window.removeEventListener(JOB_LISTING_UPDATED_DOM_EVENT, handleSilentRefresh)
+      window.removeEventListener(STREAM_CONNECTED_DOM_EVENT, handleSilentRefresh)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
   }, [load])
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))

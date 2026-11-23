@@ -161,7 +161,15 @@ class TestJobs:
         resp = run_async(client.get(f"{API_V1}/jobs/{job['id']}"))
 
         assert resp.status_code == 200
-        assert resp.json()["id"] == job["id"]
+        body = resp.json()
+        assert body["id"] == job["id"]
+        assert "required_skills" in body
+        assert "preferred_skills" in body
+        assert "minimum_years_experience" in body
+        assert "education_level" in body
+        assert "published_at" in body
+        assert "expires_at" in body
+        assert "expiration_duration_days" in body
 
     def test_published_job_in_list(
         self, client, run_async, recruiter_client, created_company
@@ -420,7 +428,16 @@ class TestMyJobs:
 
         resp_a = run_async(recruiter_a_client.get(f"{API_V1}/jobs/mine"))
         assert resp_a.status_code == 200
-        ids_a = [job["id"] for job in resp_a.json()]
+        items_a = resp_a.json()
+        for item in items_a:
+            assert "required_skills" in item
+            assert "preferred_skills" in item
+            assert "minimum_years_experience" in item
+            assert "education_level" in item
+            assert "published_at" in item
+            assert "expires_at" in item
+            assert "expiration_duration_days" in item
+        ids_a = [job["id"] for job in items_a]
         assert draft_a["id"] in ids_a
         assert published_a["id"] in ids_a
         assert published_b["id"] not in ids_a
@@ -797,7 +814,15 @@ class TestMyJobDetail:
         )
 
         assert resp.status_code == 200
-        assert resp.json()["status"] == "published"
+        data = resp.json()
+        assert data["status"] == "published"
+        assert "required_skills" in data
+        assert "preferred_skills" in data
+        assert "minimum_years_experience" in data
+        assert "education_level" in data
+        assert "published_at" in data
+        assert "expires_at" in data
+        assert "expiration_duration_days" in data
 
     def test_recruiter_b_cannot_access_recruiter_a_job(
         self, recruiter_a_client, recruiter_b_client, run_async

@@ -17,6 +17,7 @@ export const PIPELINE_UPDATED_EVENT = 'pipeline.updated';
 export const CANDIDATE_PIPELINE_UPDATED_EVENT = 'candidate.pipeline.updated';
 export const WORKSPACE_REVOKED_EVENT = 'workspace.revoked';
 export const INVITATION_REVOKED_EVENT = 'invitation.revoked';
+export const JOB_LISTING_UPDATED_EVENT = 'job.listing.updated';
 // DOM events rebroadcast by this hook for interested UI components.
 export const ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT = 'admin:subscription:changed';
 export const ADMIN_EMAIL_OUTBOX_UPDATED_DOM_EVENT = 'admin:email_outbox:updated';
@@ -25,6 +26,7 @@ export const CANDIDATE_PIPELINE_UPDATED_DOM_EVENT = 'candidate:pipeline:updated'
 export const STREAM_CONNECTED_DOM_EVENT = 'stream:connected';
 export const WORKSPACE_REVOKED_DOM_EVENT = 'workspace:revoked';
 export const INVITATION_REVOKED_DOM_EVENT = 'invitation:revoked';
+export const JOB_LISTING_UPDATED_DOM_EVENT = 'job:listing:updated';
 // DOM event rebroadcast when a subscription-related notification reaches the
 // current user (activation, plan change or revocation), so subscription views
 // can silently invalidate their cached state without a manual reload. The
@@ -92,6 +94,14 @@ export interface WorkspaceRevokedDetail {
 export interface InvitationRevokedDetail {
   invitation_id?: string;
   company_id?: string;
+}
+
+export interface JobListingUpdatedDetail {
+  type?: string;
+  action?: string;
+  job_id?: string | null;
+  affected_count?: number;
+  timestamp?: string;
 }
 
 function parsePipelineDetail<T>(raw: string): T | null {
@@ -361,6 +371,17 @@ export function useNotificationStream() {
         window.dispatchEvent(
           new CustomEvent(CANDIDATE_PIPELINE_UPDATED_DOM_EVENT, { detail: data })
         );
+      });
+
+      eventSource.addEventListener(JOB_LISTING_UPDATED_EVENT, (event) => {
+        try {
+          const data = JSON.parse(event.data) as JobListingUpdatedDetail;
+          window.dispatchEvent(
+            new CustomEvent(JOB_LISTING_UPDATED_DOM_EVENT, { detail: data })
+          );
+        } catch (error) {
+          console.warn('Failed to process job listing updated event:', error);
+        }
       });
 
       eventSource.addEventListener(WORKSPACE_REVOKED_EVENT, (event) => {

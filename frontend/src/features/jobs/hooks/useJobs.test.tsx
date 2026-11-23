@@ -100,6 +100,37 @@ describe('useJobs', () => {
     expect(result.current.error).toBe('Network Error')
   })
 
+  it('Test 6 - Silently refetches on job:listing:updated DOM event after 300ms debounce', async () => {
+    const mockJobs1 = [
+      { id: '1', title: 'Job 1', company_id: 'c1', description: 'desc', status: 'published', job_type: 'full_time', workplace_type: 'remote', location: 'VN', created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+    ]
+    const mockJobs2 = [
+      { id: '1', title: 'Job 1', company_id: 'c1', description: 'desc', status: 'published', job_type: 'full_time', workplace_type: 'remote', location: 'VN', created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+      { id: '2', title: 'Job 2', company_id: 'c1', description: 'desc', status: 'published', job_type: 'full_time', workplace_type: 'remote', location: 'VN', created_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+    ]
+    mockGetJobs.mockResolvedValueOnce({ items: mockJobs1, total: 1 } as never)
+    mockGetJobs.mockResolvedValueOnce({ items: mockJobs2, total: 2 } as never)
+
+    const { result } = renderHookWithRouter(() => useJobs())
+
+    await waitFor(() => {
+      expect(result.current.jobs).toHaveLength(1)
+    })
+
+    // Dispatch job:listing:updated event
+    window.dispatchEvent(new CustomEvent('job:listing:updated', { detail: { action: 'published' } }))
+
+    await waitFor(
+      () => {
+        expect(mockGetJobs).toHaveBeenCalledTimes(2)
+        expect(result.current.jobs).toHaveLength(2)
+      },
+      { timeout: 2000 }
+    )
+
+    expect(result.current.isLoading).toBe(false)
+  })
+
   // UI-03 Regression Tests: URL query param handling
   it('reads keyword from URL query param (q) on mount', async () => {
     const mockJobs = [

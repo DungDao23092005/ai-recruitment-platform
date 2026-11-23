@@ -37,8 +37,73 @@ router = APIRouter()
 
 
 def to_job_read(job: Job) -> JobRead:
-    skills_list = [skill.name for skill in job.skills] if job.skills else []
-    company_name = job.company.name if job.company is not None else None
+    req_skills: list[str] = []
+    pref_skills: list[str] = []
+    skills_list: list[str] = []
+
+    if isinstance(job, Job):
+        if "required_skills" in job.__dict__ and job.required_skills:
+            req_skills = [
+                s.name if hasattr(s, "name") else str(s)
+                for s in job.required_skills
+                if s is not None
+            ]
+        if "preferred_skills" in job.__dict__ and job.preferred_skills:
+            pref_skills = [
+                s.name if hasattr(s, "name") else str(s)
+                for s in job.preferred_skills
+                if s is not None
+            ]
+        if "skills" in job.__dict__ and job.skills:
+            skills_list = [
+                s.name if hasattr(s, "name") else str(s)
+                for s in job.skills
+                if s is not None
+            ]
+
+        if not req_skills and not pref_skills and "job_skills" in job.__dict__ and job.job_skills:
+            for js in job.job_skills:
+                skill_obj = js.skill if ("skill" in js.__dict__ and js.skill) else None
+                s_name = skill_obj.name if (skill_obj and hasattr(skill_obj, "name")) else None
+                if s_name:
+                    if js.is_mandatory:
+                        if s_name not in req_skills:
+                            req_skills.append(s_name)
+                    else:
+                        if s_name not in pref_skills:
+                            pref_skills.append(s_name)
+                    if s_name not in skills_list:
+                        skills_list.append(s_name)
+
+        if not skills_list and (req_skills or pref_skills):
+            skills_list = list(dict.fromkeys(req_skills + pref_skills))
+    else:
+        # Fallback for mock or test objects
+        req = getattr(job, "required_skills", None)
+        if req:
+            req_skills = [
+                s.name if hasattr(s, "name") else str(s)
+                for s in req
+                if s is not None
+            ]
+        pref = getattr(job, "preferred_skills", None)
+        if pref:
+            pref_skills = [
+                s.name if hasattr(s, "name") else str(s)
+                for s in pref
+                if s is not None
+            ]
+        sk = getattr(job, "skills", None)
+        if sk:
+            skills_list = [
+                s.name if hasattr(s, "name") else str(s)
+                for s in sk
+                if s is not None
+            ]
+        elif req_skills or pref_skills:
+            skills_list = list(dict.fromkeys(req_skills + pref_skills))
+
+    company_name = job.company.name if (job.company is not None and hasattr(job.company, "name")) else None
     return JobRead(
         id=job.id,
         company_id=job.company_id,
@@ -50,6 +115,13 @@ def to_job_read(job: Job) -> JobRead:
         workplace_type=job.workplace_type,
         location=job.location,
         skills=skills_list,
+        required_skills=req_skills,
+        preferred_skills=pref_skills,
+        minimum_years_experience=job.minimum_years_experience,
+        education_level=job.education_level,
+        published_at=job.published_at,
+        expires_at=job.expires_at,
+        expiration_duration_days=job.expiration_duration_days,
         created_at=job.created_at,
         updated_at=job.updated_at,
     )

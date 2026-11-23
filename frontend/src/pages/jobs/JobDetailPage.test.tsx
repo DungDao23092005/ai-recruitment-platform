@@ -822,5 +822,35 @@ describe('JobDetailPage', () => {
       expect(applyBtn).toBeDisabled()
       expect(screen.getByText('Hạn nộp hồ sơ')).toBeInTheDocument()
     })
+
+    it('displays deadline and remaining days for active published job', async () => {
+      const futureDate = new Date()
+      futureDate.setDate(futureDate.getDate() + 15)
+      mockedGetJobById.mockResolvedValue({
+        ...mockJob,
+        expires_at: futureDate.toISOString(),
+      })
+      mockedGetMyApplicationForJob.mockResolvedValue(null)
+      mockedGetMyResume.mockResolvedValue(mockResume)
+
+      renderJobDetailPage(candidateUser)
+
+      expect(await screen.findByText(/Hạn nộp:/i)).toBeInTheDocument()
+      expect(screen.getByText(/Còn 15 ngày/i)).toBeInTheDocument()
+    })
+
+    it('displays same-day remaining text when 1 day remaining', async () => {
+      const tomorrowDate = new Date(Date.now() + 86400 * 1000)
+      mockedGetJobById.mockResolvedValue({
+        ...mockJob,
+        expires_at: tomorrowDate.toISOString(),
+      })
+      mockedGetMyApplicationForJob.mockResolvedValue(null)
+      mockedGetMyResume.mockResolvedValue(mockResume)
+
+      renderJobDetailPage(candidateUser)
+
+      expect(await screen.findByText(/Còn 1 ngày \(hôm nay\)/i)).toBeInTheDocument()
+    })
   })
 })

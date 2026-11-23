@@ -24,6 +24,10 @@ from app.core.config import settings
 from app.database.session import async_session_factory
 from app.domain.enums import JobStatus
 from app.models import Job
+from app.services.job_realtime import (
+    ACTION_EXPIRED,
+    schedule_job_listing_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +234,11 @@ class JobExpirationWorker:
                         )
                     )
                     await session.execute(update_stmt)
+                    schedule_job_listing_event(
+                        session,
+                        action=ACTION_EXPIRED,
+                        affected_count=len(expired_ids),
+                    )
                     await session.commit()
                     total_materialized += len(expired_ids)
                     logger.info(

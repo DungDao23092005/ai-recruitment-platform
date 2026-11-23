@@ -276,4 +276,120 @@ describe('JobForm', () => {
       )
     })
   })
+
+  it('hydrates all 4 fields including 0 minimum experience', () => {
+    const jobWithAllFields: Job = {
+      ...mockJob,
+      required_skills: ['Go', 'Kubernetes'],
+      preferred_skills: ['gRPC', 'Terraform'],
+      minimum_years_experience: 0,
+      education_level: 'Bachelor',
+    }
+
+    render(<JobForm companyId="company-1" job={jobWithAllFields} />)
+
+    expect(screen.getByLabelText('Kỹ năng bắt buộc')).toHaveValue('Go, Kubernetes')
+    expect(screen.getByLabelText('Kỹ năng ưu tiên')).toHaveValue('gRPC, Terraform')
+    expect(screen.getByLabelText('Kinh nghiệm tối thiểu (năm)')).toHaveValue(0)
+    expect(screen.getByLabelText('Yêu cầu học vấn')).toHaveValue('Bachelor')
+  })
+
+  it('omits duration_days on normal edit of published job without extension selection', async () => {
+    const publishedJob: Job = {
+      ...mockJob,
+      status: 'published',
+      published_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 30 * 86400 * 1000).toISOString(),
+    }
+    const mockedPatch = vi.mocked(apiClient.patch)
+    mockedPatch.mockResolvedValue(publishedJob as never)
+
+    render(<JobForm companyId="company-1" job={publishedJob} />)
+
+    fireEvent.change(screen.getByLabelText('Tiêu đề công việc'), {
+      target: { value: 'Updated Title' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /Lưu thay đổi/i }))
+
+    await waitFor(() => {
+      expect(mockedPatch).toHaveBeenCalledWith(
+        '/jobs/mine/job-1',
+        expect.not.objectContaining({
+          duration_days: expect.anything(),
+        })
+      )
+    })
+  })
+
+  it('includes duration_days and previews new expiry when extension is selected', async () => {
+    const publishedJob: Job = {
+      ...mockJob,
+      status: 'published',
+      published_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 10 * 86400 * 1000).toISOString(),
+    }
+    const mockedPatch = vi.mocked(apiClient.patch)
+    mockedPatch.mockResolvedValue(publishedJob as never)
+
+    render(<JobForm companyId="company-1" job={publishedJob} />)
+
+    const btn14 = screen.getByRole('button', { name: '+14 ngày' })
+    fireEvent.click(btn14)
+
+    expect(screen.getByText(/Hạn mới dự kiến:/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Lưu thay đổi/i }))
+
+    await waitFor(() => {
+      expect(mockedPatch).toHaveBeenCalledWith(
+        '/jobs/mine/job-1',
+        expect.objectContaining({
+          duration_days: 14,
+        })
+      )
+    })
+  })
+
+  it('disables extension button exceeding 90-day lifetime cap', () => {
+    // Job published 80 days ago with expiry in 5 days (total 85 days)
+    // +14 days would exceed 90 days lifetime
+    const now = Date.now()
+    const pubDate = new Date(now - 80 * 86400 * 1000)
+    const expDate = new Date(now + 5 * 86400 * 1000)
+
+    const nearCapJob: Job = {
+      ...mockJob,
+      status: 'published',
+      published_at: pubDate.toISOString(),
+      expires_at: expDate.toISOString(),
+    }
+
+    render(<JobForm companyId="company-1" job={nearCapJob} />)
+
+    const btn14 = screen.getByRole('button', { name: '+14 ngày' })
+    const btn30 = screen.getByRole('button', { name: '+30 ngày' })
+
+    expect(btn14).toBeDisabled()
+    expect(btn30).toBeDisabled()
+    expect(
+      screen.getByText(/Thời hạn đăng tối đa là 90 ngày kể từ ngày đăng tin lần đầu/i)
+    ).toBeInTheDocument()
+  })
+
+  it('shows expired notice and no extension buttons when published job is expired', () => {
+    const expiredJob: Job = {
+      ...mockJob,
+      status: 'expired',
+      expires_at: new Date(Date.now() - 86400 * 1000).toISOString(),
+    }
+
+    render(<JobForm companyId="company-1" job={expiredJob} />)
+
+    expect(
+      screen.getByText('Tin tuyển dụng này đã hết hạn, không thể gia hạn.')
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '+14 ngày' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '+30 ngày' })).not.toBeInTheDocument()
+  })
 })

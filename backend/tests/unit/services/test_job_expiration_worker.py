@@ -782,3 +782,65 @@ async def test_transient_service_error_aborts_without_point_fallback():
     # Both jobs remain unsynced
     assert db.jobs[job1.id].is_qdrant_synced is False
     assert db.jobs[job2.id].is_qdrant_synced is False
+
+
+@pytest.mark.asyncio
+async def test_job_expiration_schedules_coalesced_realtime_event():
+    """Worker schedules a coalesced realtime event with affected_count after materializing expired jobs."""
+    factory, session = make_mock_session_factory()
+    vector_repo = MagicMock()
+    vector_repo.set_payload = AsyncMock()
+
+    job_ids = [uuid.uuid4(), uuid.uuid4()]
+    mock_select_result = MagicMock()
+    mock_select_result.scalars.return_value.all.return_value = job_ids
+    mock_sync_result = MagicMock()
+    mock_sync_result.scalars.return_value.all.return_value = []
+
+    session.execute.side_effect = [mock_select_result, None, mock_sync_result]
+
+    worker = JobExpirationWorker(
+        session_factory=factory,
+        vector_repository=vector_repo,
+        batch_size=50,
+    )
+
+    with patch(
+        "app.services.job_expiration_worker.schedule_job_listing_event"
+    ) as mock_schedule:
+        result = await worker.run_once()
+
+        assert result["expired"] == 2
+        mock_schedule.assert_called_once_with(
+            session,
+            action="expired",
+            affected_count=2,
+        )
+
+
+@pytest.mark.asyncio
+async def test_job_expiration_skips_realtime_event_when_zero_expired():
+    """Worker does not schedule a realtime event if no jobs were materialized as expired."""
+    factory, session = make_mock_session_factory()
+    vector_repo = MagicMock()
+    vector_repo.set_payload = AsyncMock()
+
+    mock_select_result = MagicMock()
+    mock_select_result.scalars.return_value.all.return_value = []
+    mock_sync_result = MagicMock()
+    mock_sync_result.scalars.return_value.all.return_value = []
+
+    session.execute.side_effect = [mock_select_result, mock_sync_result]
+
+    worker = JobExpirationWorker(
+        session_factory=factory,
+        vector_repository=vector_repo,
+    )
+
+    with patch(
+        "app.services.job_expiration_worker.schedule_job_listing_event"
+    ) as mock_schedule:
+        result = await worker.run_once()
+
+        assert result["expired"] == 0
+        mock_schedule.assert_not_called()

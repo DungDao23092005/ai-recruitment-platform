@@ -1183,5 +1183,36 @@ describe('useNotificationStream', () => {
       unmount();
       expect(es.readyState).toBe(MockEventSource.CLOSED);
     });
+
+    it('rebroadcasts job.listing.updated as job:listing:updated DOM event', async () => {
+      setupUnreadCountMock(0);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const jobListingListener = vi.fn();
+      window.addEventListener('job:listing:updated', jobListingListener);
+
+      const payload = {
+        type: 'job.listing.updated',
+        action: 'published',
+        job_id: 'job-123',
+        affected_count: 1,
+        timestamp: '2026-03-30T10:00:00Z',
+      };
+
+      act(() => {
+        es.emitEvent('job.listing.updated', payload);
+      });
+
+      expect(jobListingListener).toHaveBeenCalledTimes(1);
+      const customEvent = jobListingListener.mock.calls[0][0] as CustomEvent;
+      expect(customEvent.detail).toEqual(payload);
+
+      window.removeEventListener('job:listing:updated', jobListingListener);
+    });
   });
 });

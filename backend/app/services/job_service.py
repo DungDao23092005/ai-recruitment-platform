@@ -22,6 +22,12 @@ from app.domain.enums import (
     WorkplaceType,
 )
 from app.domain.models.base import utc_now
+from app.services.job_realtime import (
+    ACTION_CLOSED,
+    ACTION_DELETED,
+    ACTION_PUBLISHED,
+    schedule_job_listing_event,
+)
 from app.models import (
     Company,
     CompanyMembership,
@@ -305,10 +311,19 @@ class JobService:
                 job, required_skills, data.preferred_skills
             )
             await self._reindex_job(job)
+            if data.status == JobStatus.PUBLISHED:
+                schedule_job_listing_event(
+                    self.session,
+                    action=ACTION_PUBLISHED,
+                    job_id=job.id,
+                    affected_count=1,
+                )
             await self.session.commit()
             await self.session.refresh(job)
             await job.awaitable_attrs.company
             await job.awaitable_attrs.skills
+            await job.awaitable_attrs.required_skills
+            await job.awaitable_attrs.preferred_skills
         except Exception:
             await self.session.rollback()
             raise
@@ -431,6 +446,20 @@ class JobService:
                 job.expires_at = now + timedelta(days=duration)
 
             job.status = new_status
+            if new_status == JobStatus.PUBLISHED:
+                schedule_job_listing_event(
+                    self.session,
+                    action=ACTION_PUBLISHED,
+                    job_id=job.id,
+                    affected_count=1,
+                )
+            elif new_status == JobStatus.CLOSED:
+                schedule_job_listing_event(
+                    self.session,
+                    action=ACTION_CLOSED,
+                    job_id=job.id,
+                    affected_count=1,
+                )
             await self._reindex_job(job)
             await self._commit_and_refresh(job)
         except Exception:
@@ -642,6 +671,12 @@ class JobService:
                     job.expires_at = now + timedelta(days=duration)
                     job.expiration_duration_days = duration
                 job.status = JobStatus.PUBLISHED
+                schedule_job_listing_event(
+                    self.session,
+                    action=ACTION_PUBLISHED,
+                    job_id=job.id,
+                    affected_count=1,
+                )
 
             if skills_changed:
                 required_skills = data.required_skills
@@ -670,9 +705,17 @@ class JobService:
             job_id,
             company_id=workspace.company_id if workspace else None,
         )
+        was_published = (job.status == JobStatus.PUBLISHED)
         job.is_deleted = True
         try:
             await self.vector_repository.delete_vector("jobs", job.id)
+            if was_published:
+                schedule_job_listing_event(
+                    self.session,
+                    action=ACTION_DELETED,
+                    job_id=job.id,
+                    affected_count=1,
+                )
             await self._commit_and_refresh(job)
         except Exception:
             await self.session.rollback()
@@ -835,6 +878,14 @@ class JobService:
         try:
             await self.session.commit()
             await self.session.refresh(entity)
+            if isinstance(entity, Job):
+                try:
+                    await entity.awaitable_attrs.company
+                    await entity.awaitable_attrs.skills
+                    await entity.awaitable_attrs.required_skills
+                    await entity.awaitable_attrs.preferred_skills
+                except Exception:
+                    pass
         except Exception:
             await self.session.rollback()
             raise

@@ -48,7 +48,12 @@ class JobRepository(BaseRepository[Job]):
         # Build the base query with filters
         base_stmt = (
             select(Job)
-            .options(joinedload(Job.company), selectinload(Job.skills))
+            .options(
+                joinedload(Job.company),
+                selectinload(Job.skills),
+                selectinload(Job.required_skills),
+                selectinload(Job.preferred_skills),
+            )
             .where(
                 Job.status == JobStatus.PUBLISHED,
                 Job.is_deleted == False,  # noqa: E712
@@ -100,7 +105,12 @@ class JobRepository(BaseRepository[Job]):
     ) -> list[Job]:
         stmt = (
             select(Job)
-            .options(joinedload(Job.company), selectinload(Job.skills))
+            .options(
+                joinedload(Job.company),
+                selectinload(Job.skills),
+                selectinload(Job.required_skills),
+                selectinload(Job.preferred_skills),
+            )
             .where(
                 Job.company_id == company_id,
                 Job.is_deleted == False,  # noqa: E712
@@ -115,7 +125,12 @@ class JobRepository(BaseRepository[Job]):
     async def list_all_jobs(self, skip: int = 0, limit: int = 10) -> list[Job]:
         stmt = (
             select(Job)
-            .options(joinedload(Job.company), selectinload(Job.skills))
+            .options(
+                joinedload(Job.company),
+                selectinload(Job.skills),
+                selectinload(Job.required_skills),
+                selectinload(Job.preferred_skills),
+            )
             .where(Job.is_deleted == False)  # noqa: E712
             .order_by(Job.created_at.desc())
             .offset(skip)
