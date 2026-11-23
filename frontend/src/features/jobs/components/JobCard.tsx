@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { MapPin, ArrowRight, CalendarDays } from 'lucide-react'
+import { MapPin, ArrowRight, CalendarDays, Clock } from 'lucide-react'
 import type { Job } from '@/types/job'
 import { JOB_TYPE_LABELS, WORKPLACE_TYPE_LABELS } from '@/types/job'
 import {
@@ -94,6 +94,12 @@ export function JobCard({ job, detailPath = '/jobs' }: JobCardProps) {
             <span className="flex items-center gap-1 text-xs">
               <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
               Đăng {postedDate}
+            </span>
+          ) : null}
+          {job.expires_at ? (
+            <span className="flex items-center gap-1 text-xs">
+              <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+              Hạn nộp: {new Date(job.expires_at).toLocaleDateString('vi-VN')}
             </span>
           ) : null}
         </div>

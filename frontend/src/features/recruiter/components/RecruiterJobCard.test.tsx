@@ -10,11 +10,13 @@ vi.mock('@/api/client', () => ({
   default: {
     patch: vi.fn(),
     delete: vi.fn(),
+    post: vi.fn(),
   },
 }))
 
 const mockedPatch = vi.mocked(apiClient.patch)
 const mockedDelete = vi.mocked(apiClient.delete)
+const mockedPost = vi.mocked(apiClient.post)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -216,5 +218,47 @@ describe('RecruiterJobCard', () => {
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(mockedDelete).not.toHaveBeenCalled()
+  })
+
+  it('displays warning badge when published job expires in <= 5 days', () => {
+    const nearExpiry = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString()
+    render(
+      <MemoryRouter>
+        <RecruiterJobCard job={{ ...mockJob, status: 'published', expires_at: nearExpiry }} />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText(/Sắp hết hạn/)).toBeInTheDocument()
+  })
+
+  it('renders expired state with clone button and no reopen button', async () => {
+    mockedPost.mockResolvedValue(mockJob as never)
+    const onMutated = vi.fn()
+
+    render(
+      <MemoryRouter>
+        <RecruiterJobCard job={{ ...mockJob, status: 'expired' }} onMutated={onMutated} />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('Hết hạn')).toBeInTheDocument()
+    expect(screen.getAllByText('Đã hết hạn').length).toBeGreaterThanOrEqual(1)
+    expect(screen.queryByRole('button', { name: /Mở lại/i })).not.toBeInTheDocument()
+
+    const cloneBtn = screen.getByRole('button', { name: /Sao chép tin/i })
+    expect(cloneBtn).toBeInTheDocument()
+
+    fireEvent.click(cloneBtn)
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/jobs',
+        expect.objectContaining({
+          title: 'Backend Engineer',
+          status: 'draft',
+        })
+      )
+      expect(onMutated).toHaveBeenCalled()
+    })
   })
 })

@@ -2016,3 +2016,148 @@ def test_p70_legacy_job_creation_derives_company_id_from_recruiter_profile(
             await client.aclose()
 
     run_async(_run())
+
+
+def test_job_creation_with_duration_days_sets_expiry_on_publish(
+    recruiter_client, run_async, created_company
+):
+    resp = run_async(
+        recruiter_client.post(
+            f"{API_V1}/jobs",
+            json={
+                "company_id": created_company["id"],
+                "title": "Cloud Architect",
+                "description": "Design cloud systems",
+                "job_type": "full_time",
+                "workplace_type": "remote",
+                "status": "published",
+                "duration_days": 14,
+            },
+        )
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["status"] == "published"
+
+    async def _check_job():
+        async with async_session_factory() as session:
+            stmt = select(Job).where(Job.id == uuid.UUID(data["id"]))
+            res = await session.execute(stmt)
+            job = res.scalar_one()
+            assert job.published_at is not None
+            assert job.expires_at is not None
+            assert job.expiration_duration_days == 14
+
+    run_async(_check_job())
+
+
+def test_candidate_cannot_apply_to_expired_job(
+    recruiter_client, candidate_client, run_async, created_company
+):
+    # 1. Create candidate profile
+    profile = run_async(
+        candidate_client.post(
+            f"{API_V1}/users/me/candidate-profile",
+            json={"full_name": "Applicant Candidate", "title": "Software Engineer"},
+        )
+    )
+    assert profile.status_code == 201, profile.text
+
+    # 2. Create a job as recruiter
+    resp = run_async(
+        recruiter_client.post(
+            f"{API_V1}/jobs",
+            json={
+                "company_id": created_company["id"],
+                "title": "Expired Job",
+                "description": "Job that is expired",
+                "job_type": "full_time",
+                "workplace_type": "remote",
+                "status": "published",
+            },
+        )
+    )
+    assert resp.status_code == 201
+    job_id = resp.json()["id"]
+
+    # 2. Set expires_at in the past via database
+    from datetime import datetime, timedelta, timezone
+    past_date = datetime.now(timezone.utc) - timedelta(days=1)
+
+    async def _expire_job():
+        async with async_session_factory() as session:
+            stmt = (
+                select(Job).where(Job.id == uuid.UUID(job_id))
+            )
+            res = await session.execute(stmt)
+            job = res.scalar_one()
+            job.expires_at = past_date
+            await session.commit()
+
+    run_async(_expire_job())
+
+    # 3. Candidate applies with resume
+    apply_resp = apply_job_with_resume(candidate_client, run_async, job_id)
+    assert apply_resp.status_code == 400
+    assert "hết hạn" in apply_resp.json()["detail"]
+
+
+def test_public_jobs_list_excludes_expired_jobs(
+    recruiter_client, candidate_client, run_async, created_company
+):
+    # Create active job and expired job
+    resp1 = run_async(
+        recruiter_client.post(
+            f"{API_V1}/jobs",
+            json={
+                "company_id": created_company["id"],
+                "title": "Active Python Job",
+                "description": "Active job desc",
+                "job_type": "full_time",
+                "workplace_type": "remote",
+                "status": "published",
+                "duration_days": 30,
+            },
+        )
+    )
+    assert resp1.status_code == 201
+    active_job_id = resp1.json()["id"]
+
+    resp2 = run_async(
+        recruiter_client.post(
+            f"{API_V1}/jobs",
+            json={
+                "company_id": created_company["id"],
+                "title": "Expired Python Job",
+                "description": "Expired job desc",
+                "job_type": "full_time",
+                "workplace_type": "remote",
+                "status": "published",
+                "duration_days": 30,
+            },
+        )
+    )
+    assert resp2.status_code == 201
+    expired_job_id = resp2.json()["id"]
+
+    # Set resp2 expires_at in the past
+    from datetime import datetime, timedelta, timezone
+    past_date = datetime.now(timezone.utc) - timedelta(days=2)
+
+    async def _expire_second_job():
+        async with async_session_factory() as session:
+            stmt = select(Job).where(Job.id == uuid.UUID(expired_job_id))
+            res = await session.execute(stmt)
+            job = res.scalar_one()
+            job.expires_at = past_date
+            await session.commit()
+
+    run_async(_expire_second_job())
+
+    # Candidate lists jobs
+    list_resp = run_async(candidate_client.get(f"{API_V1}/jobs"))
+    assert list_resp.status_code == 200
+    jobs = list_resp.json()["items"] if isinstance(list_resp.json(), dict) and "items" in list_resp.json() else list_resp.json()
+    job_ids = [j["id"] for j in jobs]
+    assert active_job_id in job_ids
+    assert expired_job_id not in job_ids

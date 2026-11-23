@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.domain.enums import JobStatus, JobType, WorkplaceType
+from app.domain.models.base import utc_now
 from app.models import Company, CompanyMembership, Job
 from app.repositories.base import BaseRepository
 from app.core.workspace_context import get_workspace_company_id
@@ -16,12 +17,15 @@ from app.repositories.company_membership_repository import (
 
 class JobRepository(BaseRepository[Job]):
     async def list_active_jobs(self, skip: int = 0, limit: int = 10) -> list[Job]:
+        now = utc_now()
         stmt = (
             select(Job)
             .options(joinedload(Job.company))
             .where(
                 Job.status == JobStatus.PUBLISHED,
                 Job.is_deleted == False,  # noqa: E712
+                Job.expires_at.is_not(None),
+                Job.expires_at > now,
             )
             .order_by(Job.created_at.desc())
             .offset(skip)
@@ -40,6 +44,7 @@ class JobRepository(BaseRepository[Job]):
         location: str | None = None,
     ) -> tuple[list[Job], int]:
         """Return a page of published/active jobs with filters and total count."""
+        now = utc_now()
         # Build the base query with filters
         base_stmt = (
             select(Job)
@@ -47,11 +52,15 @@ class JobRepository(BaseRepository[Job]):
             .where(
                 Job.status == JobStatus.PUBLISHED,
                 Job.is_deleted == False,  # noqa: E712
+                Job.expires_at.is_not(None),
+                Job.expires_at > now,
             )
         )
         count_stmt = select(func.count(Job.id)).where(
             Job.status == JobStatus.PUBLISHED,
             Job.is_deleted == False,  # noqa: E712
+            Job.expires_at.is_not(None),
+            Job.expires_at > now,
         )
 
         if keyword:
@@ -258,7 +267,10 @@ class JobRepository(BaseRepository[Job]):
                 return 0
             filters.append(Job.company_id == recruiter_company_id)
         else:
+            now = utc_now()
             filters.append(Job.status == JobStatus.PUBLISHED)
+            filters.append(Job.expires_at.is_not(None))
+            filters.append(Job.expires_at > now)
 
         if employment_type:
             filters.append(Job.job_type == employment_type)
@@ -307,7 +319,10 @@ class JobRepository(BaseRepository[Job]):
                 return []
             filters.append(Job.company_id == recruiter_company_id)
         else:
+            now = utc_now()
             filters.append(Job.status == JobStatus.PUBLISHED)
+            filters.append(Job.expires_at.is_not(None))
+            filters.append(Job.expires_at > now)
 
         if employment_type:
             filters.append(Job.job_type == employment_type)

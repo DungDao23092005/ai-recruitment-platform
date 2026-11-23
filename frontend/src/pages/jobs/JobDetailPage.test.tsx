@@ -799,5 +799,28 @@ describe('JobDetailPage', () => {
 
       expect(screen.queryByRole('button', { name: /Ứng tuyển ngay/i })).not.toBeInTheDocument()
     })
+
+    it('disables apply button and shows expiration notice when job is expired', async () => {
+      const expiredJob: Job = {
+        ...mockJob,
+        status: 'expired',
+        expires_at: '2026-01-01T00:00:00Z',
+      }
+      mockedGetJobById.mockResolvedValue(expiredJob)
+      mockedGetMyApplicationForJob.mockResolvedValue(null)
+      mockedGetMyResume.mockResolvedValue(mockResume)
+
+      renderJobDetailPage(candidateUser)
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Tin tuyển dụng này đã hết hạn nhận hồ sơ.'),
+        ).toBeInTheDocument()
+      })
+
+      const applyBtn = screen.getByRole('button', { name: /Ứng tuyển ngay/i })
+      expect(applyBtn).toBeDisabled()
+      expect(screen.getByText('Hạn nộp hồ sơ')).toBeInTheDocument()
+    })
   })
 })

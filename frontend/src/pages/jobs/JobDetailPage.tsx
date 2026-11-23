@@ -321,7 +321,10 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
     currentUser && currentUser.role !== 'candidate',
   )
   const isLoggedOut = !currentUser
-  const isJobOpen = job.status === 'published'
+  const isExpired =
+    job.status === 'expired' ||
+    Boolean(job.expires_at && new Date(job.expires_at) <= new Date())
+  const isJobOpen = job.status === 'published' && !isExpired
   const isCandidate = currentUser?.role === 'candidate'
   const isResumeLoading = isCandidate && resumeState.kind === 'loading'
   const isResumeMissing = isCandidate && resumeState.kind === 'missing'
@@ -371,7 +374,11 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
                 <Badge variant="neutral">
                   {WORKPLACE_TYPE_LABELS[job.workplace_type]}
                 </Badge>
-                <Badge variant="outline-ai">{JOB_STATUS_LABELS[job.status]}</Badge>
+                {isExpired ? (
+                  <Badge variant="destructive">Hết hạn</Badge>
+                ) : (
+                  <Badge variant="outline-ai">{JOB_STATUS_LABELS[job.status]}</Badge>
+                )}
               </div>
             </CardHeader>
             <CardContent className="space-y-5">
@@ -406,6 +413,20 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
                   <div>
                     <p className="text-xs text-muted-foreground">Ngày đăng</p>
                     <p className="text-sm font-medium">{postedDate}</p>
+                  </div>
+                </div>
+              ) : null}
+              {job.expires_at ? (
+                <div className="flex items-center gap-3">
+                  <Clock
+                    className="h-4 w-4 text-primary"
+                    aria-hidden="true"
+                  />
+                  <div>
+                    <p className="text-xs text-muted-foreground">Hạn nộp hồ sơ</p>
+                    <p className="text-sm font-medium">
+                      {new Date(job.expires_at).toLocaleDateString('vi-VN')}
+                    </p>
                   </div>
                 </div>
               ) : null}
@@ -444,7 +465,11 @@ export function JobDetailPage({ backPath = '/jobs' }: JobDetailPageProps) {
                     <Briefcase className="h-4 w-4" aria-hidden="true" />
                     Ứng tuyển ngay
                   </Button>
-                  {!isJobOpen ? (
+                  {isExpired ? (
+                    <p className="text-center text-xs font-medium text-destructive">
+                      Tin tuyển dụng này đã hết hạn nhận hồ sơ.
+                    </p>
+                  ) : !isJobOpen ? (
                     <p className="text-center text-xs text-muted-foreground">
                       Tin tuyển dụng này hiện không mở nhận hồ sơ.
                     </p>

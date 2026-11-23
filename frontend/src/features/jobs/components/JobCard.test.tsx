@@ -120,4 +120,19 @@ describe('JobCard', () => {
     expect(links[0]).toHaveAttribute('href', '/jobs/job-a')
     expect(links[1]).toHaveAttribute('href', '/jobs/job-b')
   })
+
+  it('renders expiration deadline when expires_at is present', () => {
+    const jobWithExpiry: Job = {
+      ...mockJob,
+      expires_at: '2026-03-01T00:00:00Z',
+    }
+
+    render(
+      <MemoryRouter>
+        <JobCard job={jobWithExpiry} />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText(/Hạn nộp:/)).toBeInTheDocument()
+  })
 })

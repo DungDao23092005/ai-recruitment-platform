@@ -36,6 +36,7 @@ interface FormValues {
   preferred_skills: string
   minimum_years_experience: string
   education_level: string
+  duration_days: number
 }
 
 interface FormErrors {
@@ -97,6 +98,7 @@ export function JobForm({
     preferred_skills: initialValues?.preferred_skills ?? job?.preferred_skills?.join(', ') ?? '',
     minimum_years_experience: initialValues?.minimum_years_experience ?? job?.minimum_years_experience?.toString() ?? '',
     education_level: initialValues?.education_level ?? job?.education_level ?? '',
+    duration_days: initialValues?.duration_days ?? job?.expiration_duration_days ?? 30,
   })
   const [errors, setErrors] = useState<FormErrors>({})
   const [apiError, setApiError] = useState<string | null>(null)
@@ -124,7 +126,7 @@ export function JobForm({
       const educationLevel = values.education_level.trim() || null
 
       if (isEditing && job) {
-        const updated = await apiClient.patch<Job, Job>(`/jobs/mine/${job.id}`, {
+        const updatePayload: Record<string, unknown> = {
           title: values.title.trim(),
           description: values.description.trim(),
           job_type: values.job_type,
@@ -134,27 +136,39 @@ export function JobForm({
           preferred_skills: preferredSkills,
           minimum_years_experience: minimumYearsExperience,
           education_level: educationLevel,
-        })
+        }
+        if (job.status === 'published' && values.duration_days) {
+          updatePayload.duration_days = values.duration_days
+        }
+        const updated = await apiClient.patch<Job, Job>(
+          `/jobs/mine/${job.id}`,
+          updatePayload,
+        )
         setSuccess(true)
         onSaved?.(updated)
         return
       }
 
+      const createPayload: Record<string, unknown> = {
+        company_id: companyId,
+        title: values.title.trim(),
+        description: values.description.trim(),
+        job_type: values.job_type,
+        workplace_type: values.workplace_type,
+        location: values.location.trim() || null,
+        status: values.status,
+        required_skills: requiredSkills,
+        preferred_skills: preferredSkills,
+        minimum_years_experience: minimumYearsExperience,
+        education_level: educationLevel,
+      }
+      if (values.duration_days) {
+        createPayload.duration_days = values.duration_days
+      }
+
       const created = await apiClient.post<Job, Job>(
         '/jobs',
-        {
-          company_id: companyId,
-          title: values.title.trim(),
-          description: values.description.trim(),
-          job_type: values.job_type,
-          workplace_type: values.workplace_type,
-          location: values.location.trim() || null,
-          status: values.status,
-          required_skills: requiredSkills,
-          preferred_skills: preferredSkills,
-          minimum_years_experience: minimumYearsExperience,
-          education_level: educationLevel,
-        },
+        createPayload,
         { timeout: 45000 }
       )
       setSuccess(true)
@@ -291,6 +305,52 @@ export function JobForm({
           onChange={(e) => updateField('education_level', e.target.value)}
           helperText="Yêu cầu trình độ học vấn (tùy chọn)"
         />
+
+        {!isEditing ? (
+          <div className="space-y-2">
+            <label className="text-sm font-medium leading-none">
+              Thời hạn đăng tin
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              {[14, 30, 60].map((days) => (
+                <Button
+                  key={days}
+                  type="button"
+                  variant={values.duration_days === days ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => updateField('duration_days', days)}
+                >
+                  {days} ngày
+                </Button>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Mặc định 30 ngày. Thời gian đăng tối đa 90 ngày.
+            </p>
+          </div>
+        ) : job?.status === 'published' ? (
+          <div className="rounded-md border p-3 space-y-2">
+            <p className="text-sm font-medium">Gia hạn thời gian tuyển dụng</p>
+            {job.expires_at ? (
+              <p className="text-xs text-muted-foreground">
+                Hạn hiện tại: {new Date(job.expires_at).toLocaleDateString('vi-VN')}
+              </p>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              {[14, 30].map((days) => (
+                <Button
+                  key={days}
+                  type="button"
+                  variant={values.duration_days === days ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => updateField('duration_days', days)}
+                >
+                  +{days} ngày
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {isEditing ? (

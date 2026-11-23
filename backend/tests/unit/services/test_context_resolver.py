@@ -963,6 +963,26 @@ class TestContextResolverRequireApplication:
         assert result[candidate_id].email == "carol@example.com"
         assert result[candidate_id].phone == "+84900000003"
 
+    @pytest.mark.asyncio
+    async def test_resolve_parsed_jobs_by_ids_candidate_includes_unexpired_filter(self):
+        session = make_mock_session()
+        resolver = ContextResolver(session)
+
+        job_id = uuid.uuid4()
+        company_id = uuid.uuid4()
+        candidate_user = make_user(UserRole.CANDIDATE)
+
+        job = make_job(job_id, company_id, status="PUBLISHED")
+        session.execute = AsyncMock(return_value=make_mock_result([job]))
+
+        results = await resolver.resolve_parsed_jobs_by_ids([job_id], candidate_user)
+        assert job_id in results
+
+        stmt = session.execute.call_args[0][0]
+        compiled = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+        assert "status" in compiled
+        assert "expires_at" in compiled
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

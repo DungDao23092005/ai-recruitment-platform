@@ -11,6 +11,7 @@ from app.core.exceptions import (
     InvalidDocumentError,
 )
 from app.domain.enums import JobStatus, UserRole
+from app.domain.models.base import utc_now
 from app.models import Application, CandidateProfile, CompanyMembership, Job, Resume
 from app.repositories import BaseRepository, CompanyMembershipRepository
 from app.services.workspace_service import get_workspace_company_id
@@ -77,44 +78,94 @@ class SemanticSearchService:
             and getattr(actor_user, "role", None) == UserRole.CANDIDATE
         ) or actor_user is None  # Public/unauthenticated also gets published-only
 
-        # Dynamic retrieval with pagination and deduplication
-        raw_results = await self._search_jobs_dynamic(
-            query=query,
-            score_threshold=score_threshold,
-            is_candidate_public=is_candidate_public,
-            max_results=effective_limit,
-        )
-
-        if job_repository is None or not raw_results:
+        if job_repository is None:
+            raw_results = await self._search_jobs_dynamic(
+                query=query,
+                score_threshold=score_threshold,
+                is_candidate_public=is_candidate_public,
+                max_results=effective_limit,
+            )
             return raw_results[:effective_limit]
 
-        # Extract job IDs from Qdrant results (preserving order)
-        job_ids = [uuid.UUID(r.id) for r in raw_results]
+        query_vector = await self.embedding_service.embed_text(query)
+        base_filters: dict[str, Any] = {}
+        if is_candidate_public:
+            base_filters["status"] = JobStatus.PUBLISHED.value
 
-        # Batch query for jobs with company, applying role-based visibility
-        jobs = await self._fetch_jobs(job_repository, job_ids, actor_user)
-
-        # Build lookup map
-        job_map = {j.id: j for j in jobs}
-
-        # Enrich results preserving Qdrant order, filter out missing/deleted
+        seen_ids: set[str] = set()
         enriched: list[SemanticSearchResult] = []
-        for r in raw_results:
-            job_id = uuid.UUID(r.id)
-            job = job_map.get(job_id)
-            if job is None:
-                continue  # Ghost or deleted job - filter out
-            enriched.append(
-                SemanticSearchResult(
-                    id=r.id,
-                    score=r.score,
-                    skills=r.skills,
-                    created_at=r.created_at,
-                    title=job.title,
-                    company_name=job.company.name if job.company else None,
-                    location=job.location,
+        pages_fetched = 0
+
+        while pages_fetched < self.MAX_PAGES and len(enriched) < effective_limit:
+            page_filters = dict(base_filters)
+            try:
+                raw_results = await self.vector_repository.search_similar(
+                    collection_name="jobs",
+                    query_vector=query_vector,
+                    limit=self.PAGE_SIZE,
+                    filters=page_filters if page_filters else None,
+                    score_threshold=score_threshold,
+                    exclude_ids=list(seen_ids) if seen_ids else None,
                 )
-            )
+            except AIError:
+                raise
+            except Exception as exc:
+                raise AIError(
+                    f"Failed to search similar vectors in collection 'jobs'"
+                ) from exc
+
+            pages_fetched += 1
+            if not raw_results:
+                break
+
+            page_candidates: list[SemanticSearchResult] = []
+            for res in raw_results:
+                point_id = self._extract_point_id(res, "job_id")
+                if point_id is None or point_id in seen_ids:
+                    continue
+                score = self._extract_score(res)
+                if score is None:
+                    continue
+                seen_ids.add(point_id)
+                payload = res.get("payload") or {}
+                page_candidates.append(
+                    SemanticSearchResult(
+                        id=point_id,
+                        score=score,
+                        skills=list(payload.get("skills") or []),
+                        created_at=payload.get("created_at"),
+                    )
+                )
+
+            if not page_candidates:
+                break
+
+            job_ids = [uuid.UUID(r.id) for r in page_candidates]
+            jobs = await self._fetch_jobs(job_repository, job_ids, actor_user)
+            job_map = {j.id: j for j in jobs}
+
+            for r in page_candidates:
+                job_id = uuid.UUID(r.id)
+                job = job_map.get(job_id)
+                if job is None:
+                    continue
+                enriched.append(
+                    SemanticSearchResult(
+                        id=r.id,
+                        score=r.score,
+                        skills=r.skills,
+                        created_at=r.created_at,
+                        title=job.title,
+                        company_name=job.company.name if job.company else None,
+                        location=job.location,
+                    )
+                )
+                if len(enriched) >= effective_limit:
+                    break
+
+            if len(raw_results) < self.PAGE_SIZE:
+                break
+
         return enriched[:effective_limit]
 
     async def search_candidates(
@@ -269,17 +320,26 @@ class SemanticSearchService:
         )
 
         # Apply role-based visibility filters at SQL level
-        if actor_user is not None:
-            if actor_user.role == UserRole.CANDIDATE:
-                # Candidate: only PUBLISHED jobs
-                stmt = stmt.where(Job.status == JobStatus.PUBLISHED)
-            elif actor_user.role == UserRole.RECRUITER:
-                # Recruiter: only jobs from their company
-                recruiter_company_id = await self._get_recruiter_company_id(repository, actor_user.id)
-                if recruiter_company_id is None:
-                    return []
-                stmt = stmt.where(Job.company_id == recruiter_company_id)
+        now = utc_now()
+        if actor_user is not None and actor_user.role == UserRole.RECRUITER:
+            # Recruiter: only jobs from their company
+            recruiter_company_id = await self._get_recruiter_company_id(
+                repository, actor_user.id
+            )
+            if recruiter_company_id is None:
+                return []
+            stmt = stmt.where(Job.company_id == recruiter_company_id)
+        elif actor_user is not None and actor_user.role == UserRole.ADMIN:
             # ADMIN: no additional filters (can see all non-deleted jobs)
+            pass
+        else:
+            # Candidate or unauthenticated public (actor_user is None):
+            # Only PUBLISHED and unexpired jobs
+            stmt = stmt.where(
+                Job.status == JobStatus.PUBLISHED,
+                Job.expires_at.is_not(None),
+                Job.expires_at > now,
+            )
 
         result = await repository.session.execute(stmt)
         return list(result.scalars().unique().all())

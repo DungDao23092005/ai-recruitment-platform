@@ -123,6 +123,12 @@ class Settings(BaseSettings):
     SUBSCRIPTION_EXPIRATION_INTERVAL_SECONDS: float = 300.0
     SUBSCRIPTION_EXPIRATION_BATCH_SIZE: int = 500
 
+    # Materialize published jobs whose expires_at has passed and reconcile Qdrant
+    JOB_EXPIRATION_WORKER_ENABLED: bool = True
+    JOB_EXPIRATION_INTERVAL_SECONDS: float = 60.0
+    JOB_EXPIRATION_BATCH_SIZE: int = 100
+    JOB_EXPIRATION_SYNC_BATCH_SIZE: int = 50
+
     # Monthly Candidate Free AI quota reset (Asia/Ho_Chi_Minh calendar).
     CANDIDATE_QUOTA_RESET_ENABLED: bool = True
     CANDIDATE_QUOTA_RESET_INTERVAL_SECONDS: float = 300.0

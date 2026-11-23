@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, select
@@ -10,6 +11,7 @@ from app.core.exceptions import (
     EntityNotFoundException,
     ForbiddenException,
     InvalidTransitionException,
+    ValidationError,
 )
 from app.domain.enums import (
     JobStatus,
@@ -19,6 +21,7 @@ from app.domain.enums import (
     UserRole,
     WorkplaceType,
 )
+from app.domain.models.base import utc_now
 from app.models import (
     Company,
     CompanyMembership,
@@ -43,6 +46,12 @@ JOB_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
     JobStatus.CLOSED: {JobStatus.PUBLISHED},
     JobStatus.EXPIRED: set(),
 }
+
+
+def _as_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 class JobService:
@@ -226,6 +235,35 @@ class JobService:
         if required_skills is None:
             required_skills = data.skills or []
 
+        now = utc_now()
+        duration_days = data.duration_days if data.duration_days is not None else 30
+        published_at: datetime | None = None
+        expires_at: datetime | None = None
+        expiration_duration_days: int | None = duration_days
+
+        if data.status == JobStatus.PUBLISHED:
+            published_at = now
+            if data.expires_at is not None:
+                exp = _as_utc(data.expires_at)
+                if exp <= now:
+                    raise ValidationError("Thời gian hết hạn phải lớn hơn thời điểm hiện tại.")
+                if exp > now + timedelta(days=90):
+                    raise ValidationError("Thời gian đăng tin không được vượt quá 90 ngày kể từ ngày đăng.")
+                expires_at = exp
+                expiration_duration_days = max(1, int((exp - now).total_seconds() // 86400))
+            else:
+                if not (1 <= duration_days <= 90):
+                    raise ValidationError("Thời hạn đăng tin phải từ 1 đến 90 ngày.")
+                expires_at = now + timedelta(days=duration_days)
+                expiration_duration_days = duration_days
+        else:
+            published_at = None
+            if data.expires_at is not None:
+                expires_at = _as_utc(data.expires_at)
+            else:
+                expires_at = None
+            expiration_duration_days = duration_days
+
         job_id = uuid.uuid4()
 
         try:
@@ -255,6 +293,10 @@ class JobService:
                 location=data.location or "",
                 minimum_years_experience=data.minimum_years_experience,
                 education_level=data.education_level,
+                published_at=published_at,
+                expires_at=expires_at,
+                expiration_duration_days=expiration_duration_days,
+                is_qdrant_synced=True,
             )
             self.session.add(job)
             await self.session.flush()
@@ -352,6 +394,16 @@ class JobService:
                 f"to {new_status.value!r}"
             )
 
+        if (
+            new_status == JobStatus.PUBLISHED
+            and job.status == JobStatus.CLOSED
+            and job.expires_at is not None
+            and _as_utc(job.expires_at) <= utc_now()
+        ):
+            raise InvalidTransitionException(
+                "Tin tuyển dụng đã hết hạn, không thể mở lại. Vui lòng sao chép tin mới."
+            )
+
         try:
             if (
                 new_status == JobStatus.PUBLISHED
@@ -371,6 +423,12 @@ class JobService:
                         job_id=job_id,
                         is_admin=is_admin,
                     )
+
+            if new_status == JobStatus.PUBLISHED and job.published_at is None:
+                now = utc_now()
+                job.published_at = now
+                duration = job.expiration_duration_days or 30
+                job.expires_at = now + timedelta(days=duration)
 
             job.status = new_status
             await self._reindex_job(job)
@@ -495,6 +553,53 @@ class JobService:
                 job.education_level = data.education_level
                 has_changes = True
 
+        now = utc_now()
+        extension_requested = (
+            "duration_days" in data.model_fields_set
+            or "expires_at" in data.model_fields_set
+        )
+        if extension_requested:
+            if job.status == JobStatus.EXPIRED or (
+                job.expires_at is not None and _as_utc(job.expires_at) <= now
+            ):
+                raise InvalidTransitionException(
+                    "Không thể gia hạn tin tuyển dụng đã hết hạn."
+                )
+
+            if job.status == JobStatus.PUBLISHED:
+                base_pub = _as_utc(job.published_at) if job.published_at else now
+                max_expiry = base_pub + timedelta(days=90)
+
+                if data.expires_at is not None:
+                    candidate_expiry = _as_utc(data.expires_at)
+                elif data.duration_days is not None:
+                    current_expiry = _as_utc(job.expires_at) if job.expires_at else now
+                    candidate_expiry = current_expiry + timedelta(days=data.duration_days)
+                else:
+                    candidate_expiry = job.expires_at
+
+                if candidate_expiry <= now:
+                    raise ValidationError(
+                        "Thời gian gia hạn phải lớn hơn thời điểm hiện tại."
+                    )
+                if candidate_expiry > max_expiry:
+                    raise ValidationError(
+                        "Tổng thời gian đăng tin không được vượt quá 90 ngày kể từ ngày đăng."
+                    )
+
+                job.expires_at = candidate_expiry
+                if data.duration_days is not None:
+                    job.expiration_duration_days = data.duration_days
+                has_changes = True
+
+            elif job.status == JobStatus.DRAFT:
+                if data.duration_days is not None:
+                    job.expiration_duration_days = data.duration_days
+                    has_changes = True
+                if data.expires_at is not None:
+                    job.expires_at = _as_utc(data.expires_at)
+                    has_changes = True
+
         # Support publishing transition through update_job when status=PUBLISHED is requested
         publishing_in_update = (
             "get_recruiter_job_by_id" not in self.__dict__
@@ -527,6 +632,15 @@ class JobService:
                         job_id=job.id,
                         is_admin=is_admin,
                     )
+                if job.published_at is None:
+                    job.published_at = now
+                    duration = (
+                        data.duration_days
+                        or job.expiration_duration_days
+                        or 30
+                    )
+                    job.expires_at = now + timedelta(days=duration)
+                    job.expiration_duration_days = duration
                 job.status = JobStatus.PUBLISHED
 
             if skills_changed:

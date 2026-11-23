@@ -19,6 +19,9 @@ export interface Job {
   preferred_skills: string[]
   minimum_years_experience: number | null
   education_level: string | null
+  published_at?: string | null
+  expires_at?: string | null
+  expiration_duration_days?: number | null
   created_at: string
   updated_at: string
 }

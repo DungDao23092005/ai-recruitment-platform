@@ -11,6 +11,8 @@ import {
   Megaphone,
   XCircle,
   RotateCcw,
+  Clock,
+  Copy,
 } from 'lucide-react'
 import apiClient from '@/api/client'
 import { Badge } from '@/components/ui/badge'
@@ -72,15 +74,65 @@ export function RecruiterJobCard({ job, onMutated }: RecruiterJobCardProps) {
     : `Công ty: ${job.company_id.slice(0, 8)}`
 
   const [pendingAction, setPendingAction] = useState<PendingAction>(null)
-  const [busyAction, setBusyAction] = useState<'publish' | 'reopen' | null>(
+  const [busyAction, setBusyAction] = useState<'publish' | 'reopen' | 'clone' | null>(
     null,
   )
   const [submitting, setSubmitting] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
 
-  const isExpired = job.status === 'expired'
+  const isExpired =
+    job.status === 'expired' ||
+    Boolean(job.expires_at && new Date(job.expires_at) <= new Date())
   const statusAction =
-    job.status === 'draft' ? ('publish' as const) : job.status === 'closed' ? ('reopen' as const) : null
+    job.status === 'draft'
+      ? ('publish' as const)
+      : job.status === 'closed' && !isExpired
+        ? ('reopen' as const)
+        : null
+
+  let badgeVariant: NonNullable<BadgeProps['variant']> = JOB_STATUS_VARIANT[job.status]
+  let badgeLabel = JOB_STATUS_LABELS[job.status]
+
+  if (isExpired) {
+    badgeVariant = 'destructive'
+    badgeLabel = 'Hết hạn'
+  } else if (job.status === 'published' && job.expires_at) {
+    const diffDays = Math.ceil(
+      (new Date(job.expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+    )
+    if (diffDays <= 5) {
+      badgeVariant = 'warning'
+      badgeLabel = `Sắp hết hạn (${diffDays} ngày)`
+    } else {
+      badgeVariant = 'success'
+    }
+  }
+
+  const runCloneAction = async () => {
+    setBusyAction('clone')
+    setActionError(null)
+    try {
+      await apiClient.post<Job, Job>('/jobs', {
+        company_id: job.company_id,
+        title: job.title,
+        description: job.description,
+        job_type: job.job_type,
+        workplace_type: job.workplace_type,
+        location: job.location || null,
+        status: 'draft',
+        required_skills: job.required_skills || [],
+        preferred_skills: job.preferred_skills || [],
+        minimum_years_experience: job.minimum_years_experience,
+        education_level: job.education_level,
+        duration_days: job.expiration_duration_days || 30,
+      })
+      onMutated?.()
+    } catch (err) {
+      setActionError(getFriendlyErrorMessage(err))
+    } finally {
+      setBusyAction(null)
+    }
+  }
 
   const runStatusAction = async () => {
     if (!statusAction) {
@@ -154,9 +206,7 @@ export function RecruiterJobCard({ job, onMutated }: RecruiterJobCardProps) {
       </CardHeader>
       <CardContent className="flex-1 space-y-3">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={JOB_STATUS_VARIANT[job.status]}>
-            {JOB_STATUS_LABELS[job.status]}
-          </Badge>
+          <Badge variant={badgeVariant}>{badgeLabel}</Badge>
           <Badge variant="neutral">{JOB_TYPE_LABELS[job.job_type]}</Badge>
           <Badge variant="neutral">
             {WORKPLACE_TYPE_LABELS[job.workplace_type]}
@@ -167,6 +217,18 @@ export function RecruiterJobCard({ job, onMutated }: RecruiterJobCardProps) {
             <MapPin className="h-4 w-4" aria-hidden="true" />
             {job.location}
           </span>
+          {job.expires_at ? (
+            <span className="flex items-center gap-1 text-xs">
+              <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+              {isExpired
+                ? 'Đã hết hạn'
+                : `Hạn nộp: ${new Date(job.expires_at).toLocaleDateString('vi-VN')}`}
+            </span>
+          ) : isExpired ? (
+            <span className="flex items-center gap-1 text-xs text-destructive">
+              Đã hết hạn
+            </span>
+          ) : null}
         </div>
       </CardContent>
       <CardFooter className="flex-col gap-2">
@@ -213,14 +275,25 @@ export function RecruiterJobCard({ job, onMutated }: RecruiterJobCardProps) {
           ) : null}
 
           {isExpired ? (
-            <div
-              className={cn(
-                buttonVariants({ variant: 'outline' }),
-                'pointer-events-none w-full cursor-not-allowed opacity-60',
-              )}
-            >
-              {JOB_STATUS_LABELS.expired}
-            </div>
+            <>
+              <div
+                className={cn(
+                  buttonVariants({ variant: 'outline' }),
+                  'pointer-events-none w-full cursor-not-allowed opacity-60',
+                )}
+              >
+                Đã hết hạn
+              </div>
+              <Button
+                variant="outline"
+                onClick={() => void runCloneAction()}
+                isLoading={busyAction === 'clone'}
+                disabled={busyAction != null}
+              >
+                <Copy className="h-4 w-4" aria-hidden="true" />
+                Sao chép tin
+              </Button>
+            </>
           ) : null}
 
           <Button

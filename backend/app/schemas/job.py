@@ -28,6 +28,8 @@ class JobCreate(BaseModel):
     education_level: Annotated[str | None, Field(default=None, max_length=255, description="Required education level")] = None
     # Backward compatibility: legacy skills field maps to required_skills
     skills: Annotated[list[str] | None, Field(default=None, description="Legacy field for required skills")] = None
+    duration_days: Annotated[int | None, Field(default=30, ge=1, le=90, description="Duration in days until expiration")] = 30
+    expires_at: Annotated[datetime | None, Field(default=None, description="Explicit expiration datetime in UTC")] = None
 
 
 class JobRead(BaseModel):
@@ -47,6 +49,9 @@ class JobRead(BaseModel):
     preferred_skills: list[str] = Field(default_factory=list)
     minimum_years_experience: float | None = None
     education_level: str | None = None
+    published_at: datetime | None = None
+    expires_at: datetime | None = None
+    expiration_duration_days: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -66,6 +71,8 @@ class JobUpdate(BaseModel):
     minimum_years_experience: float | None = None
     education_level: str | None = None
     skills: list[str] | None = None
+    duration_days: Annotated[int | None, Field(default=None, ge=1, le=90, description="Duration in days until expiration")] = None
+    expires_at: Annotated[datetime | None, Field(default=None, description="Explicit expiration datetime in UTC")] = None
 
 
 class JobStatusUpdate(BaseModel):

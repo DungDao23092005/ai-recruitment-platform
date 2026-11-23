@@ -464,8 +464,16 @@ class TestSearchJobsRoleBasedVisibility:
         )
         return user
 
-    def _make_job(self, job_id: uuid.UUID, status: str = "published", company_id: uuid.UUID | None = None, is_deleted: bool = False):
+    def _make_job(
+        self,
+        job_id: uuid.UUID,
+        status: str = "published",
+        company_id: uuid.UUID | None = None,
+        is_deleted: bool = False,
+        expires_at: Any = "DEFAULT",
+    ):
         from app.domain.enums import JobStatus
+        from datetime import datetime, timezone, timedelta
         job = MagicMock()
         job.id = job_id
         job.title = "Test Job"
@@ -475,10 +483,19 @@ class TestSearchJobsRoleBasedVisibility:
         job.status = JobStatus(status)
         job.is_deleted = is_deleted
         job.company_id = company_id or uuid.uuid4()
+        if expires_at == "DEFAULT":
+            job.expires_at = datetime.now(timezone.utc) + timedelta(days=14) if status == "published" else None
+        else:
+            job.expires_at = expires_at
         return job
 
     def _candidate_filter(self, job):
-        return job.status.name == "PUBLISHED" and not job.is_deleted
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        if job.expires_at is None:
+            return False
+        exp = job.expires_at.replace(tzinfo=timezone.utc) if job.expires_at.tzinfo is None else job.expires_at
+        return job.status.name == "PUBLISHED" and not job.is_deleted and exp > now
 
     def _recruiter_filter(self, company_id):
         def filter_fn(job):
@@ -669,25 +686,167 @@ class TestSearchJobsRoleBasedVisibility:
         assert str(job_closed.id) in result_ids
         assert str(job_expired.id) in result_ids
 
-    def test_candidate_without_actor_user_no_visibility_filter(self, provider):
-        """Without actor_user, no visibility filter applied (backward compat)"""
+    def test_unauthenticated_public_search_sql_predicates(self, provider):
+        """Unauthenticated public search generates strict SQL expiration predicates."""
         embed, repo = provider
-        job_pub = self._make_job(uuid.uuid4(), "published")
-        job_draft = self._make_job(uuid.uuid4(), "draft")
-
-        repo.search_similar.return_value = [
-            make_scored_point(point_id=str(job_pub.id), score=0.9),
-            make_scored_point(point_id=str(job_draft.id), score=0.8),
-        ]
+        job_id = uuid.uuid4()
+        repo.search_similar.return_value = [make_scored_point(point_id=str(job_id), score=0.9)]
         service = make_service(embed, repo)
 
         job_repo = make_job_repo()
-        job_repo.session.execute.return_value.scalars.return_value.unique.return_value.all.return_value = [
-            job_pub, job_draft
+        asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=None))
+
+        executed_stmt = job_repo.session.execute.call_args[0][0]
+        sql_text = str(executed_stmt).lower()
+        assert "status" in sql_text
+        assert "expires_at is not null" in sql_text
+        assert "expires_at >" in sql_text
+        assert "is_deleted" in sql_text
+
+    def test_unauthenticated_public_search_excludes_expired_jobs(self, provider):
+        """Unauthenticated public search excludes expired jobs via SQL hydration."""
+        from datetime import datetime, timezone, timedelta
+        embed, repo = provider
+        past_time = datetime.now(timezone.utc) - timedelta(days=2)
+        job_expired = self._make_job(uuid.uuid4(), "published", expires_at=past_time)
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_expired.id), score=0.9),
+        ]
+        service = make_service(embed, repo)
+        job_repo = make_job_repo([job_expired], self._candidate_filter)
+
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=None))
+        assert len(result) == 0
+
+    def test_unauthenticated_public_search_excludes_null_expires_at(self, provider):
+        """Unauthenticated public search excludes jobs with NULL expires_at."""
+        embed, repo = provider
+        job_no_exp = self._make_job(uuid.uuid4(), "published", expires_at=None)
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_no_exp.id), score=0.9),
+        ]
+        service = make_service(embed, repo)
+        job_repo = make_job_repo([job_no_exp], self._candidate_filter)
+
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=None))
+        assert len(result) == 0
+
+    def test_unauthenticated_public_search_excludes_deleted_jobs(self, provider):
+        """Unauthenticated public search excludes deleted jobs."""
+        embed, repo = provider
+        job_deleted = self._make_job(uuid.uuid4(), "published", is_deleted=True)
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_deleted.id), score=0.9),
+        ]
+        service = make_service(embed, repo)
+        job_repo = make_job_repo([job_deleted], self._candidate_filter)
+
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=None))
+        assert len(result) == 0
+
+    def test_unauthenticated_public_search_excludes_non_published_jobs(self, provider):
+        """Unauthenticated public search excludes DRAFT/CLOSED/EXPIRED jobs."""
+        embed, repo = provider
+        job_draft = self._make_job(uuid.uuid4(), "draft")
+        job_closed = self._make_job(uuid.uuid4(), "closed")
+        job_expired = self._make_job(uuid.uuid4(), "expired")
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_draft.id), score=0.9),
+            make_scored_point(point_id=str(job_closed.id), score=0.8),
+            make_scored_point(point_id=str(job_expired.id), score=0.7),
+        ]
+        service = make_service(embed, repo)
+        job_repo = make_job_repo([job_draft, job_closed, job_expired], self._candidate_filter)
+
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=None))
+        assert len(result) == 0
+
+    def test_unauthenticated_public_search_includes_valid_published_unexpired(self, provider):
+        """Unauthenticated public search includes valid published, unexpired jobs."""
+        from datetime import datetime, timezone, timedelta
+        embed, repo = provider
+        future_time = datetime.now(timezone.utc) + timedelta(days=10)
+        job_valid = self._make_job(uuid.uuid4(), "published", expires_at=future_time)
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(job_valid.id), score=0.95),
+        ]
+        service = make_service(embed, repo)
+        job_repo = make_job_repo([job_valid], self._candidate_filter)
+
+        result = asyncio.run(service.search_jobs("test", job_repository=job_repo, actor_user=None))
+        assert len(result) == 1
+        assert result[0].id == str(job_valid.id)
+
+    def test_unauthenticated_public_dynamic_refill_when_jobs_pruned_by_sql_hydration(self, provider):
+        """Unauthenticated public search refills from next page when expired jobs are pruned."""
+        embed, repo = provider
+        job_id_1 = str(uuid.uuid4())
+        job_id_2 = str(uuid.uuid4())
+
+        page1_full = [make_scored_point(point_id=job_id_1, score=0.9)] + [
+            make_scored_point(point_id=str(uuid.uuid4()), score=0.8) for _ in range(49)
+        ]
+        page2 = [make_scored_point(point_id=job_id_2, score=0.7)]
+
+        repo.search_similar.side_effect = [page1_full, page2]
+        service = make_service(embed, repo)
+
+        job_repo = make_job_repo()
+        job2 = make_job(uuid.UUID(job_id_2), title="Valid Job", location="HCM")
+        job_repo.session.execute.return_value.scalars.return_value.unique.return_value.all.side_effect = [
+            [],
+            [job2],
         ]
 
-        # No actor_user passed - should return all non-deleted (backward compat)
-        result = asyncio.run(service.search_jobs("test", job_repository=job_repo))
+        result = asyncio.run(
+            service.search_jobs(
+                "test",
+                limit=1,
+                job_repository=job_repo,
+                actor_user=None,
+            )
+        )
 
-        # Should see both (backward compat)
-        assert len(result) == 2
+        assert len(result) == 1
+        assert result[0].id == job_id_2
+        assert repo.search_similar.call_count == 2
+
+    def test_dynamic_refill_when_jobs_pruned_by_sql_hydration(self, provider):
+        """Dynamic retrieval refills from next page when hydrated candidates are pruned."""
+        embed, repo = provider
+        job_id_1 = str(uuid.uuid4())
+        job_id_2 = str(uuid.uuid4())
+
+        page1_full = [make_scored_point(point_id=job_id_1, score=0.9)] + [
+            make_scored_point(point_id=str(uuid.uuid4()), score=0.8) for _ in range(49)
+        ]
+        page2 = [make_scored_point(point_id=job_id_2, score=0.7)]
+
+        repo.search_similar.side_effect = [page1_full, page2]
+        service = make_service(embed, repo)
+
+        job_repo = make_job_repo()
+        job2 = make_job(uuid.UUID(job_id_2), title="Valid Job", location="HCM")
+        job_repo.session.execute.return_value.scalars.return_value.unique.return_value.all.side_effect = [
+            [],
+            [job2],
+        ]
+
+        candidate_user = self._make_user("candidate")
+        result = asyncio.run(
+            service.search_jobs(
+                "test",
+                limit=1,
+                job_repository=job_repo,
+                actor_user=candidate_user,
+            )
+        )
+
+        assert len(result) == 1
+        assert result[0].id == job_id_2
+        assert repo.search_similar.call_count == 2

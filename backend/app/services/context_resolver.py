@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import EntityNotFoundException
 from app.domain.enums import JobStatus
+from app.domain.models.base import utc_now
 from app.models import (
     CandidateProfile,
     CompanyMembership,
@@ -174,6 +175,7 @@ class ContextResolver:
         from app.models import Job
         filters = [Job.id.in_(job_ids), Job.is_deleted == False]  # noqa: E712
 
+        now = utc_now()
         if actor_user.role.name == "ADMIN":
             if not include_unpublished_for_admin:
                 filters.append(Job.status == JobStatus.PUBLISHED)
@@ -184,8 +186,10 @@ class ContextResolver:
                 return {}
             filters.append(Job.company_id == recruiter_company_id)
         else:
-            # CANDIDATE - only published jobs
+            # CANDIDATE - only published, unexpired jobs
             filters.append(Job.status == JobStatus.PUBLISHED)
+            filters.append(Job.expires_at.is_not(None))
+            filters.append(Job.expires_at > now)
 
         stmt = select(Job).options(
             selectinload(Job.skills),
@@ -216,6 +220,8 @@ class ContextResolver:
                 pass
 
         return jobs
+
+    resolve_parsed_jobs_by_ids = resolve_jobs
 
     async def resolve_candidate_profiles(
         self,

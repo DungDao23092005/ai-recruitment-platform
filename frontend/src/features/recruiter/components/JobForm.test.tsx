@@ -94,6 +94,7 @@ describe('JobForm', () => {
           preferred_skills: [],
           minimum_years_experience: null,
           education_level: null,
+          duration_days: 30,
         },
         { timeout: 45000 }
       )
@@ -246,6 +247,33 @@ describe('JobForm', () => {
 
     await waitFor(() => {
       expect(onSaved).toHaveBeenCalledWith(updated)
+    })
+  })
+
+  it('allows selecting preset duration on creation', async () => {
+    mockedPost.mockResolvedValue(mockJob as never)
+
+    render(<JobForm companyId="company-1" />)
+
+    fireEvent.change(screen.getByLabelText('Tiêu đề công việc'), {
+      target: { value: 'Frontend Lead' },
+    })
+    fireEvent.change(screen.getByLabelText('Mô tả công việc'), {
+      target: { value: 'Lead the frontend team' },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '14 ngày' }))
+
+    fireEvent.click(screen.getByRole('button', { name: /Tạo tin tuyển dụng/i }))
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/jobs',
+        expect.objectContaining({
+          duration_days: 14,
+        }),
+        { timeout: 45000 }
+      )
     })
   })
 })

@@ -6,6 +6,7 @@ import logging
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import timezone
 
 from pydantic import ValidationError
 from sqlalchemy import delete, select, update
@@ -264,6 +265,14 @@ class ApplicationService:
                 f"Job {job_id} is not open for applications "
                 f"(status: {job.status.value})."
             )
+
+        now = utc_now()
+        if job.is_deleted or job.expires_at is None or (
+            job.expires_at.replace(tzinfo=timezone.utc)
+            if job.expires_at.tzinfo is None
+            else job.expires_at
+        ) <= now:
+            raise InvalidTransitionException("Tin tuyển dụng đã hết hạn nhận hồ sơ.")
 
         existing = await self.applications.get_by_candidate_and_job(
             candidate_id,

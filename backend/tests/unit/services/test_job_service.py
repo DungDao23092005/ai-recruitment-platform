@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
@@ -9,7 +10,7 @@ from app.core.exceptions import (
     InvalidTransitionException,
     ValidationError,
 )
-from app.domain.enums import JobStatus, JobType, WorkplaceType
+from app.domain.enums import JobStatus, JobType, UserRole, WorkplaceType
 from app.models import Company, Job, JobSkill, Skill
 from app.repositories import CompanyRepository, JobRepository
 from app.schemas.job import JobCreate, JobUpdate
@@ -1573,3 +1574,129 @@ class TestAttachSkillsValidation:
         # No skills should be added because validation happens before any persistence
         assert len(job.job_skills) == 0
         session.add.assert_not_called()
+
+
+class TestJobExpirationAndLifecycle:
+    @pytest.mark.asyncio
+    async def test_create_published_job_sets_published_at_and_expires_at(self):
+        session = make_session()
+        service = make_service(session)
+        cid = uuid.uuid4()
+        service.companies.get_by_id.return_value = make_company()
+
+        data = JobCreate(
+            company_id=cid,
+            title="Backend Engineer",
+            description="Build APIs",
+            job_type=JobType.FULL_TIME,
+            workplace_type=WorkplaceType.REMOTE,
+            status=JobStatus.PUBLISHED,
+            duration_days=30,
+        )
+
+        job = await service.create_job(data, user_id=uuid.uuid4(), is_admin=True)
+
+        assert job.published_at is not None
+        assert job.expires_at is not None
+        assert job.expiration_duration_days == 30
+        assert job.status == JobStatus.PUBLISHED
+
+    @pytest.mark.asyncio
+    async def test_create_published_job_rejects_duration_over_90_days(self):
+        session = make_session()
+        service = make_service(session)
+        cid = uuid.uuid4()
+        service.companies.get_by_id.return_value = make_company()
+
+        with pytest.raises(Exception):
+            JobCreate(
+                company_id=cid,
+                title="Backend Engineer",
+                description="Build APIs",
+                job_type=JobType.FULL_TIME,
+                workplace_type=WorkplaceType.REMOTE,
+                status=JobStatus.PUBLISHED,
+                duration_days=95,
+            )
+
+    @pytest.mark.asyncio
+    async def test_reopen_closed_job_preserves_published_at(self):
+        session = make_session()
+        service = make_service(session)
+        now = datetime.now(timezone.utc)
+        original_pub = now - timedelta(days=10)
+
+        job = make_job(status=JobStatus.CLOSED)
+        job.published_at = original_pub
+        job.expires_at = now + timedelta(days=20)
+        job.expiration_duration_days = 30
+        service.jobs.get_job_with_company_and_skills.return_value = job
+
+        updated = await service.update_job_status(job.id, JobStatus.PUBLISHED)
+
+        assert updated.published_at == original_pub
+        assert updated.status == JobStatus.PUBLISHED
+
+    @pytest.mark.asyncio
+    async def test_reopen_closed_job_rejects_if_already_expired(self):
+        session = make_session()
+        service = make_service(session)
+        now = datetime.now(timezone.utc)
+
+        job = make_job(status=JobStatus.CLOSED)
+        job.published_at = now - timedelta(days=40)
+        job.expires_at = now - timedelta(days=10)
+        service.jobs.get_job_with_company_and_skills.return_value = job
+
+        with pytest.raises(InvalidTransitionException, match="hết hạn"):
+            await service.update_job_status(job.id, JobStatus.PUBLISHED)
+
+    @pytest.mark.asyncio
+    async def test_cannot_transition_from_expired_status(self):
+        session = make_session()
+        service = make_service(session)
+        job = make_job(status=JobStatus.EXPIRED)
+        service.jobs.get_job_with_company_and_skills.return_value = job
+
+        with pytest.raises(InvalidTransitionException):
+            await service.update_job_status(job.id, JobStatus.PUBLISHED)
+
+    @pytest.mark.asyncio
+    async def test_active_extension_within_90_days_allowed(self):
+        session = make_session()
+        service = make_service(session)
+        now = datetime.now(timezone.utc)
+        pub_at = now - timedelta(days=10)
+
+        job = make_job(status=JobStatus.PUBLISHED)
+        job.published_at = pub_at
+        job.expires_at = now + timedelta(days=20)
+        service.jobs.get_job_with_company_and_skills.return_value = job
+
+        user = MagicMock()
+        user.role = UserRole.ADMIN
+
+        data = JobUpdate(duration_days=15)
+        updated = await service.update_job(user, job.id, data)
+
+        assert updated.expires_at > now + timedelta(days=20)
+        assert updated.published_at == pub_at
+
+    @pytest.mark.asyncio
+    async def test_active_extension_exceeding_90_days_rejected(self):
+        session = make_session()
+        service = make_service(session)
+        now = datetime.now(timezone.utc)
+        pub_at = now - timedelta(days=30)
+
+        job = make_job(status=JobStatus.PUBLISHED)
+        job.published_at = pub_at
+        job.expires_at = now + timedelta(days=10)
+        service.jobs.get_job_with_company_and_skills.return_value = job
+
+        user = MagicMock()
+        user.role = UserRole.ADMIN
+
+        data = JobUpdate(duration_days=60)
+        with pytest.raises(ValidationError, match="90 ngày"):
+            await service.update_job(user, job.id, data)

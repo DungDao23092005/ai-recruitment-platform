@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Float, ForeignKey, String, Text, Uuid
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, Uuid, text
 from sqlalchemy.dialects.mssql import NVARCHAR
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -13,6 +14,18 @@ from app.models.user import StringEnum
 
 class Job(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "jobs"
+    __table_args__ = (
+        Index("ix_jobs_status_expires_at", "status", "is_deleted", "expires_at"),
+        Index(
+            "ix_jobs_qdrant_unsynced",
+            "status",
+            "is_qdrant_synced",
+            "updated_at",
+            mssql_where=text(
+                "status = 'expired' AND is_qdrant_synced = 0 AND is_deleted = 0"
+            ),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     company_id: Mapped[uuid.UUID] = mapped_column(
@@ -40,6 +53,18 @@ class Job(Base, TimestampMixin, SoftDeleteMixin):
     minimum_years_experience: Mapped[float | None] = mapped_column(Float, nullable=True)
     education_level: Mapped[str | None] = mapped_column(
         String(255).with_variant(NVARCHAR(255), "mssql"), nullable=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expiration_duration_days: Mapped[int | None] = mapped_column(
+        Integer, default=30, nullable=True
+    )
+    is_qdrant_synced: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("1"), nullable=False
     )
 
     company: Mapped[Company] = relationship(back_populates="jobs")
