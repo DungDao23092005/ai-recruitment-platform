@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import apiClient from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -62,6 +63,18 @@ function parseSkills(skillsInput: string): string[] {
     .filter((s) => s.length > 0)
 }
 
+export interface JobFormErrorState {
+  message: string
+  showUpgradeAction: boolean
+  upgradeUrl: string
+}
+
+export const CANONICAL_UPGRADE_URL = '/plans?audience=company'
+export const QUOTA_EXHAUSTED_MESSAGE =
+  'Gói hiện tại đã hết lượt đăng tin. Vui lòng nâng cấp gói để tiếp tục đăng tin tuyển dụng.'
+export const DEFAULT_RBAC_FORBIDDEN_MESSAGE =
+  'Bạn không có quyền đăng tin tuyển dụng cho công ty này.'
+
 function isForbiddenError(error: unknown): boolean {
   return (
     typeof error === 'object' &&
@@ -71,11 +84,82 @@ function isForbiddenError(error: unknown): boolean {
   )
 }
 
-function getJobCreateErrorMessage(error: unknown): string {
-  if (isForbiddenError(error)) {
-    return 'Bạn không có quyền đăng tin tuyển dụng cho công ty này.'
+function extractDetail(error: unknown): string {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'response' in error
+  ) {
+    const response = (error as { response?: { data?: { detail?: unknown } } })
+      .response
+    const detail = response?.data?.detail
+    if (typeof detail === 'string') {
+      return detail.trim()
+    }
   }
-  return getFriendlyErrorMessage(error)
+  return ''
+}
+
+export function getJobFormError(error: unknown): JobFormErrorState {
+  if (isForbiddenError(error)) {
+    const detail = extractDetail(error)
+    const normalized = detail.toLowerCase()
+
+    // A. Job Posting Quota Exhaustion (company or legacy/personal)
+    if (normalized.includes('hết lượt đăng tin')) {
+      return {
+        message: QUOTA_EXHAUSTED_MESSAGE,
+        showUpgradeAction: true,
+        upgradeUrl: CANONICAL_UPGRADE_URL,
+      }
+    }
+
+    // C. Missing or Invalid Company / Recruiter Subscription
+    if (
+      normalized.includes('chưa có gói đăng ký hợp lệ') ||
+      normalized.includes('chưa có gói đăng ký')
+    ) {
+      return {
+        message:
+          detail ||
+          'Công ty chưa có gói đăng ký hợp lệ. Vui lòng đăng ký gói tuyển dụng để sử dụng tính năng này.',
+        showUpgradeAction: true,
+        upgradeUrl: CANONICAL_UPGRADE_URL,
+      }
+    }
+
+    // B. Subscription Plan Does Not Include Job Posting / Recruiting Feature
+    if (
+      normalized.includes('không bao gồm quyền đăng tin') ||
+      normalized.includes('không bao gồm quyền sử dụng tính năng') ||
+      (normalized.includes('gói đăng ký') && normalized.includes('không bao gồm'))
+    ) {
+      return {
+        message:
+          detail || 'Gói đăng ký không bao gồm quyền đăng tin tuyển dụng.',
+        showUpgradeAction: true,
+        upgradeUrl: CANONICAL_UPGRADE_URL,
+      }
+    }
+
+    // D. Genuine RBAC / Workspace Permission Denial / Unknown 403
+    return {
+      message: DEFAULT_RBAC_FORBIDDEN_MESSAGE,
+      showUpgradeAction: false,
+      upgradeUrl: CANONICAL_UPGRADE_URL,
+    }
+  }
+
+  // E. Other Errors (non-403 responses)
+  return {
+    message: getFriendlyErrorMessage(error),
+    showUpgradeAction: false,
+    upgradeUrl: CANONICAL_UPGRADE_URL,
+  }
+}
+
+export function getJobCreateErrorMessage(error: unknown): string {
+  return getJobFormError(error).message
 }
 
 export function JobForm({
@@ -113,7 +197,7 @@ export function JobForm({
   })
   const [selectedExtensionDays, setSelectedExtensionDays] = useState<number | null>(null)
   const [errors, setErrors] = useState<FormErrors>({})
-  const [apiError, setApiError] = useState<string | null>(null)
+  const [apiError, setApiError] = useState<JobFormErrorState | null>(null)
   const [success, setSuccess] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
@@ -186,7 +270,7 @@ export function JobForm({
       setSuccess(true)
       onCreated?.(created)
     } catch (error) {
-      setApiError(getJobCreateErrorMessage(error))
+      setApiError(getJobFormError(error))
     } finally {
       setSubmitting(false)
     }
@@ -442,9 +526,20 @@ export function JobForm({
       ) : null}
 
       {apiError ? (
-        <p role="alert" className="text-sm font-medium text-destructive">
-          {apiError}
-        </p>
+        <div className="space-y-2">
+          <p role="alert" className="text-sm font-medium text-destructive">
+            {apiError.message}
+          </p>
+          {apiError.showUpgradeAction ? (
+            <div>
+              <Link to={apiError.upgradeUrl}>
+                <Button type="button" variant="outline" size="sm">
+                  Nâng cấp gói
+                </Button>
+              </Link>
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       {success ? (

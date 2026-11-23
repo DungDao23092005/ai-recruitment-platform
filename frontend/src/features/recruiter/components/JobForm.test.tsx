@@ -1,4 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { JobForm } from './JobForm'
@@ -391,5 +392,341 @@ describe('JobForm', () => {
     ).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '+14 ngày' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '+30 ngày' })).not.toBeInTheDocument()
+  })
+
+  describe('Error Classification and Upgrade CTA', () => {
+    const submitForm = () => {
+      fireEvent.change(screen.getByLabelText('Tiêu đề công việc'), {
+        target: { value: 'Senior Backend Engineer' },
+      })
+      fireEvent.change(screen.getByLabelText('Mô tả công việc'), {
+        target: { value: 'Build high throughput distributed systems.' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: /Tạo tin tuyển dụng/i }))
+    }
+
+    it('1. Company job-posting quota exhaustion: shows PO message and upgrade CTA', async () => {
+      const error = new Error('Forbidden')
+      Object.assign(error, {
+        response: {
+          status: 403,
+          data: {
+            detail: 'Đã hết lượt đăng tin (đã dùng 5/5). Vui lòng nâng cấp gói hoặc chờ gia hạn.',
+          },
+        },
+      })
+      mockedPost.mockRejectedValue(error)
+
+      render(
+        <MemoryRouter>
+          <JobForm companyId="company-1" />
+        </MemoryRouter>
+      )
+
+      submitForm()
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            'Gói hiện tại đã hết lượt đăng tin. Vui lòng nâng cấp gói để tiếp tục đăng tin tuyển dụng.'
+          )
+        ).toBeInTheDocument()
+        const cta = screen.getByRole('link', { name: /Nâng cấp gói/i })
+        expect(cta).toBeInTheDocument()
+        expect(cta).toHaveAttribute('href', '/plans?audience=company')
+      })
+    })
+
+    it('2. Legacy/personal job-posting quota exhaustion: shows PO message and upgrade CTA', async () => {
+      const error = new Error('Forbidden')
+      Object.assign(error, {
+        response: {
+          status: 403,
+          data: {
+            detail: 'Đã hết lượt đăng tin (đã dùng 3/3). Vui lòng nâng cấp gói hoặc chờ gia hạn.',
+          },
+        },
+      })
+      mockedPost.mockRejectedValue(error)
+
+      render(
+        <MemoryRouter>
+          <JobForm companyId="company-1" />
+        </MemoryRouter>
+      )
+
+      submitForm()
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            'Gói hiện tại đã hết lượt đăng tin. Vui lòng nâng cấp gói để tiếp tục đăng tin tuyển dụng.'
+          )
+        ).toBeInTheDocument()
+        const cta = screen.getByRole('link', { name: /Nâng cấp gói/i })
+        expect(cta).toBeInTheDocument()
+        expect(cta).toHaveAttribute('href', '/plans?audience=company')
+      })
+    })
+
+    it('3. Subscription plan with zero job-posting quota: shows subscription guidance and upgrade CTA', async () => {
+      const detail = 'Gói đăng ký của bạn không bao gồm quyền đăng tin tuyển dụng.'
+      const error = new Error('Forbidden')
+      Object.assign(error, {
+        response: {
+          status: 403,
+          data: { detail },
+        },
+      })
+      mockedPost.mockRejectedValue(error)
+
+      render(
+        <MemoryRouter>
+          <JobForm companyId="company-1" />
+        </MemoryRouter>
+      )
+
+      submitForm()
+
+      await waitFor(() => {
+        expect(screen.getByText(detail)).toBeInTheDocument()
+        const cta = screen.getByRole('link', { name: /Nâng cấp gói/i })
+        expect(cta).toBeInTheDocument()
+        expect(cta).toHaveAttribute('href', '/plans?audience=company')
+      })
+    })
+
+    it('4. Missing/invalid company subscription: shows meaningful subscription guidance and upgrade CTA', async () => {
+      const detail =
+        'Công ty chưa có gói đăng ký hợp lệ. Vui lòng đăng ký gói tuyển dụng để sử dụng tính năng này.'
+      const error = new Error('Forbidden')
+      Object.assign(error, {
+        response: {
+          status: 403,
+          data: { detail },
+        },
+      })
+      mockedPost.mockRejectedValue(error)
+
+      render(
+        <MemoryRouter>
+          <JobForm companyId="company-1" />
+        </MemoryRouter>
+      )
+
+      submitForm()
+
+      await waitFor(() => {
+        expect(screen.getByText(detail)).toBeInTheDocument()
+        const cta = screen.getByRole('link', { name: /Nâng cấp gói/i })
+        expect(cta).toBeInTheDocument()
+        expect(cta).toHaveAttribute('href', '/plans?audience=company')
+      })
+    })
+
+    it('5. Subscription without recruiting feature: shows meaningful subscription guidance and upgrade CTA', async () => {
+      const detail =
+        'Gói đăng ký của công ty không bao gồm quyền sử dụng tính năng này. Vui lòng nâng cấp gói.'
+      const error = new Error('Forbidden')
+      Object.assign(error, {
+        response: {
+          status: 403,
+          data: { detail },
+        },
+      })
+      mockedPost.mockRejectedValue(error)
+
+      render(
+        <MemoryRouter>
+          <JobForm companyId="company-1" />
+        </MemoryRouter>
+      )
+
+      submitForm()
+
+      await waitFor(() => {
+        expect(screen.getByText(detail)).toBeInTheDocument()
+        const cta = screen.getByRole('link', { name: /Nâng cấp gói/i })
+        expect(cta).toBeInTheDocument()
+        expect(cta).toHaveAttribute('href', '/plans?audience=company')
+      })
+    })
+
+    it('6. Genuine cross-tenant RBAC denial: preserves RBAC message and does NOT show upgrade CTA', async () => {
+      const error = new Error('Forbidden')
+      Object.assign(error, {
+        response: {
+          status: 403,
+          data: {
+            detail: 'You do not have permission to create a job for this company',
+          },
+        },
+      })
+      mockedPost.mockRejectedValue(error)
+
+      render(
+        <MemoryRouter>
+          <JobForm companyId="company-1" />
+        </MemoryRouter>
+      )
+
+      submitForm()
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Bạn không có quyền đăng tin tuyển dụng cho công ty này.')
+        ).toBeInTheDocument()
+        expect(screen.queryByRole('link', { name: /Nâng cấp gói/i })).not.toBeInTheDocument()
+      })
+    })
+
+    it('7. Invalid/inactive workspace membership: is not misclassified as subscription error and does NOT show upgrade CTA', async () => {
+      const error = new Error('Forbidden')
+      Object.assign(error, {
+        response: {
+          status: 403,
+          data: {
+            detail: 'Quyền thành viên công ty của bạn không còn hiệu lực.',
+          },
+        },
+      })
+      mockedPost.mockRejectedValue(error)
+
+      render(
+        <MemoryRouter>
+          <JobForm companyId="company-1" />
+        </MemoryRouter>
+      )
+
+      submitForm()
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Bạn không có quyền đăng tin tuyển dụng cho công ty này.')
+        ).toBeInTheDocument()
+        expect(screen.queryByRole('link', { name: /Nâng cấp gói/i })).not.toBeInTheDocument()
+      })
+    })
+
+    it('8. Interviewer role denial: preserves generic RBAC message and does NOT show upgrade CTA', async () => {
+      const error = new Error('Forbidden')
+      Object.assign(error, {
+        response: {
+          status: 403,
+          data: {
+            detail:
+              'Vai trò thành viên công ty hiện tại không có quyền sử dụng hạn mức tuyển dụng.',
+          },
+        },
+      })
+      mockedPost.mockRejectedValue(error)
+
+      render(
+        <MemoryRouter>
+          <JobForm companyId="company-1" />
+        </MemoryRouter>
+      )
+
+      submitForm()
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Bạn không có quyền đăng tin tuyển dụng cho công ty này.')
+        ).toBeInTheDocument()
+        expect(screen.queryByRole('link', { name: /Nâng cấp gói/i })).not.toBeInTheDocument()
+      })
+    })
+
+    it('9. Unknown HTTP 403: preserves generic RBAC fallback and does NOT show upgrade CTA', async () => {
+      const error = new Error('Forbidden')
+      Object.assign(error, {
+        response: {
+          status: 403,
+          data: { detail: 'Unexpected authorization rejection' },
+        },
+      })
+      mockedPost.mockRejectedValue(error)
+
+      render(
+        <MemoryRouter>
+          <JobForm companyId="company-1" />
+        </MemoryRouter>
+      )
+
+      submitForm()
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Bạn không có quyền đăng tin tuyển dụng cho công ty này.')
+        ).toBeInTheDocument()
+        expect(screen.queryByRole('link', { name: /Nâng cấp gói/i })).not.toBeInTheDocument()
+      })
+    })
+
+    it('10. Non-403 backend errors: preserves friendly error message and does NOT show upgrade CTA', async () => {
+      const error = new Error('Bad Request')
+      Object.assign(error, {
+        response: {
+          status: 422,
+          data: { detail: 'Tiêu đề không hợp lệ' },
+        },
+      })
+      mockedPost.mockRejectedValue(error)
+
+      render(
+        <MemoryRouter>
+          <JobForm companyId="company-1" />
+        </MemoryRouter>
+      )
+
+      submitForm()
+
+      await waitFor(() => {
+        expect(screen.getByText('Tiêu đề không hợp lệ')).toBeInTheDocument()
+        expect(screen.queryByRole('link', { name: /Nâng cấp gói/i })).not.toBeInTheDocument()
+      })
+    })
+
+    it('11. Update mode (PATCH) also handles quota exhaustion and shows upgrade CTA', async () => {
+      const publishedJob: Job = {
+        ...mockJob,
+        status: 'published',
+        published_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 10 * 86400 * 1000).toISOString(),
+      }
+      const mockedPatch = vi.mocked(apiClient.patch)
+      const error = new Error('Forbidden')
+      Object.assign(error, {
+        response: {
+          status: 403,
+          data: {
+            detail: 'Đã hết lượt đăng tin (đã dùng 10/10). Vui lòng nâng cấp gói hoặc chờ gia hạn.',
+          },
+        },
+      })
+      mockedPatch.mockRejectedValue(error)
+
+      render(
+        <MemoryRouter>
+          <JobForm companyId="company-1" job={publishedJob} />
+        </MemoryRouter>
+      )
+
+      fireEvent.change(screen.getByLabelText('Tiêu đề công việc'), {
+        target: { value: 'Updated Staff Engineer' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: /Lưu thay đổi/i }))
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            'Gói hiện tại đã hết lượt đăng tin. Vui lòng nâng cấp gói để tiếp tục đăng tin tuyển dụng.'
+          )
+        ).toBeInTheDocument()
+        const cta = screen.getByRole('link', { name: /Nâng cấp gói/i })
+        expect(cta).toBeInTheDocument()
+        expect(cta).toHaveAttribute('href', '/plans?audience=company')
+      })
+    })
   })
 })
