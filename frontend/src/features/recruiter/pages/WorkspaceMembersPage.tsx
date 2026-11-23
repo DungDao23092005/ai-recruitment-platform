@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { MailPlus, ShieldCheck, UserMinus, Users } from 'lucide-react'
+import { Briefcase, CalendarCheck, CheckCircle2, Info, MailPlus, Send, ShieldCheck, UserMinus, Users } from 'lucide-react'
+import { cn } from '@/utils/cn'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,6 +14,7 @@ import {
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorBanner } from '@/components/ui/error-banner'
 import { Input } from '@/components/ui/input'
+import { Modal } from '@/components/ui/modal'
 import { Select } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -35,6 +37,34 @@ import {
   type WorkspaceMember,
 } from '@/types/workspace'
 
+const ROLE_OPTIONS: {
+  value: MembershipRole
+  label: string
+  description: string
+  icon: typeof Briefcase
+}[] = [
+  {
+    value: 'recruiter',
+    label: 'Nhà tuyển dụng',
+    description:
+      'Đăng tin tuyển dụng, quản lý hồ sơ ứng viên và điều phối tuyển dụng.',
+    icon: Briefcase,
+  },
+  {
+    value: 'interviewer',
+    label: 'Người phỏng vấn',
+    description: 'Xem lịch phỏng vấn được phân công và đánh giá ứng viên.',
+    icon: CalendarCheck,
+  },
+  {
+    value: 'admin',
+    label: 'Quản trị viên',
+    description:
+      'Quản trị không gian làm việc, mời thành viên và quản lý gói dịch vụ.',
+    icon: ShieldCheck,
+  },
+]
+
 export function WorkspaceMembersPage() {
   const { currentUser } = useAuth()
   const { selectedWorkspace, refreshWorkspaces } = useWorkspace()
@@ -46,6 +76,16 @@ export function WorkspaceMembersPage() {
   const [role, setRole] = useState<MembershipRole>('recruiter')
   const [isInviting, setIsInviting] = useState(false)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [inviteError, setInviteError] = useState<string | null>(null)
+  const [inviteSuccessMessage, setInviteSuccessMessage] = useState<string | null>(null)
+
+  const [memberToRevoke, setMemberToRevoke] = useState<WorkspaceMember | null>(null)
+  const [isRevokingMember, setIsRevokingMember] = useState(false)
+  const [revokeMemberError, setRevokeMemberError] = useState<string | null>(null)
+
+  const [invitationToRevoke, setInvitationToRevoke] = useState<WorkspaceInvitation | null>(null)
+  const [isRevokingInvitation, setIsRevokingInvitation] = useState(false)
+  const [revokeInvitationError, setRevokeInvitationError] = useState<string | null>(null)
 
   const isCompanyAdmin = useMemo(() => {
     if (!selectedWorkspace) return false
@@ -94,36 +134,64 @@ export function WorkspaceMembersPage() {
 
   const handleInvite = async (event: FormEvent) => {
     event.preventDefault()
-    setError(null)
-    setSuccessMessage(null)
+    setInviteError(null)
+    setInviteSuccessMessage(null)
     setIsInviting(true)
     try {
       await createWorkspaceInvitation({ email: email.trim(), role })
       setEmail('')
-      setSuccessMessage('Đã gửi lời mời tham gia công ty.')
+      setInviteSuccessMessage('Đã gửi lời mời tham gia công ty.')
       await loadWorkspaceData()
-    } catch (inviteError) {
-      setError(getFriendlyErrorMessage(inviteError))
+    } catch (inviteErr) {
+      setInviteError(getFriendlyErrorMessage(inviteErr))
     } finally {
       setIsInviting(false)
     }
   }
 
-  const handleRevokeMember = async (member: WorkspaceMember) => {
-    if (
-      !window.confirm(
-        `Thu hồi quyền truy cập của ${member.email} khỏi công ty?`,
-      )
-    ) {
-      return
+  const handleRoleKeyDown = (
+    event: React.KeyboardEvent,
+    currentIndex: number,
+  ) => {
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+      event.preventDefault()
+      const nextIndex = (currentIndex + 1) % ROLE_OPTIONS.length
+      setRole(ROLE_OPTIONS[nextIndex].value)
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      const prevIndex =
+        (currentIndex - 1 + ROLE_OPTIONS.length) % ROLE_OPTIONS.length
+      setRole(ROLE_OPTIONS[prevIndex].value)
+    } else if (event.key === ' ' || event.key === 'Enter') {
+      event.preventDefault()
+      setRole(ROLE_OPTIONS[currentIndex].value)
     }
-    setError(null)
+  }
+
+  const handleOpenRevokeMemberModal = (member: WorkspaceMember) => {
+    setRevokeMemberError(null)
+    setMemberToRevoke(member)
+  }
+
+  const handleCloseRevokeMemberModal = () => {
+    if (isRevokingMember) return
+    setMemberToRevoke(null)
+    setRevokeMemberError(null)
+  }
+
+  const handleConfirmRevokeMember = async () => {
+    if (!memberToRevoke || isRevokingMember) return
+    setIsRevokingMember(true)
+    setRevokeMemberError(null)
     try {
-      await revokeWorkspaceMember(member.membership_id)
+      await revokeWorkspaceMember(memberToRevoke.membership_id)
+      setMemberToRevoke(null)
       await loadWorkspaceData()
       await refreshWorkspaces()
     } catch (revokeError) {
-      setError(getFriendlyErrorMessage(revokeError))
+      setRevokeMemberError(getFriendlyErrorMessage(revokeError))
+    } finally {
+      setIsRevokingMember(false)
     }
   }
 
@@ -148,16 +216,29 @@ export function WorkspaceMembersPage() {
     }
   }
 
-  const handleRevokeInvitation = async (invitation: WorkspaceInvitation) => {
-    if (!window.confirm(`Thu hồi lời mời của ${invitation.email}?`)) {
-      return
-    }
-    setError(null)
+  const handleOpenRevokeInvitationModal = (invitation: WorkspaceInvitation) => {
+    setRevokeInvitationError(null)
+    setInvitationToRevoke(invitation)
+  }
+
+  const handleCloseRevokeInvitationModal = () => {
+    if (isRevokingInvitation) return
+    setInvitationToRevoke(null)
+    setRevokeInvitationError(null)
+  }
+
+  const handleConfirmRevokeInvitation = async () => {
+    if (!invitationToRevoke || isRevokingInvitation) return
+    setIsRevokingInvitation(true)
+    setRevokeInvitationError(null)
     try {
-      await revokeWorkspaceInvitation(invitation.id)
+      await revokeWorkspaceInvitation(invitationToRevoke.id)
+      setInvitationToRevoke(null)
       await loadWorkspaceData()
     } catch (revokeError) {
-      setError(getFriendlyErrorMessage(revokeError))
+      setRevokeInvitationError(getFriendlyErrorMessage(revokeError))
+    } finally {
+      setIsRevokingInvitation(false)
     }
   }
 
@@ -229,48 +310,136 @@ export function WorkspaceMembersPage() {
       ) : null}
 
       {isCompanyAdmin ? (
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <MailPlus className="h-5 w-5 text-primary" aria-hidden="true" />
-            Mời thành viên
-          </CardTitle>
-          <CardDescription>
-            Lời mời có thời hạn và chỉ dùng được một lần.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form
-            onSubmit={handleInvite}
-            className="grid gap-3 sm:grid-cols-[1fr_12rem_auto] sm:items-end"
-          >
-            <Input
-              type="email"
-              name="invite-email"
-              label="Email"
-              placeholder="dongnghiep@example.com"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              required
-            />
-            <Select
-              name="invite-role"
-              label="Vai trò"
-              value={role}
-              onChange={(event) =>
-                setRole(event.target.value as MembershipRole)
-              }
-            >
-              <option value="recruiter">Nhà tuyển dụng</option>
-              <option value="interviewer">Người phỏng vấn</option>
-              <option value="admin">Quản trị viên</option>
-            </Select>
-            <Button type="submit" isLoading={isInviting}>
-              Gửi lời mời
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+        <Card className="shadow-soft">
+          <CardHeader className="flex flex-row items-start gap-4 space-y-0">
+            <div className="rounded-full bg-primary/10 p-2.5 text-primary">
+              <MailPlus className="h-6 w-6" aria-hidden="true" />
+            </div>
+            <div className="space-y-1">
+              <CardTitle className="text-xl">Mời thành viên mới</CardTitle>
+              <CardDescription>
+                Gửi lời mời tham gia không gian làm việc của công ty qua email.
+              </CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {inviteError ? (
+              <div
+                role="alert"
+                className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              >
+                {inviteError}
+              </div>
+            ) : null}
+            {inviteSuccessMessage ? (
+              <p
+                role="status"
+                className="rounded-md bg-success/10 px-3 py-2 text-sm font-medium text-success"
+              >
+                {inviteSuccessMessage}
+              </p>
+            ) : null}
+
+            <form onSubmit={handleInvite} className="space-y-6">
+              <div className="space-y-2">
+                <Input
+                  type="email"
+                  name="invite-email"
+                  label="Địa chỉ email đồng nghiệp"
+                  placeholder="dongnghiep@company.com"
+                  helperText="Người nhận sẽ nhận được email lời mời và thông báo trong ứng dụng."
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="space-y-3">
+                <label className="text-sm font-medium text-foreground">
+                  Vai trò
+                </label>
+                <div
+                  role="radiogroup"
+                  aria-label="Chọn vai trò thành viên"
+                  className="grid grid-cols-1 md:grid-cols-3 gap-4"
+                >
+                  {ROLE_OPTIONS.map((option, index) => {
+                    const isSelected = role === option.value
+                    const IconComponent = option.icon
+                    return (
+                      <div
+                        key={option.value}
+                        role="radio"
+                        aria-checked={isSelected}
+                        tabIndex={isSelected ? 0 : -1}
+                        onClick={() => setRole(option.value)}
+                        onKeyDown={(e) => handleRoleKeyDown(e, index)}
+                        className={cn(
+                          'relative flex cursor-pointer flex-col justify-between rounded-xl border p-4 text-left transition-all duration-150 outline-none',
+                          'focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2',
+                          isSelected
+                            ? 'border-primary bg-primary/5 ring-2 ring-primary/20 shadow-soft'
+                            : 'border-border bg-card hover:border-primary/40 hover:bg-muted/30',
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2.5">
+                            <div
+                              className={cn(
+                                'rounded-lg p-2 transition-colors',
+                                isSelected
+                                  ? 'bg-primary text-primary-foreground'
+                                  : 'bg-muted text-muted-foreground',
+                              )}
+                            >
+                              <IconComponent className="h-5 w-5" aria-hidden="true" />
+                            </div>
+                            <span className="font-semibold text-sm text-foreground">
+                              {option.label}
+                            </span>
+                          </div>
+                          {isSelected ? (
+                            <CheckCircle2
+                              className="h-5 w-5 text-primary shrink-0"
+                              aria-hidden="true"
+                            />
+                          ) : (
+                            <div
+                              className="h-5 w-5 rounded-full border border-muted-foreground/30 shrink-0"
+                              aria-hidden="true"
+                            />
+                          )}
+                        </div>
+                        <p className="mt-3 text-xs text-muted-foreground leading-relaxed">
+                          {option.description}
+                        </p>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2.5 rounded-lg border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
+                <Info className="h-4 w-4 shrink-0 text-primary mt-0.5" aria-hidden="true" />
+                <p>
+                  Lời mời có thời hạn 7 ngày và chỉ dùng được một lần. Người nhận chưa có tài khoản sẽ được hướng dẫn đăng ký tài khoản mới khi mở liên kết lời mời.
+                </p>
+              </div>
+
+              <div className="flex justify-end">
+                <Button
+                  type="submit"
+                  isLoading={isInviting}
+                  disabled={isInviting}
+                  className="w-full sm:w-auto"
+                >
+                  <Send className="mr-2 h-4 w-4" aria-hidden="true" />
+                  Gửi lời mời tham gia
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
       ) : null}
 
       <Card>
@@ -348,7 +517,7 @@ export function WorkspaceMembersPage() {
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onClick={() => void handleRevokeMember(member)}
+                        onClick={() => handleOpenRevokeMemberModal(member)}
                       >
                         <UserMinus
                           className="h-4 w-4"
@@ -405,7 +574,7 @@ export function WorkspaceMembersPage() {
                       variant="ghost"
                       size="sm"
                       onClick={() =>
-                        void handleRevokeInvitation(invitation)
+                        handleOpenRevokeInvitationModal(invitation)
                       }
                     >
                       Thu hồi
@@ -417,6 +586,124 @@ export function WorkspaceMembersPage() {
           )}
         </CardContent>
       </Card>
+      ) : null}
+
+      {memberToRevoke ? (
+        <Modal
+          onClose={handleCloseRevokeMemberModal}
+          size="sm"
+          ariaLabel="Thu hồi quyền truy cập thành viên"
+          title="Thu hồi quyền truy cập thành viên"
+          description="Thành viên này sẽ mất quyền truy cập vào không gian làm việc của công ty."
+          footer={
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleCloseRevokeMemberModal}
+                disabled={isRevokingMember}
+              >
+                Hủy
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={handleConfirmRevokeMember}
+                isLoading={isRevokingMember}
+                disabled={isRevokingMember}
+              >
+                Thu hồi quyền truy cập
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-3">
+            {revokeMemberError ? (
+              <div
+                role="alert"
+                className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              >
+                {revokeMemberError}
+              </div>
+            ) : null}
+            <div className="rounded-lg border bg-muted/30 p-3 text-sm space-y-1">
+              <p>
+                <span className="text-muted-foreground">Thành viên: </span>
+                <span className="font-medium text-foreground">
+                  {memberToRevoke.full_name || memberToRevoke.email}
+                </span>
+              </p>
+              <p>
+                <span className="text-muted-foreground">Email: </span>
+                <span className="font-medium text-foreground">
+                  {memberToRevoke.email}
+                </span>
+              </p>
+              <p>
+                <span className="text-muted-foreground">Vai trò: </span>
+                <span className="font-medium text-foreground">
+                  {MEMBERSHIP_ROLE_LABELS[memberToRevoke.role]}
+                </span>
+              </p>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
+      {invitationToRevoke ? (
+        <Modal
+          onClose={handleCloseRevokeInvitationModal}
+          size="sm"
+          ariaLabel="Thu hồi lời mời tham gia"
+          title="Thu hồi lời mời tham gia"
+          description="Người nhận sẽ không thể sử dụng lời mời này để tham gia công ty nữa."
+          footer={
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleCloseRevokeInvitationModal}
+                disabled={isRevokingInvitation}
+              >
+                Hủy
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={handleConfirmRevokeInvitation}
+                isLoading={isRevokingInvitation}
+                disabled={isRevokingInvitation}
+              >
+                Thu hồi lời mời
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-3">
+            {revokeInvitationError ? (
+              <div
+                role="alert"
+                className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              >
+                {revokeInvitationError}
+              </div>
+            ) : null}
+            <div className="rounded-lg border bg-muted/30 p-3 text-sm space-y-1">
+              <p>
+                <span className="text-muted-foreground">Email người nhận: </span>
+                <span className="font-medium text-foreground">
+                  {invitationToRevoke.email}
+                </span>
+              </p>
+              <p>
+                <span className="text-muted-foreground">Vai trò: </span>
+                <span className="font-medium text-foreground">
+                  {MEMBERSHIP_ROLE_LABELS[invitationToRevoke.role]}
+                </span>
+              </p>
+            </div>
+          </div>
+        </Modal>
       ) : null}
     </div>
   )

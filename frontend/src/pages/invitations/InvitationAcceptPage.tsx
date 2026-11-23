@@ -154,6 +154,17 @@ export function InvitationAcceptPage() {
     }
   }, [loadData, authLoading])
 
+  useEffect(() => {
+    const handleInvitationRevoked = () => {
+      void loadData()
+    }
+
+    window.addEventListener('invitation:revoked', handleInvitationRevoked)
+    return () => {
+      window.removeEventListener('invitation:revoked', handleInvitationRevoked)
+    }
+  }, [loadData])
+
   const handleConfirmAction = async () => {
     if (!confirmAction) return
     setIsSubmitting(true)

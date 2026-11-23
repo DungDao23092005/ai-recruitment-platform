@@ -59,6 +59,7 @@ STREAM_HEARTBEAT_SECONDS = 30.0
 # Default SSE event for a personal-channel message.
 NOTIFICATION_CREATED_EVENT = "notification.created"
 WORKSPACE_REVOKED_EVENT = "workspace.revoked"
+INVITATION_REVOKED_EVENT = "invitation.revoked"
 
 
 def _personal_event_name(raw_data: object) -> str:
@@ -72,6 +73,8 @@ def _personal_event_name(raw_data: object) -> str:
     payload = parse_pipeline_payload(raw_data)
     if payload is not None and payload.get("type") == ACCOUNT_LOCKED_EVENT:
         return ACCOUNT_LOCKED_EVENT
+    if payload is not None and payload.get("type") == INVITATION_REVOKED_EVENT:
+        return INVITATION_REVOKED_EVENT
     if is_candidate_pipeline_message(raw_data):
         return CANDIDATE_PIPELINE_UPDATED_EVENT
     return NOTIFICATION_CREATED_EVENT
@@ -310,15 +313,11 @@ async def notification_stream(
                                     and payload.get("type")
                                     == WORKSPACE_REVOKED_EVENT
                                 ):
+                                    event_name = WORKSPACE_REVOKED_EVENT
                                     if company_id is None or payload.get(
                                         "company_id"
                                     ) == str(company_id):
-                                        event_name = WORKSPACE_REVOKED_EVENT
                                         workspace_revoked = True
-                                    else:
-                                        # Never let another tenant's
-                                        # revocation terminate this stream.
-                                        event_name = None
                                 else:
                                     event_name = _personal_event_name(data)
                             if event_name is not None:

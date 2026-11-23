@@ -136,6 +136,23 @@ class CompanyMembershipRepository(BaseRepository[CompanyMembership]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def list_active_admins(
+        self,
+        company_id: Any,
+    ) -> list[CompanyMembership]:
+        stmt = (
+            select(CompanyMembership)
+            .where(
+                CompanyMembership.company_id == company_id,
+                CompanyMembership.role == MembershipRole.ADMIN,
+                CompanyMembership.status == MembershipStatus.ACTIVE,
+                CompanyMembership.is_deleted == False,  # noqa: E712
+            )
+            .order_by(CompanyMembership.created_at.asc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().unique().all())
+
     async def count_active_admins(self, company_id: Any) -> int:
         stmt = select(func.count(CompanyMembership.id)).where(
             CompanyMembership.company_id == company_id,

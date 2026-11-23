@@ -70,7 +70,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         return items
       }
 
-      if (currentUser.role === 'recruiter' && items.length > 0) {
+      if (items.length > 0) {
         applySelection(items[0].company_id)
       } else {
         applySelection(null)
@@ -88,6 +88,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void loadWorkspaces()
+  }, [loadWorkspaces])
+
+  useEffect(() => {
+    const handleWorkspaceRevoked = () => {
+      void loadWorkspaces()
+    }
+
+    window.addEventListener('workspace:revoked', handleWorkspaceRevoked)
+    return () => {
+      window.removeEventListener('workspace:revoked', handleWorkspaceRevoked)
+    }
   }, [loadWorkspaces])
 
   const selectedWorkspace = useMemo(

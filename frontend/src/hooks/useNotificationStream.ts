@@ -15,12 +15,16 @@ export const ACCOUNT_LOCKED_EVENT = 'account.locked';
 // Server-sent invalidation events for recruiter and candidate pipeline views.
 export const PIPELINE_UPDATED_EVENT = 'pipeline.updated';
 export const CANDIDATE_PIPELINE_UPDATED_EVENT = 'candidate.pipeline.updated';
+export const WORKSPACE_REVOKED_EVENT = 'workspace.revoked';
+export const INVITATION_REVOKED_EVENT = 'invitation.revoked';
 // DOM events rebroadcast by this hook for interested UI components.
 export const ADMIN_SUBSCRIPTION_CHANGED_DOM_EVENT = 'admin:subscription:changed';
 export const ADMIN_EMAIL_OUTBOX_UPDATED_DOM_EVENT = 'admin:email_outbox:updated';
 export const PIPELINE_UPDATED_DOM_EVENT = 'pipeline:updated';
 export const CANDIDATE_PIPELINE_UPDATED_DOM_EVENT = 'candidate:pipeline:updated';
 export const STREAM_CONNECTED_DOM_EVENT = 'stream:connected';
+export const WORKSPACE_REVOKED_DOM_EVENT = 'workspace:revoked';
+export const INVITATION_REVOKED_DOM_EVENT = 'invitation:revoked';
 // DOM event rebroadcast when a subscription-related notification reaches the
 // current user (activation, plan change or revocation), so subscription views
 // can silently invalidate their cached state without a manual reload. The
@@ -78,6 +82,16 @@ export interface CandidatePipelineUpdatedDetail {
   from_status?: string | null;
   to_status?: string | null;
   timestamp?: string;
+}
+
+export interface WorkspaceRevokedDetail {
+  company_id?: string;
+  membership_id?: string;
+}
+
+export interface InvitationRevokedDetail {
+  invitation_id?: string;
+  company_id?: string;
 }
 
 function parsePipelineDetail<T>(raw: string): T | null {
@@ -347,6 +361,29 @@ export function useNotificationStream() {
         window.dispatchEvent(
           new CustomEvent(CANDIDATE_PIPELINE_UPDATED_DOM_EVENT, { detail: data })
         );
+      });
+
+      eventSource.addEventListener(WORKSPACE_REVOKED_EVENT, (event) => {
+        try {
+          const data = JSON.parse(event.data) as WorkspaceRevokedDetail;
+          window.dispatchEvent(
+            new CustomEvent(WORKSPACE_REVOKED_DOM_EVENT, { detail: data })
+          );
+        } catch (error) {
+          console.warn('Failed to process workspace revoked event:', error);
+        }
+      });
+
+      eventSource.addEventListener(INVITATION_REVOKED_EVENT, (event) => {
+        try {
+          const data = JSON.parse(event.data) as InvitationRevokedDetail;
+          triggerResync();
+          window.dispatchEvent(
+            new CustomEvent(INVITATION_REVOKED_DOM_EVENT, { detail: data })
+          );
+        } catch (error) {
+          console.warn('Failed to process invitation revoked event:', error);
+        }
       });
 
       eventSource.addEventListener(ACCOUNT_LOCKED_EVENT, (event) => {

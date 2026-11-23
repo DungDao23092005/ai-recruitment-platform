@@ -1256,6 +1256,30 @@ describe('NotificationsPage', () => {
 
         expect(screen.getByText('Tài khoản')).toBeInTheDocument();
       });
+
+      it('renders "Thành viên công ty" for company_membership entity type', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([
+          {
+            id: 'member-notif',
+            title: 'Thành viên mới tham gia công ty',
+            content: 'dev@example.com đã tham gia TechNova AI với vai trò Nhà tuyển dụng.',
+            notification_type: 'company_member_joined',
+            entity_type: 'company_membership',
+            entity_id: 'membership-uuid-1',
+            is_read: false,
+            created_at: new Date().toISOString(),
+          },
+        ]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByText('Thành viên mới tham gia công ty')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('Thành viên công ty')).toBeInTheDocument();
+      });
     });
 
     describe('D. Candidate Chevron Visibility', () => {
@@ -1693,6 +1717,212 @@ describe('NotificationsPage', () => {
         expect(mockNavigate).toHaveBeenCalledWith('/invitations/accept', {
           state: { invitationId: 'inv-uuid-999' },
         });
+      });
+
+      it('refreshes pending invitations and notifications when invitation:revoked event is received', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([]);
+        vi.mocked(workspacesApi.getMyInvitations).mockResolvedValueOnce([
+          {
+            id: 'inv-uuid-888',
+            company_id: 'company-uuid-1',
+            company_name: 'TechNova AI',
+            company_slug: 'technova-ai',
+            role: 'interviewer',
+            status: 'pending',
+            expires_at: new Date(Date.now() + 86400000).toISOString(),
+            created_at: new Date().toISOString(),
+            can_accept: true,
+          },
+        ]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: /TechNova AI/ })).toBeInTheDocument();
+        });
+
+        // Next response after revocation: no pending invitations
+        vi.mocked(workspacesApi.getMyInvitations).mockResolvedValueOnce([]);
+
+        await act(async () => {
+          window.dispatchEvent(
+            new CustomEvent('invitation:revoked', {
+              detail: { invitation_id: 'inv-uuid-888', company_id: 'company-uuid-1' },
+            }),
+          );
+        });
+
+        await waitFor(() => {
+          expect(screen.queryByRole('heading', { name: /TechNova AI/ })).not.toBeInTheDocument();
+        });
+
+        expect(workspacesApi.getMyInvitations).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    describe('I. Company Membership Notifications', () => {
+      const membershipNotif = {
+        id: 'notif-member-1',
+        title: 'Thành viên mới tham gia công ty',
+        content: 'newuser@example.com đã tham gia TechNova AI với vai trò Nhà tuyển dụng.',
+        notification_type: 'company_member_joined',
+        entity_type: 'company_membership',
+        entity_id: 'membership-uuid-123',
+        is_read: false,
+        created_at: new Date().toISOString(),
+      };
+
+      it('displays company membership notification with Users icon and navigates to /recruiter/workspace for company admin', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(useOptionalWorkspace).mockReturnValue({
+          workspaces: [],
+          selectedWorkspace: {
+            company_id: 'c1',
+            company_name: 'TechNova AI',
+            company_slug: 'technova-ai',
+            role: 'admin',
+            is_platform_admin: false,
+          } as any,
+          isLoading: false,
+          error: null,
+          selectWorkspace: vi.fn(),
+          refreshWorkspaces: vi.fn(),
+        });
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([membershipNotif]);
+        vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+          ...membershipNotif,
+          is_read: true,
+        });
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'Thành viên mới tham gia công ty' })).toBeInTheDocument();
+          expect(screen.getByText(membershipNotif.content)).toBeInTheDocument();
+        });
+
+        // Chevron is present for company admin
+        expect(screen.getAllByTestId('notification-chevron').length).toBeGreaterThan(0);
+
+        // Click notification
+        await screen.getByRole('heading', { name: 'Thành viên mới tham gia công ty' }).click();
+
+        await waitFor(() => {
+          expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('notif-member-1');
+          expect(mockNavigate).toHaveBeenCalledWith('/recruiter/workspace');
+        });
+      });
+
+      it('navigates to /recruiter/workspace for workspace recruiter', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(useOptionalWorkspace).mockReturnValue({
+          workspaces: [],
+          selectedWorkspace: {
+            company_id: 'c1',
+            company_name: 'TechNova AI',
+            company_slug: 'technova-ai',
+            role: 'recruiter',
+            is_platform_admin: false,
+          } as any,
+          isLoading: false,
+          error: null,
+          selectWorkspace: vi.fn(),
+          refreshWorkspaces: vi.fn(),
+        });
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([membershipNotif]);
+        vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+          ...membershipNotif,
+          is_read: true,
+        });
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'Thành viên mới tham gia công ty' })).toBeInTheDocument();
+        });
+
+        // Chevron is present for recruiter
+        expect(screen.getAllByTestId('notification-chevron').length).toBeGreaterThan(0);
+
+        await screen.getByRole('heading', { name: 'Thành viên mới tham gia công ty' }).click();
+
+        await waitFor(() => {
+          expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('notif-member-1');
+          expect(mockNavigate).toHaveBeenCalledWith('/recruiter/workspace');
+        });
+      });
+
+      it('is non-navigable for candidate: hides chevron and clicking marks read without navigating', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        vi.mocked(useOptionalWorkspace).mockReturnValue({
+          workspaces: [],
+          selectedWorkspace: null,
+          isLoading: false,
+          error: null,
+          selectWorkspace: vi.fn(),
+          refreshWorkspaces: vi.fn(),
+        });
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([membershipNotif]);
+        vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+          ...membershipNotif,
+          is_read: true,
+        });
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'Thành viên mới tham gia công ty' })).toBeInTheDocument();
+        });
+
+        // Chevron is hidden for candidate
+        expect(screen.queryAllByTestId('notification-chevron')).toHaveLength(0);
+
+        await screen.getByRole('heading', { name: 'Thành viên mới tham gia công ty' }).click();
+
+        await waitFor(() => {
+          expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('notif-member-1');
+        });
+        expect(mockNavigate).not.toHaveBeenCalled();
+      });
+
+      it('is non-navigable for interviewer: hides chevron and clicking marks read without navigating', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(useOptionalWorkspace).mockReturnValue({
+          workspaces: [],
+          selectedWorkspace: {
+            company_id: 'c1',
+            company_name: 'TechNova AI',
+            company_slug: 'technova-ai',
+            role: 'interviewer',
+            is_platform_admin: false,
+          } as any,
+          isLoading: false,
+          error: null,
+          selectWorkspace: vi.fn(),
+          refreshWorkspaces: vi.fn(),
+        });
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([membershipNotif]);
+        vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+          ...membershipNotif,
+          is_read: true,
+        });
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'Thành viên mới tham gia công ty' })).toBeInTheDocument();
+        });
+
+        // Chevron is hidden for interviewer
+        expect(screen.queryAllByTestId('notification-chevron')).toHaveLength(0);
+
+        await screen.getByRole('heading', { name: 'Thành viên mới tham gia công ty' }).click();
+
+        await waitFor(() => {
+          expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('notif-member-1');
+        });
+        expect(mockNavigate).not.toHaveBeenCalled();
       });
     });
   });

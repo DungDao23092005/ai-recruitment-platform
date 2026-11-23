@@ -8,6 +8,7 @@ import {
   Loader2,
   Mail,
   MessageSquare,
+  Users,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { Button } from '@/components/ui/button';
@@ -36,6 +37,7 @@ const ENTITY_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   subscription: CreditCard,
   company_invitation: Mail,
   invitation: Mail,
+  company_membership: Users,
 };
 
 const ENTITY_LABELS: Record<string, string> = {
@@ -46,6 +48,7 @@ const ENTITY_LABELS: Record<string, string> = {
   user: 'Tài khoản',
   company_invitation: 'Lời mời công ty',
   invitation: 'Lời mời công ty',
+  company_membership: 'Thành viên công ty',
 };
 
 function NotificationSkeleton() {
@@ -95,6 +98,11 @@ export function getEntityRoute(entityType: string | null, entityId: string | nul
     case 'company_invitation':
     case 'invitation':
       return `/invitations/accept`;
+    case 'company_membership':
+      if (userRole === 'candidate') {
+        return null;
+      }
+      return `/recruiter/workspace`;
     default:
       return null;
   }
@@ -112,6 +120,20 @@ export function isNotificationNavigable(
     notification.entity_type === 'invitation'
   ) {
     return true;
+  }
+  // Company membership notifications are navigable for authorized workspace roles
+  if (
+    notification.notification_type === 'company_member_joined' ||
+    notification.entity_type === 'company_membership'
+  ) {
+    if (userRole === 'candidate' || workspaceRole === 'interviewer') {
+      return false;
+    }
+    return (
+      workspaceRole === 'admin' ||
+      workspaceRole === 'recruiter' ||
+      userRole === 'admin'
+    );
   }
   // All candidate_quota notifications are non-navigable for every role
   if (notification.entity_type === 'candidate_quota') {
@@ -186,6 +208,20 @@ export function NotificationsPage() {
     };
   }, [isAuthenticated]);
 
+  useEffect(() => {
+    const handleInvitationRevoked = () => {
+      if (isAuthenticated) {
+        getMyInvitations().then(setPendingInvitations).catch(() => {});
+        fetchNotifications(1, false);
+      }
+    };
+
+    window.addEventListener('invitation:revoked', handleInvitationRevoked);
+    return () => {
+      window.removeEventListener('invitation:revoked', handleInvitationRevoked);
+    };
+  }, [isAuthenticated]);
+
   const isWorkspaceLoading = currentUser?.role === 'recruiter' && Boolean(workspace?.isLoading);
 
   const fetchNotifications = async (pageNum: number = 1, append = false) => {
@@ -238,6 +274,14 @@ export function NotificationsPage() {
         navigate('/invitations/accept', {
           state: { invitationId: notification.entity_id },
         });
+        return;
+      }
+
+      if (
+        notification.notification_type === 'company_member_joined' ||
+        notification.entity_type === 'company_membership'
+      ) {
+        navigate('/recruiter/workspace');
         return;
       }
 

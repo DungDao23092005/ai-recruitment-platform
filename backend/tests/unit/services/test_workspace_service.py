@@ -1,3 +1,4 @@
+import json
 import asyncio
 import uuid
 from datetime import timedelta
@@ -52,6 +53,8 @@ def make_session() -> MagicMock:
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
     session.execute = AsyncMock()
+    session.begin_nested.return_value.__aenter__ = AsyncMock()
+    session.begin_nested.return_value.__aexit__ = AsyncMock(return_value=False)
     return session
 
 
@@ -141,6 +144,7 @@ def make_service(session) -> WorkspaceService:
     service.invitations.conditional_revoke.return_value = 1
     service.invitations.get_pending_by_company_email.return_value = None
     service.memberships.get_active.return_value = None
+    service.memberships.list_active_admins.return_value = []
     service.companies = AsyncMock(spec=CompanyRepository)
     service.users = AsyncMock(spec=UserRepository)
     service.notifications = AsyncMock(spec=NotificationService)
@@ -787,19 +791,17 @@ class TestRevokeMembership:
         service.memberships.count_active_admins.return_value = 2
 
         with patch(
-            "app.services.workspace_service.asyncio.create_task"
-        ) as create_task:
+            "app.services.workspace_service.TransactionActionManager"
+        ) as tam_mock:
             result = asyncio.run(
                 service.revoke_membership(context, target.id)
             )
-            coroutine = create_task.call_args.args[0]
-            coroutine.close()
 
         assert result.status == MembershipStatus.REVOKED
         assert target.revoked_by_id == admin.id
         assert target.revoked_at is not None
         session.commit.assert_awaited_once()
-        create_task.assert_called_once()
+        tam_mock.register_action.assert_called_once()
 
     def test_revoke_membership_soft_deletes_active_interview_assignments(self):
         session = make_session()
@@ -822,16 +824,15 @@ class TestRevokeMembership:
         service.memberships.get_by_id_with_user.return_value = target
 
         with patch(
-            "app.services.workspace_service.asyncio.create_task"
-        ) as create_task:
+            "app.services.workspace_service.TransactionActionManager"
+        ) as tam_mock:
             result = asyncio.run(
                 service.revoke_membership(context, target.id)
             )
-            coroutine = create_task.call_args.args[0]
-            coroutine.close()
 
         assert result.status == MembershipStatus.REVOKED
         session.commit.assert_awaited_once()
+        tam_mock.register_action.assert_called_once()
         # session.execute is called: lock (1), RecruiterProfile update (2), InterviewAssignment update (3)
         assert session.execute.await_count >= 3
 
@@ -1291,3 +1292,708 @@ class TestInvitationEmailAndNotificationCreation:
             )
 
         service.notifications.notify_company_invitation.assert_awaited_once()
+
+
+class TestMemberJoinedNotifications:
+    def test_active_administrators_receive_notifications(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        invitee = make_user(email="invitee@example.com")
+        admin_1 = make_user(email="admin1@example.com")
+        admin_2 = make_user(email="admin2@example.com")
+
+        admin_membership_1 = make_membership(
+            company=company, user=admin_1, role=MembershipRole.ADMIN
+        )
+        admin_membership_2 = make_membership(
+            company=company, user=admin_2, role=MembershipRole.ADMIN
+        )
+
+        token = "token-secret-12345"
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+            token=token,
+            role=MembershipRole.RECRUITER,
+        )
+
+        service.invitations.get_by_token_hash_for_update.return_value = (
+            invitation
+        )
+        service.companies.get_by_id.return_value = company
+        service.memberships.list_active_admins.return_value = [
+            admin_membership_1,
+            admin_membership_2,
+        ]
+
+        def assign_defaults():
+            if session.add.call_args:
+                membership = session.add.call_args.args[0]
+                membership.id = uuid.uuid4()
+                membership.created_at = utc_now()
+                membership.updated_at = utc_now()
+
+        session.flush.side_effect = assign_defaults
+
+        result = asyncio.run(service.accept_invitation(invitee, token))
+        assert result.workspace.company_id == company.id
+
+        service.memberships.list_active_admins.assert_awaited_once_with(
+            company.id
+        )
+        assert service.notifications.notify_company_member_joined.await_count == 2
+        calls = (
+            service.notifications.notify_company_member_joined.await_args_list
+        )
+
+        assert calls[0].kwargs["admin_user_id"] == admin_1.id
+        assert calls[0].kwargs["member_email"] == "invitee@example.com"
+        assert calls[0].kwargs["company_name"] == company.name
+        assert calls[0].kwargs["role_label"] == "Nhà tuyển dụng"
+
+        assert calls[1].kwargs["admin_user_id"] == admin_2.id
+        assert calls[1].kwargs["member_email"] == "invitee@example.com"
+        assert calls[1].kwargs["company_name"] == company.name
+        assert calls[1].kwargs["role_label"] == "Nhà tuyển dụng"
+
+    def test_joining_user_does_not_receive_self_notification(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        invitee = make_user(email="joining-admin@example.com")
+        other_admin = make_user(email="other-admin@example.com")
+
+        joining_membership = make_membership(
+            company=company, user=invitee, role=MembershipRole.ADMIN
+        )
+        other_membership = make_membership(
+            company=company, user=other_admin, role=MembershipRole.ADMIN
+        )
+
+        token = "token-admin-12345"
+        invitation = make_invitation(
+            company=company,
+            email="joining-admin@example.com",
+            token=token,
+            role=MembershipRole.ADMIN,
+        )
+
+        service.invitations.get_by_token_hash_for_update.return_value = (
+            invitation
+        )
+        service.companies.get_by_id.return_value = company
+        service.memberships.list_active_admins.return_value = [
+            joining_membership,
+            other_membership,
+        ]
+
+        def assign_defaults():
+            if session.add.call_args:
+                membership = session.add.call_args.args[0]
+                membership.id = uuid.uuid4()
+                membership.created_at = utc_now()
+                membership.updated_at = utc_now()
+
+        session.flush.side_effect = assign_defaults
+
+        result = asyncio.run(service.accept_invitation(invitee, token))
+        assert result.workspace.role == MembershipRole.ADMIN
+
+        # Only other_admin receives notification, joining user is excluded
+        assert service.notifications.notify_company_member_joined.await_count == 1
+        call_kwargs = (
+            service.notifications.notify_company_member_joined.await_args.kwargs
+        )
+        assert call_kwargs["admin_user_id"] == other_admin.id
+        assert call_kwargs["member_email"] == "joining-admin@example.com"
+
+    def test_recruiters_and_interviewers_do_not_receive_admin_notifications(
+        self,
+    ):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        invitee = make_user(email="invitee@example.com")
+
+        token = "token-recruiter-123"
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+            token=token,
+            role=MembershipRole.INTERVIEWER,
+        )
+
+        service.invitations.get_by_token_hash_for_update.return_value = (
+            invitation
+        )
+        service.companies.get_by_id.return_value = company
+        service.memberships.list_active_admins.return_value = []
+
+        def assign_defaults():
+            if session.add.call_args:
+                membership = session.add.call_args.args[0]
+                membership.id = uuid.uuid4()
+                membership.created_at = utc_now()
+                membership.updated_at = utc_now()
+
+        session.flush.side_effect = assign_defaults
+
+        asyncio.run(service.accept_invitation(invitee, token))
+
+        service.memberships.list_active_admins.assert_awaited_once_with(
+            company.id
+        )
+        service.notifications.notify_company_member_joined.assert_not_awaited()
+
+    def test_administrators_of_other_companies_receive_no_notification(self):
+        session = make_session()
+        service = make_service(session)
+        company_a = make_company()
+        company_b = make_company()
+        invitee = make_user(email="invitee@example.com")
+        admin_b = make_user(email="admin-b@example.com")
+
+        make_membership(
+            company=company_b, user=admin_b, role=MembershipRole.ADMIN
+        )
+
+        token = "token-a"
+        invitation = make_invitation(
+            company=company_a,
+            email="invitee@example.com",
+            token=token,
+            role=MembershipRole.RECRUITER,
+        )
+
+        service.invitations.get_by_token_hash_for_update.return_value = (
+            invitation
+        )
+        service.companies.get_by_id.return_value = company_a
+        service.memberships.list_active_admins.return_value = []
+
+        def assign_defaults():
+            if session.add.call_args:
+                membership = session.add.call_args.args[0]
+                membership.id = uuid.uuid4()
+                membership.created_at = utc_now()
+                membership.updated_at = utc_now()
+
+        session.flush.side_effect = assign_defaults
+
+        asyncio.run(service.accept_invitation(invitee, token))
+
+        service.memberships.list_active_admins.assert_awaited_once_with(
+            company_a.id
+        )
+        service.notifications.notify_company_member_joined.assert_not_awaited()
+
+    def test_duplicate_notification_id_handled_safely(self):
+        from sqlalchemy.exc import IntegrityError
+
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        invitee = make_user(email="invitee@example.com")
+        admin = make_user(email="admin@example.com")
+        admin_membership = make_membership(
+            company=company, user=admin, role=MembershipRole.ADMIN
+        )
+
+        token = "token-dup"
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+            token=token,
+            role=MembershipRole.RECRUITER,
+        )
+
+        service.invitations.get_by_token_hash_for_update.return_value = (
+            invitation
+        )
+        service.companies.get_by_id.return_value = company
+        service.memberships.list_active_admins.return_value = [
+            admin_membership
+        ]
+
+        def assign_defaults():
+            if session.add.call_args:
+                membership = session.add.call_args.args[0]
+                membership.id = uuid.uuid4()
+                membership.created_at = utc_now()
+                membership.updated_at = utc_now()
+
+        session.flush.side_effect = assign_defaults
+
+        service.notifications.notify_company_member_joined.side_effect = (
+            IntegrityError(
+                "statement",
+                {},
+                Exception(
+                    "Violation of PRIMARY KEY constraint 'PK_notifications'. Duplicate key value."
+                ),
+            )
+        )
+
+        result = asyncio.run(service.accept_invitation(invitee, token))
+        assert result.workspace.company_id == company.id
+        session.commit.assert_awaited_once()
+
+    def test_unrelated_integrity_errors_still_propagate(self):
+        from sqlalchemy.exc import IntegrityError
+
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        invitee = make_user(email="invitee@example.com")
+        admin = make_user(email="admin@example.com")
+        admin_membership = make_membership(
+            company=company, user=admin, role=MembershipRole.ADMIN
+        )
+
+        token = "token-unrelated"
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+            token=token,
+            role=MembershipRole.RECRUITER,
+        )
+
+        service.invitations.get_by_token_hash_for_update.return_value = (
+            invitation
+        )
+        service.companies.get_by_id.return_value = company
+        service.memberships.list_active_admins.return_value = [
+            admin_membership
+        ]
+
+        def assign_defaults():
+            if session.add.call_args:
+                membership = session.add.call_args.args[0]
+                membership.id = uuid.uuid4()
+                membership.created_at = utc_now()
+                membership.updated_at = utc_now()
+
+        session.flush.side_effect = assign_defaults
+
+        service.notifications.notify_company_member_joined.side_effect = (
+            IntegrityError(
+                "statement",
+                {},
+                Exception(
+                    "FOREIGN KEY constraint 'FK_notifications_user' violation."
+                ),
+            )
+        )
+
+        with pytest.raises(IntegrityError):
+            asyncio.run(service.accept_invitation(invitee, token))
+
+
+class TestRevokeMembershipRealtime:
+    def test_member_revocation_registers_post_commit_publication_action(self):
+        session = make_session()
+        lock_result = MagicMock()
+        lock_result.scalar_one.return_value = 0
+        session.execute.return_value = lock_result
+
+        service = make_service(session)
+        company = make_company()
+        admin = make_user(email="admin@example.com")
+        member = make_user(email="member@example.com")
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+        target_membership = make_membership(company=company, user=member, role=MembershipRole.RECRUITER)
+
+        service.memberships.get_active.return_value = context.membership
+        service.memberships.get_by_id_with_user.return_value = target_membership
+
+        with patch("app.services.workspace_service.TransactionActionManager") as tam_mock, \
+             patch("app.services.workspace_service.pubsub_manager") as ps_mock:
+            ps_mock.publish = AsyncMock()
+            ps_mock.get_user_channel.return_value = f"notifications:user:{member.id}"
+            result = asyncio.run(service.revoke_membership(context, target_membership.id))
+
+            assert result.status == MembershipStatus.REVOKED
+            tam_mock.register_action.assert_called_once()
+            args, _ = tam_mock.register_action.call_args
+            assert args[0] is session
+            callback = args[1]
+            assert callable(callback)
+
+            # Execute registered callback to assert publication
+            asyncio.run(callback())
+            ps_mock.publish.assert_awaited_once_with(
+                channel=f"notifications:user:{member.id}",
+                message={
+                    "type": "workspace.revoked",
+                    "company_id": str(company.id),
+                    "membership_id": str(target_membership.id),
+                },
+            )
+
+    def test_member_revocation_action_does_not_publish_on_rollback(self):
+        session = make_session()
+        lock_result = MagicMock()
+        lock_result.scalar_one.return_value = 0
+        session.execute.return_value = lock_result
+        session.commit.side_effect = Exception("DB Commit Failed")
+
+        service = make_service(session)
+        company = make_company()
+        admin = make_user(email="admin@example.com")
+        member = make_user(email="member@example.com")
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+        target_membership = make_membership(company=company, user=member, role=MembershipRole.RECRUITER)
+
+        service.memberships.get_active.return_value = context.membership
+        service.memberships.get_by_id_with_user.return_value = target_membership
+
+        with patch("app.services.workspace_service.TransactionActionManager"), \
+             patch("app.services.workspace_service.pubsub_manager") as ps_mock:
+            ps_mock.publish = AsyncMock()
+            with pytest.raises(Exception, match="DB Commit Failed"):
+                asyncio.run(service.revoke_membership(context, target_membership.id))
+
+            session.rollback.assert_awaited_once()
+            ps_mock.publish.assert_not_called()
+
+    def test_member_revocation_targets_only_revoked_user_personal_channel(self):
+        session = make_session()
+        lock_result = MagicMock()
+        lock_result.scalar_one.return_value = 0
+        session.execute.return_value = lock_result
+
+        service = make_service(session)
+        company = make_company()
+        admin = make_user(email="admin@example.com")
+        member = make_user(email="member@example.com")
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+        target_membership = make_membership(company=company, user=member, role=MembershipRole.RECRUITER)
+
+        service.memberships.get_active.return_value = context.membership
+        service.memberships.get_by_id_with_user.return_value = target_membership
+
+        with patch("app.services.workspace_service.TransactionActionManager") as tam_mock, \
+             patch("app.services.workspace_service.pubsub_manager") as ps_mock:
+            ps_mock.publish = AsyncMock()
+            ps_mock.get_user_channel.side_effect = lambda uid: f"notifications:user:{uid}"
+            asyncio.run(service.revoke_membership(context, target_membership.id))
+
+            args, _ = tam_mock.register_action.call_args
+            asyncio.run(args[1]())
+            ps_mock.publish.assert_awaited_once()
+            call_channel = ps_mock.publish.call_args.kwargs["channel"]
+            assert call_channel == f"notifications:user:{member.id}"
+            assert call_channel != f"notifications:user:{admin.id}"
+
+
+class TestRevokeInvitationRealtime:
+    def test_invitation_revocation_marks_registered_recipient_notification_read(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        admin = make_user(email="admin@example.com")
+        recipient = make_user(email="invitee@example.com")
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+        invitation = make_invitation(company=company, email="invitee@example.com")
+
+        service.invitations.get_by_company.return_value = invitation
+        service.invitations.conditional_revoke.return_value = 1
+        service.users.get_by_email.return_value = recipient
+
+        result = asyncio.run(service.revoke_invitation(context, invitation.id))
+
+        assert result.status == InvitationStatus.REVOKED
+        service.notifications.mark_invitation_notification_read.assert_awaited_once_with(
+            recipient.id, invitation.id
+        )
+
+    def test_invitation_revocation_registers_post_commit_event_for_recipient(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        admin = make_user(email="admin@example.com")
+        recipient = make_user(email="invitee@example.com")
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+        invitation = make_invitation(company=company, email="invitee@example.com")
+
+        service.invitations.get_by_company.return_value = invitation
+        service.invitations.conditional_revoke.return_value = 1
+        service.users.get_by_email.return_value = recipient
+
+        with patch("app.services.workspace_service.TransactionActionManager") as tam_mock, \
+             patch("app.services.workspace_service.pubsub_manager") as ps_mock:
+            ps_mock.publish = AsyncMock()
+            ps_mock.get_user_channel.return_value = f"notifications:user:{recipient.id}"
+            asyncio.run(service.revoke_invitation(context, invitation.id))
+
+            tam_mock.register_action.assert_called_once()
+            args, _ = tam_mock.register_action.call_args
+            assert args[0] is session
+            asyncio.run(args[1]())
+            ps_mock.publish.assert_awaited_once_with(
+                channel=f"notifications:user:{recipient.id}",
+                message={
+                    "type": "invitation.revoked",
+                    "invitation_id": str(invitation.id),
+                    "company_id": str(company.id),
+                },
+            )
+
+    def test_unregistered_recipient_revocation_succeeds_without_personal_event(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        admin = make_user(email="admin@example.com")
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+        invitation = make_invitation(company=company, email="unregistered@example.com")
+
+        service.invitations.get_by_company.return_value = invitation
+        service.invitations.conditional_revoke.return_value = 1
+        service.users.get_by_email.return_value = None
+
+        with patch("app.services.workspace_service.TransactionActionManager") as tam_mock, \
+             patch("app.services.workspace_service.pubsub_manager") as ps_mock:
+            ps_mock.publish = AsyncMock()
+            result = asyncio.run(service.revoke_invitation(context, invitation.id))
+
+            assert result.status == InvitationStatus.REVOKED
+            service.notifications.mark_invitation_notification_read.assert_not_called()
+            tam_mock.register_action.assert_not_called()
+            ps_mock.publish.assert_not_called()
+
+    def test_failed_conditional_revocation_does_not_publish_event(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        admin = make_user(email="admin@example.com")
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+        invitation = make_invitation(company=company, email="invitee@example.com")
+
+        service.invitations.get_by_company.return_value = invitation
+        service.invitations.conditional_revoke.return_value = 0
+
+        with patch("app.services.workspace_service.TransactionActionManager") as tam_mock:
+            with pytest.raises(InvalidTransitionException):
+                asyncio.run(service.revoke_invitation(context, invitation.id))
+
+            tam_mock.register_action.assert_not_called()
+
+    def test_duplicate_or_unrelated_integrity_errors_preserve_correct_behavior(self):
+        session = make_session()
+        session.commit.side_effect = Exception("Integrity Error on Commit")
+        service = make_service(session)
+        company = make_company()
+        admin = make_user(email="admin@example.com")
+        recipient = make_user(email="invitee@example.com")
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+        invitation = make_invitation(company=company, email="invitee@example.com")
+
+        service.invitations.get_by_company.return_value = invitation
+        service.invitations.conditional_revoke.return_value = 1
+        service.users.get_by_email.return_value = recipient
+
+        with patch("app.services.workspace_service.TransactionActionManager"), \
+             patch("app.services.workspace_service.pubsub_manager") as ps_mock:
+            ps_mock.publish = AsyncMock()
+            with pytest.raises(Exception, match="Integrity Error on Commit"):
+                asyncio.run(service.revoke_invitation(context, invitation.id))
+
+            session.rollback.assert_awaited_once()
+            ps_mock.publish.assert_not_called()
+
+
+class TestSSEClassificationAndStreamDispatch:
+    def test_personal_event_name_classifies_invitation_revoked(self):
+        from app.api.v1.endpoints.notifications import (
+            _personal_event_name,
+            INVITATION_REVOKED_EVENT,
+            ACCOUNT_LOCKED_EVENT,
+            NOTIFICATION_CREATED_EVENT,
+        )
+        assert _personal_event_name({"type": INVITATION_REVOKED_EVENT}) == INVITATION_REVOKED_EVENT
+        assert _personal_event_name({"type": ACCOUNT_LOCKED_EVENT}) == ACCOUNT_LOCKED_EVENT
+        assert _personal_event_name({"type": "regular_notification"}) == NOTIFICATION_CREATED_EVENT
+        assert _personal_event_name("invalid json") == NOTIFICATION_CREATED_EVENT
+
+    def test_workspace_revoked_delivered_when_company_matches_workspace(self):
+        from app.api.v1.endpoints.notifications import (
+            WORKSPACE_REVOKED_EVENT,
+            notification_stream,
+        )
+        user_id = uuid.uuid4()
+        company_id = uuid.uuid4()
+        matching_revocation = {
+            "type": WORKSPACE_REVOKED_EVENT,
+            "company_id": str(company_id),
+            "membership_id": str(uuid.uuid4()),
+        }
+        personal_channel = f"notifications:user:{user_id}"
+
+        class FakePubSub:
+            def __init__(self, msgs):
+                self._msgs = list(msgs)
+                self.unsubscribed = []
+                self.closed = False
+            async def subscribe(self, *c):
+                pass
+            async def get_message(self, *a, **kw):
+                if self._msgs:
+                    return self._msgs.pop(0)
+                return None
+            async def unsubscribe(self, *c):
+                self.unsubscribed.extend(c)
+            async def close(self):
+                self.closed = True
+
+        msg = {
+            "type": "message",
+            "channel": personal_channel,
+            "data": json.dumps(matching_revocation),
+        }
+        pubsub = FakePubSub([msg])
+        manager = MagicMock()
+        manager._redis.get = AsyncMock(return_value=json.dumps({
+            "user_id": str(user_id),
+            "is_admin": False,
+            "company_id": str(company_id),
+        }))
+        manager._redis.delete = AsyncMock()
+        manager._redis.pubsub = MagicMock(return_value=pubsub)
+        manager.get_user_channel.return_value = personal_channel
+
+        response = asyncio.run(notification_stream(ticket="valid-ticket", pubsub=manager))
+        generator = response.body_iterator
+
+        async def _collect():
+            chunks = []
+            async for chunk in generator:
+                chunks.append(chunk)
+            return chunks
+
+        chunks = asyncio.run(_collect())
+        joined = "".join(chunks)
+        assert f"event: {WORKSPACE_REVOKED_EVENT}" in joined
+        assert matching_revocation["membership_id"] in joined
+
+    def test_workspace_revoked_delivered_when_company_differs_without_terminating_stream(self):
+        from app.api.v1.endpoints.notifications import (
+            WORKSPACE_REVOKED_EVENT,
+            notification_stream,
+        )
+        user_id = uuid.uuid4()
+        active_company_id = uuid.uuid4()
+        other_company_id = uuid.uuid4()
+        other_revocation = {
+            "type": WORKSPACE_REVOKED_EVENT,
+            "company_id": str(other_company_id),
+            "membership_id": str(uuid.uuid4()),
+        }
+        personal_channel = f"notifications:user:{user_id}"
+
+        class FakePubSub:
+            def __init__(self, msgs):
+                self._msgs = list(msgs)
+                self.unsubscribed = []
+                self.closed = False
+            async def subscribe(self, *c):
+                pass
+            async def get_message(self, *a, **kw):
+                if self._msgs:
+                    return self._msgs.pop(0)
+                return None
+            async def unsubscribe(self, *c):
+                self.unsubscribed.extend(c)
+            async def close(self):
+                self.closed = True
+
+        msg = {
+            "type": "message",
+            "channel": personal_channel,
+            "data": json.dumps(other_revocation),
+        }
+        pubsub = FakePubSub([msg])
+        manager = MagicMock()
+        manager._redis.get = AsyncMock(return_value=json.dumps({
+            "user_id": str(user_id),
+            "is_admin": False,
+            "company_id": str(active_company_id),
+        }))
+        manager._redis.delete = AsyncMock()
+        manager._redis.pubsub = MagicMock(return_value=pubsub)
+        manager.get_user_channel.return_value = personal_channel
+
+        with patch("app.api.v1.endpoints.notifications.STREAM_MAX_SECONDS", 0.001):
+            response = asyncio.run(notification_stream(ticket="valid-ticket", pubsub=manager))
+            generator = response.body_iterator
+
+            async def _collect():
+                chunks = []
+                async for chunk in generator:
+                    chunks.append(chunk)
+                return chunks
+
+            chunks = asyncio.run(_collect())
+            joined = "".join(chunks)
+            assert f"event: {WORKSPACE_REVOKED_EVENT}" in joined
+            assert other_revocation["membership_id"] in joined
+
+    def test_invitation_revoked_delivered_as_personal_event_without_terminating_stream(self):
+        from app.api.v1.endpoints.notifications import (
+            INVITATION_REVOKED_EVENT,
+            notification_stream,
+        )
+        user_id = uuid.uuid4()
+        inv_revocation = {
+            "type": INVITATION_REVOKED_EVENT,
+            "invitation_id": str(uuid.uuid4()),
+            "company_id": str(uuid.uuid4()),
+        }
+        personal_channel = f"notifications:user:{user_id}"
+
+        class FakePubSub:
+            def __init__(self, msgs):
+                self._msgs = list(msgs)
+                self.unsubscribed = []
+                self.closed = False
+            async def subscribe(self, *c):
+                pass
+            async def get_message(self, *a, **kw):
+                if self._msgs:
+                    return self._msgs.pop(0)
+                return None
+            async def unsubscribe(self, *c):
+                self.unsubscribed.extend(c)
+            async def close(self):
+                self.closed = True
+
+        msg = {
+            "type": "message",
+            "channel": personal_channel,
+            "data": json.dumps(inv_revocation),
+        }
+        pubsub = FakePubSub([msg])
+        manager = MagicMock()
+        manager._redis.get = AsyncMock(return_value=json.dumps({
+            "user_id": str(user_id),
+            "is_admin": False,
+            "company_id": None,
+        }))
+        manager._redis.delete = AsyncMock()
+        manager._redis.pubsub = MagicMock(return_value=pubsub)
+        manager.get_user_channel.return_value = personal_channel
+
+        with patch("app.api.v1.endpoints.notifications.STREAM_MAX_SECONDS", 0.001):
+            response = asyncio.run(notification_stream(ticket="valid-ticket", pubsub=manager))
+            generator = response.body_iterator
+
+            async def _collect():
+                chunks = []
+                async for chunk in generator:
+                    chunks.append(chunk)
+                return chunks
+
+            chunks = asyncio.run(_collect())
+            joined = "".join(chunks)
+            assert f"event: {INVITATION_REVOKED_EVENT}" in joined
+            assert inv_revocation["invitation_id"] in joined

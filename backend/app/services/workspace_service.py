@@ -31,6 +31,7 @@ from app.core.workspace_context import (
     set_workspace_company_id,
 )
 from app.database.base_class import utc_now
+from app.services.transaction_action_manager import TransactionActionManager
 from app.domain.enums import (
     AdminAuditAction,
     InvitationStatus,
@@ -439,6 +440,57 @@ class WorkspaceService:
             else:
                 raise
 
+    async def _notify_admins_member_joined(
+        self,
+        company_id: uuid.UUID,
+        company_name: str,
+        joining_user: User,
+        membership: CompanyMembership,
+    ) -> None:
+        role_label = {
+            MembershipRole.ADMIN: "Quản trị viên",
+            MembershipRole.RECRUITER: "Nhà tuyển dụng",
+            MembershipRole.INTERVIEWER: "Người phỏng vấn",
+        }.get(
+            membership.role,
+            str(
+                membership.role.value
+                if hasattr(membership.role, "value")
+                else membership.role
+            ),
+        )
+        admins = await self.memberships.list_active_admins(company_id)
+        for admin_membership in admins:
+            if admin_membership.user_id == joining_user.id:
+                continue
+            try:
+                async with self.session.begin_nested():
+                    await self.notifications.notify_company_member_joined(
+                        admin_user_id=admin_membership.user_id,
+                        membership_id=membership.id,
+                        member_email=joining_user.email,
+                        company_name=company_name,
+                        role_label=role_label,
+                    )
+            except IntegrityError as exc:
+                err_str = str(exc).lower()
+                if (
+                    "duplicate key" in err_str
+                    or "primary key" in err_str
+                    or "unique constraint" in err_str
+                    or "uq_" in err_str
+                    or "pk_" in err_str
+                    or "2627" in err_str
+                    or "2601" in err_str
+                ):
+                    logger.info(
+                        "Suppressed duplicate member joined notification for admin %s, membership %s",
+                        admin_membership.user_id,
+                        membership.id,
+                    )
+                else:
+                    raise
+
     async def sync_pending_invitations_for_user(
         self, user: User
     ) -> list[CompanyInvitation]:
@@ -581,12 +633,21 @@ class WorkspaceService:
         )
         try:
             await self.session.flush()
-            await self.session.commit()
         except IntegrityError:
             await self.session.rollback()
             raise ConflictException(
                 "You are already an active member of this workspace"
             ) from None
+
+        await self._notify_admins_member_joined(
+            company_id=invitation.company_id,
+            company_name=company.name,
+            joining_user=user,
+            membership=membership,
+        )
+
+        try:
+            await self.session.commit()
         except Exception:
             await self.session.rollback()
             raise
@@ -722,6 +783,32 @@ class WorkspaceService:
             )
         invitation.status = InvitationStatus.REVOKED
         invitation.revoked_at = now
+
+        normalized_email = normalize_email(invitation.email)
+        recipient = await self.users.get_by_email(normalized_email)
+        if recipient is not None:
+            await self.notifications.mark_invitation_notification_read(
+                recipient.id, invitation.id
+            )
+            channel = pubsub_manager.get_user_channel(str(recipient.id))
+            message = {
+                "type": "invitation.revoked",
+                "invitation_id": str(invitation_id),
+                "company_id": str(context.company_id),
+            }
+
+            async def _publish_invitation_revoked() -> None:
+                try:
+                    await pubsub_manager.publish(channel=channel, message=message)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to publish invitation.revoked event: %s", e
+                    )
+
+            TransactionActionManager.register_action(
+                self.session, _publish_invitation_revoked
+            )
+
         try:
             await self.session.commit()
         except Exception:
@@ -784,22 +871,29 @@ class WorkspaceService:
             )
             .values(is_deleted=True)
         )
+        channel = pubsub_manager.get_user_channel(str(target.user_id))
+        message = {
+            "type": "workspace.revoked",
+            "company_id": str(context.company_id),
+            "membership_id": str(target.id),
+        }
+
+        async def _publish() -> None:
+            try:
+                await pubsub_manager.publish(channel=channel, message=message)
+            except Exception as e:
+                logger.warning(
+                    "Failed to publish workspace.revoked event: %s", e
+                )
+
+        TransactionActionManager.register_action(self.session, _publish)
+
         try:
             await self.session.commit()
         except Exception:
             await self.session.rollback()
             raise
 
-        asyncio.create_task(
-            pubsub_manager.publish(
-                channel=pubsub_manager.get_user_channel(str(target.user_id)),
-                message={
-                    "type": "workspace.revoked",
-                    "company_id": str(context.company_id),
-                    "membership_id": str(target.id),
-                },
-            )
-        )
         user = target.user
         return MemberRead(
             membership_id=target.id,

@@ -1089,4 +1089,99 @@ describe('useNotificationStream', () => {
       window.removeEventListener('ai-recruitment:logout', logoutListener);
     });
   });
+
+  describe('workspace and invitation revocation events', () => {
+    it('dispatches workspace:revoked with parsed payload when workspace.revoked event is received', async () => {
+      setupUnreadCountMock(0);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const revokedListener = vi.fn();
+      window.addEventListener('workspace:revoked', revokedListener);
+
+      const payload = { company_id: 'c-1', membership_id: 'm-1' };
+      act(() => {
+        es.emitEvent('workspace.revoked', payload);
+      });
+      await flushMicrotasks();
+
+      expect(revokedListener).toHaveBeenCalledTimes(1);
+      const customEvent = revokedListener.mock.calls[0][0] as CustomEvent;
+      expect(customEvent.detail).toEqual(payload);
+
+      window.removeEventListener('workspace:revoked', revokedListener);
+    });
+
+    it('dispatches invitation:revoked with parsed payload and triggers notification resync', async () => {
+      setupUnreadCountMock(3);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const invitationRevokedListener = vi.fn();
+      window.addEventListener('invitation:revoked', invitationRevokedListener);
+
+      const payload = { invitation_id: 'inv-123', company_id: 'c-1' };
+      mockGetUnreadNotificationCount.mockResolvedValueOnce({ unread_count: 2 });
+
+      act(() => {
+        es.emitEvent('invitation.revoked', payload);
+      });
+      await flushMicrotasks();
+
+      expect(invitationRevokedListener).toHaveBeenCalledTimes(1);
+      const customEvent = invitationRevokedListener.mock.calls[0][0] as CustomEvent;
+      expect(customEvent.detail).toEqual(payload);
+
+      // Verify notification resync was triggered
+      act(() => { vi.advanceTimersByTime(300); });
+      await flushMicrotasks();
+      expect(mockGetUnreadNotificationCount).toHaveBeenCalled();
+
+      window.removeEventListener('invitation:revoked', invitationRevokedListener);
+    });
+
+    it('handles malformed event data safely without throwing', async () => {
+      setupUnreadCountMock(0);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const revokedListener = vi.fn();
+      window.addEventListener('workspace:revoked', revokedListener);
+
+      const malformedEvent = new Event('workspace.revoked');
+      (malformedEvent as any).data = '{invalid json';
+      expect(() => {
+        act(() => {
+          es.eventListeners.get('workspace.revoked')?.forEach((l) => l(malformedEvent));
+        });
+      }).not.toThrow();
+
+      expect(revokedListener).not.toHaveBeenCalled();
+      window.removeEventListener('workspace:revoked', revokedListener);
+    });
+
+    it('cleans up EventSource when unmounted', async () => {
+      setupUnreadCountMock(0);
+      const { unmount } = renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      expect(es.readyState).not.toBe(MockEventSource.CLOSED);
+
+      unmount();
+      expect(es.readyState).toBe(MockEventSource.CLOSED);
+    });
+  });
 });

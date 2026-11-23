@@ -471,6 +471,170 @@ class TestWorkspaceInvitationFlow:
         assert invitation_notifs_after[0]["is_read"] is True
         run_async(invitee.aclose())
 
+    def test_company_admin_receives_notification_when_member_joins(
+        self, client, recruiter_client, run_async
+    ):
+        company = _create_company(recruiter_client, run_async)
+        invitee_email = f"joining-member-{uuid.uuid4()}@example.com"
+        invitee = _register_and_login(client, run_async, invitee_email)
+
+        # 1. Admin creates invitation
+        created = run_async(
+            recruiter_client.post(
+                f"{API_V1}/workspaces/invitations",
+                json={"email": invitee_email, "role": "recruiter"},
+            )
+        )
+        assert created.status_code == 201, created.text
+        invitation_id = created.json()["id"]
+
+        # 2. Invitee accepts invitation
+        accept_resp = run_async(
+            invitee.post(f"{API_V1}/workspaces/invitations/{invitation_id}/accept")
+        )
+        assert accept_resp.status_code == 200, accept_resp.text
+        membership_id = accept_resp.json()["membership_id"]
+
+        # 3. Company administrator retrieves the notification
+        admin_notifs = run_async(recruiter_client.get(f"{API_V1}/notifications"))
+        assert admin_notifs.status_code == 200, admin_notifs.text
+        joined_notifs = [
+            n
+            for n in admin_notifs.json()
+            if n.get("notification_type") == "company_member_joined"
+        ]
+        assert len(joined_notifs) == 1
+        notif = joined_notifs[0]
+        assert notif["entity_type"] == "company_membership"
+        assert notif["entity_id"] == membership_id
+        assert notif["is_read"] is False
+        assert invitee_email in notif["content"]
+        assert company["name"] in notif["content"]
+
+        # 4. Joining user does not receive self-notification
+        invitee_notifs = run_async(invitee.get(f"{API_V1}/notifications"))
+        assert invitee_notifs.status_code == 200
+        assert not any(
+            n.get("notification_type") == "company_member_joined"
+            for n in invitee_notifs.json()
+        )
+
+        run_async(invitee.aclose())
+
+    def test_admin_revokes_member_and_subsequent_request_with_company_context_returns_403(
+        self, client, recruiter_client, run_async
+    ):
+        company = _create_company(recruiter_client, run_async)
+        member_email = f"member-to-revoke-{uuid.uuid4()}@example.com"
+        member_client = _register_and_login(client, run_async, member_email)
+
+        # 1. Admin invites member
+        created = run_async(
+            recruiter_client.post(
+                f"{API_V1}/workspaces/invitations",
+                json={"email": member_email, "role": "recruiter"},
+            )
+        )
+        assert created.status_code == 201, created.text
+        invitation_id = created.json()["id"]
+
+        # 2. Member accepts invitation
+        accept_resp = run_async(
+            member_client.post(
+                f"{API_V1}/workspaces/invitations/{invitation_id}/accept"
+            )
+        )
+        assert accept_resp.status_code == 200, accept_resp.text
+        membership_id = accept_resp.json()["membership_id"]
+
+        # 3. Member can access company workspace endpoints
+        access_resp = run_async(
+            member_client.get(
+                f"{API_V1}/workspaces/members",
+                headers={"X-Company-ID": company["id"]},
+            )
+        )
+        assert access_resp.status_code == 200, access_resp.text
+
+        # 4. Admin revokes member
+        revoke_resp = run_async(
+            recruiter_client.delete(
+                f"{API_V1}/workspaces/members/{membership_id}",
+                headers={"X-Company-ID": company["id"]},
+            )
+        )
+        assert revoke_resp.status_code == 204, revoke_resp.text
+
+        # 5. Subsequent request with company context returns 403 Forbidden
+        subsequent = run_async(
+            member_client.get(
+                f"{API_V1}/workspaces/members",
+                headers={"X-Company-ID": company["id"]},
+            )
+        )
+        assert subsequent.status_code == 403, subsequent.text
+        run_async(member_client.aclose())
+
+    def test_invitation_revocation_marks_recipient_notification_read_and_prevents_subsequent_accept(
+        self, client, recruiter_client, run_async
+    ):
+        company = _create_company(recruiter_client, run_async)
+        invitee_email = f"invitee-revocation-{uuid.uuid4()}@example.com"
+        invitee = _register_and_login(client, run_async, invitee_email)
+
+        # 1. Admin invites existing registered user
+        created = run_async(
+            recruiter_client.post(
+                f"{API_V1}/workspaces/invitations",
+                json={"email": invitee_email, "role": "recruiter"},
+            )
+        )
+        assert created.status_code == 201, created.text
+        invitation_id = created.json()["id"]
+
+        # 2. Verify recipient receives unread in-app notification
+        notifs_before = run_async(invitee.get(f"{API_V1}/notifications"))
+        assert notifs_before.status_code == 200, notifs_before.text
+        invitation_notifs_before = [
+            n
+            for n in notifs_before.json()
+            if n.get("notification_type") == "company_invitation"
+            and n.get("entity_id") == invitation_id
+        ]
+        assert len(invitation_notifs_before) == 1
+        assert invitation_notifs_before[0]["is_read"] is False
+
+        # 3. Admin revokes invitation
+        revoke_resp = run_async(
+            recruiter_client.post(
+                f"{API_V1}/workspaces/invitations/{invitation_id}/revoke",
+                headers={"X-Company-ID": company["id"]},
+            )
+        )
+        assert revoke_resp.status_code == 200, revoke_resp.text
+        assert revoke_resp.json()["status"] == "revoked"
+
+        # 4. Verify recipient notification is marked as read
+        notifs_after = run_async(invitee.get(f"{API_V1}/notifications"))
+        assert notifs_after.status_code == 200, notifs_after.text
+        invitation_notifs_after = [
+            n
+            for n in notifs_after.json()
+            if n.get("notification_type") == "company_invitation"
+            and n.get("entity_id") == invitation_id
+        ]
+        assert len(invitation_notifs_after) == 1
+        assert invitation_notifs_after[0]["is_read"] is True
+
+        # 5. Subsequent in-app accept attempt returns 409 Conflict
+        accept_resp = run_async(
+            invitee.post(
+                f"{API_V1}/workspaces/invitations/{invitation_id}/accept"
+            )
+        )
+        assert accept_resp.status_code == 409, accept_resp.text
+        run_async(invitee.aclose())
+
     def test_concurrent_accept_vs_decline(
         self, client, recruiter_client, run_async
     ):
