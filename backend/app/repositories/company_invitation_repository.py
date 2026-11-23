@@ -28,6 +28,115 @@ class CompanyInvitationRepository(BaseRepository[CompanyInvitation]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_by_id_with_company(
+        self,
+        invitation_id: Any,
+    ) -> CompanyInvitation | None:
+        stmt = (
+            select(CompanyInvitation)
+            .options(joinedload(CompanyInvitation.company))
+            .where(
+                CompanyInvitation.id == invitation_id,
+                CompanyInvitation.is_deleted == False,  # noqa: E712
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def list_pending_by_email(
+        self,
+        email: str,
+        *,
+        now: datetime,
+    ) -> list[CompanyInvitation]:
+        stmt = (
+            select(CompanyInvitation)
+            .options(joinedload(CompanyInvitation.company))
+            .where(
+                CompanyInvitation.email == email,
+                CompanyInvitation.status == InvitationStatus.PENDING,
+                CompanyInvitation.expires_at > now,
+                CompanyInvitation.is_deleted == False,  # noqa: E712
+            )
+            .order_by(CompanyInvitation.created_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def conditional_accept(
+        self,
+        *,
+        invitation_id: uuid.UUID,
+        normalized_email: str,
+        now: datetime,
+    ) -> int:
+        stmt = (
+            update(CompanyInvitation)
+            .where(
+                CompanyInvitation.id == invitation_id,
+                CompanyInvitation.email == normalized_email,
+                CompanyInvitation.status == InvitationStatus.PENDING,
+                CompanyInvitation.expires_at > now,
+                CompanyInvitation.is_deleted == False,  # noqa: E712
+            )
+            .values(
+                status=InvitationStatus.ACCEPTED,
+                accepted_at=now,
+                updated_at=now,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.rowcount or 0
+
+    async def conditional_decline(
+        self,
+        *,
+        invitation_id: uuid.UUID,
+        normalized_email: str,
+        now: datetime,
+    ) -> int:
+        stmt = (
+            update(CompanyInvitation)
+            .where(
+                CompanyInvitation.id == invitation_id,
+                CompanyInvitation.email == normalized_email,
+                CompanyInvitation.status == InvitationStatus.PENDING,
+                CompanyInvitation.expires_at > now,
+                CompanyInvitation.is_deleted == False,  # noqa: E712
+            )
+            .values(
+                status=InvitationStatus.DECLINED,
+                declined_at=now,
+                updated_at=now,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.rowcount or 0
+
+    async def conditional_revoke(
+        self,
+        *,
+        invitation_id: uuid.UUID,
+        company_id: uuid.UUID,
+        now: datetime,
+    ) -> int:
+        stmt = (
+            update(CompanyInvitation)
+            .where(
+                CompanyInvitation.id == invitation_id,
+                CompanyInvitation.company_id == company_id,
+                CompanyInvitation.status == InvitationStatus.PENDING,
+                CompanyInvitation.is_deleted == False,  # noqa: E712
+            )
+            .values(
+                status=InvitationStatus.REVOKED,
+                revoked_at=now,
+                updated_at=now,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.rowcount or 0
+
     async def get_by_token_hash_for_update(
         self,
         token_hash: str,
@@ -38,7 +147,6 @@ class CompanyInvitationRepository(BaseRepository[CompanyInvitation]):
                 CompanyInvitation.token_hash == token_hash,
                 CompanyInvitation.is_deleted == False,  # noqa: E712
             )
-            .with_for_update()
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()

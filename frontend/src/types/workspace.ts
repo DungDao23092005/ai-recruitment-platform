@@ -1,6 +1,11 @@
 export type MembershipRole = 'admin' | 'recruiter' | 'interviewer'
 export type MembershipStatus = 'active' | 'revoked'
-export type InvitationStatus = 'pending' | 'accepted' | 'revoked' | 'expired'
+export type InvitationStatus =
+  | 'pending'
+  | 'accepted'
+  | 'declined'
+  | 'revoked'
+  | 'expired'
 
 export interface Workspace {
   company_id: string
@@ -64,6 +69,25 @@ export const MEMBERSHIP_STATUS_LABELS: Record<MembershipStatus, string> = {
 export const INVITATION_STATUS_LABELS: Record<InvitationStatus, string> = {
   pending: 'Đang chờ',
   accepted: 'Đã chấp nhận',
+  declined: 'Đã từ chối',
   revoked: 'Đã thu hồi',
   expired: 'Đã hết hạn',
+}
+
+export interface MyInvitation {
+  id: string
+  company_id: string
+  company_name: string
+  company_slug: string
+  role: MembershipRole
+  status: InvitationStatus
+  expires_at: string
+  created_at: string
+  can_accept: boolean
+  can_decline: boolean
+}
+
+export interface InvitationDeclineResult {
+  invitation_id: string
+  status: InvitationStatus
 }

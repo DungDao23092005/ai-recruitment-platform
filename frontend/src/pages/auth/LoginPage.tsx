@@ -28,6 +28,7 @@ interface LoginLocationState {
   from?: string
   registered?: boolean
   invitationToken?: string
+  invitationAction?: 'accept' | 'decline'
 }
 
 function validate(values: FormValues): FormErrors {
@@ -62,6 +63,7 @@ export function LoginPage() {
   const state = location.state as LoginLocationState | null
   const from = state?.from
   const invitationToken = state?.invitationToken
+  const invitationAction = state?.invitationAction
   const justRegistered = state?.registered
 
   const handleSubmit = async (event: FormEvent) => {
@@ -80,7 +82,7 @@ export function LoginPage() {
         email: values.email.trim(),
         password: values.password,
       })
-      let destination = from ?? homeForRole(user.role)
+      let destination = from ?? (invitationToken ? '/invitations/accept' : homeForRole(user.role))
       if (!from && !invitationToken && user.role === 'recruiter') {
         try {
           const workspaces = await getWorkspaces()
@@ -93,7 +95,9 @@ export function LoginPage() {
       }
       navigate(destination, {
         replace: true,
-        state: invitationToken ? { invitationToken } : undefined,
+        state: invitationToken
+          ? { invitationToken, invitationAction }
+          : undefined,
       })
     } catch (error) {
       setApiError(getFriendlyErrorMessage(error))
@@ -165,6 +169,7 @@ export function LoginPage() {
             Chưa có tài khoản?{' '}
             <Link
               to="/register"
+              state={location.state}
               className="font-medium text-primary underline underline-offset-4"
             >
               Đăng ký ngay

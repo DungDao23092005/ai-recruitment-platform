@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { RegisterPage } from './RegisterPage'
@@ -25,12 +25,21 @@ vi.mock('@/api/auth', () => ({
 
 const mockedRegister = vi.mocked(authApi.register)
 
-function renderRegisterPage() {
+function LoginProbe() {
+  const location = useLocation()
+  return <div data-testid="login-state">{JSON.stringify(location.state)}</div>
+}
+
+function renderRegisterPage(
+  initialEntries: Parameters<typeof MemoryRouter>[0]['initialEntries'] = [
+    '/register',
+  ],
+) {
   return render(
-    <MemoryRouter initialEntries={['/register']}>
+    <MemoryRouter initialEntries={initialEntries}>
       <Routes>
         <Route path="/register" element={<RegisterPage />} />
-        <Route path="/login" element={<div>Login Page</div>} />
+        <Route path="/login" element={<LoginProbe />} />
       </Routes>
     </MemoryRouter>,
   )
@@ -155,7 +164,75 @@ describe('RegisterPage', () => {
         password: 'password1',
         role: 'candidate',
       })
-      expect(screen.getByText('Login Page')).toBeInTheDocument()
+      expect(screen.getByTestId('login-state')).toBeInTheDocument()
+    })
+  })
+
+  it('pre-selects role and forwards invitation state to login upon successful registration', async () => {
+    mockedRegister.mockResolvedValue(mockUser)
+
+    renderRegisterPage([
+      {
+        pathname: '/register',
+        state: {
+          from: '/invitations/accept',
+          invitationToken: 'invite-token-xyz',
+          invitationAction: 'accept',
+          invitationRole: 'interviewer',
+        },
+      },
+    ])
+
+    const roleSelect = screen.getByLabelText('Vai trò') as HTMLSelectElement
+    expect(roleSelect.value).toBe('recruiter')
+
+    fireEvent.change(screen.getByLabelText('Email'), {
+      target: { value: 'interviewer@example.com' },
+    })
+    fireEvent.change(screen.getByLabelText('Mật khẩu'), {
+      target: { value: 'password1' },
+    })
+    fireEvent.change(screen.getByLabelText('Xác nhận mật khẩu'), {
+      target: { value: 'password1' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Tạo tài khoản' }))
+
+    await waitFor(() => {
+      expect(mockedRegister).toHaveBeenCalledWith({
+        email: 'interviewer@example.com',
+        password: 'password1',
+        role: 'recruiter',
+      })
+      expect(screen.getByTestId('login-state')).toHaveTextContent(
+        '"invitationToken":"invite-token-xyz"',
+      )
+      expect(screen.getByTestId('login-state')).toHaveTextContent(
+        '"invitationAction":"accept"',
+      )
+    })
+  })
+
+  it('forwards invitation state when clicking link to login', async () => {
+    renderRegisterPage([
+      {
+        pathname: '/register',
+        state: {
+          from: '/invitations/accept',
+          invitationToken: 'invite-token-xyz',
+          invitationAction: 'decline',
+        },
+      },
+    ])
+
+    fireEvent.click(screen.getByRole('link', { name: 'Đăng nhập' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('login-state')).toHaveTextContent(
+        '"invitationToken":"invite-token-xyz"',
+      )
+      expect(screen.getByTestId('login-state')).toHaveTextContent(
+        '"invitationAction":"decline"',
+      )
     })
   })
 

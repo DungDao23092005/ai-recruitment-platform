@@ -1,8 +1,10 @@
 import apiClient from '@/api/client'
 import type {
   InvitationAcceptResult,
+  InvitationDeclineResult,
   InvitationPreview,
   MembershipRole,
+  MyInvitation,
   Workspace,
   WorkspaceInvitation,
   WorkspaceMember,
@@ -75,5 +77,36 @@ export async function acceptInvitation(
   return apiClient.post<InvitationAcceptResult, InvitationAcceptResult>(
     '/invitations/accept',
     { token },
+  )
+}
+
+export async function declineInvitation(
+  token: string,
+): Promise<InvitationDeclineResult> {
+  return apiClient.post<InvitationDeclineResult, InvitationDeclineResult>(
+    '/invitations/decline',
+    { token },
+  )
+}
+
+export async function getMyInvitations(): Promise<MyInvitation[]> {
+  return apiClient.get<MyInvitation[], MyInvitation[]>(
+    '/workspaces/invitations/mine',
+  )
+}
+
+export async function acceptMyInvitation(
+  invitationId: string,
+): Promise<InvitationAcceptResult> {
+  return apiClient.post<InvitationAcceptResult, InvitationAcceptResult>(
+    `/workspaces/invitations/${invitationId}/accept`,
+  )
+}
+
+export async function declineMyInvitation(
+  invitationId: string,
+): Promise<InvitationDeclineResult> {
+  return apiClient.post<InvitationDeclineResult, InvitationDeclineResult>(
+    `/workspaces/invitations/${invitationId}/decline`,
   )
 }

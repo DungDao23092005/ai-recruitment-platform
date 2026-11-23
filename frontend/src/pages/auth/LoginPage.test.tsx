@@ -27,6 +27,11 @@ vi.mock('@/api/auth', () => ({
 const mockedLogin = vi.mocked(authApi.login)
 const mockedGetCurrentUser = vi.mocked(authApi.getCurrentUser)
 
+function RegisterProbe() {
+  const location = useLocation()
+  return <div data-testid="register-state">{JSON.stringify(location.state)}</div>
+}
+
 function InvitationProbe() {
   const location = useLocation()
   return <div data-testid="invitation-state">{JSON.stringify(location.state)}</div>
@@ -162,7 +167,7 @@ describe('LoginPage', () => {
     })
   })
 
-  it('returns to the invitation with the token in router state', async () => {
+  it('returns to the invitation with token and action in router state', async () => {
     mockedLogin.mockResolvedValue({
       access_token: 'token-abc',
       token_type: 'bearer',
@@ -177,6 +182,7 @@ describe('LoginPage', () => {
             state: {
               from: '/invitations/accept',
               invitationToken: 'invite-token',
+              invitationAction: 'decline',
             },
           },
         ]}
@@ -201,6 +207,44 @@ describe('LoginPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('invitation-state')).toHaveTextContent(
         '"invitationToken":"invite-token"',
+      )
+      expect(screen.getByTestId('invitation-state')).toHaveTextContent(
+        '"invitationAction":"decline"',
+      )
+    })
+  })
+
+  it('forwards invitation state when clicking link to register', async () => {
+    render(
+      <MemoryRouter
+        initialEntries={[
+          {
+            pathname: '/login',
+            state: {
+              from: '/invitations/accept',
+              invitationToken: 'invite-token',
+              invitationAction: 'accept',
+            },
+          },
+        ]}
+      >
+        <AuthProvider>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
+            <Route path="/register" element={<RegisterProbe />} />
+          </Routes>
+        </AuthProvider>
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(screen.getByRole('link', { name: 'Đăng ký ngay' }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('register-state')).toHaveTextContent(
+        '"invitationToken":"invite-token"',
+      )
+      expect(screen.getByTestId('register-state')).toHaveTextContent(
+        '"invitationAction":"accept"',
       )
     })
   })

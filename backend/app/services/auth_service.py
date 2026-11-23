@@ -35,6 +35,7 @@ from app.services.account_email_service import (
 )
 from app.services.candidate_entitlement_service import CandidateEntitlementService
 from app.services.email_service import EmailService
+from app.services.workspace_service import WorkspaceService
 
 
 class AuthService:
@@ -43,6 +44,7 @@ class AuthService:
         self.users = UserRepository(session, User)
         self.email_service = EmailService()
         self.candidate_entitlements = CandidateEntitlementService(session)
+        self.workspaces = WorkspaceService(session)
 
     async def register_user(self, data: UserCreate) -> User:
         # Check for existing user with this email (including locked/inactive users)
@@ -71,6 +73,7 @@ class AuthService:
                 await self.candidate_entitlements.provision_free_entitlement(
                     user.id
                 )
+            await self.workspaces.sync_pending_invitations_for_user(user)
             await self.session.commit()
             await self.session.refresh(user)
         except Exception:

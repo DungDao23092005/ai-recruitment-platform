@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { UserPlus } from 'lucide-react'
 import { register as registerApi } from '@/api/auth'
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,13 @@ import {
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { USER_ROLES } from '@/types'
 import type { UserRole } from '@/types/auth'
+
+interface RegisterLocationState {
+  from?: string
+  invitationToken?: string
+  invitationAction?: 'accept' | 'decline'
+  invitationRole?: string
+}
 
 interface FormValues {
   email: string
@@ -60,11 +67,21 @@ function validate(values: FormValues): FormErrors {
 
 export function RegisterPage() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const locationState = location.state as RegisterLocationState | null
+
+  const initialRole: UserRole | '' =
+    locationState?.invitationRole === 'candidate'
+      ? 'candidate'
+      : locationState?.invitationRole
+        ? 'recruiter'
+        : ''
+
   const [values, setValues] = useState<FormValues>({
     email: '',
     password: '',
     confirmPassword: '',
-    role: '',
+    role: initialRole,
   })
   const [errors, setErrors] = useState<FormErrors>({})
   const [apiError, setApiError] = useState<string | null>(null)
@@ -92,7 +109,15 @@ export function RegisterPage() {
         password: values.password,
         role: values.role,
       })
-      navigate('/login', { replace: true, state: { registered: true } })
+      navigate('/login', {
+        replace: true,
+        state: {
+          registered: true,
+          from: locationState?.from,
+          invitationToken: locationState?.invitationToken,
+          invitationAction: locationState?.invitationAction,
+        },
+      })
     } catch (error) {
       setApiError(getFriendlyErrorMessage(error))
     } finally {
@@ -182,6 +207,7 @@ export function RegisterPage() {
           Đã có tài khoản?{' '}
           <Link
             to="/login"
+            state={location.state}
             className="font-medium text-primary underline underline-offset-4"
           >
             Đăng nhập

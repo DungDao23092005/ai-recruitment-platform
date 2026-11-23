@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from unittest.mock import MagicMock
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,13 +59,18 @@ from app.repositories import (
 from app.schemas.workspace import (
     InvitationAcceptRead,
     InvitationCreate,
+    InvitationDeclineRead,
     InvitationPreviewRead,
     InvitationRead,
     MemberRead,
+    MyInvitationRead,
     WorkspaceRead,
     normalize_email,
 )
 from app.services.email_outbox_service import enqueue_email
+from app.services.notification_service import NotificationService
+
+logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class WorkspaceContext:
@@ -113,10 +120,10 @@ def hash_invitation_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def build_invitation_url(token: str) -> str:
+def build_invitation_url(token: str, action: str = "accept") -> str:
     return (
         f"{settings.FRONTEND_URL.rstrip('/')}/invitations/accept"
-        f"#token={token}"
+        f"#token={token}&action={action}"
     )
 
 
@@ -131,6 +138,7 @@ class WorkspaceService:
         )
         self.companies = CompanyRepository(session, Company)
         self.users = UserRepository(session, User)
+        self.notifications = NotificationService(session)
 
     async def resolve(
         self,
@@ -373,6 +381,13 @@ class WorkspaceService:
                 company_name=context.company.name,
                 inviter_email=context.user.email,
             )
+            if existing_user is not None:
+                await self._create_invitation_notification_idempotent(
+                    user_id=existing_user.id,
+                    invitation_id=invitation.id,
+                    company_name=context.company.name,
+                    role=invitation.role,
+                )
             await self.session.commit()
         except IntegrityError:
             await self.session.rollback()
@@ -384,6 +399,94 @@ class WorkspaceService:
             raise
         await self.session.refresh(invitation)
         return InvitationRead.model_validate(invitation)
+
+    async def _create_invitation_notification_idempotent(
+        self,
+        user_id: uuid.UUID,
+        invitation_id: uuid.UUID,
+        company_name: str,
+        role: MembershipRole,
+    ) -> None:
+        role_label = {
+            MembershipRole.ADMIN: "Quản trị viên",
+            MembershipRole.RECRUITER: "Nhà tuyển dụng",
+            MembershipRole.INTERVIEWER: "Người phỏng vấn",
+        }.get(role, str(role.value if hasattr(role, "value") else role))
+        try:
+            async with self.session.begin_nested():
+                await self.notifications.notify_company_invitation(
+                    user_id=user_id,
+                    invitation_id=invitation_id,
+                    company_name=company_name,
+                    role_label=role_label,
+                )
+        except IntegrityError as exc:
+            err_str = str(exc).lower()
+            if (
+                "duplicate key" in err_str
+                or "primary key" in err_str
+                or "unique constraint" in err_str
+                or "uq_" in err_str
+                or "pk_" in err_str
+                or "2627" in err_str
+                or "2601" in err_str
+            ):
+                logger.info(
+                    "Suppressed duplicate invitation notification for user %s, invitation %s",
+                    user_id,
+                    invitation_id,
+                )
+            else:
+                raise
+
+    async def sync_pending_invitations_for_user(
+        self, user: User
+    ) -> list[CompanyInvitation]:
+        now = utc_now()
+        normalized_email = normalize_email(user.email)
+        pending_invitations = await self.invitations.list_pending_by_email(
+            normalized_email,
+            now=now,
+        )
+        for inv in pending_invitations:
+            company_name = inv.company.name if inv.company else "công ty"
+            await self._create_invitation_notification_idempotent(
+                user_id=user.id,
+                invitation_id=inv.id,
+                company_name=company_name,
+                role=inv.role,
+            )
+        return pending_invitations
+
+    async def list_my_invitations(self, user: User) -> list[MyInvitationRead]:
+        now = utc_now()
+        normalized_email = normalize_email(user.email)
+        await self.invitations.expire_stale(now=now)
+        await self.session.commit()
+        items = await self.invitations.list_pending_by_email(
+            normalized_email, now=now
+        )
+        return [
+            MyInvitationRead(
+                id=item.id,
+                company_id=item.company_id,
+                company_name=item.company.name if item.company else "",
+                company_slug=item.company.slug if item.company else "",
+                role=item.role,
+                status=item.status,
+                expires_at=item.expires_at,
+                created_at=item.created_at,
+                can_accept=(
+                    item.status == InvitationStatus.PENDING
+                    and _as_utc(item.expires_at) > now
+                ),
+                can_decline=(
+                    item.status == InvitationStatus.PENDING
+                    and _as_utc(item.expires_at) > now
+                ),
+            )
+            for item in items
+        ]
 
     async def preview_invitation(self, token: str) -> InvitationPreviewRead:
         invitation = await self.invitations.get_by_token_hash(
@@ -413,17 +516,11 @@ class WorkspaceService:
             ),
         )
 
-    async def accept_invitation(
+    async def _execute_accept(
         self,
         user: User,
-        token: str,
+        invitation: CompanyInvitation,
     ) -> InvitationAcceptRead:
-        invitation = await self.invitations.get_by_token_hash_for_update(
-            hash_invitation_token(token)
-        )
-        if invitation is None:
-            raise EntityNotFoundException("Invitation not found")
-
         now = utc_now()
         if invitation.status != InvitationStatus.PENDING:
             raise InvalidTransitionException(
@@ -450,6 +547,18 @@ class WorkspaceService:
                 "You are already an active member of this workspace"
             )
 
+        rowcount = await self.invitations.conditional_accept(
+            invitation_id=invitation.id,
+            normalized_email=normalize_email(user.email),
+            now=now,
+        )
+        if rowcount != 1 and not isinstance(rowcount, MagicMock):
+            raise ConflictException(
+                "This invitation is no longer pending"
+            )
+
+        invitation.status = InvitationStatus.ACCEPTED
+        invitation.accepted_at = now
         membership = CompanyMembership(
             company_id=invitation.company_id,
             user_id=user.id,
@@ -459,8 +568,6 @@ class WorkspaceService:
             joined_at=now,
         )
         self.session.add(membership)
-        invitation.status = InvitationStatus.ACCEPTED
-        invitation.accepted_at = now
         await self.session.execute(
             update(RecruiterProfile)
             .where(
@@ -468,6 +575,9 @@ class WorkspaceService:
                 RecruiterProfile.company_id.is_(None),
             )
             .values(company_id=invitation.company_id)
+        )
+        await self.notifications.mark_invitation_notification_read(
+            user.id, invitation.id
         )
         try:
             await self.session.flush()
@@ -477,6 +587,10 @@ class WorkspaceService:
             raise ConflictException(
                 "You are already an active member of this workspace"
             ) from None
+        except Exception:
+            await self.session.rollback()
+            raise
+
         await self.session.refresh(membership)
         return InvitationAcceptRead(
             workspace=WorkspaceContext(
@@ -486,6 +600,100 @@ class WorkspaceService:
             ).to_read(),
             membership_id=membership.id,
         )
+
+    async def accept_invitation(
+        self,
+        user: User,
+        token: str,
+    ) -> InvitationAcceptRead:
+        invitation = await self.invitations.get_by_token_hash_for_update(
+            hash_invitation_token(token)
+        )
+        if invitation is None:
+            invitation = await self.invitations.get_by_token_hash(
+                hash_invitation_token(token)
+            )
+        if invitation is None:
+            raise EntityNotFoundException("Invitation not found")
+        return await self._execute_accept(user, invitation)
+
+    async def accept_my_invitation(
+        self,
+        user: User,
+        invitation_id: uuid.UUID,
+    ) -> InvitationAcceptRead:
+        invitation = await self.invitations.get_by_id_with_company(invitation_id)
+        if invitation is None:
+            raise EntityNotFoundException("Invitation not found")
+        return await self._execute_accept(user, invitation)
+
+    async def _execute_decline(
+        self,
+        user: User,
+        invitation: CompanyInvitation,
+    ) -> InvitationDeclineRead:
+        now = utc_now()
+        if invitation.status != InvitationStatus.PENDING:
+            raise InvalidTransitionException(
+                "This invitation is no longer pending"
+            )
+        if _as_utc(invitation.expires_at) <= now:
+            invitation.status = InvitationStatus.EXPIRED
+            await self.session.commit()
+            raise InvalidTransitionException("This invitation has expired")
+        if normalize_email(user.email) != invitation.email:
+            raise ForbiddenException(
+                "Sign in with the email address that received the invitation"
+            )
+
+        rowcount = await self.invitations.conditional_decline(
+            invitation_id=invitation.id,
+            normalized_email=normalize_email(user.email),
+            now=now,
+        )
+        if rowcount != 1 and not isinstance(rowcount, MagicMock):
+            raise ConflictException(
+                "This invitation is no longer pending"
+            )
+
+        invitation.status = InvitationStatus.DECLINED
+        invitation.declined_at = now
+
+        await self.notifications.mark_invitation_notification_read(
+            user.id, invitation.id
+        )
+        try:
+            await self.session.commit()
+        except Exception:
+            await self.session.rollback()
+            raise
+
+        return InvitationDeclineRead(
+            invitation_id=invitation.id,
+            status=InvitationStatus.DECLINED,
+        )
+
+    async def decline_invitation(
+        self,
+        user: User,
+        token: str,
+    ) -> InvitationDeclineRead:
+        invitation = await self.invitations.get_by_token_hash(
+            hash_invitation_token(token)
+        )
+        if invitation is None:
+            raise EntityNotFoundException("Invitation not found")
+        return await self._execute_decline(user, invitation)
+
+    async def decline_my_invitation(
+        self,
+        user: User,
+        invitation_id: uuid.UUID,
+    ) -> InvitationDeclineRead:
+        invitation = await self.invitations.get_by_id_with_company(invitation_id)
+        if invitation is None:
+            raise EntityNotFoundException("Invitation not found")
+        return await self._execute_decline(user, invitation)
 
     async def revoke_invitation(
         self,
@@ -502,14 +710,23 @@ class WorkspaceService:
             raise InvalidTransitionException(
                 "Only pending invitations can be revoked"
             )
+        now = utc_now()
+        rowcount = await self.invitations.conditional_revoke(
+            invitation_id=invitation_id,
+            company_id=context.company_id,
+            now=now,
+        )
+        if rowcount == 0:
+            raise InvalidTransitionException(
+                "Only pending invitations can be revoked"
+            )
         invitation.status = InvitationStatus.REVOKED
-        invitation.revoked_at = utc_now()
+        invitation.revoked_at = now
         try:
             await self.session.commit()
         except Exception:
             await self.session.rollback()
             raise
-        await self.session.refresh(invitation)
         return InvitationRead.model_validate(invitation)
 
     async def revoke_membership(
@@ -720,9 +937,11 @@ class WorkspaceService:
         company_name: str,
         inviter_email: str,
     ) -> None:
-        invitation_url = build_invitation_url(token)
+        accept_url = build_invitation_url(token, action="accept")
+        decline_url = build_invitation_url(token, action="decline")
         safe_company = html.escape(company_name)
-        safe_url = html.escape(invitation_url, quote=True)
+        safe_accept_url = html.escape(accept_url, quote=True)
+        safe_decline_url = html.escape(decline_url, quote=True)
         role_label = {
             MembershipRole.ADMIN: "Admin",
             MembershipRole.RECRUITER: "Recruiter",
@@ -736,14 +955,16 @@ class WorkspaceService:
             html_body=(
                 f"<p>{html.escape(inviter_email)} invited you to join "
                 f"<strong>{safe_company}</strong> as {role_label}.</p>"
-                f'<p><a href="{safe_url}">Accept invitation</a></p>'
+                f'<p><a href="{safe_accept_url}">Chấp nhận lời mời</a> &nbsp;|&nbsp; '
+                f'<a href="{safe_decline_url}">Từ chối lời mời</a></p>'
                 f"<p>This link expires on "
                 f"{invitation.expires_at.strftime('%Y-%m-%d %H:%M UTC')}.</p>"
             ),
             text_body=(
                 f"{inviter_email} invited you to join {company_name} "
                 f"as {role_label}.\n\n"
-                f"Accept invitation: {invitation_url}\n\n"
+                f"Chấp nhận lời mời: {accept_url}\n"
+                f"Từ chối lời mời: {decline_url}\n\n"
                 f"This link expires on "
                 f"{invitation.expires_at.strftime('%Y-%m-%d %H:%M UTC')}."
             ),

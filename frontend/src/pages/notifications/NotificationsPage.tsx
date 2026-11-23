@@ -22,8 +22,10 @@ import { useOptionalWorkspace } from '@/contexts/WorkspaceContext';
 import { getNotifications, markNotificationRead, markAllNotificationsRead } from '@/api/notifications';
 import { getApplicationDetail } from '@/api/applications';
 import { getInterview } from '@/api/interviews';
+import { getMyInvitations } from '@/api/workspaces';
 import { useUnreadCountStore } from '@/stores/useUnreadCountStore';
 import type { Notification } from '@/types/notification';
+import type { MyInvitation } from '@/types/workspace';
 import type { UserRole } from '@/types/auth';
 
 const ITEMS_PER_PAGE = 20;
@@ -32,6 +34,8 @@ const ENTITY_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   application: MessageSquare,
   interview: Calendar,
   subscription: CreditCard,
+  company_invitation: Mail,
+  invitation: Mail,
 };
 
 const ENTITY_LABELS: Record<string, string> = {
@@ -40,6 +44,8 @@ const ENTITY_LABELS: Record<string, string> = {
   subscription: 'Gói dịch vụ',
   candidate_quota: 'Hạn mức AI',
   user: 'Tài khoản',
+  company_invitation: 'Lời mời công ty',
+  invitation: 'Lời mời công ty',
 };
 
 function NotificationSkeleton() {
@@ -86,6 +92,9 @@ export function getEntityRoute(entityType: string | null, entityId: string | nul
       return `/candidate/interviews`;
     case 'subscription':
       return `/plans`;
+    case 'company_invitation':
+    case 'invitation':
+      return `/invitations/accept`;
     default:
       return null;
   }
@@ -96,6 +105,14 @@ export function isNotificationNavigable(
   userRole?: UserRole,
   workspaceRole?: string | null
 ): boolean {
+  // Company invitation notifications are navigable for all authenticated users
+  if (
+    notification.notification_type === 'company_invitation' ||
+    notification.entity_type === 'company_invitation' ||
+    notification.entity_type === 'invitation'
+  ) {
+    return true;
+  }
   // All candidate_quota notifications are non-navigable for every role
   if (notification.entity_type === 'candidate_quota') {
     return false;
@@ -143,10 +160,31 @@ export function NotificationsPage() {
   const { unreadCount, decrement, increment, setUnreadCount } = useUnreadCountStore();
 
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [pendingInvitations, setPendingInvitations] = useState<MyInvitation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      getMyInvitations().then(setPendingInvitations).catch(() => {});
+    }
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    const handleRead = () => {
+      if (isAuthenticated) {
+        getMyInvitations().then(setPendingInvitations).catch(() => {});
+      }
+    };
+    window.addEventListener('notification:read', handleRead);
+    window.addEventListener('notification:read-all', handleRead);
+    return () => {
+      window.removeEventListener('notification:read', handleRead);
+      window.removeEventListener('notification:read-all', handleRead);
+    };
+  }, [isAuthenticated]);
 
   const isWorkspaceLoading = currentUser?.role === 'recruiter' && Boolean(workspace?.isLoading);
 
@@ -189,6 +227,17 @@ export function NotificationsPage() {
     // Helper to resolve and navigate
     const resolveAndNavigate = async () => {
       if (!isNotificationNavigable(notification, userRole, workspaceRole)) {
+        return;
+      }
+
+      if (
+        notification.notification_type === 'company_invitation' ||
+        notification.entity_type === 'company_invitation' ||
+        notification.entity_type === 'invitation'
+      ) {
+        navigate('/invitations/accept', {
+          state: { invitationId: notification.entity_id },
+        });
         return;
       }
 
@@ -349,6 +398,43 @@ export function NotificationsPage() {
         <ErrorBanner message={error} onRetry={retry} className="mb-6" />
       )}
 
+      {pendingInvitations.length > 0 ? (
+        <div className="mb-6 space-y-3" role="region" aria-label="Lời mời tham gia công ty đang chờ">
+          {pendingInvitations.map((inv) => (
+            <Card key={inv.id} className="border-primary/30 bg-primary/5">
+              <CardContent className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline-ai" className="text-xs">
+                      Lời mời công ty
+                    </Badge>
+                    <Badge variant="info" className="text-xs">
+                      Đang chờ phản hồi
+                    </Badge>
+                  </div>
+                  <h4 className="font-semibold text-foreground">
+                    Lời mời tham gia {inv.company_name}
+                  </h4>
+                  <p className="text-sm text-muted-foreground">
+                    Vai trò: {inv.role === 'admin' ? 'Quản trị viên' : inv.role === 'recruiter' ? 'Nhà tuyển dụng' : 'Người phỏng vấn'}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    navigate('/invitations/accept', {
+                      state: { invitationId: inv.id },
+                    })
+                  }
+                >
+                  Xem và phản hồi
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : null}
+
       {loading || isWorkspaceLoading ? (
         <div className="space-y-4" data-testid="notifications-skeleton">
           {[...Array(5)].map((_, i) => (
@@ -497,6 +583,7 @@ export function getBadgeVariant(type: string): 'success' | 'warning' | 'info' | 
     case 'subscription_plan_changed':
     case 'interview_assigned':
     case 'evaluation_submitted':
+    case 'company_invitation':
       return 'info';
 
     case 'interview_cancelled':
@@ -540,6 +627,7 @@ export function formatNotificationType(type: string): string {
     candidate_free_quota_exhausted: 'Hết hạn mức miễn phí',
     candidate_returned_to_free: 'Quay lại gói miễn phí',
     account_unlocked: 'Mở khóa tài khoản',
+    company_invitation: 'Lời mời tham gia công ty',
   };
   return typeMap[type] || type;
 }

@@ -8,11 +8,13 @@ import { useOptionalWorkspace } from '@/contexts/WorkspaceContext';
 import * as notificationsApi from '@/api/notifications';
 import * as applicationsApi from '@/api/applications';
 import * as interviewsApi from '@/api/interviews';
+import * as workspacesApi from '@/api/workspaces';
 import { useUnreadCountStore } from '@/stores/useUnreadCountStore';
 
 vi.mock('@/api/notifications');
 vi.mock('@/api/applications');
 vi.mock('@/api/interviews');
+vi.mock('@/api/workspaces');
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: vi.fn(),
   AuthProvider: ({ children }: { children: React.ReactNode }) => children,
@@ -46,6 +48,7 @@ describe('NotificationsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockNavigate.mockClear();
+    vi.mocked(workspacesApi.getMyInvitations).mockResolvedValue([]);
     vi.mocked(useUnreadCountStore).mockReturnValue({
       unreadCount: 0,
       decrement: vi.fn(),
@@ -134,6 +137,7 @@ describe('NotificationsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockNavigate.mockClear();
+    vi.mocked(workspacesApi.getMyInvitations).mockResolvedValue([]);
     vi.mocked(useUnreadCountStore).mockReturnValue({
       unreadCount: 0,
       decrement: vi.fn(),
@@ -1610,6 +1614,84 @@ describe('NotificationsPage', () => {
           expect(mockNavigate).not.toHaveBeenCalled();
           expect(mockNavigate).not.toHaveBeenCalledWith('/plans');
           expect(mockNavigate).not.toHaveBeenCalledWith('/candidate/portal');
+        });
+      });
+    });
+
+    describe('H. Company Invitation Notifications and In-App Pending Invitations', () => {
+      it('displays company invitation notification and navigates to /invitations/accept on click', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        const notif = {
+          id: 'notif-inv-1',
+          title: 'Lời mời tham gia công ty',
+          content: 'Bạn nhận được lời mời tham gia TechNova AI với vai trò Nhà tuyển dụng.',
+          notification_type: 'company_invitation',
+          entity_type: 'company_invitation',
+          entity_id: 'inv-uuid-123',
+          is_read: false,
+          created_at: new Date().toISOString(),
+        };
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([notif]);
+        vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+          ...notif,
+          is_read: true,
+        });
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'Lời mời tham gia công ty' })).toBeInTheDocument();
+          expect(
+            screen.getByText('Bạn nhận được lời mời tham gia TechNova AI với vai trò Nhà tuyển dụng.'),
+          ).toBeInTheDocument();
+        });
+
+        // Chevron is present indicating navigable
+        expect(screen.getAllByTestId('notification-chevron').length).toBeGreaterThan(0);
+
+        // Click notification
+        await screen.getByRole('heading', { name: 'Lời mời tham gia công ty' }).click();
+
+        await waitFor(() => {
+          expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('notif-inv-1');
+          expect(mockNavigate).toHaveBeenCalledWith('/invitations/accept', {
+            state: { invitationId: 'inv-uuid-123' },
+          });
+        });
+      });
+
+      it('displays pending in-app invitations card and navigates to respond', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([]);
+        vi.mocked(workspacesApi.getMyInvitations).mockResolvedValue([
+          {
+            id: 'inv-uuid-999',
+            company_id: 'company-uuid-1',
+            company_name: 'TechNova AI',
+            company_slug: 'technova-ai',
+            role: 'recruiter',
+            status: 'pending',
+            expires_at: new Date(Date.now() + 86400000).toISOString(),
+            created_at: new Date().toISOString(),
+            can_accept: true,
+          },
+        ]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(
+            screen.getByRole('heading', { name: /TechNova AI/ }),
+          ).toBeInTheDocument();
+          expect(screen.getByText(/Nhà tuyển dụng/)).toBeInTheDocument();
+        });
+
+        const respondBtn = screen.getByRole('button', { name: 'Xem và phản hồi' });
+        expect(respondBtn).toBeInTheDocument();
+        respondBtn.click();
+
+        expect(mockNavigate).toHaveBeenCalledWith('/invitations/accept', {
+          state: { invitationId: 'inv-uuid-999' },
         });
       });
     });

@@ -31,6 +31,10 @@ SUBSCRIPTION_ACTIVATED_TITLE = "Kích hoạt gói dịch vụ thành công"
 COMPANY_RETURNED_TO_FREE_TYPE = "company_returned_to_free"
 COMPANY_RETURNED_TO_FREE_TITLE = "Công ty đã quay lại gói miễn phí"
 
+COMPANY_INVITATION_TYPE = "company_invitation"
+COMPANY_INVITATION_ENTITY_TYPE = "company_invitation"
+COMPANY_INVITATION_TITLE = "Lời mời tham gia công ty"
+
 SUBSCRIPTION_PLAN_CHANGED_TYPE = "subscription_plan_changed"
 SUBSCRIPTION_PLAN_CHANGED_TITLE = "Thay đổi gói dịch vụ"
 
@@ -201,6 +205,17 @@ def candidate_interview_response_notification_id(
     )
 
 
+def company_invitation_notification_id(
+    user_id: uuid.UUID,
+    invitation_id: uuid.UUID,
+) -> uuid.UUID:
+    """Stable identity for an in-app company invitation notification."""
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"company_invitation:{user_id}:{invitation_id}",
+    )
+
+
 class NotificationService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -266,6 +281,36 @@ class NotificationService:
             entity_type="user",
             entity_id=user_id,
         )
+
+    async def notify_company_invitation(
+        self,
+        user_id: uuid.UUID,
+        invitation_id: uuid.UUID,
+        company_name: str,
+        role_label: str,
+    ) -> NotificationRead:
+        notification_id = company_invitation_notification_id(user_id, invitation_id)
+        return await self.create_notification(
+            user_id=user_id,
+            title=COMPANY_INVITATION_TITLE,
+            content=f"Bạn nhận được lời mời tham gia {company_name} với vai trò {role_label}.",
+            notification_type=COMPANY_INVITATION_TYPE,
+            entity_type=COMPANY_INVITATION_ENTITY_TYPE,
+            entity_id=invitation_id,
+            notification_id=notification_id,
+        )
+
+    async def mark_invitation_notification_read(
+        self,
+        user_id: uuid.UUID,
+        invitation_id: uuid.UUID,
+    ) -> None:
+        notification_id = company_invitation_notification_id(user_id, invitation_id)
+        res = self.notifications.get_by_id(notification_id)
+        notification = await res if inspect.isawaitable(res) else res
+        if notification is not None and getattr(notification, "is_read", None) is False:
+            notification.is_read = True
+            await self.session.flush()
 
     @staticmethod
     def _subscription_notification_id(

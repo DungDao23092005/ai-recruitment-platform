@@ -75,6 +75,7 @@ class InvitationRead(BaseModel):
     status: InvitationStatus
     expires_at: datetime
     accepted_at: datetime | None = None
+    declined_at: datetime | None = None
     revoked_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -85,6 +86,10 @@ class InvitationPreviewRequest(BaseModel):
 
 
 class InvitationAcceptRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+
+
+class InvitationDeclineRequest(BaseModel):
     token: str = Field(min_length=20, max_length=512)
 
 
@@ -103,6 +108,24 @@ class InvitationAcceptRead(BaseModel):
     membership_id: uuid.UUID
 
 
+class InvitationDeclineRead(BaseModel):
+    invitation_id: uuid.UUID
+    status: InvitationStatus
+
+
 class InvitationRevokeRead(BaseModel):
     invitation_id: uuid.UUID
     status: InvitationStatus
+
+
+class MyInvitationRead(BaseModel):
+    id: uuid.UUID
+    company_id: uuid.UUID
+    company_name: str
+    company_slug: str
+    role: MembershipRole
+    status: InvitationStatus
+    expires_at: datetime
+    created_at: datetime
+    can_accept: bool
+    can_decline: bool

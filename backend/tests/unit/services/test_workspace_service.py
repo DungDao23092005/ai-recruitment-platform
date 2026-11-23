@@ -37,6 +37,7 @@ from app.repositories import (
     UserRepository,
 )
 from app.schemas.workspace import InvitationCreate
+from app.services.notification_service import NotificationService
 from app.services.workspace_service import (
     WorkspaceService,
     hash_invitation_token,
@@ -135,8 +136,14 @@ def make_service(session) -> WorkspaceService:
     service = WorkspaceService(session)
     service.memberships = AsyncMock(spec=CompanyMembershipRepository)
     service.invitations = AsyncMock(spec=CompanyInvitationRepository)
+    service.invitations.conditional_accept.return_value = 1
+    service.invitations.conditional_decline.return_value = 1
+    service.invitations.conditional_revoke.return_value = 1
+    service.invitations.get_pending_by_company_email.return_value = None
+    service.memberships.get_active.return_value = None
     service.companies = AsyncMock(spec=CompanyRepository)
     service.users = AsyncMock(spec=UserRepository)
+    service.notifications = AsyncMock(spec=NotificationService)
     return service
 
 
@@ -1002,3 +1009,285 @@ def service_context(
         company=company,
         membership=membership,
     )
+
+
+class TestListMyInvitations:
+    def test_list_my_invitations_returns_pending_for_user(self):
+        service = make_service(make_session())
+        company = make_company()
+        user = make_user(email="Candidate@Example.com")
+        invitation = make_invitation(
+            company=company,
+            email="candidate@example.com",
+            role=MembershipRole.RECRUITER,
+        )
+        service.invitations.list_pending_by_email.return_value = [invitation]
+
+        result = asyncio.run(service.list_my_invitations(user))
+
+        service.invitations.list_pending_by_email.assert_awaited_once()
+        assert service.invitations.list_pending_by_email.await_args.args[0] == "candidate@example.com"
+        assert len(result) == 1
+        assert result[0].id == invitation.id
+        assert result[0].company_name == company.name
+        assert result[0].role == MembershipRole.RECRUITER
+        assert result[0].status == InvitationStatus.PENDING
+
+
+class TestAcceptMyInvitation:
+    def test_accept_my_invitation_success(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        user = make_user(email="invitee@example.com")
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+            role=MembershipRole.INTERVIEWER,
+        )
+        service.invitations.get_by_id_with_company.return_value = invitation
+        service.companies.get_by_id.return_value = company
+        service.memberships.get_active.return_value = None
+
+        def assign_defaults():
+            if session.add.call_args:
+                membership = session.add.call_args.args[0]
+                membership.id = uuid.uuid4()
+                membership.created_at = utc_now()
+                membership.updated_at = utc_now()
+
+        session.flush.side_effect = assign_defaults
+
+        result = asyncio.run(
+            service.accept_my_invitation(user, invitation.id)
+        )
+
+        assert result.workspace.company_id == company.id
+        assert result.workspace.role == MembershipRole.INTERVIEWER
+        assert invitation.status == InvitationStatus.ACCEPTED
+        assert invitation.accepted_at is not None
+        session.commit.assert_awaited_once()
+        service.notifications.mark_invitation_notification_read.assert_awaited_once_with(
+            user.id, invitation.id
+        )
+
+    def test_accept_my_invitation_not_found_raises_entity_not_found(self):
+        service = make_service(make_session())
+        user = make_user(email="invitee@example.com")
+        service.invitations.get_by_id_with_company.return_value = None
+
+        with pytest.raises(EntityNotFoundException):
+            asyncio.run(service.accept_my_invitation(user, uuid.uuid4()))
+
+    def test_accept_my_invitation_wrong_email_raises_forbidden(self):
+        service = make_service(make_session())
+        company = make_company()
+        user = make_user(email="other@example.com")
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+        )
+        service.invitations.get_by_id_with_company.return_value = invitation
+
+        with pytest.raises(ForbiddenException):
+            asyncio.run(service.accept_my_invitation(user, invitation.id))
+
+    def test_accept_my_invitation_concurrency_conflict_raises_conflict(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        user = make_user(email="invitee@example.com")
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+        )
+        service.invitations.get_by_id_with_company.return_value = invitation
+        service.companies.get_by_id.return_value = company
+        service.memberships.get_active.return_value = None
+        service.invitations.conditional_accept.return_value = 0
+
+        with pytest.raises(ConflictException, match="no longer pending"):
+            asyncio.run(service.accept_my_invitation(user, invitation.id))
+
+
+class TestDeclineInvitation:
+    def test_decline_by_token_success(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        user = make_user(email="Invitee@Example.com")
+        token = "token-secret-12345"
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+            token=token,
+        )
+        service.invitations.get_by_token_hash.return_value = invitation
+
+        result = asyncio.run(service.decline_invitation(user, token))
+
+        assert result.invitation_id == invitation.id
+        assert result.status == InvitationStatus.DECLINED
+        assert invitation.status == InvitationStatus.DECLINED
+        assert invitation.declined_at is not None
+        session.commit.assert_awaited_once()
+        service.notifications.mark_invitation_notification_read.assert_awaited_once_with(
+            user.id, invitation.id
+        )
+
+    def test_decline_my_invitation_success(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        user = make_user(email="invitee@example.com")
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+        )
+        service.invitations.get_by_id_with_company.return_value = invitation
+
+        result = asyncio.run(
+            service.decline_my_invitation(user, invitation.id)
+        )
+
+        assert result.invitation_id == invitation.id
+        assert result.status == InvitationStatus.DECLINED
+        assert invitation.status == InvitationStatus.DECLINED
+        assert invitation.declined_at is not None
+        session.commit.assert_awaited_once()
+
+    def test_decline_wrong_email_raises_forbidden(self):
+        service = make_service(make_session())
+        company = make_company()
+        user = make_user(email="different@example.com")
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+        )
+        service.invitations.get_by_id_with_company.return_value = invitation
+
+        with pytest.raises(ForbiddenException):
+            asyncio.run(service.decline_my_invitation(user, invitation.id))
+
+    def test_decline_already_declined_raises_invalid_transition(self):
+        service = make_service(make_session())
+        company = make_company()
+        user = make_user(email="invitee@example.com")
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+            status=InvitationStatus.DECLINED,
+        )
+        service.invitations.get_by_id_with_company.return_value = invitation
+
+        with pytest.raises(InvalidTransitionException):
+            asyncio.run(service.decline_my_invitation(user, invitation.id))
+
+    def test_decline_concurrency_conflict_raises_conflict(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        user = make_user(email="invitee@example.com")
+        invitation = make_invitation(
+            company=company,
+            email="invitee@example.com",
+        )
+        service.invitations.get_by_id_with_company.return_value = invitation
+        service.invitations.conditional_decline.return_value = 0
+
+        with pytest.raises(ConflictException, match="no longer pending"):
+            asyncio.run(service.decline_my_invitation(user, invitation.id))
+
+
+class TestRevokeInvitationConcurrency:
+    def test_revoke_concurrency_conflict_raises_invalid_transition(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        user = make_user()
+        context = service_context(company, user, role=MembershipRole.ADMIN)
+        invitation = make_invitation(company=company)
+        service.invitations.get_by_company.return_value = invitation
+        service.invitations.conditional_revoke.return_value = 0
+
+        with pytest.raises(InvalidTransitionException):
+            asyncio.run(service.revoke_invitation(context, invitation.id))
+
+
+class TestInvitationEmailAndNotificationCreation:
+    def test_email_outbox_contains_accept_and_decline_links(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        user = make_user()
+        context = service_context(company, user, role=MembershipRole.ADMIN)
+
+        service.invitations.list_by_company.return_value = []
+        service.users.get_by_email.return_value = None
+
+        def assign_defaults():
+            if session.add.call_args:
+                invitation = session.add.call_args.args[0]
+                invitation.id = uuid.uuid4()
+                invitation.created_at = utc_now()
+                invitation.updated_at = utc_now()
+
+        session.flush.side_effect = assign_defaults
+
+        with patch("app.services.workspace_service.secrets.token_urlsafe", return_value="mock-token-xyz"), \
+             patch("app.services.workspace_service.enqueue_email", new=AsyncMock()) as mock_enqueue:
+            asyncio.run(
+                service.create_invitation(
+                    context,
+                    InvitationCreate(
+                        email="newuser@example.com",
+                        role=MembershipRole.RECRUITER,
+                    ),
+                )
+            )
+
+            mock_enqueue.assert_awaited_once()
+            kwargs = mock_enqueue.await_args.kwargs
+            assert "action=accept" in kwargs["html_body"]
+            assert "action=decline" in kwargs["html_body"]
+            assert "Chấp nhận lời mời" in kwargs["html_body"]
+            assert "Từ chối lời mời" in kwargs["html_body"]
+            assert "action=accept" in kwargs["text_body"]
+            assert "action=decline" in kwargs["text_body"]
+
+    def test_create_invitation_creates_in_app_notification_for_existing_user(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        inviter = make_user()
+        context = service_context(company, inviter, role=MembershipRole.ADMIN)
+        registered_recipient = make_user(email="registered@example.com")
+
+        service.invitations.list_by_company.return_value = []
+        service.users.get_by_email.return_value = registered_recipient
+
+        def assign_defaults():
+            if session.add.call_args:
+                invitation = session.add.call_args.args[0]
+                invitation.id = uuid.uuid4()
+                invitation.created_at = utc_now()
+                invitation.updated_at = utc_now()
+
+        session.flush.side_effect = assign_defaults
+
+        # Mock begin_nested on session
+        session.begin_nested.return_value.__aenter__ = AsyncMock()
+        session.begin_nested.return_value.__aexit__ = AsyncMock()
+
+        with patch("app.services.workspace_service.enqueue_email", new=AsyncMock()):
+            asyncio.run(
+                service.create_invitation(
+                    context,
+                    InvitationCreate(
+                        email="registered@example.com",
+                        role=MembershipRole.RECRUITER,
+                    ),
+                )
+            )
+
+        service.notifications.notify_company_invitation.assert_awaited_once()

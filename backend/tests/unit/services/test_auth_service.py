@@ -42,6 +42,7 @@ def make_service(session) -> AuthService:
     service = AuthService(session)
     service.users = AsyncMock(spec=UserRepository)
     service.candidate_entitlements = AsyncMock()
+    service.workspaces = AsyncMock()
     return service
 
 
@@ -639,3 +640,96 @@ class TestLogout:
         result = await service.logout(jti, exp)
 
         assert result is True
+
+
+class TestRegisterInvitationSync:
+    def test_register_calls_sync_pending_invitations(self):
+        session = make_session()
+        service = make_service(session)
+        service.users.get_by_email_including_inactive.return_value = None
+        data = UserCreate(
+            email="newrecruiter@example.com",
+            password="password123",
+            role=UserRole.RECRUITER,
+        )
+
+        user = asyncio.run(service.register_user(data))
+
+        service.workspaces.sync_pending_invitations_for_user.assert_awaited_once_with(
+            user
+        )
+
+    def test_sync_pending_invitations_calls_notify_idempotently(self):
+        from app.services.workspace_service import WorkspaceService
+        from app.models import CompanyInvitation, Company
+        from app.domain.enums import MembershipRole, InvitationStatus
+
+        session = make_session()
+        workspace_service = WorkspaceService(session)
+        workspace_service.invitations = AsyncMock()
+        workspace_service.notifications = AsyncMock()
+
+        user = make_user()
+        user.email = "test@example.com"
+        invitation = CompanyInvitation(
+            id=uuid.uuid4(),
+            company_id=uuid.uuid4(),
+            email="test@example.com",
+            role=MembershipRole.RECRUITER,
+            token_hash="hash",
+            status=InvitationStatus.PENDING,
+            invited_by_id=uuid.uuid4(),
+        )
+        invitation.company = Company(id=invitation.company_id, name="Test Co", slug="test-co")
+        workspace_service.invitations.list_pending_by_email.return_value = [invitation]
+
+        # Setup savepoint mock
+        session.begin_nested.return_value.__aenter__ = AsyncMock()
+        session.begin_nested.return_value.__aexit__ = AsyncMock()
+
+        asyncio.run(
+            workspace_service.sync_pending_invitations_for_user(user)
+        )
+
+        workspace_service.notifications.notify_company_invitation.assert_awaited_once_with(
+            user_id=user.id,
+            invitation_id=invitation.id,
+            company_name="Test Co",
+            role_label="Nhà tuyển dụng",
+        )
+
+    def test_sync_pending_invitations_swallows_duplicate_key_error(self):
+        from app.services.workspace_service import WorkspaceService
+        from app.models import CompanyInvitation, Company
+        from app.domain.enums import MembershipRole, InvitationStatus
+        from sqlalchemy.exc import IntegrityError
+
+        session = make_session()
+        workspace_service = WorkspaceService(session)
+        workspace_service.invitations = AsyncMock()
+        workspace_service.notifications = AsyncMock()
+        workspace_service.notifications.notify_company_invitation.side_effect = IntegrityError(
+            "statement", {}, Exception("Violation of PRIMARY KEY constraint 'PK_notifications'")
+        )
+
+        user = make_user()
+        user.email = "test@example.com"
+        invitation = CompanyInvitation(
+            id=uuid.uuid4(),
+            company_id=uuid.uuid4(),
+            email="test@example.com",
+            role=MembershipRole.RECRUITER,
+            token_hash="hash",
+            status=InvitationStatus.PENDING,
+            invited_by_id=uuid.uuid4(),
+        )
+        invitation.company = Company(id=invitation.company_id, name="Test Co", slug="test-co")
+        workspace_service.invitations.list_pending_by_email.return_value = [invitation]
+
+        session.begin_nested.return_value.__aenter__ = AsyncMock()
+        session.begin_nested.return_value.__aexit__ = AsyncMock()
+
+        # Should not raise exception
+        asyncio.run(
+            workspace_service.sync_pending_invitations_for_user(user)
+        )

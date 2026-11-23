@@ -26,11 +26,14 @@ from app.schemas.workspace import (
     InvitationAcceptRead,
     InvitationAcceptRequest,
     InvitationCreate,
+    InvitationDeclineRead,
+    InvitationDeclineRequest,
     InvitationPreviewRead,
     InvitationPreviewRequest,
     InvitationRead,
     MemberRead,
     MembershipRoleUpdate,
+    MyInvitationRead,
     WorkspaceRead,
 )
 from app.services.workspace_service import WorkspaceContext, WorkspaceService
@@ -134,6 +137,54 @@ async def revoke_workspace_membership(
 
 
 @router.get(
+    "/workspaces/invitations/mine",
+    response_model=list[MyInvitationRead],
+)
+async def list_my_workspace_invitations(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[MyInvitationRead]:
+    try:
+        return await WorkspaceService(db).list_my_invitations(current_user)
+    except ServiceException as exc:
+        raise _service_error(exc) from exc
+
+
+@router.post(
+    "/workspaces/invitations/{invitation_id}/accept",
+    response_model=InvitationAcceptRead,
+)
+async def accept_workspace_invitation_by_id(
+    invitation_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> InvitationAcceptRead:
+    try:
+        return await WorkspaceService(db).accept_my_invitation(
+            current_user, invitation_id
+        )
+    except ServiceException as exc:
+        raise _service_error(exc) from exc
+
+
+@router.post(
+    "/workspaces/invitations/{invitation_id}/decline",
+    response_model=InvitationDeclineRead,
+)
+async def decline_workspace_invitation_by_id(
+    invitation_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> InvitationDeclineRead:
+    try:
+        return await WorkspaceService(db).decline_my_invitation(
+            current_user, invitation_id
+        )
+    except ServiceException as exc:
+        raise _service_error(exc) from exc
+
+
+@router.get(
     "/workspaces/invitations",
     response_model=list[InvitationRead],
 )
@@ -207,6 +258,23 @@ async def accept_invitation(
 ) -> InvitationAcceptRead:
     try:
         return await WorkspaceService(db).accept_invitation(
+            current_user, data.token
+        )
+    except ServiceException as exc:
+        raise _service_error(exc) from exc
+
+
+@router.post(
+    "/invitations/decline",
+    response_model=InvitationDeclineRead,
+)
+async def decline_invitation(
+    data: InvitationDeclineRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> InvitationDeclineRead:
+    try:
+        return await WorkspaceService(db).decline_invitation(
             current_user, data.token
         )
     except ServiceException as exc:
