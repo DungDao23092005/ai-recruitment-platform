@@ -180,20 +180,23 @@ describe('RecruiterBillingPage', () => {
     ).toHaveAttribute('href', '/plans?audience=company')
   })
 
-  it('keeps Workspace Recruiters read-only', async () => {
+  it('renders unauthorized state and suppresses billing data for non-admin Workspace Recruiters', async () => {
     mockWorkspace('recruiter')
 
     renderPage()
 
+    expect(await screen.findByText('Không đủ quyền')).toBeInTheDocument()
     expect(
-      await screen.findByText(
-        'Chỉ Quản trị viên công ty (Workspace Admin) mới có quyền mua hoặc thay đổi gói dịch vụ.',
+      screen.getByText(
+        'Bạn cần quyền Quản trị viên của công ty này (Workspace Admin) để quản lý gói dịch vụ và thanh toán.',
       ),
     ).toBeInTheDocument()
-    expect(
-      screen.queryByRole('link', { name: /Gia hạn hoặc thay đổi gói/ }),
-    ).not.toBeInTheDocument()
-    expect(await screen.findByText('ORDER-123')).toBeInTheDocument()
+    expect(mockedGetCompanySubscription).not.toHaveBeenCalled()
+    expect(mockedGetCompanyUsages).not.toHaveBeenCalled()
+    expect(mockedGetCompanyHistory).not.toHaveBeenCalled()
+    expect(mockedGetWorkspaceMembers).not.toHaveBeenCalled()
+    expect(screen.queryByText('ORDER-123')).not.toBeInTheDocument()
+    expect(screen.queryByText('Gói Doanh nghiệp')).not.toBeInTheDocument()
   })
 
   it('forwards the feature filter and resets pagination', async () => {
@@ -268,5 +271,7 @@ describe('RecruiterBillingPage', () => {
     expect(screen.getByText('Chưa chọn công ty')).toBeInTheDocument()
     expect(mockedGetCompanySubscription).not.toHaveBeenCalled()
     expect(mockedGetCompanyUsages).not.toHaveBeenCalled()
+    expect(mockedGetCompanyHistory).not.toHaveBeenCalled()
+    expect(mockedGetWorkspaceMembers).not.toHaveBeenCalled()
   })
 })

@@ -680,7 +680,7 @@ describe('AppRouter role guards', () => {
 })
 
 describe('AppRouter recruiter job routes', () => {
-  it('lets a recruiter with an active workspace open billing', async () => {
+  it('renders billing unauthorized empty state when recruiter is not a workspace admin', async () => {
     setUser('recruiter')
     const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
     mockedWorkspaces.getWorkspaces.mockResolvedValue([
@@ -697,10 +697,85 @@ describe('AppRouter recruiter job routes', () => {
     renderAt('/recruiter/billing')
 
     await waitFor(() => {
+      expect(screen.getByText('Không đủ quyền')).toBeInTheDocument()
+    })
+    expect(
+      screen.getByRole('heading', { name: 'Gói & Thanh toán' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Bạn cần quyền Quản trị viên của công ty này (Workspace Admin) để quản lý gói dịch vụ và thanh toán.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('lets a workspace admin open billing with full view', async () => {
+    setUser('recruiter')
+    const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
+    mockedWorkspaces.getWorkspaces.mockResolvedValue([
+      {
+        company_id: 'company-1',
+        company_name: 'Acme Corp',
+        company_slug: 'acme-corp',
+        membership_id: 'membership-1',
+        role: 'admin',
+        is_platform_admin: false,
+      },
+    ])
+
+    renderAt('/recruiter/billing')
+
+    await waitFor(() => {
+      expect(screen.getByText('Quản lý gói dịch vụ')).toBeInTheDocument()
+    })
+    expect(
+      screen.getByRole('heading', { name: 'Gói & Thanh toán' }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Không đủ quyền')).not.toBeInTheDocument()
+  })
+
+  it('renders no workspace empty state without redirecting when recruiter visits billing without workspace', async () => {
+    setUser('recruiter')
+    const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
+    mockedWorkspaces.getWorkspaces.mockResolvedValue([])
+
+    renderAt('/recruiter/billing')
+
+    await waitFor(() => {
+      expect(screen.getByText('Chưa chọn công ty')).toBeInTheDocument()
+    })
+    expect(
+      screen.getByRole('heading', { name: 'Gói & Thanh toán' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('heading', { name: /Tìm đúng công việc/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('redirects interviewer visiting billing to interviewer interviews without going to public home', async () => {
+    setUser('recruiter')
+    const mockedWorkspaces = vi.mocked(await import('@/api/workspaces'))
+    mockedWorkspaces.getWorkspaces.mockResolvedValue([
+      {
+        company_id: 'company-1',
+        company_name: 'Acme Corp',
+        company_slug: 'acme-corp',
+        membership_id: 'membership-1',
+        role: 'interviewer',
+        is_platform_admin: false,
+      },
+    ])
+
+    renderAt('/recruiter/billing')
+
+    await waitFor(() => {
       expect(
-        screen.getByRole('heading', { name: 'Gói & Thanh toán' }),
+        screen.getByRole('heading', { name: 'Lịch phỏng vấn của tôi' }),
       ).toBeInTheDocument()
     })
+    expect(
+      screen.queryByRole('heading', { name: /Tìm đúng công việc/ }),
+    ).not.toBeInTheDocument()
   })
 
   it('renders interview generator for a recruiter', async () => {
@@ -976,14 +1051,6 @@ describe('AppRouter interview schedule routes', () => {
 
     // /interviewer/profile without workspace redirects to /
     renderAt('/interviewer/profile')
-    await waitFor(() => {
-      expect(
-        screen.getByRole('heading', { name: /Tìm đúng công việc/ }),
-      ).toBeInTheDocument()
-    })
-
-    // /recruiter/billing without workspace redirects to /
-    renderAt('/recruiter/billing')
     await waitFor(() => {
       expect(
         screen.getByRole('heading', { name: /Tìm đúng công việc/ }),

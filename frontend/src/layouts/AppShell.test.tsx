@@ -199,12 +199,12 @@ describe('AppShell sidebar', () => {
     expect(within(nav).getByText('Đăng tin mới')).toBeInTheDocument()
     expect(within(nav).getByText('Phân tích')).toBeInTheDocument()
     expect(within(nav).getByText('Lịch phỏng vấn')).toBeInTheDocument()
-    expect(within(nav).getByText('Gói & Thanh toán')).toBeInTheDocument()
     expect(within(nav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
     expect(within(nav).getByText('Hồ sơ cá nhân')).toBeInTheDocument()
     expect(within(nav).getByText('Trợ lý AI')).toBeInTheDocument()
     expect(within(nav).queryByText('Công ty')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Thành viên')).not.toBeInTheDocument()
+    expect(within(nav).queryByText('Gói & Thanh toán')).not.toBeInTheDocument()
   })
 
   it('renders recruiter navigation with company link when recruiter has no active workspace', async () => {
@@ -223,11 +223,11 @@ describe('AppShell sidebar', () => {
     expect(within(nav).getByText('Phân tích')).toBeInTheDocument()
     expect(within(nav).getByText('Lịch phỏng vấn')).toBeInTheDocument()
     expect(within(nav).getByText('Gói dịch vụ')).toBeInTheDocument()
-    expect(within(nav).getByText('Gói & Thanh toán')).toBeInTheDocument()
     expect(within(nav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
     expect(within(nav).getByText('Hồ sơ cá nhân')).toBeInTheDocument()
     expect(within(nav).getByText('Trợ lý AI')).toBeInTheDocument()
     expect(within(nav).queryByText('Thành viên')).not.toBeInTheDocument()
+    expect(within(nav).queryByText('Gói & Thanh toán')).not.toBeInTheDocument()
   })
 
   it('renders interviewer workspace navigation with only assigned interviews, notifications and profile', async () => {
@@ -248,6 +248,7 @@ describe('AppShell sidebar', () => {
     expect(within(nav).queryByText('Tin tuyển dụng')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Phân tích')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Thành viên')).not.toBeInTheDocument()
+    expect(within(nav).queryByText('Gói & Thanh toán')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Trợ lý AI')).not.toBeInTheDocument()
   })
 

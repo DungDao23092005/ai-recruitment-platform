@@ -192,11 +192,13 @@ export function CompanySubscriptionCard({
               Hết hạn vào {formatDate(subscription.expires_at)}
             </CardDescription>
           </div>
-          <Link to="/recruiter/billing">
-            <Button variant="outline" size="sm">
-              Xem chi tiết
-            </Button>
-          </Link>
+          {isAdmin ? (
+            <Link to="/recruiter/billing">
+              <Button variant="outline" size="sm">
+                Xem chi tiết
+              </Button>
+            </Link>
+          ) : null}
         </div>
       </CardHeader>
       <CardContent className="space-y-4">

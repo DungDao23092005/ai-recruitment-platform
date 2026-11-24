@@ -254,9 +254,7 @@ export function AppRouter() {
             path="/recruiter/billing"
             element={
               <ProtectedByRole allowedRoles={['recruiter']}>
-                <WorkspaceRoleGuard allowedRoles={['admin', 'recruiter']}>
-                  <RecruiterBillingPage />
-                </WorkspaceRoleGuard>
+                <RecruiterBillingPage />
               </ProtectedByRole>
             }
           />

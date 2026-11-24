@@ -65,6 +65,7 @@ export function RecruiterBillingPage() {
   } = useWorkspace()
   const isAdmin = selectedWorkspace?.role === 'admin'
   const hasWorkspace = Boolean(selectedCompanyId)
+  const isAuthorized = hasWorkspace && isAdmin
 
   const defaultRange = useMemo(getDefaultRange, [])
   const [startDate, setStartDate] = useState(defaultRange.startDate)
@@ -81,7 +82,7 @@ export function RecruiterBillingPage() {
     isLoading: isSubscriptionLoading,
     error: subscriptionError,
     refetch: refetchSubscription,
-  } = useCompanySubscription(hasWorkspace)
+  } = useCompanySubscription(isAuthorized)
 
   const usageParams = useMemo<CompanyUsageQueryParams>(
     () => ({
@@ -100,14 +101,14 @@ export function RecruiterBillingPage() {
     isLoading: isUsageLoading,
     error: usageError,
     refetch: refetchUsages,
-  } = useCompanyUsages(usageParams, hasWorkspace)
+  } = useCompanyUsages(usageParams, isAuthorized)
 
   const {
     orders,
     isLoading: isPaymentsLoading,
     error: paymentsError,
     refetch: refetchPayments,
-  } = useCompanyPaymentHistory(hasWorkspace)
+  } = useCompanyPaymentHistory(isAuthorized)
 
   useEffect(() => {
     setPage(1)
@@ -115,7 +116,7 @@ export function RecruiterBillingPage() {
   }, [selectedCompanyId])
 
   useEffect(() => {
-    if (!hasWorkspace) {
+    if (!isAuthorized) {
       setMembers([])
       return
     }
@@ -132,7 +133,7 @@ export function RecruiterBillingPage() {
     return () => {
       active = false
     }
-  }, [hasWorkspace, selectedCompanyId])
+  }, [isAuthorized, selectedCompanyId])
 
   const handleStartDateChange = (value: string) => {
     setStartDate(value)
@@ -187,6 +188,23 @@ export function RecruiterBillingPage() {
         <EmptyState
           title="Chưa chọn công ty"
           description="Chọn một công ty làm việc để xem thông tin gói và thanh toán."
+        />
+      </div>
+    )
+  }
+
+  if (!isAdmin) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          eyebrow={selectedWorkspace?.company_name ?? 'Nhà tuyển dụng'}
+          title="Gói & Thanh toán"
+          description="Theo dõi gói dịch vụ, hạn mức và lịch sử sử dụng của công ty."
+        />
+        <EmptyState
+          icon={<ShieldCheck className="h-6 w-6 text-muted-foreground" aria-hidden="true" />}
+          title="Không đủ quyền"
+          description="Bạn cần quyền Quản trị viên của công ty này (Workspace Admin) để quản lý gói dịch vụ và thanh toán."
         />
       </div>
     )

@@ -123,4 +123,26 @@ describe('CompanySubscriptionCard', () => {
       screen.getByTestId('company-subscription-loading'),
     ).toBeInTheDocument()
   })
+
+  it('shows the "Xem chi tiết" link only when user is workspace admin', () => {
+    renderCard(<CompanySubscriptionCard subscription={baseSubscription} isAdmin />)
+
+    const link = screen.getByRole('link', { name: 'Xem chi tiết' })
+    expect(link).toHaveAttribute('href', '/recruiter/billing')
+  })
+
+  it('hides the "Xem chi tiết" link when user is not workspace admin or isAdmin is omitted', () => {
+    const { rerender } = renderCard(
+      <CompanySubscriptionCard subscription={baseSubscription} isAdmin={false} />,
+    )
+
+    expect(screen.queryByRole('link', { name: 'Xem chi tiết' })).not.toBeInTheDocument()
+
+    rerender(
+      <MemoryRouter>
+        <CompanySubscriptionCard subscription={baseSubscription} />
+      </MemoryRouter>,
+    )
+    expect(screen.queryByRole('link', { name: 'Xem chi tiết' })).not.toBeInTheDocument()
+  })
 })
