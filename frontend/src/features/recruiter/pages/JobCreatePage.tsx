@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/card'
 import { getCompanies } from '@/api/companies'
 import { COMPANY_SIZE_LABELS } from '@/types/company'
-import type { Company } from '@/types/company'
+import type { Company, CompanySize } from '@/types/company'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import { JobForm } from '@/features/recruiter/components/JobForm'
 import { AIPredictJDModal } from '@/features/recruiter/components/AIPredictJDModal'
@@ -101,14 +101,14 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
       ) : null}
 
       {!formVisible && isLoading ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader className="p-6">
+            <CardTitle className="flex items-center gap-2 font-display text-lg font-bold tracking-tight">
               <FileText className="h-5 w-5 text-primary" aria-hidden="true" />
               Thông tin tin tuyển dụng
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-4 p-6 pt-0">
             <Skeleton className="h-10 w-full" />
             <Skeleton className="h-24 w-full" />
             <Skeleton className="h-10 w-full" />
@@ -132,9 +132,9 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
       ) : null}
 
       {showSelector ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader className="p-6">
+            <CardTitle className="flex items-center gap-2 font-display text-lg font-bold tracking-tight">
               <Building className="h-5 w-5 text-primary" aria-hidden="true" />
               Chọn công ty
             </CardTitle>
@@ -142,49 +142,89 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
               Bạn có nhiều công ty. Chọn công ty để đăng tin tuyển dụng.
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="grid gap-3">
-              {companies?.map((company) => (
-                <button
-                  key={company.id}
-                  type="button"
-                  onClick={() => setSelectedCompanyId(company.id)}
-                  className="flex items-center gap-3 rounded-lg border border-border bg-background px-4 py-3 text-left transition-colors hover:border-primary/50 hover:bg-muted/40"
-                >
-                  <Building className="h-5 w-5 shrink-0 text-primary" aria-hidden="true" />
-                  <span>
-                    <span className="block text-sm font-medium">
-                      {company.name}
-                    </span>
-                    <span className="block text-xs text-muted-foreground">
-                      {COMPANY_SIZE_LABELS[company.size]}
-                    </span>
-                  </span>
-                </button>
-              ))}
+          <CardContent className="p-6 pt-0">
+            <div className="grid gap-3 sm:grid-cols-2">
+              {companies?.map((company) => {
+                const monogram = company.name?.trim()
+                  ? company.name.trim().charAt(0).toUpperCase()
+                  : 'C'
+                return (
+                  <button
+                    key={company.id}
+                    type="button"
+                    onClick={() => setSelectedCompanyId(company.id)}
+                    className="flex items-center gap-3.5 rounded-xl border border-border/70 bg-card p-4 text-left transition-all hover:border-primary/50 hover:bg-muted/40 shadow-xs"
+                  >
+                    <div
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 font-display text-base font-bold text-primary select-none"
+                      aria-hidden="true"
+                    >
+                      {monogram}
+                    </div>
+                    <div className="min-w-0 space-y-0.5">
+                      <span className="block font-display text-sm font-semibold text-foreground truncate">
+                        {company.name}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        {COMPANY_SIZE_LABELS[company.size as CompanySize] ?? company.size}
+                      </span>
+                    </div>
+                  </button>
+                )
+              })}
             </div>
           </CardContent>
         </Card>
       ) : null}
 
       {formVisible && activeCompany ? (
-        <Card>
-          <CardContent className="flex items-center gap-3 py-4">
-            <Building className="h-5 w-5 shrink-0 text-primary" aria-hidden="true" />
-            <div>
-              <p className="text-sm font-medium">{activeCompany.name}</p>
-              <p className="text-xs text-muted-foreground">
-                {COMPANY_SIZE_LABELS[activeCompany.size]}
-              </p>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/80 bg-card px-4 py-3 shadow-xs">
+          <div className="flex items-center gap-3 min-w-0">
+            <div
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 font-display text-base font-bold text-primary select-none"
+              aria-hidden="true"
+            >
+              {activeCompany.name?.trim()
+                ? activeCompany.name.trim().charAt(0).toUpperCase()
+                : 'C'}
             </div>
-          </CardContent>
-        </Card>
+            <div className="min-w-0 space-y-0.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-display text-sm font-bold text-foreground truncate">
+                  {activeCompany.name}
+                </span>
+                {activeCompany.slug ? (
+                  <span className="inline-flex items-center rounded-full border border-border/50 bg-muted/60 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+                    @{activeCompany.slug}
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>Quy mô:</span>
+                <span className="font-medium text-foreground">
+                  {COMPANY_SIZE_LABELS[activeCompany.size as CompanySize] ?? activeCompany.size}
+                </span>
+              </div>
+            </div>
+          </div>
+          {companyIdValue == null && companies != null && companies.length > 1 ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setSelectedCompanyId(null)}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              Đổi công ty
+            </Button>
+          ) : null}
+        </div>
       ) : null}
 
       {formVisible ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader className="p-6">
+            <CardTitle className="flex items-center gap-2 font-display text-lg font-bold tracking-tight">
               <FileText className="h-5 w-5 text-primary" aria-hidden="true" />
               Thông tin tin tuyển dụng
             </CardTitle>
@@ -193,10 +233,11 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
               từ bản mô tả công việc.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-6 pt-0">
             <JobForm
               key={`job-form-${formRevision}`}
               companyId={effectiveCompanyId}
+              onOpenAiModal={() => setShowAiModal(true)}
               initialValues={
                 appliedParsed
                   ? {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft, FileText } from 'lucide-react'
+import { Briefcase, ChevronLeft, FileText } from 'lucide-react'
 import { getMyJobById } from '@/api/jobs'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
@@ -10,6 +10,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import {
   Card,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
@@ -82,10 +83,10 @@ export function RecruiterJobEditPage({ backPath = '/recruiter/jobs' }: Recruiter
       <PageHeader
         eyebrow="Nhà tuyển dụng"
         title="Sửa tin tuyển dụng"
-        description="Cập nhật thông tin tin tuyển dụng của bạn."
+        description="Cập nhật thông tin chi tiết và thời hạn tin tuyển dụng của bạn."
         actions={
           <Link to={backPath}>
-            <Button variant="ghost">
+            <Button variant="outline" size="sm" className="gap-1.5">
               <ChevronLeft className="h-4 w-4" aria-hidden="true" />
               Quay lại danh sách
             </Button>
@@ -94,14 +95,14 @@ export function RecruiterJobEditPage({ backPath = '/recruiter/jobs' }: Recruiter
       />
 
       {state.kind === 'loading' ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader className="p-6">
+            <CardTitle className="flex items-center gap-2 font-display text-lg font-bold tracking-tight">
               <FileText className="h-5 w-5 text-primary" aria-hidden="true" />
               Thông tin tin tuyển dụng
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-4 p-6 pt-0">
             <Skeleton className="h-10 w-full" />
             <Skeleton className="h-24 w-full" />
             <Skeleton className="h-10 w-full" />
@@ -129,29 +130,64 @@ export function RecruiterJobEditPage({ backPath = '/recruiter/jobs' }: Recruiter
       ) : null}
 
       {state.kind === 'success' ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5 text-primary" aria-hidden="true" />
-              Thông tin tin tuyển dụng
-            </CardTitle>
-            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <span>Trạng thái hiện tại:</span>
-              <Badge variant={JOB_STATUS_VARIANT[state.job.status]}>
-                {JOB_STATUS_LABELS[state.job.status]}
-              </Badge>
-              <span>·</span>
-              <span>{JOB_TYPE_LABELS[state.job.job_type]}</span>
+        <div className="space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/80 bg-card px-5 py-3.5 shadow-xs">
+            <div className="flex items-center gap-3.5 min-w-0">
+              <div
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 font-display text-base font-bold text-primary select-none"
+                aria-hidden="true"
+              >
+                <Briefcase className="h-5 w-5" aria-hidden="true" />
+              </div>
+              <div className="min-w-0 space-y-0.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-display text-base font-bold text-foreground truncate">
+                    {state.job.title}
+                  </span>
+                  <Badge variant={JOB_STATUS_VARIANT[state.job.status]}>
+                    {JOB_STATUS_LABELS[state.job.status]}
+                  </Badge>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  {state.job.company_name ? (
+                    <>
+                      <span className="font-medium text-foreground">{state.job.company_name}</span>
+                      <span>•</span>
+                    </>
+                  ) : null}
+                  <span>{JOB_TYPE_LABELS[state.job.job_type]}</span>
+                  {state.job.expires_at ? (
+                    <>
+                      <span>•</span>
+                      <span>
+                        Hạn: {new Date(state.job.expires_at).toLocaleDateString('vi-VN')}
+                      </span>
+                    </>
+                  ) : null}
+                </div>
+              </div>
             </div>
-          </CardHeader>
-          <CardContent>
-            <JobForm
-              companyId={state.job.company_id}
-              job={state.job}
-              onSaved={() => navigate(backPath)}
-            />
-          </CardContent>
-        </Card>
+          </div>
+
+          <Card className="border-border/80 shadow-sm">
+            <CardHeader className="p-6">
+              <CardTitle className="flex items-center gap-2 font-display text-lg font-bold tracking-tight">
+                <FileText className="h-5 w-5 text-primary" aria-hidden="true" />
+                Thông tin tin tuyển dụng
+              </CardTitle>
+              <CardDescription>
+                Chỉnh sửa các tiêu chí, yêu cầu kỹ năng và thời gian tuyển dụng cho vị trí này.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="p-6 pt-0">
+              <JobForm
+                companyId={state.job.company_id}
+                job={state.job}
+                onSaved={() => navigate(backPath)}
+              />
+            </CardContent>
+          </Card>
+        </div>
       ) : null}
     </div>
   )

@@ -1,11 +1,13 @@
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
+import { Sparkles } from 'lucide-react'
 import apiClient from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { getFriendlyErrorMessage } from '@/utils/errors'
+import { cn } from '@/utils/cn'
 import {
   JOB_TYPE_LABELS,
   JOB_STATUS_LABELS,
@@ -24,6 +26,7 @@ export interface JobFormProps {
   onSaved?: (job: Job) => void
   initialValues?: Partial<FormValues>
   job?: Job
+  onOpenAiModal?: () => void
 }
 
 interface FormValues {
@@ -168,6 +171,7 @@ export function JobForm({
   onSaved,
   initialValues,
   job,
+  onOpenAiModal,
 }: JobFormProps) {
   const isEditing = job != null
   const [values, setValues] = useState<FormValues>({
@@ -284,11 +288,15 @@ export function JobForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6" noValidate>
+    <form onSubmit={handleSubmit} className="space-y-8" noValidate>
+      {/* Section 1: Thông tin cơ bản */}
       <div className="space-y-4">
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Thông tin cơ bản
-        </h3>
+        <div className="border-b border-border/60 pb-2">
+          <h3 className="font-display text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Thông tin cơ bản
+          </h3>
+        </div>
+
         <Input
           name="title"
           label="Tiêu đề công việc"
@@ -297,6 +305,36 @@ export function JobForm({
           onChange={(e) => updateField('title', e.target.value)}
           error={errors.title}
         />
+
+        {/* Contextual AI Assistant Card */}
+        <div className="flex flex-col gap-3 rounded-xl border border-primary/20 bg-primary/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+              <Sparkles className="h-4 w-4" aria-hidden="true" />
+            </div>
+            <div className="space-y-0.5">
+              <p className="text-xs font-semibold text-foreground">
+                Trợ lý AI bóc tách JD
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Tự động trích xuất kỹ năng và yêu cầu ứng viên từ bản mô tả công việc để tiết kiệm thời gian điền form.
+              </p>
+            </div>
+          </div>
+          {onOpenAiModal ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onOpenAiModal}
+              className="shrink-0 gap-1.5 border-primary/30 text-xs font-medium hover:bg-primary/10 hover:text-primary"
+            >
+              <Sparkles className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
+              Bóc tách kỹ năng bằng AI
+            </Button>
+          ) : null}
+        </div>
+
         <Textarea
           name="description"
           label="Mô tả công việc"
@@ -308,117 +346,171 @@ export function JobForm({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Select
-          name="job_type"
-          label="Loại công việc"
-          value={values.job_type}
-          onChange={(e) =>
-            updateField('job_type', e.target.value as JobType)
-          }
-        >
-          {(Object.keys(JOB_TYPE_LABELS) as JobType[]).map((type) => (
-            <option key={type} value={type}>
-              {JOB_TYPE_LABELS[type]}
-            </option>
-          ))}
-        </Select>
+      {/* Section 2: Hình thức & Địa điểm */}
+      <div className="space-y-4">
+        <div className="border-b border-border/60 pb-2">
+          <h3 className="font-display text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Hình thức & Địa điểm
+          </h3>
+        </div>
 
-        <Select
-          name="workplace_type"
-          label="Hình thức làm việc"
-          value={values.workplace_type}
-          onChange={(e) =>
-            updateField('workplace_type', e.target.value as WorkplaceType)
-          }
-        >
-          {(Object.keys(WORKPLACE_TYPE_LABELS) as WorkplaceType[]).map(
-            (type) => (
-              <option key={type} value={type}>
-                {WORKPLACE_TYPE_LABELS[type]}
-              </option>
-            ),
-          )}
-        </Select>
-
-        <Input
-          name="location"
-          label="Địa điểm"
-          placeholder="Hồ Chí Minh"
-          value={values.location}
-          onChange={(e) => updateField('location', e.target.value)}
-        />
-
-        {!isEditing ? (
+        <div className="grid gap-4 sm:grid-cols-2">
           <Select
-            name="status"
-            label="Trạng thái"
-            value={values.status}
+            name="job_type"
+            label="Loại công việc"
+            value={values.job_type}
             onChange={(e) =>
-              updateField('status', e.target.value as JobStatus)
+              updateField('job_type', e.target.value as JobType)
             }
           >
-            <option value="draft">{JOB_STATUS_LABELS.draft}</option>
-            <option value="published">{JOB_STATUS_LABELS.published}</option>
+            {(Object.keys(JOB_TYPE_LABELS) as JobType[]).map((type) => (
+              <option key={type} value={type}>
+                {JOB_TYPE_LABELS[type]}
+              </option>
+            ))}
           </Select>
-        ) : null}
 
-        <Input
-          name="required_skills"
-          label="Kỹ năng bắt buộc"
-          placeholder="Python, FastAPI, SQL, Docker"
-          value={values.required_skills}
-          onChange={(e) => updateField('required_skills', e.target.value)}
-          helperText="Nhập các kỹ năng bắt buộc cách nhau bằng dấu phẩy"
-        />
+          <Select
+            name="workplace_type"
+            label="Hình thức làm việc"
+            value={values.workplace_type}
+            onChange={(e) =>
+              updateField('workplace_type', e.target.value as WorkplaceType)
+            }
+          >
+            {(Object.keys(WORKPLACE_TYPE_LABELS) as WorkplaceType[]).map(
+              (type) => (
+                <option key={type} value={type}>
+                  {WORKPLACE_TYPE_LABELS[type]}
+                </option>
+              ),
+            )}
+          </Select>
 
-        <Input
-          name="preferred_skills"
-          label="Kỹ năng ưu tiên"
-          placeholder="React, TypeScript, AWS"
-          value={values.preferred_skills}
-          onChange={(e) => updateField('preferred_skills', e.target.value)}
-          helperText="Nhập các kỹ năng ưu tiên (tùy chọn), cách nhau bằng dấu phẩy"
-        />
+          <Input
+            name="location"
+            label="Địa điểm"
+            placeholder="Hồ Chí Minh"
+            value={values.location}
+            onChange={(e) => updateField('location', e.target.value)}
+          />
 
-        <Input
-          name="minimum_years_experience"
-          label="Kinh nghiệm tối thiểu (năm)"
-          placeholder="3"
-          value={values.minimum_years_experience}
-          onChange={(e) => updateField('minimum_years_experience', e.target.value)}
-          type="number"
-          min="0"
-          step="0.5"
-          helperText="Số năm kinh nghiệm tối thiểu (tùy chọn)"
-        />
+          {!isEditing ? (
+            <Select
+              name="status"
+              label="Trạng thái"
+              value={values.status}
+              onChange={(e) =>
+                updateField('status', e.target.value as JobStatus)
+              }
+            >
+              <option value="draft">{JOB_STATUS_LABELS.draft}</option>
+              <option value="published">{JOB_STATUS_LABELS.published}</option>
+            </Select>
+          ) : null}
+        </div>
+      </div>
 
-        <Input
-          name="education_level"
-          label="Yêu cầu học vấn"
-          placeholder="Bachelor, Master, etc."
-          value={values.education_level}
-          onChange={(e) => updateField('education_level', e.target.value)}
-          helperText="Yêu cầu trình độ học vấn (tùy chọn)"
-        />
+      {/* Section 3: Yêu cầu ứng viên */}
+      <div className="space-y-4">
+        <div className="border-b border-border/60 pb-2">
+          <h3 className="font-display text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Yêu cầu ứng viên
+          </h3>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="sm:col-span-2">
+            <Input
+              name="required_skills"
+              label="Kỹ năng bắt buộc"
+              placeholder="Python, FastAPI, SQL, Docker"
+              value={values.required_skills}
+              onChange={(e) => updateField('required_skills', e.target.value)}
+              helperText="Nhập các kỹ năng bắt buộc cách nhau bằng dấu phẩy"
+            />
+          </div>
+
+          <div className="sm:col-span-2">
+            <Input
+              name="preferred_skills"
+              label="Kỹ năng ưu tiên"
+              placeholder="React, TypeScript, AWS"
+              value={values.preferred_skills}
+              onChange={(e) => updateField('preferred_skills', e.target.value)}
+              helperText="Nhập các kỹ năng ưu tiên (tùy chọn), cách nhau bằng dấu phẩy"
+            />
+          </div>
+
+          <Input
+            name="minimum_years_experience"
+            label="Kinh nghiệm tối thiểu (năm)"
+            placeholder="3"
+            value={values.minimum_years_experience}
+            onChange={(e) => updateField('minimum_years_experience', e.target.value)}
+            type="number"
+            min="0"
+            step="0.5"
+            helperText="Số năm kinh nghiệm tối thiểu (tùy chọn)"
+          />
+
+          <Input
+            name="education_level"
+            label="Yêu cầu học vấn"
+            placeholder="Bachelor, Master, etc."
+            value={values.education_level}
+            onChange={(e) => updateField('education_level', e.target.value)}
+            helperText="Yêu cầu trình độ học vấn (tùy chọn)"
+          />
+        </div>
+      </div>
+
+      {/* Section 4: Thời hạn tuyển dụng */}
+      <div className="space-y-4">
+        <div className="border-b border-border/60 pb-2">
+          <h3 className="font-display text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+            Thời hạn tuyển dụng
+          </h3>
+        </div>
 
         {!isEditing ? (
           <div className="space-y-2">
             <label className="text-sm font-medium leading-none">
               Thời hạn đăng tin
             </label>
-            <div className="flex flex-wrap items-center gap-2">
-              {[14, 30, 60].map((days) => (
-                <Button
-                  key={days}
-                  type="button"
-                  variant={values.duration_days === days ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => updateField('duration_days', days)}
-                >
-                  {days} ngày
-                </Button>
-              ))}
+            <div
+              className="grid grid-cols-3 gap-3 sm:max-w-md"
+              role="group"
+              aria-label="Thời hạn đăng tin"
+            >
+              {[14, 30, 60].map((days) => {
+                const isSelected = values.duration_days === days
+                return (
+                  <button
+                    key={days}
+                    type="button"
+                    aria-label={`${days} ngày`}
+                    onClick={() => updateField('duration_days', days)}
+                    className={cn(
+                      'relative flex flex-col items-center justify-center rounded-lg border p-3 text-sm font-medium transition-all text-center',
+                      isSelected
+                        ? 'border-primary bg-primary/10 text-primary shadow-xs ring-1 ring-primary'
+                        : 'border-border/70 bg-card hover:border-primary/40 hover:bg-muted/40 text-muted-foreground hover:text-foreground',
+                    )}
+                    aria-pressed={isSelected}
+                  >
+                    <span className="font-medium">{days} ngày</span>
+                    {days === 30 ? (
+                      <span
+                        aria-hidden="true"
+                        className="mt-1 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold text-primary"
+                      >
+                        Khuyên dùng
+                      </span>
+                    ) : null}
+                  </button>
+                )
+              })}
             </div>
             <p className="text-xs text-muted-foreground">
               Mặc định 30 ngày. Thời gian đăng tối đa 90 ngày.
@@ -432,8 +524,10 @@ export function JobForm({
 
             if (isJobExpired) {
               return (
-                <div className="rounded-md border p-3 space-y-2">
-                  <p className="text-sm font-medium">Gia hạn thời gian tuyển dụng</p>
+                <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-4 space-y-1.5">
+                  <p className="text-sm font-semibold text-foreground">
+                    Gia hạn thời gian tuyển dụng
+                  </p>
                   <p className="text-xs font-medium text-destructive">
                     Tin tuyển dụng này đã hết hạn, không thể gia hạn.
                   </p>
@@ -463,19 +557,19 @@ export function JobForm({
             const canExtend30 = getResultingExpiry(30) <= maxExpiryDate
 
             return (
-              <div className="rounded-md border p-3 space-y-3">
+              <div className="rounded-lg border border-border/70 bg-card p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium">
+                  <p className="text-sm font-semibold text-foreground">
                     Gia hạn thời gian tuyển dụng
                   </p>
                   {job.expires_at ? (
-                    <span className="text-xs text-muted-foreground">
+                    <span className="text-xs font-medium text-muted-foreground">
                       Hạn hiện tại:{' '}
                       {new Date(job.expires_at).toLocaleDateString('vi-VN')}
                     </span>
                   ) : null}
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2.5">
                   {[14, 30].map((days) => {
                     const canExtend = days === 14 ? canExtend14 : canExtend30
                     const isSelected = selectedExtensionDays === days
@@ -494,6 +588,9 @@ export function JobForm({
                             ? 'Vượt quá giới hạn tối đa 90 ngày'
                             : undefined
                         }
+                        className={cn(
+                          isSelected && 'ring-1 ring-primary shadow-xs',
+                        )}
                       >
                         +{days} ngày
                       </Button>
@@ -520,20 +617,20 @@ export function JobForm({
       </div>
 
       {isEditing ? (
-        <p className="rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+        <div className="rounded-lg border border-border/60 bg-muted/30 px-3.5 py-2.5 text-xs text-muted-foreground">
           Trạng thái được quản lý từ danh sách tin tuyển dụng.
-        </p>
+        </div>
       ) : null}
 
       {apiError ? (
-        <div className="space-y-2">
+        <div className="space-y-2 rounded-lg border border-destructive/20 bg-destructive/10 p-3.5">
           <p role="alert" className="text-sm font-medium text-destructive">
             {apiError.message}
           </p>
           {apiError.showUpgradeAction ? (
-            <div>
+            <div className="pt-1">
               <Link to={apiError.upgradeUrl}>
-                <Button type="button" variant="outline" size="sm">
+                <Button type="button" variant="default" size="sm">
                   Nâng cấp gói
                 </Button>
               </Link>
@@ -543,14 +640,17 @@ export function JobForm({
       ) : null}
 
       {success ? (
-        <p role="status" className="text-sm font-medium text-success">
+        <div
+          role="status"
+          className="rounded-lg border border-success/20 bg-success/10 p-3 text-sm font-medium text-success"
+        >
           {isEditing
             ? 'Cập nhật tin tuyển dụng thành công.'
             : 'Tạo tin tuyển dụng thành công.'}
-        </p>
+        </div>
       ) : null}
 
-      <Button type="submit" className="w-full" isLoading={submitting}>
+      <Button type="submit" className="w-full" size="lg" isLoading={submitting}>
         {isEditing ? 'Lưu thay đổi' : 'Tạo tin tuyển dụng'}
       </Button>
     </form>

@@ -205,6 +205,7 @@ describe('JobCreatePage', () => {
           preferred_skills: [],
           minimum_years_experience: null,
           education_level: null,
+          duration_days: 30,
         },
         { timeout: 45000 }
       )
@@ -286,6 +287,7 @@ describe('JobCreatePage', () => {
           preferred_skills: ['Next.js'],
           minimum_years_experience: 3,
           education_level: 'Bachelor degree',
+          duration_days: 30,
         },
         { timeout: 45000 }
       )
@@ -411,6 +413,7 @@ describe('JobCreatePage', () => {
           preferred_skills: ['Docker'],
           minimum_years_experience: 5,
           education_level: 'Master degree',
+          duration_days: 30,
         },
         { timeout: 45000 }
       )
@@ -418,5 +421,23 @@ describe('JobCreatePage', () => {
         screen.getByText('Tạo tin tuyển dụng thành công.'),
       ).toBeInTheDocument()
     })
+  })
+
+  it('opens AI modal when contextual AI button in form is clicked', async () => {
+    render(
+      <MemoryRouter>
+        <JobCreatePage companyId="company-1" />
+      </MemoryRouter>,
+    )
+
+    const contextualAiButton = screen.getByRole('button', {
+      name: /Bóc tách kỹ năng bằng AI/i,
+    })
+    expect(contextualAiButton).toBeInTheDocument()
+    fireEvent.click(contextualAiButton)
+
+    expect(
+      screen.getByRole('dialog', { name: 'AI phân tích JD' }),
+    ).toBeInTheDocument()
   })
 })
