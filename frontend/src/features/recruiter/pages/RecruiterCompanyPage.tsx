@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { Building, Pencil, PlusCircle } from 'lucide-react'
 import { PageHeader } from '@/components/common/PageHeader'
-import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorBanner } from '@/components/ui/error-banner'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -10,6 +8,7 @@ import {
   Card,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
@@ -63,24 +62,33 @@ export function RecruiterCompanyPage() {
         description="Tạo và xem thông tin công ty của bạn trước khi đăng tin tuyển dụng."
       />
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              {isEditing ? (
-                <Pencil className="h-5 w-5 text-primary" aria-hidden="true" />
-              ) : (
-                <PlusCircle className="h-5 w-5 text-primary" aria-hidden="true" />
-              )}
-              {isEditing ? 'Chỉnh sửa công ty' : 'Tạo công ty'}
-            </CardTitle>
-            <CardDescription>
-              {isEditing
-                ? 'Cập nhật thông tin công ty của bạn.'
-                : 'Đăng ký công ty của bạn trước khi đăng tin tuyển dụng.'}
-            </CardDescription>
+      <div className="grid gap-6 lg:grid-cols-2 items-start">
+        <Card className="border-border/80 shadow-sm">
+          <CardHeader className="p-6">
+            <div className="space-y-1">
+              <CardTitle className="flex items-center gap-2 font-display text-lg font-bold tracking-tight">
+                {isEditing ? (
+                  <Pencil className="h-5 w-5 text-primary" aria-hidden="true" />
+                ) : (
+                  <PlusCircle className="h-5 w-5 text-primary" aria-hidden="true" />
+                )}
+                {isEditing ? 'Chỉnh sửa công ty' : 'Tạo công ty'}
+              </CardTitle>
+              <CardDescription>
+                {isEditing
+                  ? 'Cập nhật thông tin công ty của bạn.'
+                  : 'Đăng ký công ty của bạn trước khi đăng tin tuyển dụng.'}
+              </CardDescription>
+            </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="p-6 pt-0">
+            {isEditing ? (
+              <div className="mb-4 flex items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3.5 py-2 text-xs text-primary">
+                <span className="flex h-2 w-2 rounded-full bg-primary animate-pulse" />
+                <span className="font-medium">Chế độ chỉnh sửa thông tin công ty</span>
+              </div>
+            ) : null}
+
             {isEditing && company ? (
               <CompanyForm
                 key="company-edit"
@@ -112,48 +120,37 @@ export function RecruiterCompanyPage() {
           ) : null}
 
           {isLoading ? (
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Building className="h-5 w-5 text-primary" aria-hidden="true" />
-                  Công ty của bạn
-                </CardTitle>
+            <Card className="h-full border-border/80 shadow-sm">
+              <CardHeader className="p-6">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                    <Skeleton className="h-12 w-12 rounded-xl shrink-0" />
+                    <div className="space-y-2 flex-1">
+                      <Skeleton className="h-5 w-40" />
+                      <Skeleton className="h-4 w-24 rounded-full" />
+                    </div>
+                  </div>
+                  <Skeleton className="h-8 w-24 rounded-md shrink-0" />
+                </div>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-sm text-muted-foreground">
-                  Đang tải thông tin công ty...
-                </p>
-                <Skeleton className="h-6 w-2/3" />
-                <Skeleton className="h-4 w-1/2" />
-                <Skeleton className="h-10 w-full" />
+              <CardContent className="space-y-3 px-6 pb-6 pt-0">
+                <div className="grid gap-2.5 rounded-lg border border-border/50 bg-muted/20 p-3 sm:grid-cols-2">
+                  <Skeleton className="h-5 w-32" />
+                  <Skeleton className="h-5 w-28" />
+                </div>
               </CardContent>
+              <CardFooter className="border-t bg-muted/20 px-6 py-4">
+                <Skeleton className="h-9 w-60 rounded-md" />
+              </CardFooter>
             </Card>
           ) : null}
 
           {!isLoading && error == null ? (
             company ? (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-2">
-                  <h2 className="font-display text-lg font-semibold">
-                    Công ty của bạn
-                  </h2>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setIsEditing(true)}
-                  >
-                    <Pencil className="h-4 w-4" aria-hidden="true" />
-                    Chỉnh sửa
-                  </Button>
-                </div>
-                <CompanyCard company={company} />
-                <Link to="/recruiter/jobs/new">
-                  <Button className="w-full sm:w-auto">
-                    <Building className="h-4 w-4" aria-hidden="true" />
-                    Đăng tin tuyển dụng cho công ty này
-                  </Button>
-                </Link>
-              </div>
+              <CompanyCard
+                company={company}
+                onEdit={() => setIsEditing(true)}
+              />
             ) : (
               <EmptyState
                 icon={<Building className="h-6 w-6" aria-hidden="true" />}

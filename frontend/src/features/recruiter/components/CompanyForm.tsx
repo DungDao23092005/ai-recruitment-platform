@@ -1,9 +1,11 @@
 import { useState, type FormEvent } from 'react'
+import { AlertCircle, CheckCircle2 } from 'lucide-react'
 import { createCompany, updateCompany } from '@/api/companies'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { getFriendlyErrorMessage } from '@/utils/errors'
+import { cn } from '@/utils/cn'
 import { COMPANY_SIZE_LABELS, COMPANY_SIZES } from '@/types/company'
 import type { Company, CompanySize } from '@/types/company'
 
@@ -119,15 +121,23 @@ export function CompanyForm({
         onChange={(e) => setValues((v) => ({ ...v, name: e.target.value }))}
         error={errors.name}
       />
-      <Input
-        name="slug"
-        label="Slug"
-        placeholder="abc-corporation"
-        value={values.slug}
-        onChange={(e) => setValues((v) => ({ ...v, slug: e.target.value }))}
-        error={errors.slug}
-        helperText="Chỉ gồm chữ thường, chữ số và dấu gạch ngang."
-      />
+      <div className="space-y-1.5">
+        <Input
+          name="slug"
+          label="Slug"
+          placeholder="abc-corporation"
+          value={values.slug}
+          onChange={(e) => setValues((v) => ({ ...v, slug: e.target.value }))}
+          error={errors.slug}
+          helperText="Chỉ gồm chữ thường, chữ số và dấu gạch ngang."
+        />
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground pt-0.5">
+          <span>Xem trước:</span>
+          <span className="font-mono font-medium text-foreground bg-muted/80 px-2 py-0.5 rounded text-[11px] border border-border/40">
+            @{values.slug.trim() || 'slug'}
+          </span>
+        </div>
+      </div>
       <Input
         name="tax_code"
         label="Mã số thuế"
@@ -136,44 +146,82 @@ export function CompanyForm({
         onChange={(e) => setValues((v) => ({ ...v, tax_code: e.target.value }))}
         error={errors.tax_code}
       />
-      <Select
-        name="size"
-        label="Quy mô công ty"
-        value={values.size}
-        onChange={(e) =>
-          setValues((v) => ({ ...v, size: e.target.value as CompanySize }))
-        }
-      >
-        {COMPANY_SIZES.map((size) => (
-          <option key={size} value={size}>
-            {COMPANY_SIZE_LABELS[size]}
-          </option>
-        ))}
-      </Select>
+      <div className="space-y-2">
+        <Select
+          name="size"
+          label="Quy mô công ty"
+          value={values.size}
+          onChange={(e) =>
+            setValues((v) => ({ ...v, size: e.target.value as CompanySize }))
+          }
+        >
+          {COMPANY_SIZES.map((size) => (
+            <option key={size} value={size}>
+              {COMPANY_SIZE_LABELS[size]}
+            </option>
+          ))}
+        </Select>
+
+        <div
+          className="grid grid-cols-2 gap-2 sm:grid-cols-4 pt-1"
+          role="group"
+          aria-label="Lựa chọn nhanh quy mô công ty"
+        >
+          {COMPANY_SIZES.map((size) => {
+            const isSelected = values.size === size
+            return (
+              <button
+                key={size}
+                type="button"
+                onClick={() => setValues((v) => ({ ...v, size }))}
+                className={cn(
+                  'flex items-center justify-center rounded-lg border px-3 py-2 text-xs font-medium transition-all text-center',
+                  isSelected
+                    ? 'border-primary bg-primary/10 text-primary shadow-xs ring-1 ring-primary'
+                    : 'border-border/70 bg-card hover:border-primary/40 hover:bg-muted/40 text-muted-foreground hover:text-foreground',
+                )}
+                aria-pressed={isSelected}
+              >
+                <span>{COMPANY_SIZE_LABELS[size]}</span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
 
       {apiError ? (
-        <p role="alert" className="text-sm font-medium text-destructive">
-          {apiError}
-        </p>
+        <div
+          role="alert"
+          className="flex items-start gap-2.5 rounded-lg border border-destructive/20 bg-destructive/10 p-3 text-sm font-medium text-destructive"
+        >
+          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden="true" />
+          <span>{apiError}</span>
+        </div>
       ) : null}
 
       {success ? (
-        <p role="status" className="text-sm font-medium text-success">
-          {isEdit
-            ? 'Cập nhật công ty thành công.'
-            : 'Tạo công ty thành công.'}
-        </p>
+        <div
+          role="status"
+          className="flex items-start gap-2.5 rounded-lg border border-success/20 bg-success/10 p-3 text-sm font-medium text-success"
+        >
+          <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" aria-hidden="true" />
+          <span>
+            {isEdit
+              ? 'Cập nhật công ty thành công.'
+              : 'Tạo công ty thành công.'}
+          </span>
+        </div>
       ) : null}
 
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <Button type="submit" className="w-full" isLoading={submitting}>
+      <div className="flex flex-col gap-2.5 sm:flex-row pt-2">
+        <Button type="submit" className="w-full sm:flex-1" isLoading={submitting}>
           {isEdit ? 'Lưu thay đổi' : 'Tạo công ty'}
         </Button>
         {isEdit ? (
           <Button
             type="button"
             variant="outline"
-            className="w-full"
+            className="w-full sm:w-auto"
             onClick={onCancelEdit}
           >
             Hủy chỉnh sửa
