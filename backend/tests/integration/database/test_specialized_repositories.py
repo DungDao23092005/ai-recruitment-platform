@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.domain.enums import (
     ApplicationStatus,
@@ -25,6 +25,7 @@ def make_company(slug="acme", tax_code="111") -> Company:
 
 
 def make_job(company_id, status=JobStatus.PUBLISHED, title="Job") -> Job:
+    now = datetime.now(timezone.utc) if status == JobStatus.PUBLISHED else None
     return Job(
         company_id=company_id,
         title=title,
@@ -32,6 +33,9 @@ def make_job(company_id, status=JobStatus.PUBLISHED, title="Job") -> Job:
         status=status,
         job_type=JobType.FULL_TIME,
         workplace_type=WorkplaceType.REMOTE,
+        published_at=now,
+        expires_at=now + timedelta(days=30) if now is not None else None,
+        expiration_duration_days=30 if now is not None else None,
     )
 
 
