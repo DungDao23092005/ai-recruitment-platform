@@ -53,6 +53,7 @@ def test_valid_environments(monkeypatch: pytest.MonkeyPatch, environment: str):
         monkeypatch.setenv("DATABASE_PASSWORD", "test-password-123")
         monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
         monkeypatch.setenv("BACKEND_CORS_ORIGINS", "https://app.example.com,https://api.example.com")
+        monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
 
     settings = Settings(_env_file=None)
 
@@ -113,6 +114,7 @@ def test_production_accepts_custom_secret(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DATABASE_PASSWORD", "test-password-123")
     monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
     monkeypatch.setenv("BACKEND_CORS_ORIGINS", "https://app.example.com,https://api.example.com")
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
 
     settings = Settings(_env_file=None)
 
@@ -161,6 +163,7 @@ def test_production_secret_key_exactly_32_bytes(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("DATABASE_PASSWORD", "test-password")
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("BACKEND_CORS_ORIGINS", "https://app.example.com")
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
 
     settings = Settings(_env_file=None)
     assert settings.SECRET_KEY == "a" * 32
@@ -172,6 +175,7 @@ def test_production_secret_key_over_32_bytes(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DATABASE_PASSWORD", "test-password")
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("BACKEND_CORS_ORIGINS", "https://app.example.com")
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
 
     settings = Settings(_env_file=None)
     assert settings.SECRET_KEY == "a" * 33
@@ -226,6 +230,7 @@ def test_production_database_password_accepted(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SECRET_KEY", "a" * 32)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("BACKEND_CORS_ORIGINS", "https://app.example.com")
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
 
     settings = Settings(_env_file=None)
     assert settings.DATABASE_PASSWORD == "secure-password-123"
@@ -272,6 +277,7 @@ def test_production_gemini_api_key_accepted(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SECRET_KEY", "a" * 32)
     monkeypatch.setenv("DATABASE_PASSWORD", "test-password")
     monkeypatch.setenv("BACKEND_CORS_ORIGINS", "https://app.example.com")
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
 
     settings = Settings(_env_file=None)
     assert settings.GEMINI_API_KEY == "valid-api-key-123"
@@ -348,6 +354,7 @@ def test_production_cors_legitimate_https_accepted(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("SECRET_KEY", "a" * 32)
     monkeypatch.setenv("DATABASE_PASSWORD", "test-password")
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
 
     settings = Settings(_env_file=None)
     assert settings.BACKEND_CORS_ORIGINS == [
