@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import httpx
@@ -159,6 +159,7 @@ async def _create_recruiter_profile(session, user_id: uuid.UUID, company_id: uui
 
 async def _create_job(session, job_id: uuid.UUID, company_id: uuid.UUID, skills: list[str]):
     """Create a Job in SQL with the given skills."""
+    now = datetime.now(timezone.utc)
     job = Job(
         id=job_id,
         company_id=company_id,
@@ -170,6 +171,9 @@ async def _create_job(session, job_id: uuid.UUID, company_id: uuid.UUID, skills:
         location="Ho Chi Minh",
         minimum_years_experience=3.0,
         education_level="Bachelor",
+        published_at=now,
+        expires_at=now + timedelta(days=30),
+        expiration_duration_days=30,
     )
     session.add(job)
     await session.flush()
