@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +15,7 @@ from app.domain.enums import (
     ApplicationStatus,
     InterviewStatus,
     InterviewType,
+    JobStatus,
     MembershipRole,
     MembershipStatus,
     UserRole,
@@ -112,16 +113,41 @@ def make_interview(
     )
 
 
-def make_job() -> Job:
+_UNSET = object()
+
+
+def make_job(
+    status: JobStatus | str = JobStatus.PUBLISHED,
+    expires_at: datetime | None | object = _UNSET,
+    is_deleted: bool = False,
+) -> Job:
+    if isinstance(status, str):
+        try:
+            status = JobStatus(status)
+        except ValueError:
+            pass
+
+    now = datetime.now(timezone.utc)
+    is_published = status == JobStatus.PUBLISHED or status == "published"
+    published_at = now if is_published else None
+
+    if expires_at is _UNSET:
+        computed_expires_at = now + timedelta(days=30) if is_published else None
+    else:
+        computed_expires_at = expires_at
+
     job = Job(
         id=uuid.uuid4(),
         company_id=uuid.uuid4(),
         title="Backend Engineer",
         description="Build APIs",
-        status="published",
+        status=status,
         job_type="full_time",
         workplace_type="remote",
         location="",
+        published_at=published_at,
+        expires_at=computed_expires_at,
+        is_deleted=is_deleted,
     )
     job.company = MagicMock()
     job.company.recruiters = [MagicMock(user_id=uuid.uuid4())]
@@ -400,6 +426,87 @@ class TestApplyJob:
 
         assert notification_entity_id == application_id, \
             f"entity_id ({notification_entity_id}) does not match application.id ({application_id})"
+
+    def test_expired_job_rejects_application(self):
+        session = make_session()
+        service = make_service(session)
+        now = datetime.now(timezone.utc)
+        job = make_job(expires_at=now - timedelta(days=1))
+        service.jobs.get_job_with_company_and_recruiters.return_value = job
+
+        with pytest.raises(
+            InvalidTransitionException, match="Tin tuyển dụng đã hết hạn nhận hồ sơ."
+        ) as exc_info:
+            asyncio.run(
+                service.apply_job(
+                    candidate_id=uuid.uuid4(),
+                    job_id=job.id,
+                )
+            )
+
+        assert str(exc_info.value) == "Tin tuyển dụng đã hết hạn nhận hồ sơ."
+        session.add.assert_not_called()
+        session.commit.assert_not_awaited()
+
+    def test_job_with_none_expiration_rejects_application(self):
+        session = make_session()
+        service = make_service(session)
+        job = make_job(expires_at=None)
+        service.jobs.get_job_with_company_and_recruiters.return_value = job
+
+        with pytest.raises(
+            InvalidTransitionException, match="Tin tuyển dụng đã hết hạn nhận hồ sơ."
+        ) as exc_info:
+            asyncio.run(
+                service.apply_job(
+                    candidate_id=uuid.uuid4(),
+                    job_id=job.id,
+                )
+            )
+
+        assert str(exc_info.value) == "Tin tuyển dụng đã hết hạn nhận hồ sơ."
+        session.add.assert_not_called()
+        session.commit.assert_not_awaited()
+
+    def test_soft_deleted_job_rejects_application(self):
+        session = make_session()
+        service = make_service(session)
+        job = make_job(is_deleted=True)
+        service.jobs.get_job_with_company_and_recruiters.return_value = job
+
+        with pytest.raises(
+            InvalidTransitionException, match="Tin tuyển dụng đã hết hạn nhận hồ sơ."
+        ) as exc_info:
+            asyncio.run(
+                service.apply_job(
+                    candidate_id=uuid.uuid4(),
+                    job_id=job.id,
+                )
+            )
+
+        assert str(exc_info.value) == "Tin tuyển dụng đã hết hạn nhận hồ sơ."
+        session.add.assert_not_called()
+        session.commit.assert_not_awaited()
+
+    def test_unpublished_job_rejects_application(self):
+        session = make_session()
+        service = make_service(session)
+        job = make_job(status=JobStatus.DRAFT)
+        service.jobs.get_job_with_company_and_recruiters.return_value = job
+
+        with pytest.raises(
+            InvalidTransitionException, match="is not open for applications"
+        ) as exc_info:
+            asyncio.run(
+                service.apply_job(
+                    candidate_id=uuid.uuid4(),
+                    job_id=job.id,
+                )
+            )
+
+        assert str(exc_info.value) == f"Job {job.id} is not open for applications (status: draft)."
+        session.add.assert_not_called()
+        session.commit.assert_not_awaited()
 
 
 class TestListApplicationsByJob:
