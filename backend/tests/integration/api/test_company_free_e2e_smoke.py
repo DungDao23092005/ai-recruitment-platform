@@ -186,7 +186,8 @@ async def _extract_invitation_token(email: str) -> str:
             .order_by(EmailOutbox.created_at.desc())
         )
         assert outbox is not None, f"No email outbox entry found for {email}"
-        return outbox.text_body.split("#token=", 1)[1].splitlines()[0]
+        raw = outbox.text_body.split("#token=", 1)[1].splitlines()[0]
+        return raw.split("&", 1)[0]
 
 
 # ==============================================================================

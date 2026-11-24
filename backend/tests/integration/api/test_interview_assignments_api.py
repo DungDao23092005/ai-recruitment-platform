@@ -83,7 +83,8 @@ def _invitation_token(run_async, email: str) -> str:
                 .order_by(EmailOutbox.created_at.desc())
             )
             assert outbox is not None
-            return outbox.text_body.split("#token=", 1)[1].splitlines()[0]
+            raw = outbox.text_body.split("#token=", 1)[1].splitlines()[0]
+            return raw.split("&", 1)[0]
 
     return run_async(_load())
 
@@ -1019,7 +1020,8 @@ class TestInterviewAssignmentNotificationsLifecycle:
                         (
                             await session.execute(
                                 select(Notification).where(
-                                    Notification.user_id == uuid.UUID(interviewer_user_id)
+                                    Notification.user_id == uuid.UUID(interviewer_user_id),
+                                    Notification.entity_type == "interview",
                                 )
                             )
                         ).scalars().all()
@@ -1073,7 +1075,8 @@ class TestInterviewAssignmentNotificationsLifecycle:
                         (
                             await session.execute(
                                 select(Notification).where(
-                                    Notification.user_id == uuid.UUID(interviewer_user_id)
+                                    Notification.user_id == uuid.UUID(interviewer_user_id),
+                                    Notification.entity_type == "interview",
                                 ).order_by(Notification.created_at.asc())
                             )
                         ).scalars().all()
@@ -1122,7 +1125,8 @@ class TestInterviewAssignmentNotificationsLifecycle:
                         (
                             await session.execute(
                                 select(Notification).where(
-                                    Notification.user_id == uuid.UUID(interviewer_user_id)
+                                    Notification.user_id == uuid.UUID(interviewer_user_id),
+                                    Notification.entity_type == "interview",
                                 ).order_by(Notification.created_at.asc())
                             )
                         ).scalars().all()
