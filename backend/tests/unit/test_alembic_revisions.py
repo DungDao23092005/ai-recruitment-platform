@@ -19,7 +19,7 @@ _ALEMBIC_DIR = _BACKEND_DIR / "alembic"
 
 _MAX_REVISION_LENGTH = 32
 _EXPECTED_BASE = "0001_initial_schema"
-_EXPECTED_HEAD = "b7d2e8f190c4"
+_EXPECTED_HEAD = "e7a1b3c9f201"
 
 
 def _parents(down_revision) -> tuple[str, ...]:
@@ -78,7 +78,15 @@ def test_graph_has_single_root_and_expected_head():
 
     head = script.get_revision(_EXPECTED_HEAD)
     assert head is not None
-    assert _parents(head.down_revision) == ("wave1_5_company_free",)
+    assert _parents(head.down_revision) == ("c5e8f19a0d12",)
+
+    invitation_declined = script.get_revision("c5e8f19a0d12")
+    assert invitation_declined is not None
+    assert _parents(invitation_declined.down_revision) == ("b7d2e8f190c4",)
+
+    reset_token_used = script.get_revision("b7d2e8f190c4")
+    assert reset_token_used is not None
+    assert _parents(reset_token_used.down_revision) == ("wave1_5_company_free",)
 
     company_free = script.get_revision("wave1_5_company_free")
     assert company_free is not None

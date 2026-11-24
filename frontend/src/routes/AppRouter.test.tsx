@@ -948,6 +948,9 @@ describe('AppRouter interview schedule routes', () => {
           'Lịch phỏng vấn chỉ hiển thị khi bạn tham gia hoặc tạo một công ty.',
         ),
       ).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'Tạo công ty' }),
+      ).toBeInTheDocument()
     })
     const createCompanyButton = screen.getByRole('button', {
       name: 'Tạo công ty',
@@ -998,14 +1001,16 @@ describe('AppRouter interview schedule routes', () => {
           'Lịch phỏng vấn chỉ hiển thị khi bạn tham gia hoặc tạo một công ty. Bạn có lời mời tham gia công ty đang chờ phản hồi.',
         ),
       ).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'Xem lời mời tham gia công ty' }),
+      ).toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'Tạo công ty' }),
+      ).toBeInTheDocument()
     })
     const viewInvitationsBtn = screen.getByRole('button', {
       name: 'Xem lời mời tham gia công ty',
     })
-    expect(viewInvitationsBtn).toBeInTheDocument()
-    expect(
-      screen.getByRole('button', { name: 'Tạo công ty' }),
-    ).toBeInTheDocument()
     expect(mockedInterviews.listMyAssignedInterviews).not.toHaveBeenCalled()
 
     fireEvent.click(viewInvitationsBtn)
