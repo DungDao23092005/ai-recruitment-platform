@@ -113,6 +113,10 @@ export function isNotificationNavigable(
   userRole?: UserRole,
   workspaceRole?: string | null
 ): boolean {
+  if (notification.notification_type === 'company_member_revoked') {
+    return false;
+  }
+
   // Company invitation notifications are navigable for all authenticated users
   if (
     notification.notification_type === 'company_invitation' ||
@@ -219,6 +223,19 @@ export function NotificationsPage() {
     window.addEventListener('invitation:revoked', handleInvitationRevoked);
     return () => {
       window.removeEventListener('invitation:revoked', handleInvitationRevoked);
+    };
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    const handleWorkspaceRevoked = () => {
+      if (isAuthenticated) {
+        fetchNotifications(1, false);
+      }
+    };
+
+    window.addEventListener('workspace:revoked', handleWorkspaceRevoked);
+    return () => {
+      window.removeEventListener('workspace:revoked', handleWorkspaceRevoked);
     };
   }, [isAuthenticated]);
 

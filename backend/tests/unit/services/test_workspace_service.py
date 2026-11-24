@@ -358,6 +358,19 @@ class TestListMembers:
         assert result[0].user_id == member.id
         assert result[0].email == "member@example.com"
 
+    def test_list_members_respects_include_revoked(self):
+        service = make_service(make_session())
+        admin = make_user(role=UserRole.RECRUITER)
+        company = make_company()
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+        service.memberships.list_by_company.return_value = []
+
+        asyncio.run(service.list_members(context, include_revoked=False))
+        service.memberships.list_by_company.assert_awaited_once_with(
+            context.company_id,
+            include_revoked=False,
+        )
+
 
 class TestCreateInvitation:
     def test_creates_pending_invitation_and_enqueues_email(self):
@@ -1039,6 +1052,116 @@ class TestRevokeMembership:
             asyncio.run(
                 service.revoke_membership(context, uuid.uuid4())
             )
+
+    def test_revoke_membership_creates_notification_and_enqueues_email(self):
+        session = make_session()
+        lock_result = MagicMock()
+        lock_result.scalar_one.return_value = 0
+        session.execute.return_value = lock_result
+        service = make_service(session)
+        company = make_company(name="Acme Corp")
+        admin = make_user(email="admin@acme.com")
+        member_user = make_user(email="worker@acme.com")
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+        target = make_membership(
+            company=company,
+            user=member_user,
+            role=MembershipRole.RECRUITER,
+        )
+        other_membership = make_membership(
+            company=make_company(name="Other Co"),
+            user=member_user,
+            role=MembershipRole.RECRUITER,
+        )
+        service.memberships.get_active.return_value = context.membership
+        service.memberships.get_by_id_with_user.return_value = target
+        service.memberships.list_active_for_user.return_value = [
+            target,
+            other_membership,
+        ]
+
+        with patch("app.services.workspace_service.enqueue_email", new_callable=AsyncMock) as mock_enqueue, \
+             patch("app.services.workspace_service.signal_dispatch_after_commit") as mock_signal, \
+             patch("app.services.workspace_service.TransactionActionManager"):
+            result = asyncio.run(service.revoke_membership(context, target.id))
+
+        assert result.status == MembershipStatus.REVOKED
+        service.notifications.notify_company_member_revoked.assert_awaited_once_with(
+            user_id=target.user_id,
+            membership_id=target.id,
+            company_name="Acme Corp",
+            role_label="Nhà tuyển dụng",
+            has_other_active_memberships=True,
+        )
+        mock_enqueue.assert_awaited_once()
+        email_kwargs = mock_enqueue.await_args.kwargs
+        assert email_kwargs["event_type"] == "company_membership_revoked"
+        assert email_kwargs["to_email"] == "worker@acme.com"
+        assert email_kwargs["idempotency_key"] == f"company-membership-revoked:{target.id}"
+        assert "[AI Recruitment Platform] Thông báo thu hồi quyền thành viên tại Acme Corp" in email_kwargs["subject"]
+        assert "Nhà tuyển dụng" in email_kwargs["text_body"]
+        assert "các không gian làm việc khác" in email_kwargs["text_body"]
+        mock_signal.assert_called_once_with(session)
+        session.commit.assert_awaited_once()
+
+    def test_revoke_membership_without_remaining_memberships_informs_access_ended(self):
+        session = make_session()
+        lock_result = MagicMock()
+        lock_result.scalar_one.return_value = 0
+        session.execute.return_value = lock_result
+        service = make_service(session)
+        company = make_company(name="Acme Corp")
+        admin = make_user(email="admin@acme.com")
+        member_user = make_user(email="worker@acme.com")
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+        target = make_membership(
+            company=company,
+            user=member_user,
+            role=MembershipRole.INTERVIEWER,
+        )
+        service.memberships.get_active.return_value = context.membership
+        service.memberships.get_by_id_with_user.return_value = target
+        service.memberships.list_active_for_user.return_value = [target]
+
+        with patch("app.services.workspace_service.enqueue_email", new_callable=AsyncMock) as mock_enqueue, \
+             patch("app.services.workspace_service.signal_dispatch_after_commit"), \
+             patch("app.services.workspace_service.TransactionActionManager"):
+            result = asyncio.run(service.revoke_membership(context, target.id))
+
+        assert result.status == MembershipStatus.REVOKED
+        service.notifications.notify_company_member_revoked.assert_awaited_once_with(
+            user_id=target.user_id,
+            membership_id=target.id,
+            company_name="Acme Corp",
+            role_label="Người phỏng vấn",
+            has_other_active_memberships=False,
+        )
+        email_kwargs = mock_enqueue.await_args.kwargs
+        assert "không gian làm việc này đã kết thúc" in email_kwargs["text_body"]
+        assert "bị khóa" not in email_kwargs["text_body"]
+
+    def test_revoke_membership_non_active_raises_invalid_transition(self):
+        session = make_session()
+        lock_result = MagicMock()
+        lock_result.scalar_one.return_value = 0
+        session.execute.return_value = lock_result
+        service = make_service(session)
+        company = make_company()
+        admin = make_user()
+        context = service_context(company, admin, role=MembershipRole.ADMIN)
+        target = make_membership(
+            company=company,
+            user=make_user(),
+            status=MembershipStatus.REVOKED,
+        )
+        service.memberships.get_active.return_value = context.membership
+        service.memberships.get_by_id_with_user.return_value = target
+
+        with pytest.raises(InvalidTransitionException, match="not active"):
+            asyncio.run(service.revoke_membership(context, target.id))
+
+        session.commit.assert_not_awaited()
+        service.notifications.notify_company_member_revoked.assert_not_awaited()
 
 
 class TestUpdateMembershipRole:

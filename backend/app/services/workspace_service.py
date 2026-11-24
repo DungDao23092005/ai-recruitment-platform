@@ -69,6 +69,7 @@ from app.schemas.workspace import (
     normalize_email,
 )
 from app.services.email_outbox_service import enqueue_email
+from app.services.email_outbox_worker import signal_dispatch_after_commit
 from app.services.notification_service import NotificationService
 
 logger = logging.getLogger(__name__)
@@ -292,11 +293,15 @@ class WorkspaceService:
             if membership.company is not None
         ]
 
-    async def list_members(self, context: WorkspaceContext) -> list[MemberRead]:
+    async def list_members(
+        self,
+        context: WorkspaceContext,
+        include_revoked: bool = True,
+    ) -> list[MemberRead]:
         self._require_company_manager(context)
         memberships = await self.memberships.list_by_company(
             context.company_id,
-            include_revoked=True,
+            include_revoked=include_revoked,
         )
         return [
             MemberRead(
@@ -878,6 +883,38 @@ class WorkspaceService:
             )
             .values(is_deleted=True)
         )
+
+        user_active_memberships = await self.memberships.list_active_for_user(
+            target.user_id
+        )
+        remaining_active = [
+            m for m in user_active_memberships if m.id != target.id
+        ]
+        has_other_active = len(remaining_active) > 0
+
+        role_label = {
+            MembershipRole.ADMIN: "Quản trị viên",
+            MembershipRole.RECRUITER: "Nhà tuyển dụng",
+            MembershipRole.INTERVIEWER: "Người phỏng vấn",
+        }.get(
+            target.role,
+            str(target.role.value if hasattr(target.role, "value") else target.role),
+        )
+
+        await self.notifications.notify_company_member_revoked(
+            user_id=target.user_id,
+            membership_id=target.id,
+            company_name=context.company.name,
+            role_label=role_label,
+            has_other_active_memberships=has_other_active,
+        )
+
+        await self._send_revocation_email(
+            target=target,
+            company_name=context.company.name,
+            has_other_active=has_other_active,
+        )
+
         channel = pubsub_manager.get_user_channel(str(target.user_id))
         message = {
             "type": "workspace.revoked",
@@ -1208,3 +1245,141 @@ class WorkspaceService:
             text_body=text_body,
             idempotency_key=f"company-invitation:{invitation.id}",
         )
+
+    async def _send_revocation_email(
+        self,
+        target: CompanyMembership,
+        company_name: str,
+        has_other_active: bool,
+    ) -> None:
+        if not target.user or not target.user.email:
+            return
+
+        revoked_dt = target.revoked_at or utc_now()
+        if revoked_dt.tzinfo is None:
+            revoked_dt = revoked_dt.replace(tzinfo=timezone.utc)
+        try:
+            from zoneinfo import ZoneInfo
+            revoked_vn = revoked_dt.astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
+        except Exception:
+            revoked_vn = revoked_dt.astimezone(timezone(timedelta(hours=7)))
+        revoked_str = revoked_vn.strftime("%d/%m/%Y %H:%M (GMT+7)")
+
+        role_label = {
+            MembershipRole.ADMIN: "Quản trị viên",
+            MembershipRole.RECRUITER: "Nhà tuyển dụng",
+            MembershipRole.INTERVIEWER: "Người phỏng vấn",
+        }.get(
+            target.role,
+            str(target.role.value if hasattr(target.role, "value") else target.role),
+        )
+
+        safe_company = html.escape(company_name)
+        safe_role = html.escape(role_label)
+        safe_time = html.escape(revoked_str)
+        safe_recipient = html.escape(target.user.email)
+
+        if has_other_active:
+            status_desc = (
+                f"Quyền {role_label} của bạn tại {company_name} đã bị thu hồi. "
+                "Bạn vẫn có thể tiếp tục truy cập các không gian làm việc khác của mình."
+            )
+        else:
+            status_desc = (
+                f"Quyền {role_label} của bạn tại {company_name} đã bị thu hồi. "
+                "Quyền truy cập vào không gian làm việc này đã kết thúc."
+            )
+        safe_status_desc = html.escape(status_desc)
+
+        subject = f"[AI Recruitment Platform] Thông báo thu hồi quyền thành viên tại {company_name}"
+
+        html_body = f"""<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Thông báo thu hồi quyền thành viên</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; line-height: 1.6;">
+  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f8fafc; padding: 32px 16px;">
+    <tr>
+      <td align="center">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 600px; background-color: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+          <!-- Header -->
+          <tr>
+            <td style="padding: 24px 32px; background-color: #dc2626; color: #ffffff; text-align: center;">
+              <h1 style="margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.025em;">AI Recruitment Platform</h1>
+            </td>
+          </tr>
+          <!-- Body Content -->
+          <tr>
+            <td style="padding: 32px 32px 24px 32px;">
+              <h2 style="margin: 0 0 16px 0; font-size: 22px; font-weight: 700; color: #0f172a; text-align: center;">Thông báo thu hồi quyền thành viên</h2>
+              <p style="margin: 0 0 24px 0; font-size: 15px; color: #475569; text-align: center;">
+                {safe_status_desc}
+              </p>
+
+              <!-- Info Card -->
+              <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 28px;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                      <tr>
+                        <td style="padding: 6px 0; font-size: 14px; color: #64748b; width: 140px; vertical-align: top;"><strong>Công ty:</strong></td>
+                        <td style="padding: 6px 0; font-size: 14px; color: #0f172a; font-weight: 600;">{safe_company}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 6px 0; font-size: 14px; color: #64748b; vertical-align: top;"><strong>Email nhận:</strong></td>
+                        <td style="padding: 6px 0; font-size: 14px; color: #0f172a;">{safe_recipient}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 6px 0; font-size: 14px; color: #64748b; vertical-align: top;"><strong>Vai trò đã thu hồi:</strong></td>
+                        <td style="padding: 6px 0; font-size: 14px; color: #dc2626; font-weight: 600;">{safe_role}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 6px 0; font-size: 14px; color: #64748b; vertical-align: top;"><strong>Thời gian thu hồi:</strong></td>
+                        <td style="padding: 6px 0; font-size: 14px; color: #0f172a;">{safe_time}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="padding: 20px 32px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; text-align: center;">
+              <p style="margin: 0; font-size: 12px; color: #64748b;">Email được gửi tự động từ AI Recruitment Platform.</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+        text_body = (
+            f"AI Recruitment Platform\n"
+            f"========================================\n\n"
+            f"Thông báo thu hồi quyền thành viên\n\n"
+            f"{status_desc}\n\n"
+            f"Thông tin chi tiết:\n"
+            f"- Công ty: {company_name}\n"
+            f"- Email nhận: {target.user.email}\n"
+            f"- Vai trò đã thu hồi: {role_label}\n"
+            f"- Thời gian thu hồi: {revoked_str}\n\n"
+            f"----------------------------------------\n"
+            f"Email được gửi tự động từ AI Recruitment Platform."
+        )
+
+        await enqueue_email(
+            self.session,
+            event_type="company_membership_revoked",
+            to_email=target.user.email,
+            subject=subject,
+            html_body=html_body,
+            text_body=text_body,
+            idempotency_key=f"company-membership-revoked:{target.id}",
+        )
+        signal_dispatch_after_commit(self.session)

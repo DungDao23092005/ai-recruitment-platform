@@ -1924,6 +1924,79 @@ describe('NotificationsPage', () => {
         });
         expect(mockNavigate).not.toHaveBeenCalled();
       });
+
+      it('is non-navigable for company_member_revoked for any role: hides chevron and does not navigate', async () => {
+        const revokedNotif = {
+          id: 'notif-revoked-1',
+          title: 'Thu hồi quyền thành viên',
+          content: 'Quyền Nhà tuyển dụng của bạn tại TechNova AI đã bị thu hồi.',
+          notification_type: 'company_member_revoked',
+          entity_type: 'company_membership',
+          entity_id: 'mem-revoked-1',
+          is_read: false,
+          created_at: new Date().toISOString(),
+        };
+
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(useOptionalWorkspace).mockReturnValue({
+          workspaces: [],
+          selectedWorkspace: {
+            company_id: 'c1',
+            company_name: 'TechNova AI',
+            company_slug: 'technova-ai',
+            role: 'admin',
+            is_platform_admin: false,
+          } as any,
+          isLoading: false,
+          error: null,
+          selectWorkspace: vi.fn(),
+          refreshWorkspaces: vi.fn(),
+        });
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([revokedNotif]);
+        vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+          ...revokedNotif,
+          is_read: true,
+        });
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'Thu hồi quyền thành viên' })).toBeInTheDocument();
+        });
+
+        // Chevron is hidden even for admin role because company_member_revoked is non-navigable
+        expect(screen.queryAllByTestId('notification-chevron')).toHaveLength(0);
+
+        await screen.getByRole('heading', { name: 'Thu hồi quyền thành viên' }).click();
+
+        await waitFor(() => {
+          expect(vi.mocked(notificationsApi.markNotificationRead)).toHaveBeenCalledWith('notif-revoked-1');
+        });
+        expect(mockNavigate).not.toHaveBeenCalled();
+      });
+
+      it('refreshes notifications when workspace:revoked event is dispatched on window', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(notificationsApi.getNotifications).toHaveBeenCalledTimes(1);
+        });
+
+        act(() => {
+          window.dispatchEvent(
+            new CustomEvent('workspace:revoked', {
+              detail: { company_id: 'c1', membership_id: 'm1' },
+            })
+          );
+        });
+
+        await waitFor(() => {
+          expect(notificationsApi.getNotifications).toHaveBeenCalledTimes(2);
+        });
+      });
     });
   });
 });

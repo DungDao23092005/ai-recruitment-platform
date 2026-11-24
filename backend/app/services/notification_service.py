@@ -39,6 +39,9 @@ COMPANY_MEMBER_JOINED_TYPE = "company_member_joined"
 COMPANY_MEMBERSHIP_ENTITY_TYPE = "company_membership"
 COMPANY_MEMBER_JOINED_TITLE = "Thành viên mới tham gia công ty"
 
+COMPANY_MEMBER_REVOKED_TYPE = "company_member_revoked"
+COMPANY_MEMBER_REVOKED_TITLE = "Thu hồi quyền thành viên"
+
 SUBSCRIPTION_PLAN_CHANGED_TYPE = "subscription_plan_changed"
 SUBSCRIPTION_PLAN_CHANGED_TITLE = "Thay đổi gói dịch vụ"
 
@@ -231,6 +234,17 @@ def company_member_joined_notification_id(
     )
 
 
+def company_member_revoked_notification_id(
+    user_id: uuid.UUID,
+    membership_id: uuid.UUID,
+) -> uuid.UUID:
+    """Deterministic identity for a company member revoked notification."""
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"company_member_revoked:{user_id}:{membership_id}",
+    )
+
+
 class NotificationService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -331,6 +345,37 @@ class NotificationService:
             title=COMPANY_MEMBER_JOINED_TITLE,
             content=f"{member_email} đã tham gia {company_name} với vai trò {role_label}.",
             notification_type=COMPANY_MEMBER_JOINED_TYPE,
+            entity_type=COMPANY_MEMBERSHIP_ENTITY_TYPE,
+            entity_id=membership_id,
+            notification_id=notification_id,
+        )
+
+    async def notify_company_member_revoked(
+        self,
+        user_id: uuid.UUID,
+        membership_id: uuid.UUID,
+        company_name: str,
+        role_label: str,
+        has_other_active_memberships: bool = False,
+    ) -> NotificationRead:
+        notification_id = company_member_revoked_notification_id(
+            user_id, membership_id
+        )
+        if has_other_active_memberships:
+            content = (
+                f"Quyền {role_label} của bạn tại {company_name} đã bị thu hồi. "
+                "Bạn vẫn có thể tiếp tục truy cập các không gian làm việc khác của mình."
+            )
+        else:
+            content = (
+                f"Quyền {role_label} của bạn tại {company_name} đã bị thu hồi. "
+                "Quyền truy cập vào không gian làm việc này đã kết thúc."
+            )
+        return await self.create_notification(
+            user_id=user_id,
+            title=COMPANY_MEMBER_REVOKED_TITLE,
+            content=content,
+            notification_type=COMPANY_MEMBER_REVOKED_TYPE,
             entity_type=COMPANY_MEMBERSHIP_ENTITY_TYPE,
             entity_id=membership_id,
             notification_id=notification_id,

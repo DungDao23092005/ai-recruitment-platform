@@ -596,3 +596,87 @@ class TestGetActiveRecruiterAndAdminUsers:
         assert len(recipients) == 2
         recipient_ids = {r.id for r in recipients}
         assert recipient_ids == {active_admin.id, active_recruiter.id}
+
+
+class TestCompanyMemberRevokedNotification:
+    def test_deterministic_revoked_notification_id(self):
+        from app.services.notification_service import (
+            company_member_revoked_notification_id,
+        )
+
+        user_id = uuid.uuid4()
+        membership_id = uuid.uuid4()
+        expected = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"company_member_revoked:{user_id}:{membership_id}",
+        )
+        assert company_member_revoked_notification_id(user_id, membership_id) == expected
+
+    def test_notify_revoked_with_remaining_active_memberships(self):
+        from app.services.notification_service import (
+            COMPANY_MEMBER_REVOKED_TITLE,
+            COMPANY_MEMBER_REVOKED_TYPE,
+            COMPANY_MEMBERSHIP_ENTITY_TYPE,
+        )
+
+        service = make_service()
+        user_id = uuid.uuid4()
+        membership_id = uuid.uuid4()
+
+        result = asyncio.run(
+            service.notify_company_member_revoked(
+                user_id=user_id,
+                membership_id=membership_id,
+                company_name="TechCorp",
+                role_label="Nhà tuyển dụng",
+                has_other_active_memberships=True,
+            )
+        )
+
+        assert result == "created"
+        service.create_notification.assert_awaited_once()
+        kwargs = service.create_notification.await_args.kwargs
+        assert kwargs["user_id"] == user_id
+        assert kwargs["title"] == COMPANY_MEMBER_REVOKED_TITLE
+        assert kwargs["title"] == "Thu hồi quyền thành viên"
+        assert kwargs["notification_type"] == COMPANY_MEMBER_REVOKED_TYPE
+        assert kwargs["entity_type"] == COMPANY_MEMBERSHIP_ENTITY_TYPE
+        assert kwargs["entity_id"] == membership_id
+        assert "TechCorp" in kwargs["content"]
+        assert "Nhà tuyển dụng" in kwargs["content"]
+        assert "tiếp tục truy cập các không gian làm việc khác" in kwargs["content"]
+
+    def test_notify_revoked_without_remaining_active_memberships(self):
+        from app.services.notification_service import (
+            COMPANY_MEMBER_REVOKED_TITLE,
+            COMPANY_MEMBER_REVOKED_TYPE,
+            COMPANY_MEMBERSHIP_ENTITY_TYPE,
+        )
+
+        service = make_service()
+        user_id = uuid.uuid4()
+        membership_id = uuid.uuid4()
+
+        result = asyncio.run(
+            service.notify_company_member_revoked(
+                user_id=user_id,
+                membership_id=membership_id,
+                company_name="TechCorp",
+                role_label="Quản trị viên",
+                has_other_active_memberships=False,
+            )
+        )
+
+        assert result == "created"
+        service.create_notification.assert_awaited_once()
+        kwargs = service.create_notification.await_args.kwargs
+        assert kwargs["user_id"] == user_id
+        assert kwargs["title"] == COMPANY_MEMBER_REVOKED_TITLE
+        assert kwargs["notification_type"] == COMPANY_MEMBER_REVOKED_TYPE
+        assert kwargs["entity_type"] == COMPANY_MEMBERSHIP_ENTITY_TYPE
+        assert kwargs["entity_id"] == membership_id
+        assert "TechCorp" in kwargs["content"]
+        assert "Quản trị viên" in kwargs["content"]
+        assert "không gian làm việc này đã kết thúc" in kwargs["content"]
+        assert "bị khóa" not in kwargs["content"]
+        assert "cấm" not in kwargs["content"]

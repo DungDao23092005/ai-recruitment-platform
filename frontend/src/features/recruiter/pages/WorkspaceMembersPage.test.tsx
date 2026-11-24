@@ -561,4 +561,141 @@ describe('WorkspaceMembersPage', () => {
       })
     })
   })
+
+  describe('Member Tabs and History Visibility', () => {
+    const mixedMembers: WorkspaceMember[] = [
+      {
+        membership_id: 'mem-1',
+        user_id: 'user-admin-1',
+        email: 'admin@company.com',
+        full_name: 'Admin User',
+        role: 'admin',
+        status: 'active',
+        is_owner: true,
+        joined_at: '2026-01-01T00:00:00Z',
+      },
+      {
+        membership_id: 'mem-2',
+        user_id: 'user-recruiter-2',
+        email: 'recruiter@company.com',
+        full_name: 'Nguyen Van Recruiter',
+        role: 'recruiter',
+        status: 'active',
+        is_owner: false,
+        joined_at: '2026-02-01T00:00:00Z',
+      },
+      {
+        membership_id: 'mem-3',
+        user_id: 'user-old-1',
+        email: 'former1@company.com',
+        full_name: 'Former Member 1',
+        role: 'interviewer',
+        status: 'revoked',
+        is_owner: false,
+        joined_at: '2026-01-05T00:00:00Z',
+        revoked_at: '2026-02-10T12:00:00Z',
+      },
+      {
+        membership_id: 'mem-4',
+        user_id: 'user-old-2',
+        email: 'former2@company.com',
+        full_name: 'Former Member 2',
+        role: 'recruiter',
+        status: 'revoked',
+        is_owner: false,
+        joined_at: '2026-01-10T00:00:00Z',
+        revoked_at: '2026-02-15T14:30:00Z',
+      },
+    ]
+
+    it('renders both tabs with correct member counts', async () => {
+      vi.mocked(workspacesApi.getWorkspaceMembers).mockResolvedValue(mixedMembers)
+      renderComponent()
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole('tab', { name: 'Thành viên hiện tại (2)' })
+        ).toBeInTheDocument()
+        expect(
+          screen.getByRole('tab', { name: 'Lịch sử đã thu hồi (2)' })
+        ).toBeInTheDocument()
+      })
+    })
+
+    it('displays active members with role controls and revoke button on active tab', async () => {
+      vi.mocked(workspacesApi.getWorkspaceMembers).mockResolvedValue(mixedMembers)
+      renderComponent()
+
+      await waitFor(() => {
+        expect(screen.getByText('Nguyen Van Recruiter')).toBeInTheDocument()
+      })
+
+      // Active tab panel is active by default
+      const panel = screen.getByRole('tabpanel', { name: 'Thành viên hiện tại (2)' })
+      expect(panel).toBeInTheDocument()
+      expect(within(panel).queryByText('Former Member 1')).not.toBeInTheDocument()
+
+      // Active non-self member has role select and revoke button
+      expect(
+        within(panel).getByRole('combobox', { name: 'Vai trò của recruiter@company.com' })
+      ).toBeInTheDocument()
+      expect(
+        within(panel).getByRole('button', { name: /Thu hồi/i })
+      ).toBeInTheDocument()
+    })
+
+    it('switches to revoked tab, sorts by revoked_at desc, and is read-only', async () => {
+      vi.mocked(workspacesApi.getWorkspaceMembers).mockResolvedValue(mixedMembers)
+      renderComponent()
+
+      await waitFor(() => {
+        expect(screen.getByText('Nguyen Van Recruiter')).toBeInTheDocument()
+      })
+
+      const revokedTab = screen.getByRole('tab', { name: 'Lịch sử đã thu hồi (2)' })
+      fireEvent.click(revokedTab)
+
+      await waitFor(() => {
+        expect(screen.getByText('Former Member 2')).toBeInTheDocument()
+        expect(screen.getByText('Former Member 1')).toBeInTheDocument()
+      })
+
+      const revokedPanel = screen.getByRole('tabpanel', { name: 'Lịch sử đã thu hồi (2)' })
+      expect(revokedPanel).toBeInTheDocument()
+
+      // Active members are hidden on revoked tab
+      expect(within(revokedPanel).queryByText('Nguyen Van Recruiter')).not.toBeInTheDocument()
+
+      // Verify ordering: Former Member 2 (revoked Feb 15) comes before Former Member 1 (revoked Feb 10)
+      const listItems = within(revokedPanel).getAllByRole('listitem')
+      const texts = listItems.map((li) => li.textContent || '')
+      const indexFormer2 = texts.findIndex((t) => t.includes('Former Member 2'))
+      const indexFormer1 = texts.findIndex((t) => t.includes('Former Member 1'))
+      expect(indexFormer2).toBeLessThan(indexFormer1)
+
+      // Read-only: no role select and no revoke button on revoked tab
+      expect(within(revokedPanel).queryByRole('combobox')).not.toBeInTheDocument()
+      expect(within(revokedPanel).queryByRole('button', { name: /Thu hồi/i })).not.toBeInTheDocument()
+    })
+
+    it('renders empty states when there are no active or revoked members', async () => {
+      vi.mocked(workspacesApi.getWorkspaceMembers).mockResolvedValue([])
+      renderComponent()
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Chưa có thành viên nào đang hoạt động.')
+        ).toBeInTheDocument()
+      })
+
+      const revokedTab = screen.getByRole('tab', { name: 'Lịch sử đã thu hồi (0)' })
+      fireEvent.click(revokedTab)
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Chưa có thành viên nào bị thu hồi.')
+        ).toBeInTheDocument()
+      })
+    })
+  })
 })

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -94,9 +94,12 @@ async def list_workspaces(
 async def list_workspace_members(
     workspace: WorkspaceContext = Depends(get_current_workspace),
     db: AsyncSession = Depends(get_db),
+    include_revoked: bool = Query(True),
 ) -> list[MemberRead]:
     try:
-        return await WorkspaceService(db).list_members(workspace)
+        return await WorkspaceService(db).list_members(
+            workspace, include_revoked=include_revoked
+        )
     except ServiceException as exc:
         raise _service_error(exc) from exc
 

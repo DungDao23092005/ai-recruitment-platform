@@ -1091,7 +1091,7 @@ describe('useNotificationStream', () => {
   });
 
   describe('workspace and invitation revocation events', () => {
-    it('dispatches workspace:revoked with parsed payload when workspace.revoked event is received', async () => {
+    it('dispatches workspace:revoked with parsed payload and triggers notification resync', async () => {
       setupUnreadCountMock(0);
       renderHook();
       await flushMicrotasks();
@@ -1104,6 +1104,8 @@ describe('useNotificationStream', () => {
       window.addEventListener('workspace:revoked', revokedListener);
 
       const payload = { company_id: 'c-1', membership_id: 'm-1' };
+      mockGetUnreadNotificationCount.mockResolvedValueOnce({ unread_count: 5 });
+
       act(() => {
         es.emitEvent('workspace.revoked', payload);
       });
@@ -1112,6 +1114,11 @@ describe('useNotificationStream', () => {
       expect(revokedListener).toHaveBeenCalledTimes(1);
       const customEvent = revokedListener.mock.calls[0][0] as CustomEvent;
       expect(customEvent.detail).toEqual(payload);
+
+      // Verify notification resync was triggered
+      act(() => { vi.advanceTimersByTime(300); });
+      await flushMicrotasks();
+      expect(mockGetUnreadNotificationCount).toHaveBeenCalled();
 
       window.removeEventListener('workspace:revoked', revokedListener);
     });

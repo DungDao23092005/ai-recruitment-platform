@@ -177,12 +177,28 @@ async def create_stream_ticket(
                 current_user, x_company_id
             )
             company_id = workspace.company_id
-        except WorkspaceSelectionRequiredException as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(exc),
-            ) from exc
-        except (WorkspaceRequiredException, ForbiddenException) as exc:
+        except (
+            WorkspaceRequiredException,
+            WorkspaceSelectionRequiredException,
+        ) as exc:
+            if current_user.role == UserRole.RECRUITER and not x_company_id:
+                company_id = None
+            elif current_user.role == UserRole.RECRUITER and x_company_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=str(exc),
+                ) from exc
+            elif isinstance(exc, WorkspaceSelectionRequiredException):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc),
+                ) from exc
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=str(exc),
+                ) from exc
+        except ForbiddenException as exc:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=str(exc),

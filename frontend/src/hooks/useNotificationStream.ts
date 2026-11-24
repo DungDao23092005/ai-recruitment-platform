@@ -387,6 +387,7 @@ export function useNotificationStream() {
       eventSource.addEventListener(WORKSPACE_REVOKED_EVENT, (event) => {
         try {
           const data = JSON.parse(event.data) as WorkspaceRevokedDetail;
+          triggerResync();
           window.dispatchEvent(
             new CustomEvent(WORKSPACE_REVOKED_DOM_EVENT, { detail: data })
           );

@@ -23,6 +23,7 @@ from app.api.v1.endpoints.notifications import (
 )
 from app.domain.enums import ApplicationStatus, UserRole
 from app.services.account_lock_realtime import ACCOUNT_LOCKED_EVENT
+from app.services.job_realtime import JOBS_PUBLIC_CHANNEL
 from app.services.email_outbox_realtime import (
     ADMIN_EMAILS_CHANNEL,
     EMAIL_OUTBOX_UPDATED_EVENT,
@@ -127,6 +128,7 @@ async def test_admin_ticket_subscribes_personal_and_admin_channels():
 
     assert set(pubsub.subscribed) == {
         f"notifications:user:{user_id}",
+        JOBS_PUBLIC_CHANNEL,
         ADMIN_SUBSCRIPTIONS_CHANNEL,
         ADMIN_EMAILS_CHANNEL,
     }
@@ -174,7 +176,10 @@ async def test_non_admin_ticket_never_subscribes_admin_channel():
     personal_event = await _next(generator)
     await generator.aclose()
 
-    assert pubsub.subscribed == [f"notifications:user:{user_id}"]
+    assert set(pubsub.subscribed) == {
+        f"notifications:user:{user_id}",
+        JOBS_PUBLIC_CHANNEL,
+    }
     assert ADMIN_SUBSCRIPTIONS_CHANNEL not in pubsub.subscribed
     assert ADMIN_EMAILS_CHANNEL not in pubsub.subscribed
     assert "event: notification.created" in personal_event
@@ -247,7 +252,11 @@ async def test_recruiter_ticket_subscribes_own_company_pipeline_channel():
     pipeline_event = await _next(generator)
     await generator.aclose()
 
-    assert pubsub.subscribed == [f"notifications:user:{user_id}", channel]
+    assert set(pubsub.subscribed) == {
+        f"notifications:user:{user_id}",
+        JOBS_PUBLIC_CHANNEL,
+        channel,
+    }
     assert ADMIN_SUBSCRIPTIONS_CHANNEL not in pubsub.subscribed
     assert f"event: {PIPELINE_UPDATED_EVENT}" in pipeline_event
     assert f"event: notification.created" not in pipeline_event
@@ -451,6 +460,7 @@ async def test_bounded_stream_lifetime_terminates(monkeypatch):
     assert pubsub.closed is True
     assert set(pubsub.unsubscribed) == {
         f"notifications:user:{user_id}",
+        JOBS_PUBLIC_CHANNEL,
         ADMIN_SUBSCRIPTIONS_CHANNEL,
         ADMIN_EMAILS_CHANNEL,
     }
@@ -483,6 +493,7 @@ async def test_workspace_revocation_terminates_matching_stream_and_cleans_up():
 
     assert set(pubsub.unsubscribed) == {
         f"notifications:user:{user_id}",
+        JOBS_PUBLIC_CHANNEL,
         company_pipeline_channel(company_id),
     }
     assert pubsub.closed is True
@@ -516,10 +527,11 @@ async def test_other_company_revocation_does_not_terminate_stream():
     response = await notification_stream(ticket="t", pubsub=manager)  # type: ignore[arg-type]
     generator = response.body_iterator
     await _next(generator)
+    other_event = await _next(generator)
     revoked_event = await _next(generator)
 
+    assert other_revocation["membership_id"] in other_event
     assert matching_revocation["membership_id"] in revoked_event
-    assert other_revocation["membership_id"] not in revoked_event
     with pytest.raises(StopAsyncIteration):
         await _next(generator)
 
@@ -578,3 +590,116 @@ async def test_heartbeat_database_failure_fails_closed(monkeypatch):
 
 async def _noop_sleep(*_args, **_kwargs) -> None:
     return None
+
+
+async def test_recruiter_without_active_workspace_generates_ticket_with_company_none():
+    from app.core.exceptions import WorkspaceRequiredException
+
+    user_id = uuid.uuid4()
+    user = SimpleNamespace(id=user_id, role=UserRole.RECRUITER)
+    manager = _FakePubSubManager(None, _FakePubSub([]))
+
+    with patch.object(notifications_module, "WorkspaceService") as service_cls:
+        service_cls.return_value.resolve = AsyncMock(
+            side_effect=WorkspaceRequiredException("You do not have an active company workspace")
+        )
+        result = await create_stream_ticket(  # type: ignore[call-arg]
+            current_user=user,
+            db=MagicMock(),
+            pubsub=manager,
+            x_company_id=None,
+        )
+
+    _, ttl, stored = manager._redis.setex_calls[0]
+    payload = json.loads(stored)
+    assert ttl == notifications_module.TICKET_TTL_SECONDS
+    assert result["ticket"]
+    assert "company_id" not in payload
+    assert payload["is_admin"] is False
+
+
+async def test_recruiter_with_selection_required_generates_ticket_with_company_none():
+    from app.core.exceptions import WorkspaceSelectionRequiredException
+
+    user_id = uuid.uuid4()
+    user = SimpleNamespace(id=user_id, role=UserRole.RECRUITER)
+    manager = _FakePubSubManager(None, _FakePubSub([]))
+
+    with patch.object(notifications_module, "WorkspaceService") as service_cls:
+        service_cls.return_value.resolve = AsyncMock(
+            side_effect=WorkspaceSelectionRequiredException("Select a company workspace with X-Company-ID")
+        )
+        result = await create_stream_ticket(  # type: ignore[call-arg]
+            current_user=user,
+            db=MagicMock(),
+            pubsub=manager,
+            x_company_id=None,
+        )
+
+    _, ttl, stored = manager._redis.setex_calls[0]
+    payload = json.loads(stored)
+    assert result["ticket"]
+    assert "company_id" not in payload
+    assert payload["is_admin"] is False
+
+
+async def test_recruiter_with_invalid_header_raises_403():
+    from app.core.exceptions import WorkspaceRequiredException
+
+    user_id = uuid.uuid4()
+    user = SimpleNamespace(id=user_id, role=UserRole.RECRUITER)
+    manager = _FakePubSubManager(None, _FakePubSub([]))
+
+    with patch.object(notifications_module, "WorkspaceService") as service_cls:
+        service_cls.return_value.resolve = AsyncMock(
+            side_effect=WorkspaceRequiredException("You do not have access to this workspace")
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await create_stream_ticket(  # type: ignore[call-arg]
+                current_user=user,
+                db=MagicMock(),
+                pubsub=manager,
+                x_company_id=str(uuid.uuid4()),
+            )
+
+    assert exc_info.value.status_code == 403
+
+
+async def test_recruiter_forbidden_exception_raises_403():
+    from app.core.exceptions import ForbiddenException
+
+    user_id = uuid.uuid4()
+    user = SimpleNamespace(id=user_id, role=UserRole.RECRUITER)
+    manager = _FakePubSubManager(None, _FakePubSub([]))
+
+    with patch.object(notifications_module, "WorkspaceService") as service_cls:
+        service_cls.return_value.resolve = AsyncMock(
+            side_effect=ForbiddenException("Account suspended")
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await create_stream_ticket(  # type: ignore[call-arg]
+                current_user=user,
+                db=MagicMock(),
+                pubsub=manager,
+                x_company_id=None,
+            )
+
+    assert exc_info.value.status_code == 403
+
+
+async def test_recruiter_stream_without_company_subscribes_personal_and_jobs_channels():
+    user_id = uuid.uuid4()
+    pubsub = _FakePubSub([_message(f"notifications:user:{user_id}", {"type": "x"})])
+    manager = _FakePubSubManager(_ticket(user_id, is_admin=False, company_id=None), pubsub)
+
+    response = await notification_stream(ticket="t", pubsub=manager)  # type: ignore[arg-type]
+    generator = response.body_iterator
+    await _next(generator)
+    personal_event = await _next(generator)
+    await generator.aclose()
+
+    assert set(pubsub.subscribed) == {
+        f"notifications:user:{user_id}",
+        JOBS_PUBLIC_CHANNEL,
+    }
+    assert "event: notification.created" in personal_event

@@ -65,10 +65,24 @@ const ROLE_OPTIONS: {
   },
 ]
 
+function formatRevokedDate(dateString: string | null | undefined): string {
+  if (!dateString) return ''
+  const date = new Date(dateString)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString('vi-VN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 export function WorkspaceMembersPage() {
   const { currentUser } = useAuth()
   const { selectedWorkspace, refreshWorkspaces } = useWorkspace()
   const [members, setMembers] = useState<WorkspaceMember[]>([])
+  const [activeTab, setActiveTab] = useState<'active' | 'revoked'>('active')
   const [invitations, setInvitations] = useState<WorkspaceInvitation[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -103,6 +117,23 @@ export function WorkspaceMembersPage() {
       selectedWorkspace.role === 'recruiter'
     )
   }, [selectedWorkspace])
+
+  const activeMembers = useMemo(
+    () => members.filter((m) => m.status === 'active'),
+    [members],
+  )
+
+  const revokedMembers = useMemo(
+    () =>
+      members
+        .filter((m) => m.status === 'revoked')
+        .sort((a, b) => {
+          const timeA = a.revoked_at ? new Date(a.revoked_at).getTime() : 0
+          const timeB = b.revoked_at ? new Date(b.revoked_at).getTime() : 0
+          return timeB - timeA
+        }),
+    [members],
+  )
 
   const loadWorkspaceData = useCallback(async () => {
     if (!selectedWorkspace || !isCompanyManager) {
@@ -448,6 +479,44 @@ export function WorkspaceMembersPage() {
             <Users className="h-5 w-5 text-primary" aria-hidden="true" />
             Thành viên
           </CardTitle>
+          <div
+            role="tablist"
+            aria-label="Danh sách thành viên"
+            className="flex flex-wrap gap-1 border-b pt-2"
+          >
+            <button
+              type="button"
+              role="tab"
+              id="members-tab-active"
+              aria-selected={activeTab === 'active'}
+              aria-controls="members-panel-active"
+              onClick={() => setActiveTab('active')}
+              className={cn(
+                'flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                activeTab === 'active'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground',
+              )}
+            >
+              {`Thành viên hiện tại (${activeMembers.length})`}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="members-tab-revoked"
+              aria-selected={activeTab === 'revoked'}
+              aria-controls="members-panel-revoked"
+              onClick={() => setActiveTab('revoked')}
+              className={cn(
+                'flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                activeTab === 'revoked'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground',
+              )}
+            >
+              {`Lịch sử đã thu hồi (${revokedMembers.length})`}
+            </button>
+          </div>
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -455,81 +524,122 @@ export function WorkspaceMembersPage() {
               <Skeleton className="h-12 w-full" />
               <Skeleton className="h-12 w-full" />
             </div>
-          ) : members.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Chưa có thành viên nào.
-            </p>
+          ) : activeTab === 'active' ? (
+            <div
+              role="tabpanel"
+              id="members-panel-active"
+              aria-labelledby="members-tab-active"
+            >
+              {activeMembers.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Chưa có thành viên nào đang hoạt động.
+                </p>
+              ) : (
+                <ul className="divide-y">
+                  {activeMembers.map((member) => {
+                    const isSelf = member.user_id === currentUser?.id
+                    return (
+                      <li
+                        key={member.membership_id}
+                        className="flex flex-wrap items-center gap-3 py-3"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium">
+                            {member.full_name || member.email}
+                          </p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {member.email}
+                          </p>
+                        </div>
+                        {isCompanyAdmin && !isSelf ? (
+                          <Select
+                            aria-label={`Vai trò của ${member.email}`}
+                            value={member.role}
+                            onChange={(event) =>
+                              void handleRoleChange(
+                                member,
+                                event.target.value as MembershipRole,
+                              )
+                            }
+                            className="h-8 w-36"
+                          >
+                            <option value="admin">Quản trị viên</option>
+                            <option value="recruiter">Nhà tuyển dụng</option>
+                            <option value="interviewer">Người phỏng vấn</option>
+                          </Select>
+                        ) : (
+                          <Badge
+                            variant={
+                              member.role === 'admin' ? 'outline-ai' : 'neutral'
+                            }
+                          >
+                            {MEMBERSHIP_ROLE_LABELS[member.role]}
+                          </Badge>
+                        )}
+                        <Badge variant="success">
+                          {MEMBERSHIP_STATUS_LABELS[member.status]}
+                        </Badge>
+                        {isCompanyAdmin && !isSelf ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleOpenRevokeMemberModal(member)}
+                          >
+                            <UserMinus
+                              className="h-4 w-4"
+                              aria-hidden="true"
+                            />
+                            Thu hồi
+                          </Button>
+                        ) : null}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
           ) : (
-            <ul className="divide-y">
-              {members.map((member) => {
-                const isSelf = member.user_id === currentUser?.id
-                return (
-                  <li
-                    key={member.membership_id}
-                    className="flex flex-wrap items-center gap-3 py-3"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">
-                        {member.full_name || member.email}
-                      </p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {member.email}
-                      </p>
-                    </div>
-                    {isCompanyAdmin &&
-                    member.status === 'active' &&
-                    !isSelf ? (
-                      <Select
-                        aria-label={`Vai trò của ${member.email}`}
-                        value={member.role}
-                        onChange={(event) =>
-                          void handleRoleChange(
-                            member,
-                            event.target.value as MembershipRole,
-                          )
-                        }
-                        className="h-8 w-36"
-                      >
-                        <option value="admin">Quản trị viên</option>
-                        <option value="recruiter">Nhà tuyển dụng</option>
-                        <option value="interviewer">Người phỏng vấn</option>
-                      </Select>
-                    ) : (
-                      <Badge
-                        variant={
-                          member.role === 'admin' ? 'outline-ai' : 'neutral'
-                        }
-                      >
+            <div
+              role="tabpanel"
+              id="members-panel-revoked"
+              aria-labelledby="members-tab-revoked"
+            >
+              {revokedMembers.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Chưa có thành viên nào bị thu hồi.
+                </p>
+              ) : (
+                <ul className="divide-y">
+                  {revokedMembers.map((member) => (
+                    <li
+                      key={member.membership_id}
+                      className="flex flex-wrap items-center gap-3 py-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">
+                          {member.full_name || member.email}
+                        </p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {member.email}
+                        </p>
+                      </div>
+                      <Badge variant="neutral">
                         {MEMBERSHIP_ROLE_LABELS[member.role]}
                       </Badge>
-                    )}
-                    <Badge
-                      variant={
-                        member.status === 'active' ? 'success' : 'neutral'
-                      }
-                    >
-                      {MEMBERSHIP_STATUS_LABELS[member.status]}
-                    </Badge>
-                    {isCompanyAdmin &&
-                    member.status === 'active' &&
-                    !isSelf ? (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleOpenRevokeMemberModal(member)}
-                      >
-                        <UserMinus
-                          className="h-4 w-4"
-                          aria-hidden="true"
-                        />
-                        Thu hồi
-                      </Button>
-                    ) : null}
-                  </li>
-                )
-              })}
-            </ul>
+                      <Badge variant="neutral">
+                        {MEMBERSHIP_STATUS_LABELS[member.status]}
+                      </Badge>
+                      {member.revoked_at ? (
+                        <span className="text-xs text-muted-foreground">
+                          {formatRevokedDate(member.revoked_at)}
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </CardContent>
       </Card>
