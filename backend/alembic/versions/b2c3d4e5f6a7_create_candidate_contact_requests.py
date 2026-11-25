@@ -132,22 +132,22 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["candidate_id"],
             ["candidate_profiles.id"],
-            ondelete="CASCADE",
+            ondelete="NO ACTION",
         ),
         sa.ForeignKeyConstraint(
             ["company_id"],
             ["companies.id"],
-            ondelete="CASCADE",
+            ondelete="NO ACTION",
         ),
         sa.ForeignKeyConstraint(
             ["contact_request_id"],
             ["candidate_contact_requests.id"],
-            ondelete="CASCADE",
+            ondelete="NO ACTION",
         ),
         sa.ForeignKeyConstraint(
             ["disclosed_to_user_id"],
             ["users.id"],
-            ondelete="CASCADE",
+            ondelete="NO ACTION",
         ),
         sa.PrimaryKeyConstraint("id"),
     )
