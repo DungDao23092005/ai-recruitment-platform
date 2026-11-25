@@ -10,6 +10,7 @@ export interface PlanCardProps {
   onSelect: (planId: string) => void
   isSelected?: boolean
   isCurrent?: boolean
+  isLowerTier?: boolean
   disabled?: boolean
   disabledReason?: string
   className?: string
@@ -41,23 +42,39 @@ export function formatPlanDuration(days: number): string {
 }
 
 const PlanCard = React.forwardRef<HTMLDivElement, PlanCardProps>(
-  ({ plan, onSelect, isSelected = false, isCurrent = false, disabled = false, disabledReason, className }, ref) => {
+  (
+    {
+      plan,
+      onSelect,
+      isSelected = false,
+      isCurrent = false,
+      isLowerTier = false,
+      disabled = false,
+      disabledReason,
+      className,
+    },
+    ref,
+  ) => {
     const isCandidatePlan = plan.plan_audience === 'candidate'
-    const isDisabled = isCurrent || isSelected || disabled
+    const isDisabled = isCurrent || isLowerTier || isSelected || disabled
     const buttonLabel = isCurrent
       ? 'Gói hiện tại của bạn'
-      : isSelected
-        ? 'Đã chọn'
-        : disabled
-          ? 'Không khả dụng'
-          : 'Chọn gói này'
+      : isLowerTier
+        ? 'Gói thấp hơn gói của bạn'
+        : isSelected
+          ? 'Đã chọn'
+          : disabled
+            ? 'Không khả dụng'
+            : 'Chọn gói này'
     const buttonAriaLabel = isCurrent
       ? `Gói hiện tại của bạn: ${plan.name}`
-      : isSelected
-        ? `Đã chọn gói ${plan.name}`
-        : disabled
-          ? `${disabledReason ?? 'Không khả dụng'}: ${plan.name}`
-          : `Chọn gói ${plan.name}`
+      : isLowerTier
+        ? `Gói thấp hơn gói của bạn: ${plan.name}`
+        : isSelected
+          ? `Đã chọn gói ${plan.name}`
+          : disabled
+            ? `${disabledReason ?? 'Không khả dụng'}: ${plan.name}`
+            : `Chọn gói ${plan.name}`
 
     return (
       <article
@@ -68,7 +85,7 @@ const PlanCard = React.forwardRef<HTMLDivElement, PlanCardProps>(
           'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2',
           isSelected && 'border-primary ring-2 ring-primary/30',
           !isSelected && isCurrent && 'border-primary/50 ring-1 ring-primary/20',
-          disabled && !isCurrent && !isSelected && 'opacity-75',
+          (disabled || isLowerTier) && !isCurrent && !isSelected && 'opacity-75',
           className,
         )}
         aria-current={isCurrent ? 'true' : undefined}

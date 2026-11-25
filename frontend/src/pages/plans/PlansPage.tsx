@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Sparkles } from 'lucide-react'
 import { usePlans } from '@/features/subscriptions/hooks/usePlans'
@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorBanner } from '@/components/ui/error-banner'
-import type { RecruitmentPlanRead } from '@/types/subscription'
+import type { RecruitmentPlan, RecruitmentPlanRead } from '@/types/subscription'
 
 export function PlansPage() {
   const { currentUser } = useAuth()
@@ -91,6 +91,68 @@ export function PlansPage() {
     ],
   )
 
+  const currentPlan = useMemo<RecruitmentPlan | RecruitmentPlanRead | null>(() => {
+    if (
+      isCandidate ||
+      isSubscriptionLoading ||
+      subscriptionError ||
+      !activeSubscription
+    ) {
+      return null
+    }
+
+    if (activeSubscription.status !== 'active') {
+      return null
+    }
+
+    if (activeSubscription.expires_at) {
+      const expiresAt = new Date(activeSubscription.expires_at).getTime()
+
+      if (Number.isNaN(expiresAt) || expiresAt <= Date.now()) {
+        return null
+      }
+    }
+
+    return (
+      plans.find((plan) => plan.id === activeSubscription.plan_id) ||
+      activeSubscription.plan ||
+      null
+    )
+  }, [
+    activeSubscription,
+    isCandidate,
+    isSubscriptionLoading,
+    plans,
+    subscriptionError,
+  ])
+
+  const isLowerTierPlan = useCallback(
+    (plan: RecruitmentPlanRead): boolean => {
+      if (!currentPlan || plan.id === currentPlan.id) {
+        return false
+      }
+
+      if (
+        typeof plan.price !== 'number' ||
+        typeof currentPlan.price !== 'number' ||
+        Number.isNaN(plan.price) ||
+        Number.isNaN(currentPlan.price)
+      ) {
+        return false
+      }
+
+      const planCurrency = (plan.currency || 'VND').trim().toUpperCase()
+      const currentCurrency = (currentPlan.currency || 'VND').trim().toUpperCase()
+
+      if (planCurrency !== currentCurrency) {
+        return false
+      }
+
+      return plan.price < currentPlan.price
+    },
+    [currentPlan],
+  )
+
   const handleSelectPlan = useCallback(
     (planId: string) => {
       if (isCurrentPlan(planId)) {
@@ -103,9 +165,12 @@ export function PlansPage() {
       if (isCandidate && plan?.is_free) {
         return
       }
+      if (plan && isLowerTierPlan(plan)) {
+        return
+      }
       navigate(`/checkout/${planId}`)
     },
-    [canPurchase, isCandidate, isCurrentPlan, isRecruiter, navigate, plans],
+    [canPurchase, isCandidate, isCurrentPlan, isLowerTierPlan, isRecruiter, navigate, plans],
   )
 
   const isPlanDisabled = useCallback(
@@ -231,6 +296,7 @@ export function PlansPage() {
                   key={plan.id}
                   plan={plan}
                   isCurrent={isCurrentPlan(plan.id)}
+                  isLowerTier={isLowerTierPlan(plan)}
                   onSelect={handleSelectPlan}
                   disabled={isPlanDisabled(plan)}
                   disabledReason={disabledReason(plan)}
