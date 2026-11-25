@@ -11,6 +11,7 @@ from app.api.v1.endpoints import (
     applications,
     auth,
     companies,
+    contact_requests,
     health,
     interviews,
     jobs,
@@ -52,3 +53,4 @@ api_router.include_router(admin_plans.router)
 api_router.include_router(admin_subscriptions.router)
 api_router.include_router(admin_payment_orders.router)
 api_router.include_router(workspaces.router, tags=["Workspaces"])
+api_router.include_router(contact_requests.router)

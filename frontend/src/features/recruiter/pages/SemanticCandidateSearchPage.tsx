@@ -1,12 +1,15 @@
+import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SemanticSearchBar } from '@/features/ai/components/SemanticSearchBar'
 import { searchCandidates } from '@/api/ai'
 import { PageHeader } from '@/components/common/PageHeader'
+import { CandidatePreviewModal } from '@/features/recruiter/components/CandidatePreviewModal'
 
 export function SemanticCandidateSearchPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const qParam = searchParams.get('q') || ''
   const sessionIdParam = searchParams.get('session_id') || ''
+  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null)
 
   const handleSearch = (query: string, isRetry = false) => {
     let activeSessionId = sessionIdParam
@@ -31,7 +34,14 @@ export function SemanticCandidateSearchPage() {
         initialQuery={qParam}
         autoSearchOnMount={Boolean(qParam && sessionIdParam)}
         searchFn={handleSearch}
+        onResultClick={(result) => setSelectedCandidateId(result.id)}
       />
+      {selectedCandidateId ? (
+        <CandidatePreviewModal
+          candidateId={selectedCandidateId}
+          onClose={() => setSelectedCandidateId(null)}
+        />
+      ) : null}
     </div>
   )
 }

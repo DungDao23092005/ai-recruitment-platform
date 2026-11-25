@@ -7,6 +7,10 @@ from app.models.application import Application
 from app.models.application_activity import ApplicationActivity
 from app.models.application_note import ApplicationNote
 from app.models.candidate import CandidateProfile
+from app.models.candidate_contact_request import (
+    CandidateContactRequest,
+    ContactDisclosureAuditLog,
+)
 from app.models.company import Company
 from app.models.company_invitation import CompanyInvitation
 from app.models.company_membership import CompanyMembership
@@ -39,10 +43,12 @@ __all__ = [
     "Application",
     "ApplicationActivity",
     "ApplicationNote",
+    "CandidateContactRequest",
     "CandidateProfile",
     "Company",
     "CompanyInvitation",
     "CompanyMembership",
+    "ContactDisclosureAuditLog",
     "EmailOutbox",
     "Interview",
     "InterviewAssignment",

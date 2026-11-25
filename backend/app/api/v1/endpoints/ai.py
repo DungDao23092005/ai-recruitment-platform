@@ -78,7 +78,7 @@ from app.schemas.ai_matching import (
     JobMatchRecommendation,
 )
 from app.schemas.ai_resume import ParsedResumeSchema
-from app.schemas.ai_search import SemanticSearchResult
+from app.schemas.ai_search import CandidatePreviewResponse, SemanticSearchResult
 from app.schemas.resume import ResumeRead
 from app.services.ai_evaluation_service import (
     AIEvaluationService,
@@ -86,6 +86,7 @@ from app.services.ai_evaluation_service import (
     RelevanceLabel,
 )
 from app.services.ai_matching_service import AIMatchingService
+from app.services.contact_request_service import ContactRequestService
 from app.services.explainable_ai_service import ExplainableAIService
 from app.services.interview_generator_service import InterviewGeneratorService
 from app.services.job_service import JobService
@@ -1166,6 +1167,38 @@ async def semantic_search_candidates(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="AI service internal error",
+        ) from exc
+
+
+@router.get(
+    "/candidates/{candidate_id}/preview",
+    response_model=CandidatePreviewResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get candidate discovery preview",
+)
+async def get_candidate_preview(
+    candidate_id: uuid.UUID,
+    current_user: User = Depends(require_recruiter),
+    workspace: WorkspaceContext | None = Depends(get_optional_workspace),
+    db: AsyncSession = Depends(get_db),
+) -> CandidatePreviewResponse:
+    ensure_not_interviewer(workspace)
+    company_id = workspace.company_id if workspace is not None else None
+    service = ContactRequestService(db)
+    try:
+        return await service.get_candidate_preview(
+            candidate_id=candidate_id,
+            company_id=company_id,
+        )
+    except EntityNotFoundException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ForbiddenException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
         ) from exc
 
 

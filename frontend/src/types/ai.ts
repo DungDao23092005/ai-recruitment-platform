@@ -276,3 +276,56 @@ export interface GenerateInterviewQuestionsResponse {
   total_questions: number
   questions: InterviewQuestion[]
 }
+
+export type ContactRequestStatus =
+  | 'pending'
+  | 'accepted'
+  | 'declined'
+  | 'revoked'
+  | 'expired'
+
+export interface CandidateContactRequestRead {
+  id: string
+  company_id: string
+  candidate_id: string
+  requester_user_id: string
+  status: ContactRequestStatus
+  created_at: string
+  updated_at: string
+  expires_at: string
+  responded_at: string | null
+  revoked_at: string | null
+  company_name: string | null
+  candidate_name: string | null
+  candidate_title: string | null
+}
+
+export interface CandidateContactResponse {
+  candidate_id: string
+  full_name: string | null
+  email: string
+  phone: string | null
+  disclosed_at: string
+}
+
+export interface ContactRequestStatusCheck {
+  status: ContactRequestStatus | null
+  request_id: string | null
+  can_request: boolean
+  cooldown_until: string | null
+}
+
+export interface CandidatePreviewResponse {
+  id: string
+  full_name: string | null
+  title: string | null
+  summary: string | null
+  total_years_experience: number | null
+  skills: string[]
+  experiences: WorkExperience[]
+  education: Education[]
+  contact_request_status: ContactRequestStatus | null
+  contact_request_id: string | null
+  can_request_contact: boolean
+  cooldown_until: string | null
+}

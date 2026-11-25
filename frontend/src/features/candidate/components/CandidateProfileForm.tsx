@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { FileText, ArrowRight } from 'lucide-react'
 import { getCandidateProfile, updateCandidateProfile } from '@/api/auth'
+import type { CandidateProfileUpdate } from '@/types/auth'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -23,6 +24,7 @@ interface FormValues {
   full_name: string
   phone: string
   title: string
+  is_searchable: boolean
 }
 
 interface FormErrors {
@@ -80,11 +82,13 @@ export function CandidateProfileForm() {
     full_name: '',
     phone: '',
     title: '',
+    is_searchable: false,
   })
   const [initialValues, setInitialValues] = useState<FormValues>({
     full_name: '',
     phone: '',
     title: '',
+    is_searchable: false,
   })
   const [errors, setErrors] = useState<FormErrors>({})
   const [isLoading, setIsLoading] = useState(true)
@@ -98,10 +102,12 @@ export function CandidateProfileForm() {
     setLoadError(null)
     try {
       const profile = await getCandidateProfile()
+      const rawProfile = profile as unknown as { is_searchable?: boolean }
       const loaded: FormValues = {
         full_name: profile.full_name ?? '',
         phone: profile.phone ?? '',
         title: profile.title ?? '',
+        is_searchable: rawProfile.is_searchable ?? false,
       }
       setValues(loaded)
       setInitialValues(loaded)
@@ -139,12 +145,14 @@ export function CandidateProfileForm() {
         full_name: trimmedFullName || null,
         phone: trimmedPhone || null,
         title: trimmedTitle || null,
-      })
+        is_searchable: values.is_searchable,
+      } as CandidateProfileUpdate & { is_searchable?: boolean })
 
       const saved: FormValues = {
         full_name: trimmedFullName,
         phone: trimmedPhone,
         title: trimmedTitle,
+        is_searchable: values.is_searchable,
       }
       setValues(saved)
       setInitialValues(saved)
@@ -159,7 +167,8 @@ export function CandidateProfileForm() {
   const isDirty =
     values.full_name !== initialValues.full_name ||
     values.phone !== initialValues.phone ||
-    values.title !== initialValues.title
+    values.title !== initialValues.title ||
+    values.is_searchable !== initialValues.is_searchable
 
   const userEmail = currentUser?.email || '—'
   const roleName =
@@ -369,6 +378,50 @@ export function CandidateProfileForm() {
             <span>Quản lý CV</span>
             <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
           </Link>
+        </div>
+
+        {/* Section 5: Global Discovery & Contact Requests */}
+        <div className="rounded-xl border border-border/70 bg-muted/20 p-4 sm:p-5 space-y-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <h4 className="text-sm font-semibold text-foreground">
+                Cho phép nhà tuyển dụng tìm kiếm hồ sơ (Global Discovery)
+              </h4>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Khi bật tính năng này, các nhà tuyển dụng đã xác thực có thể tìm thấy hồ sơ chuyên môn của bạn qua tính năng tìm kiếm ứng viên AI. Email và số điện thoại của bạn sẽ luôn được ẩn cho đến khi bạn đồng ý yêu cầu liên hệ.
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-1">
+              <input
+                type="checkbox"
+                name="is_searchable"
+                role="switch"
+                aria-label="Cho phép tìm kiếm công khai"
+                checked={values.is_searchable}
+                onChange={(e) =>
+                  setValues((prev) => ({
+                    ...prev,
+                    is_searchable: e.target.checked,
+                  }))
+                }
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-muted-foreground/30 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-primary rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
+            </label>
+          </div>
+
+          <div className="border-t border-border/50 pt-3 flex items-center justify-between">
+            <div className="text-xs text-muted-foreground">
+              Quản lý các yêu cầu kết nối từ nhà tuyển dụng
+            </div>
+            <Link
+              to="/candidate/contact-requests"
+              className="text-xs font-semibold text-primary hover:underline inline-flex items-center gap-1"
+            >
+              <span>Xem yêu cầu liên hệ</span>
+              <ArrowRight className="h-3 w-3" aria-hidden="true" />
+            </Link>
+          </div>
         </div>
 
         {apiError ? (

@@ -176,82 +176,134 @@ class SemanticSearchService:
         candidate_repository: BaseRepository[CandidateProfile] | None = None,
         actor_user: Any | None = None,
     ) -> list[SemanticSearchResult]:
-        """Search candidates and enrich with profile data.
+        """Search eligible global candidates with profile enrichment and dynamic refill.
 
-        When ``candidate_repository`` is provided, results are enriched with
-        ``full_name`` and ``title`` from ``CandidateProfile`` using a single
-        batch query. Ghost/deleted candidates are filtered out. Qdrant ranking
-        order is preserved.
+        Global discovery rules:
+        - Opt-in candidates: CandidateProfile.is_searchable == True
+        - Confirmed primary resume indexed in vector store
+        - Active non-deleted user account and profile
+        - No company applicant restriction
+        - Dynamic Qdrant refill (up to 3 pages of 50)
+        - Preserves similarity score ordering and excludes duplicates
         """
         effective_limit = max(1, min(100, limit))
 
-        raw_results = await self._search(
-            collection_name="resumes",
-            id_field="candidate_id",
-            query=query,
-            limit=limit,
-            score_threshold=score_threshold,
-        )
-
-        if candidate_repository is None or not raw_results:
+        if candidate_repository is None:
+            raw_results = await self._search(
+                collection_name="resumes",
+                id_field="candidate_id",
+                query=query,
+                limit=limit,
+                score_threshold=score_threshold,
+            )
             return raw_results[:effective_limit]
 
-        # Extract candidate IDs from Qdrant results (preserving order)
-        candidate_ids = [uuid.UUID(r.id) for r in raw_results]
-
-        authorized_candidate_ids: list[uuid.UUID] | None = None
+        # Recruiter access verification: must have an active workspace
         if actor_user is not None and actor_user.role == UserRole.RECRUITER:
             company_id = await self._get_recruiter_company_id(
                 candidate_repository, actor_user.id
             )
             if company_id is None:
                 return []
-            authorized_candidate_ids = await self._get_company_applicant_ids(
-                candidate_repository, company_id, candidate_ids
-            )
-            if not authorized_candidate_ids:
-                return []
 
-        # Batch query for candidate profiles
-        profiles = await self._fetch_candidate_profiles(
-            candidate_repository,
-            candidate_ids,
-            authorized_candidate_ids=authorized_candidate_ids,
-        )
-
-        # Build lookup map
-        profile_map = {p.id: p for p in profiles}
-
-        # Enrich results preserving Qdrant order, filter out missing/deleted
+        query_vector = await self.embedding_service.embed_text(query)
+        seen_ids: set[str] = set()
         enriched: list[SemanticSearchResult] = []
-        for r in raw_results:
-            cand_id = uuid.UUID(r.id)
-            profile = profile_map.get(cand_id)
-            if profile is None:
-                continue  # Ghost or deleted candidate - filter out
-            enriched.append(
-                SemanticSearchResult(
-                    id=r.id,
-                    score=r.score,
-                    skills=r.skills,
-                    created_at=r.created_at,
-                    full_name=profile.full_name,
-                    title=profile.title,
+        pages_fetched = 0
+
+        while pages_fetched < self.MAX_PAGES and len(enriched) < effective_limit:
+            try:
+                raw_results = await self.vector_repository.search_similar(
+                    collection_name="resumes",
+                    query_vector=query_vector,
+                    limit=self.PAGE_SIZE,
+                    score_threshold=score_threshold,
+                    exclude_ids=list(seen_ids) if seen_ids else None,
                 )
+            except AIError:
+                raise
+            except Exception as exc:
+                raise AIError(
+                    "Failed to search similar vectors in collection 'resumes'"
+                ) from exc
+
+            pages_fetched += 1
+            if not raw_results:
+                break
+
+            page_candidates: list[SemanticSearchResult] = []
+            for res in raw_results:
+                point_id = str(res.get("id")) if res.get("id") else ""
+                payload = res.get("payload") or {}
+                cand_id_str = point_id or str(payload.get("candidate_id") or "")
+                if not cand_id_str:
+                    continue
+                seen_ids.add(point_id or cand_id_str)
+                score = float(res.get("score") or 0.0)
+                page_candidates.append(
+                    SemanticSearchResult(
+                        id=cand_id_str,
+                        score=score,
+                        skills=list(payload.get("skills") or []),
+                        created_at=payload.get("created_at"),
+                    )
+                )
+
+            if not page_candidates:
+                break
+
+            cand_uuid_map: dict[uuid.UUID, SemanticSearchResult] = {}
+            for item in page_candidates:
+                try:
+                    c_uuid = uuid.UUID(item.id)
+                    cand_uuid_map[c_uuid] = item
+                except (ValueError, TypeError):
+                    continue
+
+            if not cand_uuid_map:
+                if len(raw_results) < self.PAGE_SIZE:
+                    break
+                continue
+
+            profiles = await self._fetch_candidate_profiles(
+                candidate_repository,
+                list(cand_uuid_map.keys()),
             )
+            profile_map = {p.id: p for p in profiles}
+
+            for cand_uuid, item in cand_uuid_map.items():
+                profile = profile_map.get(cand_uuid)
+                if profile is None:
+                    continue
+                enriched.append(
+                    SemanticSearchResult(
+                        id=str(cand_uuid),
+                        score=item.score,
+                        skills=item.skills,
+                        created_at=item.created_at,
+                        full_name=profile.full_name,
+                        title=profile.title,
+                    )
+                )
+                if len(enriched) >= effective_limit:
+                    break
+
+            if len(raw_results) < self.PAGE_SIZE:
+                break
+
         return enriched[:effective_limit]
 
     async def _fetch_candidate_profiles(
         self,
         repository: BaseRepository[CandidateProfile],
         candidate_ids: list[uuid.UUID],
-        *,
-        authorized_candidate_ids: list[uuid.UUID] | None = None,
     ) -> list[CandidateProfile]:
-        """Batch fetch non-deleted candidate profiles by IDs."""
+        """Batch fetch eligible candidate profiles by IDs."""
         if not candidate_ids:
             return []
         from sqlalchemy import select
+        from app.models import CandidateProfile, Resume, User
+
         confirmed_candidate_ids = (
             select(Resume.candidate_id)
             .where(
@@ -262,16 +314,16 @@ class SemanticSearchService:
         )
         stmt = (
             select(CandidateProfile)
+            .join(User, CandidateProfile.user_id == User.id)
             .where(
                 CandidateProfile.id.in_(candidate_ids),
-                CandidateProfile.id.in_(confirmed_candidate_ids),
+                CandidateProfile.is_searchable == True,  # noqa: E712
                 CandidateProfile.is_deleted == False,  # noqa: E712
+                User.is_active == True,  # noqa: E712
+                User.is_deleted == False,  # noqa: E712
+                CandidateProfile.id.in_(confirmed_candidate_ids),
             )
         )
-        if authorized_candidate_ids is not None:
-            stmt = stmt.where(
-                CandidateProfile.id.in_(authorized_candidate_ids)
-            )
         result = await repository.session.execute(stmt)
         return list(result.scalars().all())
 

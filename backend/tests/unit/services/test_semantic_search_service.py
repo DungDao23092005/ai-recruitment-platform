@@ -850,3 +850,134 @@ class TestSearchJobsRoleBasedVisibility:
         assert len(result) == 1
         assert result[0].id == job_id_2
         assert repo.search_similar.call_count == 2
+
+
+class TestSearchCandidatesGlobalDiscovery:
+    def _make_candidate(
+        self,
+        candidate_id=None,
+        full_name="Alice Developer",
+        title="Full Stack Engineer",
+        is_searchable=True,
+        is_active=True,
+        is_deleted=False,
+    ):
+        cid = candidate_id or uuid.uuid4()
+        cand = MagicMock()
+        cand.id = cid
+        cand.full_name = full_name
+        cand.title = title
+        cand.is_searchable = is_searchable
+        cand.is_deleted = is_deleted
+
+        user = MagicMock()
+        user.is_active = is_active
+        user.is_deleted = is_deleted
+        cand.user = user
+        return cand
+
+    def test_global_candidate_search_enriches_eligible_candidate(self, provider):
+        embed, repo = provider
+        cand_id = uuid.uuid4()
+        cand = self._make_candidate(cand_id, "Jane Doe", "Backend Developer")
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(cand_id), score=0.92)
+        ]
+        service = make_service(embed, repo)
+        service._get_recruiter_company_id = AsyncMock(return_value=uuid.uuid4())
+
+        cand_repo = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [cand]
+        cand_repo.session.execute = AsyncMock(return_value=mock_result)
+
+        recruiter_user = MagicMock()
+        recruiter_user.role = "recruiter"
+
+        result = asyncio.run(
+            service.search_candidates(
+                "python fastapi",
+                limit=10,
+                candidate_repository=cand_repo,
+                actor_user=recruiter_user,
+            )
+        )
+
+        assert len(result) == 1
+        assert result[0].id == str(cand_id)
+        assert result[0].full_name == "Jane Doe"
+        assert result[0].title == "Backend Developer"
+        assert result[0].score == 0.92
+
+    def test_search_excludes_pruned_candidates(self, provider):
+        """When candidate is pruned by SQL filters (e.g. is_searchable=False), result excludes them."""
+        embed, repo = provider
+        cand_id = uuid.uuid4()
+
+        repo.search_similar.return_value = [
+            make_scored_point(point_id=str(cand_id), score=0.88)
+        ]
+        service = make_service(embed, repo)
+        service._get_recruiter_company_id = AsyncMock(return_value=uuid.uuid4())
+
+        cand_repo = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
+        cand_repo.session.execute = AsyncMock(return_value=mock_result)
+
+        recruiter_user = MagicMock()
+        recruiter_user.role = "recruiter"
+
+        result = asyncio.run(
+            service.search_candidates(
+                "react",
+                limit=10,
+                candidate_repository=cand_repo,
+                actor_user=recruiter_user,
+            )
+        )
+
+        assert len(result) == 0
+
+    def test_candidate_dynamic_refill_when_pruned(self, provider):
+        """Candidate search refills from subsequent pages if candidates pruned by SQL hydration."""
+        embed, repo = provider
+        cand_id_1 = str(uuid.uuid4())
+        cand_id_2 = str(uuid.uuid4())
+
+        page1 = [make_scored_point(point_id=cand_id_1, score=0.95)] + [
+            make_scored_point(point_id=str(uuid.uuid4()), score=0.85) for _ in range(49)
+        ]
+        page2 = [make_scored_point(point_id=cand_id_2, score=0.80)]
+
+        repo.search_similar.side_effect = [page1, page2]
+        service = make_service(embed, repo)
+        service._get_recruiter_company_id = AsyncMock(return_value=uuid.uuid4())
+
+        cand_repo = MagicMock()
+        cand2 = self._make_candidate(uuid.UUID(cand_id_2), "Bob Smith", "DevOps Engineer")
+
+        mock_res1 = MagicMock()
+        mock_res1.scalars.return_value.all.return_value = []
+        mock_res2 = MagicMock()
+        mock_res2.scalars.return_value.all.return_value = [cand2]
+
+        cand_repo.session.execute = AsyncMock(side_effect=[mock_res1, mock_res2])
+
+        recruiter_user = MagicMock()
+        recruiter_user.role = "recruiter"
+
+        result = asyncio.run(
+            service.search_candidates(
+                "devops kubernetes",
+                limit=1,
+                candidate_repository=cand_repo,
+                actor_user=recruiter_user,
+            )
+        )
+
+        assert len(result) == 1
+        assert result[0].id == cand_id_2
+        assert result[0].full_name == "Bob Smith"
+        assert repo.search_similar.call_count == 2

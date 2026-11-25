@@ -28,12 +28,14 @@ class CandidateProfileCreate(BaseModel):
     full_name: str | None = None
     phone: str | None = None
     title: str | None = None
+    is_searchable: bool = False
 
 
 class CandidateProfileUpdate(BaseModel):
     full_name: str | None = None
     phone: str | None = None
     title: str | None = None
+    is_searchable: bool | None = None
 
 
 class CandidateProfileRead(BaseModel):
@@ -44,6 +46,7 @@ class CandidateProfileRead(BaseModel):
     full_name: str | None
     phone: str | None
     title: str | None
+    is_searchable: bool = False
 
 
 class RecruiterProfileCreate(BaseModel):

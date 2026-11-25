@@ -100,6 +100,21 @@ INTERVIEW_ASSIGNED_TITLE = "Phân công phỏng vấn"
 INTERVIEW_UNASSIGNED_TYPE = "interview_unassigned"
 INTERVIEW_UNASSIGNED_TITLE = "Hủy phân công phỏng vấn"
 
+# Contact request notification types and titles
+CONTACT_REQUEST_ENTITY_TYPE = "contact_request"
+
+CONTACT_REQUEST_RECEIVED_TYPE = "contact_request_received"
+CONTACT_REQUEST_RECEIVED_TITLE = "Yêu cầu liên hệ mới từ nhà tuyển dụng"
+
+CONTACT_REQUEST_ACCEPTED_TYPE = "contact_request_accepted"
+CONTACT_REQUEST_ACCEPTED_TITLE = "Ứng viên đã chấp nhận yêu cầu liên hệ"
+
+CONTACT_REQUEST_DECLINED_TYPE = "contact_request_declined"
+CONTACT_REQUEST_DECLINED_TITLE = "Ứng viên đã từ chối yêu cầu liên hệ"
+
+CONTACT_REQUEST_REVOKED_TYPE = "contact_request_revoked"
+CONTACT_REQUEST_REVOKED_TITLE = "Ứng viên đã thu hồi quyền liên hệ"
+
 EVALUATION_SUBMITTED_TYPE = "evaluation_submitted"
 EVALUATION_SUBMITTED_TITLE = "Đánh giá phỏng vấn mới"
 

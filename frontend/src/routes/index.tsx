@@ -18,6 +18,7 @@ import { ResumeUploadPage } from '@/features/candidate/pages/ResumeUploadPage'
 import { CandidatePortalPage } from '@/features/candidate/pages/CandidatePortalPage'
 import { CandidateApplicationsPage } from '@/features/candidate/pages/CandidateApplicationsPage'
 import { CandidateInterviewsPage } from '@/features/candidate/pages/CandidateInterviewsPage'
+import { CandidateContactRequestsPage } from '@/features/candidate/pages/CandidateContactRequestsPage'
 import { CandidateRecommendationsPage } from '@/pages/candidate/CandidateRecommendationsPage'
 import { AdminDashboardPage } from '@/features/admin/pages/AdminDashboardPage'
 import { AdminUsersPage } from '@/features/admin/pages/AdminUsersPage'
@@ -160,6 +161,14 @@ export function AppRouter() {
             element={
               <ProtectedByRole allowedRoles={['candidate']}>
                 <CandidateInterviewsPage />
+              </ProtectedByRole>
+            }
+          />
+          <Route
+            path="/candidate/contact-requests"
+            element={
+              <ProtectedByRole allowedRoles={['candidate']}>
+                <CandidateContactRequestsPage />
               </ProtectedByRole>
             }
           />

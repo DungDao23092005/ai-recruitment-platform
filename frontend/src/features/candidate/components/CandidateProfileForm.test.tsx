@@ -211,6 +211,7 @@ describe('CandidateProfileForm - Read-Only Context and Summary', () => {
         full_name: 'Trần Thị Bích',
         phone: '+84 900 123 456',
         title: 'Senior Frontend Engineer',
+        is_searchable: false,
       })
       expect(mockedPut).not.toHaveBeenCalledWith(
         expect.objectContaining({ email: expect.anything() }),
@@ -358,6 +359,7 @@ describe('CandidateProfileForm - Phone Validation', () => {
         full_name: 'Nguyễn Văn An',
         phone: null,
         title: 'Senior Frontend Engineer',
+        is_searchable: false,
       })
     })
   })
@@ -507,6 +509,7 @@ describe('CandidateProfileForm - Submission and Failure Handling', () => {
         full_name: 'Nguyễn Văn An',
         phone: '0901234567',
         title: 'Full Stack Developer',
+        is_searchable: false,
       })
       expect(mockedPost).not.toHaveBeenCalled()
     })
@@ -563,5 +566,55 @@ describe('CandidateProfileForm - CV Context Card', () => {
     const cvLink = screen.getByRole('link', { name: /Quản lý CV/i })
     expect(cvLink).toBeInTheDocument()
     expect(cvLink).toHaveAttribute('href', '/candidate/cv-upload')
+  })
+})
+
+describe('CandidateProfileForm - Global Discovery & Contact Requests', () => {
+  it('hydrates is_searchable toggle from profile and toggles state', async () => {
+    mockedGet.mockResolvedValue({
+      ...existingProfile,
+      is_searchable: true,
+    } as never)
+    mockedPut.mockResolvedValue({
+      ...existingProfile,
+      is_searchable: false,
+    } as never)
+
+    renderComponent()
+
+    await waitFor(() => {
+      expect(screen.getByRole('switch', { name: /Cho phép tìm kiếm công khai/i })).toBeChecked()
+    })
+
+    const toggle = screen.getByRole('switch', { name: /Cho phép tìm kiếm công khai/i })
+    fireEvent.click(toggle)
+    expect(toggle).not.toBeChecked()
+
+    // Form is now dirty
+    expect(screen.getByRole('button', { name: /Lưu hồ sơ/i })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('button', { name: /Lưu hồ sơ/i }))
+
+    await waitFor(() => {
+      expect(mockedPut).toHaveBeenCalledWith({
+        full_name: 'Nguyễn Văn An',
+        phone: '+84 900 123 456',
+        title: 'Senior Frontend Engineer',
+        is_searchable: false,
+      })
+    })
+  })
+
+  it('renders link to incoming contact requests page', async () => {
+    mockedGet.mockResolvedValue(existingProfile as never)
+
+    renderComponent()
+
+    await waitFor(() => {
+      expect(screen.getByRole('link', { name: /Xem yêu cầu liên hệ/i })).toBeInTheDocument()
+    })
+
+    const contactRequestsLink = screen.getByRole('link', { name: /Xem yêu cầu liên hệ/i })
+    expect(contactRequestsLink).toHaveAttribute('href', '/candidate/contact-requests')
   })
 })

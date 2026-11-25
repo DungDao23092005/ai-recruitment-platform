@@ -19,7 +19,7 @@ _ALEMBIC_DIR = _BACKEND_DIR / "alembic"
 
 _MAX_REVISION_LENGTH = 32
 _EXPECTED_BASE = "0001_initial_schema"
-_EXPECTED_HEAD = "e7a1b3c9f201"
+_EXPECTED_HEAD = "b2c3d4e5f6a7"
 
 
 def _parents(down_revision) -> tuple[str, ...]:
@@ -78,7 +78,15 @@ def test_graph_has_single_root_and_expected_head():
 
     head = script.get_revision(_EXPECTED_HEAD)
     assert head is not None
-    assert _parents(head.down_revision) == ("c5e8f19a0d12",)
+    assert _parents(head.down_revision) == ("a1b2c3d4e5f6",)
+
+    candidate_is_searchable = script.get_revision("a1b2c3d4e5f6")
+    assert candidate_is_searchable is not None
+    assert _parents(candidate_is_searchable.down_revision) == ("e7a1b3c9f201",)
+
+    profile_enhancement = script.get_revision("e7a1b3c9f201")
+    assert profile_enhancement is not None
+    assert _parents(profile_enhancement.down_revision) == ("c5e8f19a0d12",)
 
     invitation_declined = script.get_revision("c5e8f19a0d12")
     assert invitation_declined is not None

@@ -80,6 +80,7 @@ class UserService:
             full_name=data.full_name,
             phone=data.phone,
             title=data.title,
+            is_searchable=data.is_searchable,
         )
         self.session.add(profile)
         try:
@@ -157,6 +158,9 @@ class UserService:
                 full_name=data.full_name,
                 phone=data.phone,
                 title=data.title,
+                is_searchable=(
+                    data.is_searchable if data.is_searchable is not None else False
+                ),
             )
             self.session.add(profile)
             try:
@@ -171,6 +175,8 @@ class UserService:
         profile.full_name = data.full_name
         profile.phone = data.phone
         profile.title = data.title
+        if data.is_searchable is not None:
+            profile.is_searchable = data.is_searchable
         try:
             await self.session.commit()
             await self.session.refresh(profile)

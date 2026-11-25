@@ -98,6 +98,14 @@ class ProficiencyLevel(str, Enum):
     EXPERT = "expert"
 
 
+class ContactRequestStatus(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    DECLINED = "declined"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
 class CompanySize(str, Enum):
     SEED = "seed"
     STARTUP = "startup"
