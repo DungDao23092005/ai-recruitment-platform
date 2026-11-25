@@ -15,7 +15,7 @@ export function ProfilePage() {
   const { currentUser, isLoading } = useAuth()
   const role = currentUser?.role
   const isRecruiter = role === 'recruiter'
-  const maxWidthClass = isRecruiter ? 'max-w-4xl' : 'max-w-xl'
+  const maxWidthClass = 'max-w-4xl'
 
   if (isLoading) {
     return (
