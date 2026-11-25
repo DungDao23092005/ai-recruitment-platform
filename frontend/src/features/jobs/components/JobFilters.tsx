@@ -37,8 +37,8 @@ export function JobFilters({
   return (
     <div className="rounded-xl border bg-card p-4 shadow-sm">
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <div className="space-y-1.5">
-          <label htmlFor="keyword" className="text-sm font-medium">
+        <div className="flex w-full flex-col gap-1.5">
+          <label htmlFor="keyword" className="text-sm font-medium leading-none">
             Từ khóa
           </label>
           <div className="relative">
