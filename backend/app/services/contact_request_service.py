@@ -14,7 +14,7 @@ from app.core.exceptions import (
     EntityNotFoundException,
     ForbiddenException,
 )
-from app.domain.enums import ContactRequestStatus, MembershipStatus
+from app.domain.enums import ContactRequestStatus, MembershipRole, MembershipStatus
 from app.domain.models.base import utc_now
 from app.models.candidate import CandidateProfile
 from app.models.candidate_contact_request import (
@@ -30,6 +30,7 @@ from app.schemas.contact_request import (
     CandidateContactResponse,
     ContactRequestStatusCheck,
 )
+from app.services.contact_request_email_service import ContactRequestEmailService
 from app.services.notification_service import (
     CONTACT_REQUEST_ACCEPTED_TITLE,
     CONTACT_REQUEST_ACCEPTED_TYPE,
@@ -52,11 +53,88 @@ REVOKED_COOLDOWN_DAYS = 90
 ROLLING_WINDOW_DAYS = 180
 MAX_REQUESTS_PER_WINDOW = 2
 
+CONTACT_REQUEST_EXPIRED_TYPE = "contact_request_expired"
+CONTACT_REQUEST_EXPIRED_TITLE = "Yêu cầu liên hệ đã hết hạn"
+
 
 class ContactRequestService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        email_service: ContactRequestEmailService | None = None,
+        notification_service: NotificationService | None = None,
+    ) -> None:
         self.session = session
-        self.notifications = NotificationService(session)
+        self.notifications = notification_service or NotificationService(session)
+        self.email_service = email_service or ContactRequestEmailService(session)
+
+    async def _is_active_company_member(
+        self, company_id: uuid.UUID, user_id: uuid.UUID
+    ) -> tuple[bool, User | None]:
+        """Check if a user is currently an active member of the company with an active account."""
+        stmt = (
+            select(CompanyMembership)
+            .options(selectinload(CompanyMembership.user))
+            .where(
+                CompanyMembership.company_id == company_id,
+                CompanyMembership.user_id == user_id,
+                CompanyMembership.status == MembershipStatus.ACTIVE,
+                CompanyMembership.is_deleted == False,  # noqa: E712
+            )
+        )
+        res = await self.session.execute(stmt)
+        membership = res.scalar_one_or_none() if hasattr(res, "scalar_one_or_none") else None
+        if (
+            membership
+            and hasattr(membership, "user")
+            and membership.user
+            and getattr(membership.user, "is_active", False)
+            and not getattr(membership.user, "is_deleted", False)
+        ):
+            return True, membership.user
+        return False, None
+
+    async def _resolve_response_recipients(
+        self, company_id: uuid.UUID, requester_user_id: uuid.UUID
+    ) -> list[User]:
+        """Resolve recipients for candidate response events under D2.
+
+        Normally returns [requester_user] if the requester has active membership in company_id.
+        If the initiating recruiter is no longer an active member, falls back to all active
+        Workspace Admin members of that company.
+        """
+        is_active, requester_user = await self._is_active_company_member(
+            company_id, requester_user_id
+        )
+        if is_active and requester_user:
+            return [requester_user]
+
+        # Fallback to all currently active Workspace Admin members
+        admin_stmt = (
+            select(CompanyMembership)
+            .options(selectinload(CompanyMembership.user))
+            .where(
+                CompanyMembership.company_id == company_id,
+                CompanyMembership.role == MembershipRole.ADMIN,
+                CompanyMembership.status == MembershipStatus.ACTIVE,
+                CompanyMembership.is_deleted == False,  # noqa: E712
+            )
+        )
+        admin_res = await self.session.execute(admin_stmt)
+        admin_memberships = (
+            list(admin_res.scalars().all())
+            if hasattr(admin_res, "scalars")
+            else []
+        )
+
+        return [
+            m.user
+            for m in admin_memberships
+            if hasattr(m, "user")
+            and m.user
+            and getattr(m.user, "is_active", False)
+            and not getattr(m.user, "is_deleted", False)
+        ]
 
     async def _expire_stale_requests(
         self,
@@ -64,17 +142,20 @@ class ContactRequestService:
         company_id: uuid.UUID | None = None,
         candidate_id: uuid.UUID | None = None,
         request_id: uuid.UUID | None = None,
-    ) -> None:
-        """Deterministically update expired PENDING requests to EXPIRED status."""
+    ) -> list[CandidateContactRequest]:
+        """Deterministically update expired PENDING requests to EXPIRED status and emit notifications."""
         now = utc_now()
         stmt = (
-            update(CandidateContactRequest)
+            select(CandidateContactRequest)
+            .options(
+                selectinload(CandidateContactRequest.company),
+                selectinload(CandidateContactRequest.candidate),
+            )
             .where(
                 CandidateContactRequest.status == ContactRequestStatus.PENDING,
                 CandidateContactRequest.expires_at <= now,
                 CandidateContactRequest.is_deleted == False,  # noqa: E712
             )
-            .values(status=ContactRequestStatus.EXPIRED)
         )
 
         if request_id is not None:
@@ -84,7 +165,60 @@ class ContactRequestService:
         if candidate_id is not None:
             stmt = stmt.where(CandidateContactRequest.candidate_id == candidate_id)
 
-        await self.session.execute(stmt)
+        bind = self.session.bind
+        dialect_name = bind.dialect.name if bind else ""
+        if dialect_name != "sqlite":
+            stmt = stmt.with_for_update()
+
+        result = await self.session.execute(stmt)
+        stale_requests = list(result.scalars().all()) if hasattr(result, "scalars") else []
+
+        for req in stale_requests:
+            req.status = ContactRequestStatus.EXPIRED
+
+            # D1: Emit expiration notification & email to initiating recruiter if active
+            is_active, requester_user = await self._is_active_company_member(
+                req.company_id, req.requester_user_id
+            )
+            if is_active and requester_user:
+                candidate = req.candidate
+                if candidate is None:
+                    candidate = await self.session.get(CandidateProfile, req.candidate_id)
+                candidate_name = candidate.full_name if candidate and candidate.full_name else "Ứng viên"
+                company = req.company
+                if company is None:
+                    company = await self.session.get(Company, req.company_id)
+                company_name = company.name if company else "Doanh nghiệp"
+
+                notif_id = uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"contact_request:expired:{req.requester_user_id}:{req.id}",
+                )
+                await self.notifications.create_notification(
+                    user_id=req.requester_user_id,
+                    title=CONTACT_REQUEST_EXPIRED_TITLE,
+                    content=(
+                        f"Yêu cầu liên hệ với ứng viên {candidate_name} đã hết hạn sau 14 ngày. "
+                        "Bạn có thể gửi lại yêu cầu khi chính sách thời gian chờ và giới hạn cho phép."
+                    ),
+                    notification_type=CONTACT_REQUEST_EXPIRED_TYPE,
+                    entity_type=CONTACT_REQUEST_ENTITY_TYPE,
+                    entity_id=req.id,
+                    notification_id=notif_id,
+                )
+                requester_email = getattr(requester_user, "email", None)
+                if requester_email:
+                    await self.email_service.send_request_expired_email(
+                        to_email=requester_email,
+                        candidate_name=candidate_name,
+                        company_name=company_name,
+                        request_id=req.id,
+                    )
+
+        if stale_requests:
+            await self.session.flush()
+
+        return stale_requests
 
     async def check_contact_request_status(
         self,
@@ -298,6 +432,10 @@ class ContactRequestService:
         company = await self.session.get(Company, company_id)
         company_name = company.name if company else "Một doanh nghiệp"
 
+        notif_id = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"contact_request:received:{candidate.user_id}:{contact_request.id}",
+        )
         await self.notifications.create_notification(
             user_id=candidate.user_id,
             title=CONTACT_REQUEST_RECEIVED_TITLE,
@@ -305,7 +443,17 @@ class ContactRequestService:
             notification_type=CONTACT_REQUEST_RECEIVED_TYPE,
             entity_type=CONTACT_REQUEST_ENTITY_TYPE,
             entity_id=contact_request.id,
+            notification_id=notif_id,
         )
+
+        if candidate.user and candidate.user.email:
+            candidate_name = candidate.full_name or "Ứng viên"
+            await self.email_service.send_request_received_email(
+                to_email=candidate.user.email,
+                candidate_name=candidate_name,
+                company_name=company_name,
+                request_id=contact_request.id,
+            )
 
         return contact_request
 
@@ -402,17 +550,37 @@ class ContactRequestService:
         req.responded_at = now
         await self.session.flush()
 
-        # Notify requester
+        # Notify requester or fallback to active Workspace Admins (D2)
+        recipients = await self._resolve_response_recipients(req.company_id, req.requester_user_id)
         candidate = await self.session.get(CandidateProfile, candidate_id)
-        candidate_name = candidate.full_name if candidate and candidate.full_name else "Ứng viên"
-        await self.notifications.create_notification(
-            user_id=req.requester_user_id,
-            title=CONTACT_REQUEST_ACCEPTED_TITLE,
-            content=f"Ứng viên {candidate_name} đã chấp nhận yêu cầu liên hệ từ công ty bạn.",
-            notification_type=CONTACT_REQUEST_ACCEPTED_TYPE,
-            entity_type=CONTACT_REQUEST_ENTITY_TYPE,
-            entity_id=req.id,
-        )
+        candidate_name = getattr(candidate, "full_name", None) or "Ứng viên"
+        company = await self.session.get(Company, req.company_id)
+        company_name = getattr(company, "name", None) or "Doanh nghiệp"
+
+        for recipient in recipients:
+            is_fallback = recipient.id != req.requester_user_id
+            notif_id = uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"contact_request:accepted:{recipient.id}:{req.id}",
+            )
+            await self.notifications.create_notification(
+                user_id=recipient.id,
+                title=CONTACT_REQUEST_ACCEPTED_TITLE,
+                content=f"Ứng viên {candidate_name} đã chấp nhận yêu cầu liên hệ từ công ty bạn.",
+                notification_type=CONTACT_REQUEST_ACCEPTED_TYPE,
+                entity_type=CONTACT_REQUEST_ENTITY_TYPE,
+                entity_id=req.id,
+                notification_id=notif_id,
+            )
+            recipient_email = getattr(recipient, "email", None)
+            if recipient_email:
+                await self.email_service.send_request_accepted_email(
+                    to_email=recipient_email,
+                    candidate_name=candidate_name,
+                    company_name=company_name,
+                    request_id=req.id,
+                    recipient_user_id=recipient.id if is_fallback else None,
+                )
 
         return req
 
@@ -440,17 +608,37 @@ class ContactRequestService:
         req.responded_at = now
         await self.session.flush()
 
-        # Notify requester
+        # Notify requester or fallback to active Workspace Admins (D2)
+        recipients = await self._resolve_response_recipients(req.company_id, req.requester_user_id)
         candidate = await self.session.get(CandidateProfile, candidate_id)
-        candidate_name = candidate.full_name if candidate and candidate.full_name else "Ứng viên"
-        await self.notifications.create_notification(
-            user_id=req.requester_user_id,
-            title=CONTACT_REQUEST_DECLINED_TITLE,
-            content=f"Ứng viên {candidate_name} đã từ chối yêu cầu liên hệ.",
-            notification_type=CONTACT_REQUEST_DECLINED_TYPE,
-            entity_type=CONTACT_REQUEST_ENTITY_TYPE,
-            entity_id=req.id,
-        )
+        candidate_name = getattr(candidate, "full_name", None) or "Ứng viên"
+        company = await self.session.get(Company, req.company_id)
+        company_name = getattr(company, "name", None) or "Doanh nghiệp"
+
+        for recipient in recipients:
+            is_fallback = recipient.id != req.requester_user_id
+            notif_id = uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"contact_request:declined:{recipient.id}:{req.id}",
+            )
+            await self.notifications.create_notification(
+                user_id=recipient.id,
+                title=CONTACT_REQUEST_DECLINED_TITLE,
+                content=f"Ứng viên {candidate_name} đã từ chối yêu cầu liên hệ.",
+                notification_type=CONTACT_REQUEST_DECLINED_TYPE,
+                entity_type=CONTACT_REQUEST_ENTITY_TYPE,
+                entity_id=req.id,
+                notification_id=notif_id,
+            )
+            recipient_email = getattr(recipient, "email", None)
+            if recipient_email:
+                await self.email_service.send_request_declined_email(
+                    to_email=recipient_email,
+                    candidate_name=candidate_name,
+                    company_name=company_name,
+                    request_id=req.id,
+                    recipient_user_id=recipient.id if is_fallback else None,
+                )
 
         return req
 
@@ -473,17 +661,37 @@ class ContactRequestService:
         await self.session.flush()
         await self.session.refresh(req)
 
-        # Notify requester
+        # Notify requester or fallback to active Workspace Admins (D2)
+        recipients = await self._resolve_response_recipients(req.company_id, req.requester_user_id)
         candidate = await self.session.get(CandidateProfile, candidate_id)
-        candidate_name = candidate.full_name if candidate and candidate.full_name else "Ứng viên"
-        await self.notifications.create_notification(
-            user_id=req.requester_user_id,
-            title=CONTACT_REQUEST_REVOKED_TITLE,
-            content=f"Ứng viên {candidate_name} đã thu hồi quyền xem thông tin liên hệ.",
-            notification_type=CONTACT_REQUEST_REVOKED_TYPE,
-            entity_type=CONTACT_REQUEST_ENTITY_TYPE,
-            entity_id=req.id,
-        )
+        candidate_name = getattr(candidate, "full_name", None) or "Ứng viên"
+        company = await self.session.get(Company, req.company_id)
+        company_name = getattr(company, "name", None) or "Doanh nghiệp"
+
+        for recipient in recipients:
+            is_fallback = recipient.id != req.requester_user_id
+            notif_id = uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"contact_request:revoked:{recipient.id}:{req.id}",
+            )
+            await self.notifications.create_notification(
+                user_id=recipient.id,
+                title=CONTACT_REQUEST_REVOKED_TITLE,
+                content=f"Ứng viên {candidate_name} đã thu hồi quyền liên hệ.",
+                notification_type=CONTACT_REQUEST_REVOKED_TYPE,
+                entity_type=CONTACT_REQUEST_ENTITY_TYPE,
+                entity_id=req.id,
+                notification_id=notif_id,
+            )
+            recipient_email = getattr(recipient, "email", None)
+            if recipient_email:
+                await self.email_service.send_request_revoked_email(
+                    to_email=recipient_email,
+                    candidate_name=candidate_name,
+                    company_name=company_name,
+                    request_id=req.id,
+                    recipient_user_id=recipient.id if is_fallback else None,
+                )
 
         return req
 

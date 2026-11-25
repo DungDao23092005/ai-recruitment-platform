@@ -12,17 +12,20 @@ from app.core.exceptions import (
     EntityNotFoundException,
     ForbiddenException,
 )
-from app.domain.enums import ContactRequestStatus, MembershipStatus
+from app.domain.enums import ContactRequestStatus, MembershipRole, MembershipStatus
 from app.models import (
     CandidateContactRequest,
     CandidateProfile,
     Company,
     CompanyMembership,
     ContactDisclosureAuditLog,
+    EmailOutbox,
     Resume,
     User,
 )
 from app.services.contact_request_service import (
+    CONTACT_REQUEST_EXPIRED_TITLE,
+    CONTACT_REQUEST_EXPIRED_TYPE,
     DECLINED_COOLDOWN_DAYS,
     EXPIRATION_DAYS,
     MAX_REQUESTS_PER_WINDOW,
@@ -43,8 +46,36 @@ def make_session() -> MagicMock:
     session.flush = AsyncMock()
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
-    session.execute = AsyncMock()
     session.get = AsyncMock()
+
+    default_result = MagicMock()
+    default_result.scalars.return_value.all.return_value = []
+    default_result.scalar_one_or_none.return_value = None
+
+    class RobustAsyncMock(AsyncMock):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._default_res = default_result
+            self._custom_items = None
+
+        def __setattr__(self, name, value):
+            if name == "side_effect" and isinstance(value, list):
+                object.__setattr__(self, "_custom_items", list(value))
+                super().__setattr__("side_effect", None)
+                return
+            super().__setattr__(name, value)
+
+        async def __call__(self, *args, **kwargs):
+            if getattr(self, "_custom_items", None) is not None:
+                if self._custom_items:
+                    item = self._custom_items.pop(0)
+                    if isinstance(item, Exception):
+                        raise item
+                    return item
+                return self._default_res
+            return await super().__call__(*args, **kwargs)
+
+    session.execute = RobustAsyncMock(return_value=default_result)
     # Mock dialect as sqlite or other
     dialect = MagicMock()
     dialect.name = "postgresql"
@@ -574,6 +605,7 @@ class TestCandidateResponseFlow:
 
         service = ContactRequestService(session)
         service._get_request_with_relations = AsyncMock(return_value=req)
+        service._resolve_response_recipients = AsyncMock(return_value=[make_user(user_id=req.requester_user_id)])
         service.notifications.create_notification = AsyncMock()
 
         updated = asyncio.run(service.accept_request(req.id, candidate_id))
@@ -594,6 +626,7 @@ class TestCandidateResponseFlow:
 
         service = ContactRequestService(session)
         service._get_request_with_relations = AsyncMock(return_value=req)
+        service._resolve_response_recipients = AsyncMock(return_value=[make_user(user_id=req.requester_user_id)])
         service.notifications.create_notification = AsyncMock()
 
         updated = asyncio.run(service.decline_request(req.id, candidate_id))
@@ -613,6 +646,7 @@ class TestCandidateResponseFlow:
 
         service = ContactRequestService(session)
         service._get_request_with_relations = AsyncMock(return_value=req)
+        service._resolve_response_recipients = AsyncMock(return_value=[make_user(user_id=req.requester_user_id)])
         service.notifications.create_notification = AsyncMock()
 
         updated = asyncio.run(service.revoke_authorization(req.id, candidate_id))
@@ -728,3 +762,281 @@ class TestDiscloseContactDetails:
         # Confirm audit log does NOT have email or phone attributes
         assert not hasattr(log, "email")
         assert not hasattr(log, "phone")
+
+
+class TestContactRequestNotificationAndEmailDelivery:
+    """Verifies in-app notification and transactional outbox email enqueueing for all events."""
+
+    def test_create_request_enqueues_email_and_notification_to_candidate(self):
+        session = make_session()
+        candidate_user = make_user(email="cand@example.com")
+        candidate = make_candidate_profile(user=candidate_user, full_name="Candidate A", is_searchable=True)
+
+        cand_result = MagicMock()
+        cand_result.scalar_one_or_none.return_value = candidate
+        reqs_result = MagicMock()
+        reqs_result.scalars.return_value.all.return_value = []
+        session.execute.side_effect = [cand_result, reqs_result]
+        session.get.return_value = MagicMock(name="TechCorp")
+
+        service = ContactRequestService(session)
+        service.notifications.create_notification = AsyncMock()
+        service.email_service.send_request_received_email = AsyncMock()
+
+        company_id = uuid.uuid4()
+        requester_id = uuid.uuid4()
+        res = asyncio.run(service.create_contact_request(company_id, candidate.id, requester_id))
+
+        assert service.notifications.create_notification.called
+        notif_kwargs = service.notifications.create_notification.call_args[1]
+        assert notif_kwargs["user_id"] == candidate_user.id
+        assert notif_kwargs["notification_type"] == "contact_request_received"
+
+        assert service.email_service.send_request_received_email.called
+        email_kwargs = service.email_service.send_request_received_email.call_args[1]
+        assert email_kwargs["to_email"] == "cand@example.com"
+        assert email_kwargs["request_id"] == res.id
+
+    def test_accept_request_enqueues_email_and_notification_to_requester(self):
+        session = make_session()
+        candidate_id = uuid.uuid4()
+        requester_id = uuid.uuid4()
+        req = make_contact_request(
+            candidate_id=candidate_id,
+            requester_user_id=requester_id,
+            status=ContactRequestStatus.PENDING,
+            expires_at=utc_now() + timedelta(days=10),
+        )
+        session.get.return_value = make_candidate_profile(candidate_id=candidate_id, full_name="Candidate B")
+
+        service = ContactRequestService(session)
+        service._get_request_with_relations = AsyncMock(return_value=req)
+        requester_user = make_user(user_id=requester_id, email="recruiter@example.com")
+        service._resolve_response_recipients = AsyncMock(return_value=[requester_user])
+        service.notifications.create_notification = AsyncMock()
+        service.email_service.send_request_accepted_email = AsyncMock()
+
+        asyncio.run(service.accept_request(req.id, candidate_id))
+
+        assert service.notifications.create_notification.called
+        notif_kwargs = service.notifications.create_notification.call_args[1]
+        assert notif_kwargs["user_id"] == requester_id
+        assert notif_kwargs["notification_type"] == "contact_request_accepted"
+
+        assert service.email_service.send_request_accepted_email.called
+        email_kwargs = service.email_service.send_request_accepted_email.call_args[1]
+        assert email_kwargs["to_email"] == "recruiter@example.com"
+        assert email_kwargs["recipient_user_id"] is None
+
+    def test_decline_request_enqueues_email_and_notification_to_requester(self):
+        session = make_session()
+        candidate_id = uuid.uuid4()
+        requester_id = uuid.uuid4()
+        req = make_contact_request(
+            candidate_id=candidate_id,
+            requester_user_id=requester_id,
+            status=ContactRequestStatus.PENDING,
+            expires_at=utc_now() + timedelta(days=10),
+        )
+        session.get.return_value = make_candidate_profile(candidate_id=candidate_id, full_name="Candidate C")
+
+        service = ContactRequestService(session)
+        service._get_request_with_relations = AsyncMock(return_value=req)
+        requester_user = make_user(user_id=requester_id, email="recruiter@example.com")
+        service._resolve_response_recipients = AsyncMock(return_value=[requester_user])
+        service.notifications.create_notification = AsyncMock()
+        service.email_service.send_request_declined_email = AsyncMock()
+
+        asyncio.run(service.decline_request(req.id, candidate_id))
+
+        assert service.notifications.create_notification.called
+        notif_kwargs = service.notifications.create_notification.call_args[1]
+        assert notif_kwargs["user_id"] == requester_id
+        assert notif_kwargs["notification_type"] == "contact_request_declined"
+
+        assert service.email_service.send_request_declined_email.called
+        email_kwargs = service.email_service.send_request_declined_email.call_args[1]
+        assert email_kwargs["to_email"] == "recruiter@example.com"
+
+    def test_revoke_authorization_enqueues_email_and_notification_to_requester(self):
+        session = make_session()
+        candidate_id = uuid.uuid4()
+        requester_id = uuid.uuid4()
+        req = make_contact_request(
+            candidate_id=candidate_id,
+            requester_user_id=requester_id,
+            status=ContactRequestStatus.ACCEPTED,
+        )
+        session.get.return_value = make_candidate_profile(candidate_id=candidate_id, full_name="Candidate D")
+
+        service = ContactRequestService(session)
+        service._get_request_with_relations = AsyncMock(return_value=req)
+        requester_user = make_user(user_id=requester_id, email="recruiter@example.com")
+        service._resolve_response_recipients = AsyncMock(return_value=[requester_user])
+        service.notifications.create_notification = AsyncMock()
+        service.email_service.send_request_revoked_email = AsyncMock()
+
+        asyncio.run(service.revoke_authorization(req.id, candidate_id))
+
+        assert service.notifications.create_notification.called
+        notif_kwargs = service.notifications.create_notification.call_args[1]
+        assert notif_kwargs["user_id"] == requester_id
+        assert notif_kwargs["notification_type"] == "contact_request_revoked"
+
+        assert service.email_service.send_request_revoked_email.called
+        email_kwargs = service.email_service.send_request_revoked_email.call_args[1]
+        assert email_kwargs["to_email"] == "recruiter@example.com"
+
+
+class TestInactiveRequesterFallbackD2:
+    """Verifies D2 policy: inactive initiating recruiter falls back to all active Workspace Admins."""
+
+    def test_fallback_to_all_active_workspace_admins_when_requester_inactive(self):
+        session = make_session()
+        company_id = uuid.uuid4()
+        requester_id = uuid.uuid4()
+        admin1_user = make_user(user_id=uuid.uuid4(), email="admin1@example.com", is_active=True)
+        admin2_user = make_user(user_id=uuid.uuid4(), email="admin2@example.com", is_active=True)
+
+        admin1_mem = MagicMock(spec=CompanyMembership, user=admin1_user, status=MembershipStatus.ACTIVE, is_deleted=False)
+        admin2_mem = MagicMock(spec=CompanyMembership, user=admin2_user, status=MembershipStatus.ACTIVE, is_deleted=False)
+
+        mem_res = MagicMock()
+        mem_res.scalar_one_or_none.return_value = None
+        admin_res = MagicMock()
+        admin_res.scalars.return_value.all.return_value = [admin1_mem, admin2_mem]
+        session.execute.side_effect = [mem_res, admin_res]
+
+        service = ContactRequestService(session)
+        recipients = asyncio.run(service._resolve_response_recipients(company_id, requester_id))
+
+        assert len(recipients) == 2
+        recipient_ids = {r.id for r in recipients}
+        assert recipient_ids == {admin1_user.id, admin2_user.id}
+
+    def test_no_fallback_to_inactive_deleted_or_revoked_admins(self):
+        session = make_session()
+        company_id = uuid.uuid4()
+        requester_id = uuid.uuid4()
+
+        active_admin_user = make_user(email="active_admin@example.com", is_active=True)
+        inactive_admin_user = make_user(email="inactive_admin@example.com", is_active=False)
+        deleted_admin_user = make_user(email="deleted_admin@example.com", is_active=True, is_deleted=True)
+
+        mem_active = MagicMock(spec=CompanyMembership, user=active_admin_user, status=MembershipStatus.ACTIVE, is_deleted=False)
+        mem_inactive = MagicMock(spec=CompanyMembership, user=inactive_admin_user, status=MembershipStatus.ACTIVE, is_deleted=False)
+        mem_deleted = MagicMock(spec=CompanyMembership, user=deleted_admin_user, status=MembershipStatus.ACTIVE, is_deleted=False)
+
+        mem_res = MagicMock()
+        mem_res.scalar_one_or_none.return_value = None
+        admin_res = MagicMock()
+        admin_res.scalars.return_value.all.return_value = [mem_active, mem_inactive, mem_deleted]
+        session.execute.side_effect = [mem_res, admin_res]
+
+        service = ContactRequestService(session)
+        recipients = asyncio.run(service._resolve_response_recipients(company_id, requester_id))
+
+        assert len(recipients) == 1
+        assert recipients[0].id == active_admin_user.id
+
+    def test_fallback_admin_notifications_and_emails_receive_deterministic_idempotency_keys(self):
+        session = make_session()
+        company_id = uuid.uuid4()
+        candidate_id = uuid.uuid4()
+        requester_id = uuid.uuid4()
+        admin_user = make_user(user_id=uuid.uuid4(), email="admin@example.com")
+
+        req = make_contact_request(
+            candidate_id=candidate_id,
+            company_id=company_id,
+            requester_user_id=requester_id,
+            status=ContactRequestStatus.PENDING,
+            expires_at=utc_now() + timedelta(days=10),
+        )
+        session.get.return_value = make_candidate_profile(candidate_id=candidate_id, full_name="Candidate Fallback")
+
+        service = ContactRequestService(session)
+        service._get_request_with_relations = AsyncMock(return_value=req)
+        service._resolve_response_recipients = AsyncMock(return_value=[admin_user])
+        service.notifications.create_notification = AsyncMock()
+        service.email_service.send_request_accepted_email = AsyncMock()
+
+        asyncio.run(service.accept_request(req.id, candidate_id))
+
+        assert service.notifications.create_notification.called
+        notif_call = service.notifications.create_notification.call_args[1]
+        assert notif_call["user_id"] == admin_user.id
+
+        assert service.email_service.send_request_accepted_email.called
+        email_call = service.email_service.send_request_accepted_email.call_args[1]
+        assert email_call["to_email"] == "admin@example.com"
+        assert email_call["recipient_user_id"] == admin_user.id
+
+    def test_expiration_does_not_fallback_to_workspace_admins(self):
+        session = make_session()
+        company_id = uuid.uuid4()
+        requester_id = uuid.uuid4()
+        req = make_contact_request(
+            company_id=company_id,
+            requester_user_id=requester_id,
+            status=ContactRequestStatus.PENDING,
+            expires_at=utc_now() - timedelta(days=1),
+        )
+        service = ContactRequestService(session)
+        service._is_active_company_member = AsyncMock(return_value=(False, None))
+        service.notifications.create_notification = AsyncMock()
+        service.email_service.send_request_expired_email = AsyncMock()
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [req]
+        session.execute.side_effect = [mock_result]
+
+        asyncio.run(service._expire_stale_requests(request_id=req.id))
+
+        assert req.status == ContactRequestStatus.EXPIRED
+        # D2 strict boundary: no fallback to admins for expiration
+        assert not service.notifications.create_notification.called
+        assert not service.email_service.send_request_expired_email.called
+
+class TestIdempotentExpirationD1:
+    """Verifies D1 policy: lazy idempotent expiration emits exactly once."""
+
+    def test_lazy_expiration_emits_notification_and_email_only_once(self):
+        session = make_session()
+        company_id = uuid.uuid4()
+        requester_id = uuid.uuid4()
+        requester_user = make_user(user_id=requester_id, email="recruiter@example.com")
+        req = make_contact_request(
+            company_id=company_id,
+            requester_user_id=requester_id,
+            status=ContactRequestStatus.PENDING,
+            expires_at=utc_now() - timedelta(days=1),
+        )
+
+        service = ContactRequestService(session)
+        service._is_active_company_member = AsyncMock(return_value=(True, requester_user))
+        service.notifications.create_notification = AsyncMock()
+        service.email_service.send_request_expired_email = AsyncMock()
+
+        # 1st call: request is PENDING and expires_at <= now -> transitions to EXPIRED
+        mock_result1 = MagicMock()
+        mock_result1.scalars.return_value.all.return_value = [req]
+        session.execute.side_effect = [mock_result1]
+
+        expired_list = asyncio.run(service._expire_stale_requests(request_id=req.id))
+        assert len(expired_list) == 1
+        assert req.status == ContactRequestStatus.EXPIRED
+        assert service.notifications.create_notification.called
+        assert service.email_service.send_request_expired_email.called
+
+        # 2nd call: request is already EXPIRED -> query returns empty list -> no-op
+        service.notifications.create_notification.reset_mock()
+        service.email_service.send_request_expired_email.reset_mock()
+        mock_result2 = MagicMock()
+        mock_result2.scalars.return_value.all.return_value = []
+        session.execute.side_effect = [mock_result2]
+
+        expired_list2 = asyncio.run(service._expire_stale_requests(request_id=req.id))
+        assert len(expired_list2) == 0
+        assert not service.notifications.create_notification.called
+        assert not service.email_service.send_request_expired_email.called

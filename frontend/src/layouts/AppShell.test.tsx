@@ -125,6 +125,7 @@ describe('AppShell sidebar', () => {
     const nav = getAppNav()
     expect(within(nav).getByText('Tổng quan')).toBeInTheDocument()
     expect(within(nav).getByText('Lịch phỏng vấn')).toBeInTheDocument()
+    expect(within(nav).getByText('Yêu cầu kết nối')).toBeInTheDocument()
     expect(within(nav).getByText('Tìm việc AI')).toBeInTheDocument()
     expect(within(nav).getByText('Gợi ý việc làm')).toBeInTheDocument()
     expect(within(nav).getByText('Trợ lý AI')).toBeInTheDocument()
@@ -183,6 +184,7 @@ describe('AppShell sidebar', () => {
     expect(within(nav).getByText('Tìm ứng viên AI')).toBeInTheDocument()
     expect(within(nav).getByText('Hồ sơ cá nhân')).toBeInTheDocument()
     expect(within(nav).getByText('Trợ lý AI')).toBeInTheDocument()
+    expect(within(nav).queryByText('Yêu cầu kết nối')).not.toBeInTheDocument()
   })
 
   it('renders standard recruiter workspace navigation without company settings or member governance', async () => {
@@ -244,6 +246,7 @@ describe('AppShell sidebar', () => {
     expect(within(nav).getByText('Lịch phỏng vấn')).toBeInTheDocument()
     expect(within(nav).getByText('Thông báo')).toBeInTheDocument()
     expect(within(nav).getByText('Hồ sơ cá nhân')).toBeInTheDocument()
+    expect(within(nav).queryByText('Yêu cầu kết nối')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Công ty')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Tin tuyển dụng')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Phân tích')).not.toBeInTheDocument()
@@ -271,6 +274,7 @@ describe('AppShell sidebar', () => {
     expect(within(nav).getByText('Hàng đợi email')).toBeInTheDocument()
     expect(within(nav).getByText('Nhật ký quản trị')).toBeInTheDocument()
     expect(within(nav).queryByText('Lịch phỏng vấn')).not.toBeInTheDocument()
+    expect(within(nav).queryByText('Yêu cầu kết nối')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Tìm ứng viên AI')).not.toBeInTheDocument()
     expect(within(nav).queryByText('Trợ lý AI')).not.toBeInTheDocument()
   })
@@ -376,6 +380,24 @@ describe('AppShell sidebar', () => {
     expect(appIndex).toBeGreaterThan(-1)
     expect(interviewIndex).toBe(appIndex + 1)
     expect(links[interviewIndex]).toHaveAttribute('href', '/candidate/interviews')
+  })
+
+  it('points candidate "Yêu cầu kết nối" at /candidate/contact-requests and positions it after "Lịch phỏng vấn"', async () => {
+    renderShell('candidate', '/candidate/portal')
+
+    const contactRequestsLink = await within(getAppNav()).findByRole('link', {
+      name: 'Yêu cầu kết nối',
+    })
+
+    const nav = getAppNav()
+    const links = within(nav).getAllByRole('link')
+    const linkTexts = links.map((l) => l.textContent)
+    const interviewIndex = linkTexts.findIndex((t) => t?.includes('Lịch phỏng vấn'))
+    const contactIndex = linkTexts.findIndex((t) => t?.includes('Yêu cầu kết nối'))
+    expect(interviewIndex).toBeGreaterThan(-1)
+    expect(contactIndex).toBe(interviewIndex + 1)
+    expect(links[contactIndex]).toHaveAttribute('href', '/candidate/contact-requests')
+    expect(contactRequestsLink).toBeInTheDocument()
   })
 
   it('opens the mobile drawer with the same sidebar navigation', async () => {

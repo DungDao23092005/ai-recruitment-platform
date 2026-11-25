@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import {
   Calendar,
@@ -7,6 +7,7 @@ import {
   CreditCard,
   Loader2,
   Mail,
+  MailCheck,
   MessageSquare,
   Users,
 } from 'lucide-react';
@@ -38,6 +39,7 @@ const ENTITY_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   company_invitation: Mail,
   invitation: Mail,
   company_membership: Users,
+  contact_request: MailCheck,
 };
 
 const ENTITY_LABELS: Record<string, string> = {
@@ -49,6 +51,7 @@ const ENTITY_LABELS: Record<string, string> = {
   company_invitation: 'Lời mời công ty',
   invitation: 'Lời mời công ty',
   company_membership: 'Thành viên công ty',
+  contact_request: 'Yêu cầu kết nối',
 };
 
 function NotificationSkeleton() {
@@ -103,6 +106,14 @@ export function getEntityRoute(entityType: string | null, entityId: string | nul
         return null;
       }
       return `/recruiter/workspace`;
+    case 'contact_request':
+      if (userRole === 'candidate') {
+        return entityId ? `/candidate/contact-requests?id=${encodeURIComponent(entityId)}` : null;
+      }
+      if (userRole === 'recruiter') {
+        return `/recruiter/candidate-search`;
+      }
+      return null;
     default:
       return null;
   }
@@ -114,6 +125,22 @@ export function isNotificationNavigable(
   workspaceRole?: string | null
 ): boolean {
   if (notification.notification_type === 'company_member_revoked') {
+    return false;
+  }
+
+  if (notification.entity_type === 'contact_request') {
+    if (userRole === 'candidate') {
+      return (
+        notification.notification_type === 'contact_request_received' &&
+        Boolean(notification.entity_id)
+      );
+    }
+    if (userRole === 'recruiter') {
+      if (workspaceRole === 'admin' || workspaceRole === 'interviewer') {
+        return false;
+      }
+      return notification.notification_type === 'contact_request_accepted';
+    }
     return false;
   }
 
@@ -239,24 +266,50 @@ export function NotificationsPage() {
     };
   }, [isAuthenticated]);
 
+  useEffect(() => {
+    const handleNotificationCreated = () => {
+      if (isAuthenticated) {
+        fetchNotifications(1, false);
+      }
+    };
+
+    window.addEventListener('notification:created', handleNotificationCreated);
+    return () => {
+      window.removeEventListener('notification:created', handleNotificationCreated);
+    };
+  }, [isAuthenticated]);
+
   const isWorkspaceLoading = currentUser?.role === 'recruiter' && Boolean(workspace?.isLoading);
+  const fetchIdRef = useRef(0);
 
   const fetchNotifications = async (pageNum: number = 1, append = false) => {
+    const fetchId = ++fetchIdRef.current;
     try {
       setError(null);
       if (!append) setLoading(true);
       const newNotifications = await getNotifications({ skip: (pageNum - 1) * ITEMS_PER_PAGE, limit: ITEMS_PER_PAGE });
+      if (fetchId !== fetchIdRef.current) {
+        return;
+      }
       if (append) {
-        setNotifications((prev) => [...prev, ...newNotifications]);
+        setNotifications((prev) => {
+          const existingIds = new Set(prev.map((n) => n.id));
+          const uniqueNew = newNotifications.filter((n) => !existingIds.has(n.id));
+          return [...prev, ...uniqueNew];
+        });
       } else {
         setNotifications(newNotifications);
       }
       setHasMore(newNotifications.length === ITEMS_PER_PAGE);
       setPage(pageNum);
     } catch (err) {
-      setError('Không thể tải danh sách thông báo. Vui lòng thử lại.');
+      if (fetchId === fetchIdRef.current) {
+        setError('Không thể tải danh sách thông báo. Vui lòng thử lại.');
+      }
     } finally {
-      setLoading(false);
+      if (fetchId === fetchIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -307,6 +360,18 @@ export function NotificationsPage() {
         notification.entity_type === 'interview'
       ) {
         navigate('/interviewer/interviews');
+        return;
+      }
+
+      if (notification.entity_type === 'contact_request') {
+        if (userRole === 'candidate' && notification.entity_id) {
+          navigate(`/candidate/contact-requests?id=${encodeURIComponent(notification.entity_id)}`);
+          return;
+        }
+        if (userRole === 'recruiter' && workspaceRole !== 'admin' && workspaceRole !== 'interviewer') {
+          navigate('/recruiter/candidate-search');
+          return;
+        }
         return;
       }
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   CheckCircle2,
   Clock,
@@ -39,6 +40,9 @@ const FILTER_TABS: { key: FilterKey; label: string }[] = [
 ]
 
 export function CandidateContactRequestsPage() {
+  const [searchParams] = useSearchParams()
+  const targetId = searchParams.get('id')
+
   const [requests, setRequests] = useState<CandidateContactRequestRead[]>([])
   const [activeFilter, setActiveFilter] = useState<FilterKey>('all')
   const [isLoading, setIsLoading] = useState(true)
@@ -68,6 +72,15 @@ export function CandidateContactRequestsPage() {
   useEffect(() => {
     void loadRequests(activeFilter)
   }, [activeFilter])
+
+  useEffect(() => {
+    if (!isLoading && requests.length > 0 && targetId) {
+      const el = document.getElementById(`contact-request-${targetId}`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }
+  }, [isLoading, requests, targetId])
 
   const handleAccept = async (requestId: string) => {
     setActionLoadingId(requestId)
@@ -230,11 +243,18 @@ export function CandidateContactRequestsPage() {
         />
       ) : (
         <div className="space-y-4">
-          {requests.map((req) => (
-            <div
-              key={req.id}
-              className="rounded-xl border border-border/70 bg-card p-5 shadow-xs space-y-4 transition-all hover:border-border"
-            >
+          {requests.map((req) => {
+            const isTarget = req.id === targetId
+            return (
+              <div
+                key={req.id}
+                id={`contact-request-${req.id}`}
+                data-testid={isTarget ? 'target-contact-request-card' : undefined}
+                className={cn(
+                  'rounded-xl border border-border/70 bg-card p-5 shadow-xs space-y-4 transition-all hover:border-border',
+                  isTarget && 'ring-2 ring-primary border-primary bg-primary/5',
+                )}
+              >
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
                   <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -336,7 +356,8 @@ export function CandidateContactRequestsPage() {
                 ) : null}
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>

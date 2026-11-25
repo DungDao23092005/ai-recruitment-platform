@@ -1997,6 +1997,231 @@ describe('NotificationsPage', () => {
           expect(notificationsApi.getNotifications).toHaveBeenCalledTimes(2);
         });
       });
+
+      it('navigates candidate to /candidate/contact-requests?id={entity_id} on contact_request_received', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        const notif = {
+          id: 'cr-notif-1',
+          title: 'Yêu cầu kết nối mới',
+          content: 'Công ty Acme muốn xem thông tin liên hệ của bạn.',
+          notification_type: 'contact_request_received',
+          entity_type: 'contact_request',
+          entity_id: 'req-uuid-123',
+          is_read: false,
+          created_at: new Date().toISOString(),
+        };
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([notif]);
+        vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+          ...notif,
+          is_read: true,
+        });
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'Yêu cầu kết nối mới' })).toBeInTheDocument();
+        });
+
+        // Should be navigable
+        expect(screen.getByTestId('notification-chevron')).toBeInTheDocument();
+
+        await screen.getByRole('heading', { name: 'Yêu cầu kết nối mới' }).click();
+
+        await waitFor(() => {
+          expect(mockNavigate).toHaveBeenCalledWith('/candidate/contact-requests?id=req-uuid-123');
+        });
+      });
+
+      it('does not navigate candidate if contact_request_received has no entity_id', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        const notif = {
+          id: 'cr-notif-2',
+          title: 'Yêu cầu kết nối mới',
+          content: 'Công ty Acme muốn kết nối.',
+          notification_type: 'contact_request_received',
+          entity_type: 'contact_request',
+          entity_id: null,
+          is_read: false,
+          created_at: new Date().toISOString(),
+        };
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([notif]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'Yêu cầu kết nối mới' })).toBeInTheDocument();
+        });
+
+        expect(screen.queryByTestId('notification-chevron')).not.toBeInTheDocument();
+      });
+
+      it('navigates standard recruiter to /recruiter/candidate-search on contact_request_accepted', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(useOptionalWorkspace).mockReturnValue({
+          workspaces: [],
+          selectedWorkspace: {
+            company_id: 'c1',
+            company_name: 'Acme',
+            company_slug: 'acme',
+            membership_id: 'm1',
+            role: 'recruiter',
+            is_platform_admin: false,
+          },
+          isLoading: false,
+          error: null,
+          selectWorkspace: vi.fn(),
+          refreshWorkspaces: vi.fn(),
+        });
+
+        const notif = {
+          id: 'cr-notif-3',
+          title: 'Yêu cầu kết nối được chấp nhận',
+          content: 'Ứng viên đã chấp nhận yêu cầu kết nối.',
+          notification_type: 'contact_request_accepted',
+          entity_type: 'contact_request',
+          entity_id: 'req-uuid-456',
+          is_read: false,
+          created_at: new Date().toISOString(),
+        };
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([notif]);
+        vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+          ...notif,
+          is_read: true,
+        });
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'Yêu cầu kết nối được chấp nhận' })).toBeInTheDocument();
+        });
+
+        expect(screen.getByTestId('notification-chevron')).toBeInTheDocument();
+
+        await screen.getByRole('heading', { name: 'Yêu cầu kết nối được chấp nhận' }).click();
+
+        await waitFor(() => {
+          expect(mockNavigate).toHaveBeenCalledWith('/recruiter/candidate-search');
+        });
+      });
+
+      it('prevents Workspace Admin fallback recipient from navigating on contact_request_accepted (D2/D3)', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        vi.mocked(useOptionalWorkspace).mockReturnValue({
+          workspaces: [],
+          selectedWorkspace: {
+            company_id: 'c1',
+            company_name: 'Acme',
+            company_slug: 'acme',
+            membership_id: 'm1',
+            role: 'admin', // Workspace Admin fallback
+            is_platform_admin: false,
+          },
+          isLoading: false,
+          error: null,
+          selectWorkspace: vi.fn(),
+          refreshWorkspaces: vi.fn(),
+        });
+
+        const notif = {
+          id: 'cr-notif-4',
+          title: 'Yêu cầu kết nối được chấp nhận',
+          content: 'Ứng viên đã chấp nhận yêu cầu kết nối.',
+          notification_type: 'contact_request_accepted',
+          entity_type: 'contact_request',
+          entity_id: 'req-uuid-456',
+          is_read: false,
+          created_at: new Date().toISOString(),
+        };
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([notif]);
+        vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({
+          ...notif,
+          is_read: true,
+        });
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'Yêu cầu kết nối được chấp nhận' })).toBeInTheDocument();
+        });
+
+        // Non-navigable for Workspace Admin
+        expect(screen.queryByTestId('notification-chevron')).not.toBeInTheDocument();
+
+        await screen.getByRole('heading', { name: 'Yêu cầu kết nối được chấp nhận' }).click();
+
+        expect(mockNavigate).not.toHaveBeenCalled();
+      });
+
+      it('marks contact_request_declined, contact_request_revoked, and contact_request_expired as non-navigable for recruiter', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('recruiter'));
+        const notifs = [
+          {
+            id: 'cr-declined',
+            title: 'Yêu cầu kết nối bị từ chối',
+            content: 'Ứng viên đã từ chối yêu cầu.',
+            notification_type: 'contact_request_declined',
+            entity_type: 'contact_request',
+            entity_id: 'req-1',
+            is_read: true,
+            created_at: new Date().toISOString(),
+          },
+          {
+            id: 'cr-revoked',
+            title: 'Quyền kết nối đã bị thu hồi',
+            content: 'Ứng viên đã thu hồi quyền liên hệ.',
+            notification_type: 'contact_request_revoked',
+            entity_type: 'contact_request',
+            entity_id: 'req-2',
+            is_read: true,
+            created_at: new Date().toISOString(),
+          },
+          {
+            id: 'cr-expired',
+            title: 'Yêu cầu liên hệ đã hết hạn',
+            content: 'Yêu cầu đã hết hạn sau 14 ngày.',
+            notification_type: 'contact_request_expired',
+            entity_type: 'contact_request',
+            entity_id: 'req-3',
+            is_read: true,
+            created_at: new Date().toISOString(),
+          },
+        ];
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue(notifs);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(screen.getByRole('heading', { name: 'Yêu cầu kết nối bị từ chối' })).toBeInTheDocument();
+        });
+
+        expect(screen.queryByTestId('notification-chevron')).not.toBeInTheDocument();
+      });
+
+      it('refreshes notification list when notification:created event is dispatched on window', async () => {
+        vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
+        vi.mocked(notificationsApi.getNotifications).mockResolvedValue([]);
+
+        renderPage();
+
+        await waitFor(() => {
+          expect(notificationsApi.getNotifications).toHaveBeenCalledTimes(1);
+        });
+
+        act(() => {
+          window.dispatchEvent(
+            new CustomEvent('notification:created', {
+              detail: {
+                id: 'new-notif-1',
+                title: 'Thông báo mới',
+              },
+            })
+          );
+        });
+
+        await waitFor(() => {
+          expect(notificationsApi.getNotifications).toHaveBeenCalledTimes(2);
+        });
+      });
     });
   });
 });
