@@ -309,12 +309,17 @@ class TestCompanyOwnership:
 
         body = {**JOB_BODY, "company_id": company_b["id"]}
         resp = run_async(
-            recruiter_a_client.post(f"{API_V1}/jobs", json=body)
+            recruiter_a_client.post(
+                f"{API_V1}/jobs",
+                headers={"X-Company-ID": company_b["id"]},
+                json=body,
+            )
         )
 
         assert resp.status_code == 403
         assert (
-            "permission" in resp.json()["detail"].lower()
+            "access" in resp.json()["detail"].lower()
+            or "permission" in resp.json()["detail"].lower()
         )
         count = run_async(count_jobs_for_company(company_b["id"]))
         assert count == 0
@@ -2186,3 +2191,150 @@ def test_public_jobs_list_excludes_expired_jobs(
     job_ids = [j["id"] for j in jobs]
     assert active_job_id in job_ids
     assert expired_job_id not in job_ids
+
+
+def test_job_creation_header_and_body_company_id_match_succeeds(
+    recruiter_a_client, run_async
+):
+    resp_co = run_async(
+        recruiter_a_client.post(
+            f"{API_V1}/companies",
+            json={
+                "name": "Match Co",
+                "slug": f"match-co-{uuid.uuid4().hex[:6]}",
+                "tax_code": "555555555",
+                "size": "startup",
+            },
+        )
+    )
+    assert resp_co.status_code == 201, resp_co.text
+    company_id = resp_co.json()["id"]
+
+    job_resp = run_async(
+        recruiter_a_client.post(
+            f"{API_V1}/jobs",
+            headers={"X-Company-ID": company_id},
+            json={**JOB_BODY, "company_id": company_id},
+        )
+    )
+    assert job_resp.status_code == 201, job_resp.text
+    assert job_resp.json()["company_id"] == company_id
+
+
+def test_job_creation_header_and_body_company_id_mismatch_returns_400(
+    recruiter_a_client, recruiter_b_client, run_async
+):
+    resp_a = run_async(
+        recruiter_a_client.post(
+            f"{API_V1}/companies",
+            json={
+                "name": "Co A Mismatch",
+                "slug": f"co-a-mismatch-{uuid.uuid4().hex[:6]}",
+                "tax_code": "666666666",
+                "size": "startup",
+            },
+        )
+    )
+    assert resp_a.status_code == 201
+    comp_a_id = resp_a.json()["id"]
+
+    resp_b = run_async(
+        recruiter_b_client.post(
+            f"{API_V1}/companies",
+            json={
+                "name": "Co B Mismatch",
+                "slug": f"co-b-mismatch-{uuid.uuid4().hex[:6]}",
+                "tax_code": "777777777",
+                "size": "startup",
+            },
+        )
+    )
+    assert resp_b.status_code == 201
+    comp_b_id = resp_b.json()["id"]
+
+    # Header is comp_a_id, but body is comp_b_id -> 400 Bad Request
+    mismatch_resp = run_async(
+        recruiter_a_client.post(
+            f"{API_V1}/jobs",
+            headers={"X-Company-ID": comp_a_id},
+            json={**JOB_BODY, "company_id": comp_b_id},
+        )
+    )
+    assert mismatch_resp.status_code == 400
+    assert (
+        mismatch_resp.json()["detail"]
+        == "Mã công ty trong dữ liệu yêu cầu không khớp với không gian làm việc đang chọn (X-Company-ID)."
+    )
+
+    # Verify zero jobs created
+    count_a = run_async(count_jobs_for_company(comp_a_id))
+    count_b = run_async(count_jobs_for_company(comp_b_id))
+    assert count_a == 0
+    assert count_b == 0
+
+
+def test_job_creation_no_header_single_membership_mismatch_returns_400(
+    recruiter_a_client, recruiter_b_client, run_async
+):
+    resp_a = run_async(
+        recruiter_a_client.post(
+            f"{API_V1}/companies",
+            json={
+                "name": "Co A Auto Workspace",
+                "slug": f"co-a-auto-{uuid.uuid4().hex[:6]}",
+                "tax_code": "888888888",
+                "size": "startup",
+            },
+        )
+    )
+    assert resp_a.status_code == 201
+    comp_a_id = resp_a.json()["id"]
+
+    resp_b = run_async(
+        recruiter_b_client.post(
+            f"{API_V1}/companies",
+            json={
+                "name": "Co B Other",
+                "slug": f"co-b-other-{uuid.uuid4().hex[:6]}",
+                "tax_code": "999999999",
+                "size": "startup",
+            },
+        )
+    )
+    assert resp_b.status_code == 201
+    comp_b_id = resp_b.json()["id"]
+
+    # Recruiter A has exactly one active membership (comp_a_id).
+    # Request does not contain an X-Company-ID header.
+    # Workspace resolution automatically selects Recruiter A's sole company (comp_a_id).
+    # Request body contains a different company_id (comp_b_id).
+    mismatch_resp = run_async(
+        recruiter_a_client.post(
+            f"{API_V1}/jobs",
+            json={**JOB_BODY, "company_id": comp_b_id},
+        )
+    )
+    assert mismatch_resp.status_code == 400
+    assert (
+        mismatch_resp.json()["detail"]
+        == "Mã công ty trong dữ liệu yêu cầu không khớp với không gian làm việc đang chọn (X-Company-ID)."
+    )
+
+    # Verify zero jobs created for either company (no job is persisted)
+    count_a = run_async(count_jobs_for_company(comp_a_id))
+    count_b = run_async(count_jobs_for_company(comp_b_id))
+    assert count_a == 0
+    assert count_b == 0
+
+    # Verify no quota was consumed for either company
+    async def _check_quota():
+        async with async_session_factory() as session:
+            for cid in (comp_a_id, comp_b_id):
+                stmt = select(Subscription).where(
+                    Subscription.company_id == uuid.UUID(cid)
+                )
+                result = await session.execute(stmt)
+                for sub in result.scalars().all():
+                    assert sub.job_posts_used == 0
+
+    run_async(_check_quota())

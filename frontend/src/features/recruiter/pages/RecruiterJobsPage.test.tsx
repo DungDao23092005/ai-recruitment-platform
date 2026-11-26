@@ -39,11 +39,44 @@ vi.mock('@/api/jobs', () => ({
   getJobs: vi.fn(),
 }))
 
+const workspaceMocks = vi.hoisted(() => ({
+  selectedCompanyId: 'company-1' as string | null,
+  selectedWorkspace: {
+    company_id: 'company-1',
+    company_name: 'TechNova AI',
+    company_slug: 'technova-ai',
+    membership_id: 'mem-1',
+    role: 'admin',
+    is_platform_admin: false,
+  } as any,
+}))
+
+vi.mock('@/contexts/WorkspaceContext', () => ({
+  useWorkspace: () => ({
+    selectedCompanyId: workspaceMocks.selectedCompanyId,
+    selectedWorkspace: workspaceMocks.selectedWorkspace,
+    workspaces: workspaceMocks.selectedWorkspace ? [workspaceMocks.selectedWorkspace] : [],
+    selectWorkspace: vi.fn(),
+    refreshWorkspaces: vi.fn(),
+    isLoading: false,
+    error: null,
+  }),
+}))
+
 const mockedGetMyJobs = vi.mocked(getMyJobs)
 const mockedGetJobs = vi.mocked(getJobs)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  workspaceMocks.selectedCompanyId = 'company-1'
+  workspaceMocks.selectedWorkspace = {
+    company_id: 'company-1',
+    company_name: 'TechNova AI',
+    company_slug: 'technova-ai',
+    membership_id: 'mem-1',
+    role: 'admin',
+    is_platform_admin: false,
+  }
 })
 
 describe('RecruiterJobsPage', () => {
@@ -184,5 +217,138 @@ describe('RecruiterJobsPage', () => {
       expect(screen.getByText('Backend Engineer')).toBeInTheDocument()
     })
     expect(mockedGetJobs).not.toHaveBeenCalled()
+  })
+
+  describe('Workspace Context & Job Visibility (PO4)', () => {
+    it('displays active company name in page description when workspace is selected', async () => {
+      mockedGetMyJobs.mockResolvedValue([])
+
+      render(
+        <MemoryRouter>
+          <RecruiterJobsPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Tin tuyển dụng của: TechNova AI'),
+        ).toBeInTheDocument()
+      })
+    })
+
+    it('displays default description when no workspace is selected', async () => {
+      workspaceMocks.selectedCompanyId = null
+      workspaceMocks.selectedWorkspace = null
+      mockedGetMyJobs.mockResolvedValue([])
+
+      render(
+        <MemoryRouter>
+          <RecruiterJobsPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Quản lý các tin tuyển dụng và ứng viên của bạn.'),
+        ).toBeInTheDocument()
+      })
+    })
+
+    it('re-fetches jobs when selectedCompanyId changes', async () => {
+      mockedGetMyJobs.mockResolvedValue([mockDraftJob])
+
+      const { rerender } = render(
+        <MemoryRouter>
+          <RecruiterJobsPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(mockedGetMyJobs).toHaveBeenCalledTimes(1)
+        expect(screen.getByText('Senior Frontend Engineer')).toBeInTheDocument()
+      })
+
+      // Simulate workspace switch
+      workspaceMocks.selectedCompanyId = 'company-2'
+      workspaceMocks.selectedWorkspace = {
+        company_id: 'company-2',
+        company_name: 'Second Corp',
+        company_slug: 'second-corp',
+        membership_id: 'mem-2',
+        role: 'recruiter',
+        is_platform_admin: false,
+      }
+      mockedGetMyJobs.mockResolvedValue([mockPublishedJob])
+
+      rerender(
+        <MemoryRouter>
+          <RecruiterJobsPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(mockedGetMyJobs).toHaveBeenCalledTimes(2)
+        expect(screen.getByText('Backend Engineer')).toBeInTheDocument()
+        expect(screen.getByText('Tin tuyển dụng của: Second Corp')).toBeInTheDocument()
+      })
+    })
+
+    it('discards stale asynchronous responses when company changes rapidly', async () => {
+      let resolveFirstCall: (value: Job[]) => void = () => {}
+      const firstCallPromise = new Promise<Job[]>((resolve) => {
+        resolveFirstCall = resolve
+      })
+
+      let resolveSecondCall: (value: Job[]) => void = () => {}
+      const secondCallPromise = new Promise<Job[]>((resolve) => {
+        resolveSecondCall = resolve
+      })
+
+      mockedGetMyJobs
+        .mockImplementationOnce(() => firstCallPromise)
+        .mockImplementationOnce(() => secondCallPromise)
+
+      const { rerender } = render(
+        <MemoryRouter>
+          <RecruiterJobsPage />
+        </MemoryRouter>,
+      )
+
+      expect(mockedGetMyJobs).toHaveBeenCalledTimes(1)
+
+      // Rapidly switch workspace before call 1 finishes
+      workspaceMocks.selectedCompanyId = 'company-2'
+      workspaceMocks.selectedWorkspace = {
+        company_id: 'company-2',
+        company_name: 'Second Corp',
+        company_slug: 'second-corp',
+        membership_id: 'mem-2',
+        role: 'recruiter',
+        is_platform_admin: false,
+      }
+
+      rerender(
+        <MemoryRouter>
+          <RecruiterJobsPage />
+        </MemoryRouter>,
+      )
+
+      expect(mockedGetMyJobs).toHaveBeenCalledTimes(2)
+
+      // Call 2 resolves first with mockPublishedJob
+      resolveSecondCall([mockPublishedJob])
+
+      await waitFor(() => {
+        expect(screen.getByText('Backend Engineer')).toBeInTheDocument()
+      })
+
+      // Call 1 resolves late with mockDraftJob (stale response)
+      resolveFirstCall([mockDraftJob])
+
+      // Wait a moment and ensure mockDraftJob does not overwrite mockPublishedJob
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(screen.getByText('Backend Engineer')).toBeInTheDocument()
+      expect(screen.queryByText('Senior Frontend Engineer')).not.toBeInTheDocument()
+    })
   })
 })

@@ -60,11 +60,30 @@ vi.mock('@/api/client', () => ({
   },
 }))
 
+const workspaceMocks = vi.hoisted(() => ({
+  selectedCompanyId: null as string | null,
+  selectWorkspace: vi.fn(),
+  refreshWorkspaces: vi.fn().mockResolvedValue([]),
+}))
+
+vi.mock('@/contexts/WorkspaceContext', () => ({
+  useWorkspace: () => ({
+    selectedCompanyId: workspaceMocks.selectedCompanyId,
+    selectWorkspace: workspaceMocks.selectWorkspace,
+    refreshWorkspaces: workspaceMocks.refreshWorkspaces,
+    workspaces: [],
+    selectedWorkspace: null,
+    isLoading: false,
+    error: null,
+  }),
+}))
+
 const mockedGet = vi.mocked(apiClient.get)
 const mockedPost = vi.mocked(apiClient.post)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  workspaceMocks.selectedCompanyId = null
 })
 
 describe('JobCreatePage', () => {
@@ -439,5 +458,96 @@ describe('JobCreatePage', () => {
     expect(
       screen.getByRole('dialog', { name: 'AI phân tích JD' }),
     ).toBeInTheDocument()
+  })
+
+  describe('Contextual Job Creation & Precedence (PO2 & PO3)', () => {
+    it('defaults to active authorized workspace without showing selector on direct navigation', async () => {
+      workspaceMocks.selectedCompanyId = 'company-1'
+      mockedGet.mockResolvedValue(mockCompanies as never)
+
+      render(
+        <MemoryRouter initialEntries={['/recruiter/jobs/new']}>
+          <JobCreatePage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Acme Corp')).toBeInTheDocument()
+        expect(screen.getByLabelText('Tiêu đề công việc')).toBeInTheDocument()
+      })
+      // Selector prompt is not shown
+      expect(screen.queryByText('Chọn công ty')).not.toBeInTheDocument()
+      // "Đổi công ty" button is available
+      expect(
+        screen.getByRole('button', { name: /Đổi công ty/i }),
+      ).toBeInTheDocument()
+    })
+
+    it('preselects company from valid query param and synchronizes workspace', async () => {
+      workspaceMocks.selectedCompanyId = 'company-1'
+      mockedGet.mockResolvedValue(mockCompanies as never)
+
+      render(
+        <MemoryRouter initialEntries={['/recruiter/jobs/new?company_id=company-2']}>
+          <JobCreatePage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Beta Inc')).toBeInTheDocument()
+        expect(screen.getByLabelText('Tiêu đề công việc')).toBeInTheDocument()
+      })
+      expect(screen.queryByText('Chọn công ty')).not.toBeInTheDocument()
+      expect(workspaceMocks.selectWorkspace).toHaveBeenCalledWith('company-2')
+    })
+
+    it('safely rejects unauthorized query parameter and falls back to active workspace', async () => {
+      workspaceMocks.selectedCompanyId = 'company-1'
+      mockedGet.mockResolvedValue(mockCompanies as never)
+
+      render(
+        <MemoryRouter initialEntries={['/recruiter/jobs/new?company_id=unauthorized-company-id']}>
+          <JobCreatePage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        // Falls back to active workspace Acme Corp
+        expect(screen.getByText('Acme Corp')).toBeInTheDocument()
+        expect(screen.getByLabelText('Tiêu đề công việc')).toBeInTheDocument()
+      })
+      expect(screen.queryByText('unauthorized-company-id')).not.toBeInTheDocument()
+    })
+
+    it('allows changing company via "Đổi công ty" and shows selector', async () => {
+      workspaceMocks.selectedCompanyId = 'company-1'
+      mockedGet.mockResolvedValue(mockCompanies as never)
+
+      render(
+        <MemoryRouter initialEntries={['/recruiter/jobs/new']}>
+          <JobCreatePage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Acme Corp')).toBeInTheDocument()
+      })
+
+      const changeBtn = screen.getByRole('button', { name: /Đổi công ty/i })
+      fireEvent.click(changeBtn)
+
+      await waitFor(() => {
+        expect(screen.getByText('Chọn công ty')).toBeInTheDocument()
+        expect(screen.getByText('Beta Inc')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByText('Beta Inc'))
+
+      await waitFor(() => {
+        expect(screen.getByText('Beta Inc')).toBeInTheDocument()
+        expect(screen.getByLabelText('Tiêu đề công việc')).toBeInTheDocument()
+      })
+      expect(workspaceMocks.selectWorkspace).toHaveBeenCalledWith('company-2')
+    })
   })
 })

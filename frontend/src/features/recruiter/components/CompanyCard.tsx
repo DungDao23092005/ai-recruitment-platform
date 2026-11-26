@@ -9,15 +9,34 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { useWorkspace } from '@/contexts/WorkspaceContext'
 import { COMPANY_SIZE_LABELS } from '@/types/company'
 import type { Company, CompanySize } from '@/types/company'
 
 export interface CompanyCardProps {
   company: Company
+  isActive?: boolean
+  onSelect?: () => void
   onEdit?: () => void
 }
 
-export function CompanyCard({ company, onEdit }: CompanyCardProps) {
+export function CompanyCard({
+  company,
+  isActive: propIsActive,
+  onSelect,
+  onEdit,
+}: CompanyCardProps) {
+  const { selectedCompanyId, selectWorkspace } = useWorkspace()
+  const isActive = propIsActive ?? selectedCompanyId === company.id
+
+  const handleSelect = () => {
+    if (onSelect) {
+      onSelect()
+    } else {
+      selectWorkspace(company.id)
+    }
+  }
+
   const monogram = company.name?.trim()
     ? company.name.trim().charAt(0).toUpperCase()
     : 'C'
@@ -34,9 +53,16 @@ export function CompanyCard({ company, onEdit }: CompanyCardProps) {
               {monogram}
             </div>
             <div className="space-y-1 min-w-0">
-              <CardTitle className="font-display text-lg font-bold tracking-tight text-foreground truncate">
-                {company.name}
-              </CardTitle>
+              <div className="flex flex-wrap items-center gap-2">
+                <CardTitle className="font-display text-lg font-bold tracking-tight text-foreground truncate">
+                  {company.name}
+                </CardTitle>
+                {isActive ? (
+                  <Badge variant="outline-ai" className="shrink-0 text-xs font-semibold">
+                    Đang chọn
+                  </Badge>
+                ) : null}
+              </div>
               <div>
                 <span className="inline-flex items-center rounded-full border border-border/60 bg-muted/70 px-2.5 py-0.5 font-mono text-xs text-muted-foreground">
                   @{company.slug}
@@ -44,18 +70,31 @@ export function CompanyCard({ company, onEdit }: CompanyCardProps) {
               </div>
             </div>
           </div>
-          {onEdit ? (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={onEdit}
-              className="shrink-0 gap-1.5"
-            >
-              <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-              Chỉnh sửa
-            </Button>
-          ) : null}
+          <div className="flex items-center gap-2 shrink-0">
+            {!isActive ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleSelect}
+                className="gap-1.5"
+              >
+                Chọn làm việc
+              </Button>
+            ) : null}
+            {onEdit ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onEdit}
+                className="gap-1.5"
+              >
+                <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                Chỉnh sửa
+              </Button>
+            ) : null}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3 px-6 pb-6 pt-0 text-sm">
@@ -74,7 +113,13 @@ export function CompanyCard({ company, onEdit }: CompanyCardProps) {
         </div>
       </CardContent>
       <CardFooter className="border-t bg-muted/20 px-6 py-4">
-        <Link to="/recruiter/jobs/new" className="w-full sm:w-auto">
+        <Link
+          to={`/recruiter/jobs/new?company_id=${company.id}`}
+          onClick={() => {
+            selectWorkspace(company.id)
+          }}
+          className="w-full sm:w-auto"
+        >
           <Button className="w-full sm:w-auto gap-2">
             <Building className="h-4 w-4" aria-hidden="true" />
             Đăng tin tuyển dụng cho công ty này

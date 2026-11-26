@@ -146,6 +146,16 @@ async def create_job(
     ensure_not_interviewer(workspace)
     is_admin = current_user.role == UserRole.ADMIN
 
+    if (
+        data.company_id is not None
+        and workspace is not None
+        and data.company_id != workspace.company_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mã công ty trong dữ liệu yêu cầu không khớp với không gian làm việc đang chọn (X-Company-ID).",
+        )
+
     if data.company_id is not None and (
         workspace is None or request.headers.get("X-Company-ID") is None
     ):

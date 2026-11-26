@@ -25,13 +25,14 @@ vi.mock('@/api/client', () => ({
 }))
 
 const workspaceMocks = vi.hoisted(() => ({
+  selectedCompanyId: null as string | null,
   selectWorkspace: vi.fn(),
   refreshWorkspaces: vi.fn().mockResolvedValue([]),
 }))
 
 vi.mock('@/contexts/WorkspaceContext', () => ({
   useWorkspace: () => ({
-    selectedCompanyId: null,
+    selectedCompanyId: workspaceMocks.selectedCompanyId,
     selectWorkspace: workspaceMocks.selectWorkspace,
     refreshWorkspaces: workspaceMocks.refreshWorkspaces,
   }),
@@ -43,6 +44,7 @@ const mockedPatch = vi.mocked(apiClient.patch)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  workspaceMocks.selectedCompanyId = null
 })
 
 describe('RecruiterCompanyPage', () => {
@@ -76,7 +78,7 @@ describe('RecruiterCompanyPage', () => {
     expect(screen.getByText('Mã số thuế: 0317654321')).toBeInTheDocument()
     expect(
       screen.getByRole('link', { name: /Đăng tin tuyển dụng cho công ty này/i }),
-    ).toHaveAttribute('href', '/recruiter/jobs/new')
+    ).toHaveAttribute('href', '/recruiter/jobs/new?company_id=company-1')
     expect(screen.queryByText('Chưa có công ty')).not.toBeInTheDocument()
   })
 
@@ -397,6 +399,91 @@ describe('RecruiterCompanyPage', () => {
       expect(
         screen.getByText('Mã số thuế đã được đăng ký. Vui lòng kiểm tra lại.'),
       ).toBeInTheDocument()
+    })
+  })
+
+  describe('Multi-Company Management', () => {
+    const mockCompany2: Company = {
+      id: 'company-2',
+      name: 'Beta Software',
+      slug: 'beta-software',
+      tax_code: '0987654321',
+      size: 'startup',
+      created_at: '2026-02-01T00:00:00Z',
+      updated_at: '2026-02-01T00:00:00Z',
+    }
+
+    it('displays all authorized companies returned by getCompanies()', async () => {
+      workspaceMocks.selectedCompanyId = 'company-1'
+      mockedGet.mockResolvedValue([mockCompany, mockCompany2] as never)
+
+      render(
+        <MemoryRouter>
+          <RecruiterCompanyPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('TechNova AI')).toBeInTheDocument()
+        expect(screen.getByText('Beta Software')).toBeInTheDocument()
+      })
+
+      // Active workspace badge
+      expect(screen.getByText('Đang chọn')).toBeInTheDocument()
+
+      // Non-active company has "Chọn làm việc"
+      expect(
+        screen.getByRole('button', { name: /Chọn làm việc/i }),
+      ).toBeInTheDocument()
+    })
+
+    it('switches active workspace when clicking "Chọn làm việc"', async () => {
+      workspaceMocks.selectWorkspace.mockClear()
+      workspaceMocks.selectedCompanyId = 'company-1'
+      mockedGet.mockResolvedValue([mockCompany, mockCompany2] as never)
+
+      render(
+        <MemoryRouter>
+          <RecruiterCompanyPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Beta Software')).toBeInTheDocument()
+      })
+
+      const selectBtn = screen.getByRole('button', { name: /Chọn làm việc/i })
+      fireEvent.click(selectBtn)
+
+      expect(workspaceMocks.selectWorkspace).toHaveBeenCalledTimes(1)
+      expect(workspaceMocks.selectWorkspace).toHaveBeenCalledWith('company-2')
+    })
+
+    it('company-specific job link selects workspace and has query param', async () => {
+      workspaceMocks.selectedCompanyId = 'company-1'
+      mockedGet.mockResolvedValue([mockCompany, mockCompany2] as never)
+
+      render(
+        <MemoryRouter>
+          <RecruiterCompanyPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Beta Software')).toBeInTheDocument()
+      })
+
+      const jobLinks = screen.getAllByRole('link', {
+        name: /Đăng tin tuyển dụng cho công ty này/i,
+      })
+      expect(jobLinks).toHaveLength(2)
+      expect(jobLinks[1]).toHaveAttribute(
+        'href',
+        '/recruiter/jobs/new?company_id=company-2',
+      )
+
+      fireEvent.click(jobLinks[1])
+      expect(workspaceMocks.selectWorkspace).toHaveBeenCalledWith('company-2')
     })
   })
 })

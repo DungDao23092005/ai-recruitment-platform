@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Briefcase, PlusCircle } from 'lucide-react'
 import { getMyJobs } from '@/api/jobs'
@@ -8,6 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorBanner } from '@/components/ui/error-banner'
 import { EmptyState } from '@/components/ui/empty-state'
 import { RecruiterJobCard } from '@/features/recruiter/components/RecruiterJobCard'
+import { useWorkspace } from '@/contexts/WorkspaceContext'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { Job } from '@/types/job'
 
@@ -17,33 +18,52 @@ type JobsState =
   | { kind: 'success'; jobs: Job[] }
 
 export function RecruiterJobsPage() {
-  const [state, setState] = useState<JobsState>({ kind: 'loading' })
+  let workspaceContext: ReturnType<typeof useWorkspace> | null = null
+  try {
+    workspaceContext = useWorkspace()
+  } catch {
+    workspaceContext = null
+  }
+  const selectedCompanyId = workspaceContext?.selectedCompanyId ?? null
+  const selectedWorkspace = workspaceContext?.selectedWorkspace ?? null
 
-  const load = () => {
+  const [state, setState] = useState<JobsState>({ kind: 'loading' })
+  const requestIdRef = useRef(0)
+
+  const load = useCallback(() => {
+    const currentRequestId = ++requestIdRef.current
     setState({ kind: 'loading' })
 
     getMyJobs({ skip: 0, limit: 50 })
       .then((jobs) => {
-        setState({ kind: 'success', jobs })
+        if (currentRequestId === requestIdRef.current) {
+          setState({ kind: 'success', jobs })
+        }
       })
       .catch((err) => {
-        setState({
-          kind: 'error',
-          message: getFriendlyErrorMessage(err),
-        })
+        if (currentRequestId === requestIdRef.current) {
+          setState({
+            kind: 'error',
+            message: getFriendlyErrorMessage(err),
+          })
+        }
       })
-  }
+  }, [])
 
   useEffect(() => {
     load()
-  }, [])
+  }, [load, selectedCompanyId])
+
+  const description = selectedWorkspace?.company_name
+    ? `Tin tuyển dụng của: ${selectedWorkspace.company_name}`
+    : 'Quản lý các tin tuyển dụng và ứng viên của bạn.'
 
   return (
     <div className="space-y-6">
       <PageHeader
         eyebrow="Nhà tuyển dụng"
         title="Tin tuyển dụng"
-        description="Quản lý các tin tuyển dụng và ứng viên của bạn."
+        description={description}
         actions={
           <Link to="/recruiter/jobs/new">
             <Button>

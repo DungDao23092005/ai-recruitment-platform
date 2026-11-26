@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Building, FileText, Sparkles } from 'lucide-react'
 import { PageHeader } from '@/components/common/PageHeader'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { getCompanies } from '@/api/companies'
+import { useWorkspace } from '@/contexts/WorkspaceContext'
 import { COMPANY_SIZE_LABELS } from '@/types/company'
 import type { Company, CompanySize } from '@/types/company'
 import { getFriendlyErrorMessage } from '@/utils/errors'
@@ -26,6 +27,18 @@ export interface JobCreatePageProps {
 }
 
 export function JobCreatePage({ companyId }: JobCreatePageProps) {
+  let workspaceContext: ReturnType<typeof useWorkspace> | null = null
+  try {
+    workspaceContext = useWorkspace()
+  } catch {
+    workspaceContext = null
+  }
+  const workspaceCompanyId = workspaceContext?.selectedCompanyId ?? null
+  const selectWorkspace = workspaceContext?.selectWorkspace
+
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawQueryCompanyId = searchParams.get('company_id')
+
   const [showAiModal, setShowAiModal] = useState(false)
   const [appliedParsed, setAppliedParsed] = useState<ParsedJob | null>(null)
   const [formRevision, setFormRevision] = useState(0)
@@ -33,9 +46,10 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
   const [companies, setCompanies] = useState<Company[] | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(
-    null,
-  )
+  const [inPageSelectedCompanyId, setInPageSelectedCompanyId] = useState<
+    string | null
+  >(null)
+  const [wantsToChangeCompany, setWantsToChangeCompany] = useState(false)
 
   const companyIdValue = companyId ?? null
 
@@ -58,10 +72,99 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
     }
   }, [companyIdValue, loadCompanies])
 
-  const effectiveCompanyId =
-    companyIdValue ??
-    selectedCompanyId ??
-    (companies != null && companies.length === 1 ? companies[0].id : null)
+  // Validate query parameter against authorized companies
+  const validatedQueryCompanyId = useMemo(() => {
+    if (!rawQueryCompanyId || !companies) return null
+    const match = companies.find((c) => c.id === rawQueryCompanyId)
+    return match ? match.id : null
+  }, [rawQueryCompanyId, companies])
+
+  // Clear invalid/stale query parameter appropriately
+  useEffect(() => {
+    if (rawQueryCompanyId && companies && !validatedQueryCompanyId) {
+      searchParams.delete('company_id')
+      setSearchParams(searchParams, { replace: true })
+    }
+  }, [rawQueryCompanyId, companies, validatedQueryCompanyId, searchParams, setSearchParams])
+
+  // PO3 Approved Precedence:
+  // 1. Explicit companyId component prop, if supplied.
+  // 2. Validated company_id URL query parameter.
+  // 3. Explicit in-page company selection.
+  // 4. Active WorkspaceContext.selectedCompanyId, if authorized.
+  // 5. Single authorized company fallback.
+  // 6. Otherwise, display the company selector.
+  const effectiveCompanyId = useMemo(() => {
+    if (companyIdValue) {
+      return companyIdValue
+    }
+
+    if (!companies || companies.length === 0) {
+      return null
+    }
+
+    if (wantsToChangeCompany && !inPageSelectedCompanyId) {
+      return null
+    }
+
+    if (validatedQueryCompanyId) {
+      return validatedQueryCompanyId
+    }
+
+    if (
+      inPageSelectedCompanyId &&
+      companies.some((c) => c.id === inPageSelectedCompanyId)
+    ) {
+      return inPageSelectedCompanyId
+    }
+
+    if (
+      workspaceCompanyId &&
+      companies.some((c) => c.id === workspaceCompanyId)
+    ) {
+      return workspaceCompanyId
+    }
+
+    if (companies.length === 1) {
+      return companies[0].id
+    }
+
+    return null
+  }, [
+    companyIdValue,
+    companies,
+    wantsToChangeCompany,
+    inPageSelectedCompanyId,
+    validatedQueryCompanyId,
+    workspaceCompanyId,
+  ])
+
+  // Synchronize active workspace ID with effective company ID
+  useEffect(() => {
+    if (
+      effectiveCompanyId &&
+      selectWorkspace &&
+      workspaceCompanyId !== effectiveCompanyId
+    ) {
+      selectWorkspace(effectiveCompanyId)
+    }
+  }, [effectiveCompanyId, workspaceCompanyId, selectWorkspace])
+
+  const handleSelectCompany = (id: string) => {
+    if (selectWorkspace) {
+      selectWorkspace(id)
+    }
+    setInPageSelectedCompanyId(id)
+    setWantsToChangeCompany(false)
+    setSearchParams({ company_id: id }, { replace: true })
+  }
+
+  const handleSwitchCompany = () => {
+    setInPageSelectedCompanyId(null)
+    setWantsToChangeCompany(true)
+    searchParams.delete('company_id')
+    setSearchParams(searchParams, { replace: true })
+  }
 
   const activeCompany =
     companies?.find((company) => company.id === effectiveCompanyId) ?? null
@@ -152,7 +255,7 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
                   <button
                     key={company.id}
                     type="button"
-                    onClick={() => setSelectedCompanyId(company.id)}
+                    onClick={() => handleSelectCompany(company.id)}
                     className="flex items-center gap-3.5 rounded-xl border border-border/70 bg-card p-4 text-left transition-all hover:border-primary/50 hover:bg-muted/40 shadow-xs"
                   >
                     <div
@@ -212,7 +315,7 @@ export function JobCreatePage({ companyId }: JobCreatePageProps) {
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => setSelectedCompanyId(null)}
+              onClick={handleSwitchCompany}
               className="text-xs text-muted-foreground hover:text-foreground"
             >
               Đổi công ty

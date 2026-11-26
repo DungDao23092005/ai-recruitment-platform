@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/card'
 import { CompanyForm } from '@/features/recruiter/components/CompanyForm'
 import { CompanyCard } from '@/features/recruiter/components/CompanyCard'
-import { getCompanies, getCompanyById } from '@/api/companies'
+import { getCompanies } from '@/api/companies'
 import { useWorkspace } from '@/contexts/WorkspaceContext'
 import { getFriendlyErrorMessage } from '@/utils/errors'
 import type { Company } from '@/types/company'
@@ -22,37 +22,35 @@ import type { Company } from '@/types/company'
 export function RecruiterCompanyPage() {
   const { selectedCompanyId, refreshWorkspaces, selectWorkspace } =
     useWorkspace()
-  const [company, setCompany] = useState<Company | null>(null)
+  const [companies, setCompanies] = useState<Company[]>([])
+  const [editingCompany, setEditingCompany] = useState<Company | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [isEditing, setIsEditing] = useState(false)
 
   const loadCompanies = useCallback(async () => {
     setIsLoading(true)
     setError(null)
     try {
-      if (selectedCompanyId) {
-        setCompany(await getCompanyById(selectedCompanyId))
-      } else {
-        const list = await getCompanies()
-        setCompany(list[0] ?? null)
-      }
+      const list = await getCompanies()
+      setCompanies(list)
     } catch (err) {
       setError(getFriendlyErrorMessage(err))
     } finally {
       setIsLoading(false)
     }
-  }, [selectedCompanyId])
+  }, [])
 
   useEffect(() => {
     void loadCompanies()
   }, [loadCompanies])
 
   const handleCreated = async (created: Company) => {
-    setCompany(created)
+    setCompanies((prev) => [created, ...prev])
     selectWorkspace(created.id)
     await refreshWorkspaces()
   }
+
+  const isEditing = Boolean(editingCompany)
 
   return (
     <div className="space-y-6">
@@ -89,16 +87,18 @@ export function RecruiterCompanyPage() {
               </div>
             ) : null}
 
-            {isEditing && company ? (
+            {editingCompany ? (
               <CompanyForm
-                key="company-edit"
+                key={`company-edit-${editingCompany.id}`}
                 mode="edit"
-                company={company}
+                company={editingCompany}
                 onUpdated={(updated) => {
-                  setCompany(updated)
-                  setIsEditing(false)
+                  setCompanies((prev) =>
+                    prev.map((c) => (c.id === updated.id ? updated : c)),
+                  )
+                  setEditingCompany(null)
                 }}
-                onCancelEdit={() => setIsEditing(false)}
+                onCancelEdit={() => setEditingCompany(null)}
               />
             ) : (
               <CompanyForm
@@ -146,11 +146,18 @@ export function RecruiterCompanyPage() {
           ) : null}
 
           {!isLoading && error == null ? (
-            company ? (
-              <CompanyCard
-                company={company}
-                onEdit={() => setIsEditing(true)}
-              />
+            companies.length > 0 ? (
+              <div className="space-y-4">
+                {companies.map((c) => (
+                  <CompanyCard
+                    key={c.id}
+                    company={c}
+                    isActive={selectedCompanyId === c.id}
+                    onSelect={() => selectWorkspace(c.id)}
+                    onEdit={() => setEditingCompany(c)}
+                  />
+                ))}
+              </div>
             ) : (
               <EmptyState
                 icon={<Building className="h-6 w-6" aria-hidden="true" />}
