@@ -715,3 +715,77 @@ class TestUpdateCompanyNotifications:
         service.memberships.list_by_company.assert_awaited_once_with(
             target_company_id, include_revoked=False
         )
+
+    def test_updater_without_recruiter_full_name_attributed_by_email(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        service.companies.get_by_id.return_value = company
+
+        updater_id = uuid.uuid4()
+        other_member_id = uuid.uuid4()
+
+        updater_user = User(
+            id=updater_id,
+            email="updater.no.name@example.com",
+            role=UserRole.RECRUITER,
+            recruiter_profile=RecruiterProfile(full_name=None),
+        )
+        other_user = User(
+            id=other_member_id,
+            email="other@example.com",
+            role=UserRole.RECRUITER,
+            recruiter_profile=RecruiterProfile(full_name="Other Member"),
+        )
+
+        memberships = [
+            CompanyMembership(
+                id=uuid.uuid4(),
+                company_id=company.id,
+                user_id=updater_id,
+                role=MembershipRole.ADMIN,
+                status=MembershipStatus.ACTIVE,
+                user=updater_user,
+            ),
+            CompanyMembership(
+                id=uuid.uuid4(),
+                company_id=company.id,
+                user_id=other_member_id,
+                role=MembershipRole.RECRUITER,
+                status=MembershipStatus.ACTIVE,
+                user=other_user,
+            ),
+        ]
+        service.memberships.list_by_company.return_value = memberships
+
+        data = CompanyUpdate(name="Acme Renamed")
+
+        with patch.object(
+            CompanyEmailService,
+            "schedule_company_profile_updated_email",
+            new_callable=AsyncMock,
+        ) as mock_email:
+            result = asyncio.run(
+                service.update_company(
+                    company_id=company.id,
+                    data=data,
+                    updated_by=updater_user,
+                )
+            )
+
+            assert result.name == "Acme Renamed"
+            session.commit.assert_awaited_once()
+
+            # Verify attribution in notification uses updater's email
+            service.notifications.notify_company_profile_updated.assert_awaited_once()
+            notif_kwargs = (
+                service.notifications.notify_company_profile_updated.call_args.kwargs
+            )
+            assert notif_kwargs["updater_name"] == "updater.no.name@example.com"
+            assert notif_kwargs["user_id"] == other_member_id
+
+            # Verify attribution in transactional email uses updater's email
+            mock_email.assert_awaited_once()
+            email_kwargs = mock_email.call_args.kwargs
+            assert email_kwargs["updater_name"] == "updater.no.name@example.com"
+            assert email_kwargs["recipient_user_id"] == other_member_id

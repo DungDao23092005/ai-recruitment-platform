@@ -235,11 +235,6 @@ class CompanyService:
                     and updater_member.user.recruiter_profile.full_name
                 ):
                     name = updater_member.user.recruiter_profile.full_name
-                elif (
-                    updater_member.user.candidate_profile
-                    and updater_member.user.candidate_profile.full_name
-                ):
-                    name = updater_member.user.candidate_profile.full_name
                 elif updater_member.user.email:
                     name = updater_member.user.email
             if not name:
@@ -248,11 +243,6 @@ class CompanyService:
                     and updated_by.recruiter_profile.full_name
                 ):
                     name = updated_by.recruiter_profile.full_name
-                elif (
-                    getattr(updated_by, "candidate_profile", None)
-                    and updated_by.candidate_profile.full_name
-                ):
-                    name = updated_by.candidate_profile.full_name
                 elif updated_by.email:
                     name = updated_by.email
                 else:
