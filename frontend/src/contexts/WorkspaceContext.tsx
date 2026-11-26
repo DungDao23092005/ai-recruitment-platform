@@ -101,6 +101,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [loadWorkspaces])
 
+  useEffect(() => {
+    const handleCompanyUpdated = () => {
+      void loadWorkspaces()
+    }
+
+    window.addEventListener('company:updated', handleCompanyUpdated)
+    return () => {
+      window.removeEventListener('company:updated', handleCompanyUpdated)
+    }
+  }, [loadWorkspaces])
+
   const selectedWorkspace = useMemo(
     () =>
       workspaces.find(

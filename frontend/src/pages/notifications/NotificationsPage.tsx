@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 import {
+  Building,
   Calendar,
   Check,
   ChevronRight,
@@ -40,6 +41,7 @@ const ENTITY_ICONS: Record<string, React.ComponentType<{ className?: string }>> 
   invitation: Mail,
   company_membership: Users,
   contact_request: MailCheck,
+  company: Building,
 };
 
 const ENTITY_LABELS: Record<string, string> = {
@@ -52,6 +54,7 @@ const ENTITY_LABELS: Record<string, string> = {
   invitation: 'Lời mời công ty',
   company_membership: 'Thành viên công ty',
   contact_request: 'Yêu cầu kết nối',
+  company: 'Công ty',
 };
 
 function NotificationSkeleton() {
@@ -114,6 +117,11 @@ export function getEntityRoute(entityType: string | null, entityId: string | nul
         return `/recruiter/candidate-search`;
       }
       return null;
+    case 'company':
+      if (userRole === 'candidate') {
+        return null;
+      }
+      return '/recruiter/company';
     default:
       return null;
   }
@@ -126,6 +134,10 @@ export function isNotificationNavigable(
 ): boolean {
   if (notification.notification_type === 'company_member_revoked') {
     return false;
+  }
+
+  if (notification.entity_type === 'company') {
+    return userRole === 'recruiter' || userRole === 'admin';
   }
 
   if (notification.entity_type === 'contact_request') {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,8 +18,10 @@ from app.repositories import (
     UserRepository,
 )
 from app.schemas.company import CompanyCreate, CompanyUpdate
+from app.services.company_email_service import CompanyEmailService
 from app.services.company_entitlement_service import CompanyEntitlementService
 from app.services.job_service import JobService
+from app.services.notification_service import NotificationService
 
 
 class CompanyService:
@@ -33,6 +36,7 @@ class CompanyService:
         self.memberships = CompanyMembershipRepository(
             session, CompanyMembership
         )
+        self.notifications = NotificationService(session)
         self.job_service = job_service
 
     async def create_company(self, data: CompanyCreate) -> Company:
@@ -158,19 +162,22 @@ class CompanyService:
                 raise ForbiddenException(
                     f"Not allowed to update company {company_id}"
                 )
-        return await self.update_company(company_id, data)
+        return await self.update_company(company_id, data, updated_by=user)
 
     async def update_company(
         self,
         company_id: uuid.UUID,
         data: CompanyUpdate,
+        updated_by: User | None = None,
     ) -> Company:
         company = await self.companies.get_by_id(company_id)
         if company is None:
             raise EntityNotFoundException(f"Company {company_id} not found")
 
-        if data.name is not None:
+        changed_labels: list[str] = []
+        if data.name is not None and data.name != company.name:
             company.name = data.name
+            changed_labels.append("tên công ty")
         if data.slug is not None and data.slug != company.slug:
             existing = await self.companies.get_by_slug(data.slug)
             if existing is not None and existing.id != company.id:
@@ -178,6 +185,7 @@ class CompanyService:
                     f"Đường dẫn (slug) {data.slug!r} đã được sử dụng."
                 )
             company.slug = data.slug
+            changed_labels.append("đường dẫn (slug)")
         if data.tax_code is not None and data.tax_code != company.tax_code:
             existing = await self.companies.get_by_tax_code(data.tax_code)
             if existing is not None and existing.id != company.id:
@@ -185,8 +193,106 @@ class CompanyService:
                     f"Mã số thuế {data.tax_code!r} đã được sử dụng."
                 )
             company.tax_code = data.tax_code
-        if data.size is not None:
+            changed_labels.append("mã số thuế")
+        if data.size is not None and data.size != company.size:
             company.size = data.size
+            changed_labels.append("quy mô")
+
+        # PO-3 (Option A): No-Op Suppression
+        if not changed_labels:
+            try:
+                await self.session.commit()
+                await self.session.refresh(company)
+            except Exception:
+                await self.session.rollback()
+                raise
+            return company
+
+        # Query all active members of the company (tenant isolation & PO-2 Option B)
+        memberships = await self.memberships.list_by_company(
+            company_id, include_revoked=False
+        )
+
+        # PO-4 (Option A): Platform Admin Attribution vs Member Name
+        is_company_member = False
+        updater_member = None
+        if updated_by is not None:
+            updater_member = next(
+                (m for m in memberships if m.user_id == updated_by.id), None
+            )
+            if updater_member is not None:
+                is_company_member = True
+
+        if updated_by is None:
+            updater_name = "Quản trị viên hệ thống"
+        elif updated_by.role == UserRole.ADMIN and not is_company_member:
+            updater_name = "Quản trị viên hệ thống"
+        else:
+            name: str | None = None
+            if updater_member and updater_member.user:
+                if (
+                    updater_member.user.recruiter_profile
+                    and updater_member.user.recruiter_profile.full_name
+                ):
+                    name = updater_member.user.recruiter_profile.full_name
+                elif (
+                    updater_member.user.candidate_profile
+                    and updater_member.user.candidate_profile.full_name
+                ):
+                    name = updater_member.user.candidate_profile.full_name
+                elif updater_member.user.email:
+                    name = updater_member.user.email
+            if not name:
+                if (
+                    getattr(updated_by, "recruiter_profile", None)
+                    and updated_by.recruiter_profile.full_name
+                ):
+                    name = updated_by.recruiter_profile.full_name
+                elif (
+                    getattr(updated_by, "candidate_profile", None)
+                    and updated_by.candidate_profile.full_name
+                ):
+                    name = updated_by.candidate_profile.full_name
+                elif updated_by.email:
+                    name = updated_by.email
+                else:
+                    name = "Quản trị viên hệ thống"
+            updater_name = name
+
+        # PO-1 (Option A): Exclude updater from in-app notifications and emails
+        eligible_members = [
+            m for m in memberships
+            if updated_by is None or m.user_id != updated_by.id
+        ]
+
+        event_uuid = uuid.uuid4()
+        changed_fields_summary = ", ".join(changed_labels)
+        now = datetime.now(timezone.utc)
+
+        for member in eligible_members:
+            # In-App Notification
+            await self.notifications.notify_company_profile_updated(
+                user_id=member.user_id,
+                company_id=company.id,
+                company_name=company.name,
+                updater_name=updater_name,
+                changed_fields_summary=changed_fields_summary,
+            )
+
+            # Transactional Email
+            recipient_email = member.user.email if member.user else None
+            if recipient_email:
+                await CompanyEmailService.schedule_company_profile_updated_email(
+                    session=self.session,
+                    company_id=company.id,
+                    company_name=company.name,
+                    updater_name=updater_name,
+                    recipient_user_id=member.user_id,
+                    recipient_email=recipient_email,
+                    event_uuid=event_uuid,
+                    updated_at=now,
+                    changed_fields_summary=changed_fields_summary,
+                )
 
         try:
             await self.session.commit()

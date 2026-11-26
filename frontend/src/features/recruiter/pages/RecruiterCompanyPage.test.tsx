@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
@@ -484,6 +484,60 @@ describe('RecruiterCompanyPage', () => {
 
       fireEvent.click(jobLinks[1])
       expect(workspaceMocks.selectWorkspace).toHaveBeenCalledWith('company-2')
+    })
+
+    it('reloads company list when company:updated DOM event is dispatched', async () => {
+      mockedGet.mockResolvedValueOnce([mockCompany] as never)
+
+      render(
+        <MemoryRouter>
+          <RecruiterCompanyPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('TechNova AI')).toBeInTheDocument()
+      })
+
+      const updatedCompany = { ...mockCompany, name: 'TechNova Enterprise' }
+      mockedGet.mockResolvedValueOnce([updatedCompany] as never)
+
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent('company:updated', { detail: { entity_type: 'company' } }),
+        )
+      })
+
+      await waitFor(() => {
+        expect(screen.getByText('TechNova Enterprise')).toBeInTheDocument()
+      })
+    })
+
+    it('refreshes workspaces when company form update succeeds', async () => {
+      mockedGet.mockResolvedValue([mockCompany] as never)
+      mockedPatch.mockResolvedValue({ ...mockCompany, name: 'TechNova Updated' } as never)
+
+      render(
+        <MemoryRouter>
+          <RecruiterCompanyPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('TechNova AI')).toBeInTheDocument()
+      })
+
+      // Click Edit
+      const editBtn = screen.getByRole('button', { name: /Chỉnh sửa/i })
+      fireEvent.click(editBtn)
+
+      // Submit update
+      const submitBtn = screen.getByRole('button', { name: /Lưu thay đổi/i })
+      fireEvent.click(submitBtn)
+
+      await waitFor(() => {
+        expect(workspaceMocks.refreshWorkspaces).toHaveBeenCalled()
+      })
     })
   })
 })

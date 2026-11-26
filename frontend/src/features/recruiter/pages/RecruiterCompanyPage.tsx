@@ -44,6 +44,17 @@ export function RecruiterCompanyPage() {
     void loadCompanies()
   }, [loadCompanies])
 
+  useEffect(() => {
+    const handleCompanyUpdated = () => {
+      void loadCompanies()
+    }
+
+    window.addEventListener('company:updated', handleCompanyUpdated)
+    return () => {
+      window.removeEventListener('company:updated', handleCompanyUpdated)
+    }
+  }, [loadCompanies])
+
   const handleCreated = async (created: Company) => {
     setCompanies((prev) => [created, ...prev])
     selectWorkspace(created.id)
@@ -92,11 +103,12 @@ export function RecruiterCompanyPage() {
                 key={`company-edit-${editingCompany.id}`}
                 mode="edit"
                 company={editingCompany}
-                onUpdated={(updated) => {
+                onUpdated={async (updated) => {
                   setCompanies((prev) =>
                     prev.map((c) => (c.id === updated.id ? updated : c)),
                   )
                   setEditingCompany(null)
+                  await refreshWorkspaces()
                 }}
                 onCancelEdit={() => setEditingCompany(null)}
               />

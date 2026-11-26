@@ -212,4 +212,53 @@ describe('WorkspaceContext', () => {
 
     window.removeEventListener('ai-recruitment:logout', logoutListener)
   })
+
+  it('reloads workspaces when company:updated DOM event is dispatched', async () => {
+    localStorage.setItem('ai_recruitment_company_id', 'c-1')
+    vi.mocked(workspacesApi.getWorkspaces).mockResolvedValueOnce(mockWorkspaces)
+
+    render(
+      <WorkspaceProvider>
+        <TestConsumer />
+      </WorkspaceProvider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId('selected')).toHaveTextContent('c-1')
+      expect(screen.getByTestId('count')).toHaveTextContent('2')
+    })
+
+    const updatedWorkspaces = [
+      { ...mockWorkspaces[0], company_name: 'Company One Updated' },
+      mockWorkspaces[1],
+    ]
+    vi.mocked(workspacesApi.getWorkspaces).mockResolvedValueOnce(updatedWorkspaces)
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('company:updated', { detail: { entity_type: 'company' } }),
+      )
+    })
+
+    await waitFor(() => {
+      expect(workspacesApi.getWorkspaces).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('registers and cleans up company:updated event listener on unmount', () => {
+    const addListenerSpy = vi.spyOn(window, 'addEventListener')
+    const removeListenerSpy = vi.spyOn(window, 'removeEventListener')
+
+    const { unmount } = render(
+      <WorkspaceProvider>
+        <TestConsumer />
+      </WorkspaceProvider>,
+    )
+
+    expect(addListenerSpy).toHaveBeenCalledWith('company:updated', expect.any(Function))
+
+    unmount()
+
+    expect(removeListenerSpy).toHaveBeenCalledWith('company:updated', expect.any(Function))
+  })
 })

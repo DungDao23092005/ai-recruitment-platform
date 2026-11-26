@@ -85,7 +85,9 @@ async def update_company(
     """Update the current company (name/slug/tax_code/size).
 
     Ownership is resolved server-side through the caller's active workspace
-    membership. A platform admin may update any company.
+    membership. A platform admin may update any company. The authenticated
+    caller (current_user) is attributed as the updater for member notifications
+    and excluded from self-notification.
     """
     ensure_not_interviewer(workspace)
     try:

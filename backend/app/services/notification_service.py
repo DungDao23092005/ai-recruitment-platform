@@ -42,6 +42,10 @@ COMPANY_MEMBER_JOINED_TITLE = "Thành viên mới tham gia công ty"
 COMPANY_MEMBER_REVOKED_TYPE = "company_member_revoked"
 COMPANY_MEMBER_REVOKED_TITLE = "Thu hồi quyền thành viên"
 
+COMPANY_ENTITY_TYPE = "company"
+COMPANY_PROFILE_UPDATED_TYPE = "company_profile_updated"
+COMPANY_PROFILE_UPDATED_TITLE = "Thông tin công ty đã được cập nhật"
+
 SUBSCRIPTION_PLAN_CHANGED_TYPE = "subscription_plan_changed"
 SUBSCRIPTION_PLAN_CHANGED_TITLE = "Thay đổi gói dịch vụ"
 
@@ -393,6 +397,34 @@ class NotificationService:
             notification_type=COMPANY_MEMBER_REVOKED_TYPE,
             entity_type=COMPANY_MEMBERSHIP_ENTITY_TYPE,
             entity_id=membership_id,
+            notification_id=notification_id,
+        )
+
+    async def notify_company_profile_updated(
+        self,
+        user_id: uuid.UUID,
+        company_id: uuid.UUID,
+        company_name: str,
+        updater_name: str,
+        changed_fields_summary: str | None = None,
+        notification_id: Optional[uuid.UUID] = None,
+    ) -> NotificationRead:
+        if changed_fields_summary:
+            content = (
+                f"Thông tin công ty {company_name} vừa được {updater_name} "
+                f"cập nhật ({changed_fields_summary})."
+            )
+        else:
+            content = (
+                f"Thông tin công ty {company_name} vừa được {updater_name} cập nhật."
+            )
+        return await self.create_notification(
+            user_id=user_id,
+            title=COMPANY_PROFILE_UPDATED_TITLE,
+            content=content,
+            notification_type=COMPANY_PROFILE_UPDATED_TYPE,
+            entity_type=COMPANY_ENTITY_TYPE,
+            entity_id=company_id,
             notification_id=notification_id,
         )
 

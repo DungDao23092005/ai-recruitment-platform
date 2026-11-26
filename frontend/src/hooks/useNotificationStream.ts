@@ -33,6 +33,7 @@ export const JOB_LISTING_UPDATED_DOM_EVENT = 'job:listing:updated';
 // detail is an invalidation signal only - never authoritative entitlement data.
 export const USER_SUBSCRIPTION_CHANGED_DOM_EVENT = 'subscription:changed';
 export const CONTACT_REQUEST_UPDATED_DOM_EVENT = 'contact_request:updated';
+export const COMPANY_UPDATED_DOM_EVENT = 'company:updated';
 
 const SUBSCRIPTION_ENTITY_TYPE = 'subscription';
 const SUBSCRIPTION_NOTIFICATION_TYPE_PREFIX = 'subscription_';
@@ -329,6 +330,14 @@ export function useNotificationStream() {
           if (data?.entity_type === 'contact_request') {
             window.dispatchEvent(
               new CustomEvent(CONTACT_REQUEST_UPDATED_DOM_EVENT, { detail: data })
+            );
+          }
+
+          // Bridge company profile update notifications so company/workspace views
+          // reload their state without a manual reload.
+          if (data?.entity_type === 'company') {
+            window.dispatchEvent(
+              new CustomEvent(COMPANY_UPDATED_DOM_EVENT, { detail: data })
             );
           }
         } catch (error) {

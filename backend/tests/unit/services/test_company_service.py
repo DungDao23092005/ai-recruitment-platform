@@ -11,10 +11,16 @@ from app.core.exceptions import (
 )
 from app.domain.enums import CompanySize, MembershipRole, MembershipStatus, UserRole
 from app.models import Company, CompanyMembership, RecruiterProfile, User
-from app.repositories import CompanyRepository, UserRepository
+from app.repositories import (
+    CompanyMembershipRepository,
+    CompanyRepository,
+    UserRepository,
+)
 from app.schemas.company import CompanyCreate, CompanyUpdate
+from app.services.company_email_service import CompanyEmailService
 from app.services.company_entitlement_service import CompanyEntitlementService
 from app.services.company_service import CompanyService
+from app.services.notification_service import NotificationService
 
 
 def make_session() -> MagicMock:
@@ -41,6 +47,9 @@ def make_service(session) -> CompanyService:
     service = CompanyService(session)
     service.companies = AsyncMock(spec=CompanyRepository)
     service.users = AsyncMock(spec=UserRepository)
+    service.memberships = AsyncMock(spec=CompanyMembershipRepository)
+    service.memberships.list_by_company.return_value = []
+    service.notifications = AsyncMock(spec=NotificationService)
     return service
 
 
@@ -485,3 +494,224 @@ class TestCreateCompanyForOwner:
 
             # Assert session.commit is not awaited
             session.commit.assert_not_awaited()
+
+
+class TestUpdateCompanyNotifications:
+    def test_no_op_suppresses_notifications_and_emails(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        service.companies.get_by_id.return_value = company
+
+        # Send same name, slug, tax_code, size
+        data = CompanyUpdate(
+            name=company.name,
+            slug=company.slug,
+            tax_code=company.tax_code,
+            size=company.size,
+        )
+
+        with patch.object(
+            CompanyEmailService,
+            "schedule_company_profile_updated_email",
+            new_callable=AsyncMock,
+        ) as mock_email:
+            result = asyncio.run(
+                service.update_company(company_id=company.id, data=data)
+            )
+
+            assert result is company
+            session.commit.assert_awaited_once()
+            service.memberships.list_by_company.assert_not_awaited()
+            service.notifications.notify_company_profile_updated.assert_not_awaited()
+            mock_email.assert_not_awaited()
+
+    def test_initiator_excluded_and_all_active_roles_notified(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        service.companies.get_by_id.return_value = company
+
+        updater_id = uuid.uuid4()
+        admin_id = uuid.uuid4()
+        recruiter_id = uuid.uuid4()
+        interviewer_id = uuid.uuid4()
+
+        updater_user = User(
+            id=updater_id,
+            email="updater@example.com",
+            role=UserRole.RECRUITER,
+            recruiter_profile=RecruiterProfile(full_name="Nguyễn Văn A"),
+        )
+        admin_user = User(
+            id=admin_id,
+            email="admin@example.com",
+            role=UserRole.RECRUITER,
+            recruiter_profile=RecruiterProfile(full_name="Trần Thị B"),
+        )
+        recruiter_user = User(
+            id=recruiter_id,
+            email="recruiter@example.com",
+            role=UserRole.RECRUITER,
+            recruiter_profile=RecruiterProfile(full_name="Lê Văn C"),
+        )
+        interviewer_user = User(
+            id=interviewer_id,
+            email="interviewer@example.com",
+            role=UserRole.RECRUITER,
+            recruiter_profile=RecruiterProfile(full_name="Phạm Văn D"),
+        )
+
+        memberships = [
+            CompanyMembership(
+                id=uuid.uuid4(),
+                company_id=company.id,
+                user_id=updater_id,
+                role=MembershipRole.ADMIN,
+                status=MembershipStatus.ACTIVE,
+                user=updater_user,
+            ),
+            CompanyMembership(
+                id=uuid.uuid4(),
+                company_id=company.id,
+                user_id=admin_id,
+                role=MembershipRole.ADMIN,
+                status=MembershipStatus.ACTIVE,
+                user=admin_user,
+            ),
+            CompanyMembership(
+                id=uuid.uuid4(),
+                company_id=company.id,
+                user_id=recruiter_id,
+                role=MembershipRole.RECRUITER,
+                status=MembershipStatus.ACTIVE,
+                user=recruiter_user,
+            ),
+            CompanyMembership(
+                id=uuid.uuid4(),
+                company_id=company.id,
+                user_id=interviewer_id,
+                role=MembershipRole.INTERVIEWER,
+                status=MembershipStatus.ACTIVE,
+                user=interviewer_user,
+            ),
+        ]
+        service.memberships.list_by_company.return_value = memberships
+
+        data = CompanyUpdate(name="Acme Global")
+
+        with patch.object(
+            CompanyEmailService,
+            "schedule_company_profile_updated_email",
+            new_callable=AsyncMock,
+        ) as mock_email:
+            result = asyncio.run(
+                service.update_company(
+                    company_id=company.id,
+                    data=data,
+                    updated_by=updater_user,
+                )
+            )
+
+            assert result.name == "Acme Global"
+            session.commit.assert_awaited_once()
+
+            # Verify PO-1 & PO-2: Updater excluded, exactly 3 other members notified
+            notified_user_ids = [
+                call.kwargs["user_id"]
+                for call in service.notifications.notify_company_profile_updated.call_args_list
+            ]
+            assert updater_id not in notified_user_ids
+            assert set(notified_user_ids) == {admin_id, recruiter_id, interviewer_id}
+
+            # Verify updater attribution (PO-4): member full name
+            for call in service.notifications.notify_company_profile_updated.call_args_list:
+                assert call.kwargs["updater_name"] == "Nguyễn Văn A"
+                assert call.kwargs["changed_fields_summary"] == "tên công ty"
+
+            # Verify emails scheduled for the 3 members with correct updater attribution
+            emailed_user_ids = [
+                call.kwargs["recipient_user_id"]
+                for call in mock_email.call_args_list
+            ]
+            assert updater_id not in emailed_user_ids
+            assert set(emailed_user_ids) == {admin_id, recruiter_id, interviewer_id}
+            for call in mock_email.call_args_list:
+                assert call.kwargs["updater_name"] == "Nguyễn Văn A"
+
+    def test_platform_admin_updater_attributed_as_system_admin(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        service.companies.get_by_id.return_value = company
+
+        platform_admin = User(
+            id=uuid.uuid4(),
+            email="platform.admin@company.com",
+            role=UserRole.ADMIN,
+            recruiter_profile=None,
+        )
+
+        member_id = uuid.uuid4()
+        member_user = User(
+            id=member_id,
+            email="member@example.com",
+            role=UserRole.RECRUITER,
+            recruiter_profile=RecruiterProfile(full_name="Thành Viên 1"),
+        )
+        memberships = [
+            CompanyMembership(
+                id=uuid.uuid4(),
+                company_id=company.id,
+                user_id=member_id,
+                role=MembershipRole.ADMIN,
+                status=MembershipStatus.ACTIVE,
+                user=member_user,
+            )
+        ]
+        service.memberships.list_by_company.return_value = memberships
+
+        data = CompanyUpdate(tax_code="987654321")
+        service.companies.get_by_tax_code.return_value = None
+
+        with patch.object(
+            CompanyEmailService,
+            "schedule_company_profile_updated_email",
+            new_callable=AsyncMock,
+        ) as mock_email:
+            asyncio.run(
+                service.update_company(
+                    company_id=company.id,
+                    data=data,
+                    updated_by=platform_admin,
+                )
+            )
+
+            # Verify PO-4 (Option A): Platform admin is attributed as "Quản trị viên hệ thống"
+            service.notifications.notify_company_profile_updated.assert_awaited_once()
+            notif_kwargs = (
+                service.notifications.notify_company_profile_updated.call_args.kwargs
+            )
+            assert notif_kwargs["updater_name"] == "Quản trị viên hệ thống"
+            assert notif_kwargs["changed_fields_summary"] == "mã số thuế"
+
+            mock_email.assert_awaited_once()
+            email_kwargs = mock_email.call_args.kwargs
+            assert email_kwargs["updater_name"] == "Quản trị viên hệ thống"
+
+    def test_tenant_isolation_queries_only_target_company(self):
+        session = make_session()
+        service = make_service(session)
+        target_company_id = uuid.uuid4()
+        company = make_company(company_id=target_company_id)
+        service.companies.get_by_id.return_value = company
+
+        data = CompanyUpdate(name="Isolated Corp")
+        asyncio.run(
+            service.update_company(company_id=target_company_id, data=data)
+        )
+
+        # Confirm list_by_company was called with target_company_id only
+        service.memberships.list_by_company.assert_awaited_once_with(
+            target_company_id, include_revoked=False
+        )

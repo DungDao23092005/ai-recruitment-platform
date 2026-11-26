@@ -2,7 +2,13 @@
 import { render, screen, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { NotificationsPage, getBadgeVariant, formatNotificationType } from '@/pages/notifications/NotificationsPage';
+import {
+  NotificationsPage,
+  getBadgeVariant,
+  formatNotificationType,
+  getEntityRoute,
+  isNotificationNavigable,
+} from '@/pages/notifications/NotificationsPage';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import { useOptionalWorkspace } from '@/contexts/WorkspaceContext';
 import * as notificationsApi from '@/api/notifications';
@@ -2299,6 +2305,78 @@ describe('NotificationsPage', () => {
           expect(formatNotificationType(tc.type)).toBe(tc.expectedLabel);
           expect(getBadgeVariant(tc.type)).toBe(tc.expectedVariant);
         }
+      });
+    });
+  });
+
+  describe('Company profile update notifications', () => {
+    it('getEntityRoute returns /recruiter/company for recruiter and admin, and null for candidate', () => {
+      const companyId = 'company-123';
+      expect(getEntityRoute('company', companyId, 'recruiter')).toBe('/recruiter/company');
+      expect(getEntityRoute('company', companyId, 'admin')).toBe('/recruiter/company');
+      expect(getEntityRoute('company', companyId, 'candidate')).toBeNull();
+    });
+
+    it('isNotificationNavigable returns true for recruiter/admin and false for candidate', () => {
+      const companyNotification = {
+        id: 'n-company-1',
+        title: 'Thông tin công ty đã được cập nhật',
+        content: 'Thông tin công ty TechNova vừa được cập nhật.',
+        notification_type: 'company_profile_updated',
+        entity_type: 'company',
+        entity_id: 'company-123',
+        is_read: false,
+        created_at: new Date().toISOString(),
+      };
+
+      expect(isNotificationNavigable(companyNotification, 'recruiter', 'admin')).toBe(true);
+      expect(isNotificationNavigable(companyNotification, 'recruiter', 'recruiter')).toBe(true);
+      expect(isNotificationNavigable(companyNotification, 'recruiter', 'interviewer')).toBe(true);
+      expect(isNotificationNavigable(companyNotification, 'admin', null)).toBe(true);
+      expect(isNotificationNavigable(companyNotification, 'candidate', null)).toBe(false);
+    });
+
+    it('renders company notification item and navigates to /recruiter/company on click', async () => {
+      vi.mocked(useAuth).mockReturnValue({
+        currentUser: { id: 'u-recruiter', email: 'recruiter@example.com', role: 'recruiter' } as any,
+        isAuthenticated: true,
+        isLoading: false,
+        token: 'token',
+        login: vi.fn(),
+        logout: vi.fn(),
+      });
+
+      const companyNotification = {
+        id: 'notif-company-1',
+        title: 'Thông tin công ty đã được cập nhật',
+        content: 'Thông tin công ty TechNova vừa được Nguyễn Văn A cập nhật (tên công ty, quy mô).',
+        notification_type: 'company_profile_updated',
+        entity_type: 'company',
+        entity_id: 'c-1',
+        is_read: false,
+        created_at: new Date().toISOString(),
+      };
+
+      vi.mocked(notificationsApi.getNotifications).mockResolvedValue([companyNotification]);
+      vi.mocked(notificationsApi.markNotificationRead).mockResolvedValue({} as any);
+
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText('Thông tin công ty đã được cập nhật')).toBeInTheDocument();
+        expect(screen.getByText(/Thông tin công ty TechNova vừa được/)).toBeInTheDocument();
+        expect(screen.getByText('Công ty')).toBeInTheDocument();
+      });
+
+      const item = screen.getByText('Thông tin công ty đã được cập nhật').closest('div[class*="cursor-pointer"]');
+      if (item) {
+        act(() => {
+          (item as HTMLElement).click();
+        });
+      }
+
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith('/recruiter/company');
       });
     });
   });
