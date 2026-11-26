@@ -269,7 +269,7 @@ class TestCompaniesServiceEndToEndIntegration:
         ]
         service.memberships.list_by_company.return_value = memberships
 
-        payload = CompanyUpdate(name="TechCorp Super AI", size=CompanySize.GROWTH)
+        payload = CompanyUpdate(name="TechCorp Super AI", size=CompanySize.ENTERPRISE)
 
         with patch(
             "app.services.company_service.CompanyEmailService.schedule_company_profile_updated_email",
@@ -280,7 +280,7 @@ class TestCompaniesServiceEndToEndIntegration:
             )
 
             assert res.name == "TechCorp Super AI"
-            assert res.size == CompanySize.GROWTH
+            assert res.size == CompanySize.ENTERPRISE
             session.commit.assert_awaited_once()
 
             # PO-1 & PO-2: Updater excluded; Admin and Interviewer notified
