@@ -24,6 +24,9 @@ def make_session() -> MagicMock:
     session.commit = AsyncMock()
     session.refresh = AsyncMock()
     session.rollback = AsyncMock()
+    exec_result = MagicMock()
+    exec_result.scalars.return_value.unique.return_value.all.return_value = []
+    session.execute = AsyncMock(return_value=exec_result)
     return session
 
 
