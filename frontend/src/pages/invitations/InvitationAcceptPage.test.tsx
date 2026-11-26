@@ -15,6 +15,7 @@ const apiMocks = vi.hoisted(() => ({
 }))
 
 const authState = vi.hoisted(() => ({
+  currentUser: null as any,
   isAuthenticated: true,
   isLoading: false,
 }))
@@ -40,6 +41,7 @@ const preview: InvitationPreview = {
   status: 'pending',
   expires_at: '2026-12-01T00:00:00Z',
   can_accept: true,
+  can_decline: true,
 }
 
 const workspace: Workspace = {
@@ -61,6 +63,7 @@ const myInvitation: MyInvitation = {
   expires_at: '2026-12-01T00:00:00Z',
   created_at: '2026-11-20T00:00:00Z',
   can_accept: true,
+  can_decline: true,
 }
 
 function LoginProbe() {
@@ -85,6 +88,7 @@ function renderPage(
         <Route path="/login" element={<LoginProbe />} />
         <Route path="/register" element={<RegisterProbe />} />
         <Route path="/recruiter/portal" element={<div>Recruiter portal</div>} />
+        <Route path="/candidate/portal" element={<div>Candidate portal</div>} />
         <Route path="/" element={<div>Home page</div>} />
       </Routes>
     </MemoryRouter>,
@@ -95,6 +99,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   sessionStorage.clear()
   window.history.replaceState(null, '', '/')
+  authState.currentUser = null
   authState.isAuthenticated = true
   authState.isLoading = false
   apiMocks.previewInvitation.mockResolvedValue(preview)
@@ -373,5 +378,225 @@ describe('InvitationAcceptPage', () => {
     })
     expect(window.location.hash).toBe('')
     expect(screen.queryByText('bad-token')).not.toBeInTheDocument()
+  })
+
+  describe('Candidate Account Restrictions', () => {
+    it('shows candidate warning notice and does not render accept button', async () => {
+      authState.currentUser = {
+        id: 'candidate-user-1',
+        email: 'candidate@example.com',
+        role: 'candidate',
+      }
+      window.history.replaceState(
+        null,
+        '',
+        '/invitations/accept#token=cand-token&action=accept',
+      )
+
+      renderPage()
+
+      await waitFor(() => {
+        expect(screen.getByText('TechNova AI')).toBeInTheDocument()
+      })
+
+      // Notice with exact text
+      expect(
+        screen.getByText(
+          'Tài khoản ứng viên không thể tham gia không gian làm việc của công ty. Bạn có thể từ chối lời mời này hoặc quay về trang ứng viên.',
+        ),
+      ).toBeInTheDocument()
+
+      // Never render accept button
+      expect(
+        screen.queryByRole('button', { name: 'Chấp nhận lời mời' }),
+      ).not.toBeInTheDocument()
+
+      // Decline button rendered because preview.can_decline is true
+      expect(
+        screen.getByRole('button', { name: 'Từ chối lời mời' }),
+      ).toBeInTheDocument()
+
+      // "Về trang ứng viên" button is rendered
+      expect(
+        screen.getByRole('button', { name: 'Về trang ứng viên' }),
+      ).toBeInTheDocument()
+    })
+
+    it('navigates to /candidate/portal when clicking "Về trang ứng viên"', async () => {
+      authState.currentUser = {
+        id: 'candidate-user-1',
+        email: 'candidate@example.com',
+        role: 'candidate',
+      }
+      window.history.replaceState(
+        null,
+        '',
+        '/invitations/accept#token=cand-token',
+      )
+
+      renderPage()
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole('button', { name: 'Về trang ứng viên' }),
+        ).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Về trang ứng viên' }))
+
+      await waitFor(() => {
+        expect(screen.getByText('Candidate portal')).toBeInTheDocument()
+      })
+      expect(screen.queryByText('Recruiter portal')).not.toBeInTheDocument()
+    })
+
+    it('candidate declines invitation via token and shows declined state without redirecting to recruiter portal', async () => {
+      authState.currentUser = {
+        id: 'candidate-user-1',
+        email: 'candidate@example.com',
+        role: 'candidate',
+      }
+      window.history.replaceState(
+        null,
+        '',
+        '/invitations/accept#token=cand-token&action=decline',
+      )
+
+      renderPage()
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole('button', { name: 'Từ chối lời mời' }),
+        ).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: 'Từ chối lời mời' }))
+
+      // Confirmation modal
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
+      expect(screen.getByText('Xác nhận từ chối lời mời')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Xác nhận từ chối' }))
+
+      await waitFor(() => {
+        expect(apiMocks.declineInvitation).toHaveBeenCalledWith('cand-token')
+        expect(screen.getByText('Đã từ chối lời mời')).toBeInTheDocument()
+      })
+      expect(screen.queryByText('Recruiter portal')).not.toBeInTheDocument()
+
+      // Clicking navigation button from declined state goes to candidate portal
+      fireEvent.click(screen.getByRole('button', { name: 'Về trang ứng viên' }))
+      await waitFor(() => {
+        expect(screen.getByText('Candidate portal')).toBeInTheDocument()
+      })
+    })
+
+    it('hides decline button when preview.can_decline is false or missing', async () => {
+      authState.currentUser = {
+        id: 'candidate-user-1',
+        email: 'candidate@example.com',
+        role: 'candidate',
+      }
+      apiMocks.previewInvitation.mockResolvedValueOnce({
+        ...preview,
+        can_decline: false,
+      })
+      window.history.replaceState(
+        null,
+        '',
+        '/invitations/accept#token=cand-token',
+      )
+
+      renderPage()
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            'Tài khoản ứng viên không thể tham gia không gian làm việc của công ty. Bạn có thể từ chối lời mời này hoặc quay về trang ứng viên.',
+          ),
+        ).toBeInTheDocument()
+      })
+
+      expect(
+        screen.queryByRole('button', { name: 'Từ chối lời mời' }),
+      ).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('button', { name: 'Chấp nhận lời mời' }),
+      ).not.toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'Về trang ứng viên' }),
+      ).toBeInTheDocument()
+    })
+
+    it('supports candidate in-app invitation via getMyInvitations and declining', async () => {
+      authState.currentUser = {
+        id: 'candidate-user-1',
+        email: 'candidate@example.com',
+        role: 'candidate',
+      }
+      apiMocks.getMyInvitations.mockResolvedValueOnce([
+        {
+          ...myInvitation,
+          can_accept: false,
+          can_decline: true,
+        },
+      ])
+
+      renderPage(['/invitations/accept'])
+
+      await waitFor(() => {
+        expect(apiMocks.getMyInvitations).toHaveBeenCalled()
+        expect(
+          screen.getByText(
+            'Tài khoản ứng viên không thể tham gia không gian làm việc của công ty. Bạn có thể từ chối lời mời này hoặc quay về trang ứng viên.',
+          ),
+        ).toBeInTheDocument()
+      })
+
+      expect(
+        screen.queryByRole('button', { name: 'Chấp nhận lời mời' }),
+      ).not.toBeInTheDocument()
+      expect(
+        screen.getByRole('button', { name: 'Từ chối lời mời' }),
+      ).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Từ chối lời mời' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Xác nhận từ chối' }))
+
+      await waitFor(() => {
+        expect(apiMocks.declineMyInvitation).toHaveBeenCalledWith(
+          'invitation-in-app-1',
+        )
+        expect(screen.getByText('Đã từ chối lời mời')).toBeInTheDocument()
+      })
+    })
+
+    it('shows expired message only when both can_accept and can_decline are false', async () => {
+      apiMocks.previewInvitation.mockResolvedValueOnce({
+        ...preview,
+        can_accept: false,
+        can_decline: false,
+      })
+      window.history.replaceState(
+        null,
+        '',
+        '/invitations/accept#token=expired-token',
+      )
+
+      renderPage()
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Lời mời này không còn hiệu lực.'),
+        ).toBeInTheDocument()
+      })
+
+      expect(
+        screen.queryByRole('button', { name: 'Chấp nhận lời mời' }),
+      ).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('button', { name: 'Từ chối lời mời' }),
+      ).not.toBeInTheDocument()
+    })
   })
 })

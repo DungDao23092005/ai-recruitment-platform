@@ -28,11 +28,13 @@ COMPANY_BODY = {
 }
 
 
-def _register_and_login(client, run_async, email: str) -> httpx.AsyncClient:
+def _register_and_login(
+    client, run_async, email: str, role: str = "recruiter"
+) -> httpx.AsyncClient:
     register = run_async(
         client.post(
             f"{API_V1}/auth/register",
-            json={"email": email, "password": PASSWORD, "role": "recruiter"},
+            json={"email": email, "password": PASSWORD, "role": role},
         )
     )
     assert register.status_code == 201, register.text
@@ -1149,3 +1151,144 @@ def test_p71_invalid_or_unauthorized_supplied_x_company_id_returns_400_or_403(
             assert s.job_posts_used == 0
 
     run_async(_run())
+
+
+class TestCandidateWorkspaceRestriction:
+    def test_candidate_cannot_be_invited_to_workspace(
+        self, client, recruiter_client, run_async
+    ):
+        company = _create_company(recruiter_client, run_async)
+        candidate_email = f"candidate-{uuid.uuid4()}@example.com"
+        _register_and_login(client, run_async, candidate_email, role="candidate")
+
+        # Recruiter tries to invite candidate
+        invite_resp = run_async(
+            recruiter_client.post(
+                f"{API_V1}/workspaces/invitations",
+                headers={"X-Company-ID": company["id"]},
+                json={"email": candidate_email, "role": "recruiter"},
+            )
+        )
+        assert invite_resp.status_code == 403
+        assert (
+            invite_resp.json()["detail"]
+            == "Không thể gửi lời mời. Tài khoản ứng viên không thể tham gia không gian làm việc của công ty. Chỉ tài khoản nhân sự công ty mới được mời."
+        )
+
+        # Confirm no invitation exists in database
+        async def _check_db():
+            async with async_session_factory() as session:
+                inv = await session.scalar(
+                    select(CompanyInvitation).where(
+                        CompanyInvitation.email == candidate_email
+                    )
+                )
+                assert inv is None
+
+        run_async(_check_db())
+
+    def test_candidate_cannot_accept_invitation_but_can_decline(
+        self, client, recruiter_client, run_async
+    ):
+        company = _create_company(recruiter_client, run_async)
+        candidate_email = f"candidate-accept-{uuid.uuid4()}@example.com"
+        candidate_client = _register_and_login(
+            client, run_async, candidate_email, role="candidate"
+        )
+
+        # Seed a pending invitation in DB directly (simulating pre-existing pending invite)
+        token = f"token-{uuid.uuid4()}-{uuid.uuid4()}"
+        token_hash = hash_invitation_token(token)
+
+        async def _seed_invitation():
+            async with async_session_factory() as session:
+                recruiter_user = await session.scalar(
+                    select(User).where(User.email.like("%recruiter%"))
+                )
+                inv = CompanyInvitation(
+                    company_id=uuid.UUID(company["id"]),
+                    email=candidate_email,
+                    role=MembershipRole.RECRUITER,
+                    token_hash=token_hash,
+                    status=InvitationStatus.PENDING,
+                    invited_by_id=recruiter_user.id if recruiter_user else uuid.uuid4(),
+                    expires_at=utc_now() + timedelta(days=7),
+                )
+                session.add(inv)
+                await session.commit()
+                return inv.id
+
+        invitation_id = run_async(_seed_invitation())
+
+        # Candidate attempts to accept via token -> 403 Forbidden
+        accept_resp = run_async(
+            candidate_client.post(
+                f"{API_V1}/invitations/accept",
+                json={"token": token},
+            )
+        )
+        assert accept_resp.status_code == 403
+        assert (
+            accept_resp.json()["detail"]
+            == "Tài khoản ứng viên không thể tham gia không gian làm việc của công ty. Vui lòng sử dụng tài khoản dành cho nhân sự công ty."
+        )
+
+        # Verify invitation remains PENDING and no membership created
+        async def _verify_still_pending():
+            async with async_session_factory() as session:
+                inv = await session.scalar(
+                    select(CompanyInvitation).where(
+                        CompanyInvitation.id == invitation_id
+                    )
+                )
+                assert inv is not None
+                assert inv.status == InvitationStatus.PENDING
+
+                cand_user = await session.scalar(
+                    select(User).where(User.email == candidate_email)
+                )
+                assert cand_user.role.value == "candidate"
+
+                mem = await session.scalar(
+                    select(CompanyMembership).where(
+                        CompanyMembership.user_id == cand_user.id,
+                        CompanyMembership.company_id == uuid.UUID(company["id"]),
+                    )
+                )
+                assert mem is None
+
+        run_async(_verify_still_pending())
+
+        # Candidate declines invitation -> 200 OK
+        decline_resp = run_async(
+            candidate_client.post(
+                f"{API_V1}/invitations/decline",
+                json={"token": token},
+            )
+        )
+        assert decline_resp.status_code == 200
+        assert decline_resp.json()["status"] == "declined"
+
+        # Verify invitation is DECLINED in DB and still no membership
+        async def _verify_declined():
+            async with async_session_factory() as session:
+                inv = await session.scalar(
+                    select(CompanyInvitation).where(
+                        CompanyInvitation.id == invitation_id
+                    )
+                )
+                assert inv is not None
+                assert inv.status == InvitationStatus.DECLINED
+
+                cand_user = await session.scalar(
+                    select(User).where(User.email == candidate_email)
+                )
+                mem = await session.scalar(
+                    select(CompanyMembership).where(
+                        CompanyMembership.user_id == cand_user.id,
+                        CompanyMembership.company_id == uuid.UUID(company["id"]),
+                    )
+                )
+                assert mem is None
+
+        run_async(_verify_declined())

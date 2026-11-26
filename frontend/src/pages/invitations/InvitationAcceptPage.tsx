@@ -76,10 +76,12 @@ function formatExpiryDate(dateStr: string): string {
 }
 
 export function InvitationAcceptPage() {
-  const { isAuthenticated, isLoading: authLoading } = useAuth()
+  const { currentUser, isAuthenticated, isLoading: authLoading } = useAuth()
   const { refreshWorkspaces, selectWorkspace } = useWorkspace()
   const navigate = useNavigate()
   const location = useLocation()
+
+  const isCandidate = currentUser?.role === 'candidate'
 
   const initialHashRef = useRef(readParamsFromHash())
   const locationState = location.state as InvitationLocationState | null
@@ -134,6 +136,7 @@ export function InvitationAcceptPage() {
             status: target.status,
             expires_at: target.expires_at,
             can_accept: target.can_accept,
+            can_decline: target.can_decline,
           })
         } else {
           setError('Không tìm thấy lời mời tham gia công ty đang chờ.')
@@ -167,6 +170,7 @@ export function InvitationAcceptPage() {
 
   const handleConfirmAction = async () => {
     if (!confirmAction) return
+    if (confirmAction === 'accept' && isCandidate) return
     setIsSubmitting(true)
     setError(null)
     try {
@@ -232,9 +236,9 @@ export function InvitationAcceptPage() {
               <Button
                 variant="outline"
                 className="mt-4"
-                onClick={() => navigate('/')}
+                onClick={() => navigate(isCandidate ? '/candidate/portal' : '/')}
               >
-                Về trang chủ
+                {isCandidate ? 'Về trang ứng viên' : 'Về trang chủ'}
               </Button>
             </div>
           ) : error ? (
@@ -267,10 +271,43 @@ export function InvitationAcceptPage() {
                 </p>
               </div>
 
-              {!preview.can_accept ? (
+              {!preview.can_accept && !preview.can_decline ? (
                 <p className="text-sm text-muted-foreground">
                   Lời mời này không còn hiệu lực.
                 </p>
+              ) : isAuthenticated && isCandidate ? (
+                <div className="space-y-4">
+                  <div
+                    role="alert"
+                    className="rounded-md bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300"
+                  >
+                    <div className="flex items-center gap-2">
+                      <ShieldAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      <span>
+                        Tài khoản ứng viên không thể tham gia không gian làm việc của công ty. Bạn có thể từ chối lời mời này hoặc quay về trang ứng viên.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    {preview.can_decline === true ? (
+                      <Button
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => setConfirmAction('decline')}
+                      >
+                        <XCircle className="mr-2 h-4 w-4" aria-hidden="true" />
+                        Từ chối lời mời
+                      </Button>
+                    ) : null}
+                    <Button
+                      variant="default"
+                      className="flex-1"
+                      onClick={() => navigate('/candidate/portal')}
+                    >
+                      Về trang ứng viên
+                    </Button>
+                  </div>
+                </div>
               ) : isAuthenticated ? (
                 <div className="space-y-2">
                   <div className="flex flex-col sm:flex-row gap-3">

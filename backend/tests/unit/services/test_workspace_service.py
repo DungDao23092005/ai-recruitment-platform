@@ -478,6 +478,38 @@ class TestCreateInvitation:
             mock_enqueue.assert_not_called()
             service.notifications.notify_company_invitation.assert_not_called()
 
+    def test_candidate_account_raises_forbidden_on_invitation(self):
+        for role in (MembershipRole.ADMIN, MembershipRole.RECRUITER, MembershipRole.INTERVIEWER):
+            session = make_session()
+            service = make_service(session)
+            admin = make_user()
+            company = make_company()
+            context = service_context(
+                company, admin, role=MembershipRole.ADMIN
+            )
+            service.invitations.expire_stale.return_value = 0
+            service.users.get_by_email.return_value = make_user(
+                email="candidate@example.com",
+                role=UserRole.CANDIDATE,
+                is_active=True,
+            )
+
+            with patch("app.services.workspace_service.enqueue_email", new=AsyncMock()) as mock_enqueue:
+                with pytest.raises(ForbiddenException) as exc_info:
+                    asyncio.run(
+                        service.create_invitation(
+                            context,
+                            InvitationCreate(email="candidate@example.com", role=role),
+                        )
+                    )
+                assert (
+                    "Không thể gửi lời mời. Tài khoản ứng viên không thể tham gia không gian làm việc của công ty. Chỉ tài khoản nhân sự công ty mới được mời."
+                    in str(exc_info.value)
+                )
+                session.add.assert_not_called()
+                mock_enqueue.assert_not_called()
+                service.notifications.notify_company_invitation.assert_not_called()
+
     def test_soft_deleted_account_raises_entity_not_found(self):
         session = make_session()
         service = make_service(session)
@@ -664,6 +696,7 @@ class TestPreviewInvitation:
         assert result.company_name == "Acme Corp"
         assert result.email_masked == "i***@example.com"
         assert result.can_accept is True
+        assert result.can_decline is True
         session.commit.assert_not_awaited()
 
     def test_expired_pending_invitation_is_marked_expired(self):
@@ -682,11 +715,42 @@ class TestPreviewInvitation:
         )
 
         assert result.can_accept is False
+        assert result.can_decline is False
         assert invitation.status == InvitationStatus.EXPIRED
         session.commit.assert_awaited_once()
 
 
 class TestAcceptInvitation:
+    def test_candidate_cannot_accept_invitation(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        candidate_user = make_user(
+            email="candidate@example.com",
+            role=UserRole.CANDIDATE,
+        )
+        token = "invitation-token-value-1234567890"
+        invitation = make_invitation(
+            company=company,
+            email="candidate@example.com",
+            token=token,
+            role=MembershipRole.RECRUITER,
+        )
+        service.invitations.get_by_token_hash_for_update.return_value = invitation
+        service.invitations.get_by_token_hash.return_value = invitation
+
+        with pytest.raises(ForbiddenException) as exc_info:
+            asyncio.run(service.accept_invitation(candidate_user, token))
+
+        assert (
+            "Tài khoản ứng viên không thể tham gia không gian làm việc của công ty. Vui lòng sử dụng tài khoản dành cho nhân sự công ty."
+            in str(exc_info.value)
+        )
+        assert invitation.status == InvitationStatus.PENDING
+        assert candidate_user.role == UserRole.CANDIDATE
+        session.add.assert_not_called()
+        session.commit.assert_not_awaited()
+
     def test_accept_creates_membership_and_updates_legacy_profile(self):
         session = make_session()
         service = make_service(session)
@@ -1306,6 +1370,61 @@ def service_context(
 
 
 class TestListMyInvitations:
+    def test_candidate_list_my_invitations_capability_flags(self):
+        service = make_service(make_session())
+        company = make_company()
+        candidate_user = make_user(
+            email="candidate@example.com",
+            role=UserRole.CANDIDATE,
+        )
+        active_invitation = make_invitation(
+            company=company,
+            email="candidate@example.com",
+            role=MembershipRole.RECRUITER,
+            expires_at=utc_now() + timedelta(days=7),
+        )
+        expired_invitation = make_invitation(
+            company=company,
+            email="candidate@example.com",
+            role=MembershipRole.INTERVIEWER,
+            expires_at=utc_now() - timedelta(days=1),
+        )
+        service.invitations.list_pending_by_email.return_value = [
+            active_invitation,
+            expired_invitation,
+        ]
+
+        result = asyncio.run(service.list_my_invitations(candidate_user))
+
+        assert len(result) == 2
+        # Active invitation: can_accept is False for candidate, can_decline is True
+        assert result[0].can_accept is False
+        assert result[0].can_decline is True
+        # Expired invitation: both are False
+        assert result[1].can_accept is False
+        assert result[1].can_decline is False
+
+    def test_recruiter_list_my_invitations_capability_flags(self):
+        service = make_service(make_session())
+        company = make_company()
+        recruiter_user = make_user(
+            email="recruiter@example.com",
+            role=UserRole.RECRUITER,
+        )
+        active_invitation = make_invitation(
+            company=company,
+            email="recruiter@example.com",
+            role=MembershipRole.RECRUITER,
+            expires_at=utc_now() + timedelta(days=7),
+        )
+        service.invitations.list_pending_by_email.return_value = [active_invitation]
+
+        result = asyncio.run(service.list_my_invitations(recruiter_user))
+
+        assert len(result) == 1
+        assert result[0].can_accept is True
+        assert result[0].can_decline is True
+
     def test_list_my_invitations_returns_pending_for_user(self):
         service = make_service(make_session())
         company = make_company()
@@ -1405,6 +1524,47 @@ class TestAcceptMyInvitation:
 
 
 class TestDeclineInvitation:
+    def test_candidate_can_decline_own_invitation(self):
+        session = make_session()
+        service = make_service(session)
+        company = make_company()
+        candidate_user = make_user(
+            email="candidate@example.com",
+            role=UserRole.CANDIDATE,
+        )
+        token = "token-secret-cand-12345"
+        invitation = make_invitation(
+            company=company,
+            email="candidate@example.com",
+            token=token,
+        )
+        service.invitations.get_by_token_hash.return_value = invitation
+
+        result = asyncio.run(service.decline_invitation(candidate_user, token))
+
+        assert result.invitation_id == invitation.id
+        assert result.status == InvitationStatus.DECLINED
+        assert invitation.status == InvitationStatus.DECLINED
+        assert invitation.declined_at is not None
+        session.commit.assert_awaited_once()
+
+    def test_candidate_cannot_decline_other_user_invitation(self):
+        service = make_service(make_session())
+        company = make_company()
+        candidate_user = make_user(
+            email="candidate@example.com",
+            role=UserRole.CANDIDATE,
+        )
+        invitation = make_invitation(
+            company=company,
+            email="recruiter@example.com",
+        )
+        service.invitations.get_by_token_hash.return_value = invitation
+
+        with pytest.raises(ForbiddenException) as exc_info:
+            asyncio.run(service.decline_invitation(candidate_user, "some-token"))
+        assert "Sign in with the email address" in str(exc_info.value)
+
     def test_decline_by_token_success(self):
         session = make_session()
         service = make_service(session)

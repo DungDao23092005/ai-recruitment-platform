@@ -358,6 +358,10 @@ class WorkspaceService:
             raise ForbiddenException(
                 "Tài khoản này đang bị khóa và không thể nhận lời mời."
             )
+        if existing_user.role == UserRole.CANDIDATE:
+            raise ForbiddenException(
+                "Không thể gửi lời mời. Tài khoản ứng viên không thể tham gia không gian làm việc của công ty. Chỉ tài khoản nhân sự công ty mới được mời."
+            )
 
         membership = await self.memberships.get_active(
             existing_user.id, context.company_id
@@ -530,6 +534,7 @@ class WorkspaceService:
         items = await self.invitations.list_pending_by_email(
             normalized_email, now=now
         )
+        is_candidate = user.role == UserRole.CANDIDATE
         return [
             MyInvitationRead(
                 id=item.id,
@@ -541,8 +546,12 @@ class WorkspaceService:
                 expires_at=item.expires_at,
                 created_at=item.created_at,
                 can_accept=(
-                    item.status == InvitationStatus.PENDING
-                    and _as_utc(item.expires_at) > now
+                    False
+                    if is_candidate
+                    else (
+                        item.status == InvitationStatus.PENDING
+                        and _as_utc(item.expires_at) > now
+                    )
                 ),
                 can_decline=(
                     item.status == InvitationStatus.PENDING
@@ -567,6 +576,10 @@ class WorkspaceService:
             invitation.status = InvitationStatus.EXPIRED
             await self.session.commit()
 
+        is_active = (
+            invitation.status == InvitationStatus.PENDING
+            and _as_utc(invitation.expires_at) > now
+        )
         return InvitationPreviewRead(
             company_name=invitation.company.name,
             company_slug=invitation.company.slug,
@@ -574,10 +587,8 @@ class WorkspaceService:
             role=invitation.role,
             status=invitation.status,
             expires_at=invitation.expires_at,
-            can_accept=(
-                invitation.status == InvitationStatus.PENDING
-                and _as_utc(invitation.expires_at) > now
-            ),
+            can_accept=is_active,
+            can_decline=is_active,
         )
 
     async def _execute_accept(
@@ -585,6 +596,10 @@ class WorkspaceService:
         user: User,
         invitation: CompanyInvitation,
     ) -> InvitationAcceptRead:
+        if user.role == UserRole.CANDIDATE:
+            raise ForbiddenException(
+                "Tài khoản ứng viên không thể tham gia không gian làm việc của công ty. Vui lòng sử dụng tài khoản dành cho nhân sự công ty."
+            )
         now = utc_now()
         if invitation.status != InvitationStatus.PENDING:
             raise InvalidTransitionException(

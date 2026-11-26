@@ -560,6 +560,33 @@ describe('WorkspaceMembersPage', () => {
         expect(emailInput).toHaveValue('notfound@example.com')
       })
     })
+
+    it('displays candidate account error inline and preserves entered email when candidate is invited', async () => {
+      vi.mocked(workspacesApi.createWorkspaceInvitation).mockRejectedValueOnce({
+        response: {
+          status: 403,
+          data: {
+            detail:
+              'Không thể gửi lời mời. Tài khoản ứng viên không thể tham gia không gian làm việc của công ty. Chỉ tài khoản nhân sự công ty mới được mời.',
+          },
+        },
+      })
+
+      renderComponent()
+
+      const emailInput = screen.getByLabelText(/Địa chỉ email đồng nghiệp/i)
+      fireEvent.change(emailInput, { target: { value: 'candidate@example.com' } })
+
+      const submitBtn = screen.getByRole('button', { name: /Gửi lời mời tham gia/i })
+      fireEvent.click(submitBtn)
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toHaveTextContent(
+          'Không thể gửi lời mời. Tài khoản ứng viên không thể tham gia không gian làm việc của công ty. Chỉ tài khoản nhân sự công ty mới được mời.'
+        )
+        expect(emailInput).toHaveValue('candidate@example.com')
+      })
+    })
   })
 
   describe('Member Tabs and History Visibility', () => {

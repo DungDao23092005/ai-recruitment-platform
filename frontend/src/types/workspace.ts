@@ -48,6 +48,7 @@ export interface InvitationPreview {
   status: InvitationStatus
   expires_at: string
   can_accept: boolean
+  can_decline?: boolean
 }
 
 export interface InvitationAcceptResult {

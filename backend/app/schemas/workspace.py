@@ -101,6 +101,7 @@ class InvitationPreviewRead(BaseModel):
     status: InvitationStatus
     expires_at: datetime
     can_accept: bool
+    can_decline: bool = False
 
 
 class InvitationAcceptRead(BaseModel):
