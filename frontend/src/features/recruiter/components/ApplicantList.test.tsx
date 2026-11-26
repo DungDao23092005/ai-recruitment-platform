@@ -227,18 +227,19 @@ describe('ApplicantList', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
-  it('opens the status update modal for an applicant', () => {
+  it('renders a single view detail action for each applicant and no standalone status update button', () => {
     render(<ApplicantList applications={mockApplications} />)
 
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: /Cập nhật trạng thái cho đơn ứng tuyển app-1/i,
-      }),
-    )
-
     expect(
-      screen.getByRole('dialog', { name: 'Cập nhật trạng thái đơn ứng tuyển' }),
+      screen.getByRole('button', {
+        name: /Xem chi tiết hồ sơ ứng viên 11111111/i,
+      }),
     ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', {
+        name: /Cập nhật trạng thái/i,
+      }),
+    ).not.toBeInTheDocument()
   })
 
 it('opens the application detail modal with the digital CV', async () => {
@@ -248,7 +249,7 @@ it('opens the application detail modal with the digital CV', async () => {
 
     fireEvent.click(
       screen.getByRole('button', {
-        name: /Xem hồ sơ ứng viên 11111111/i,
+        name: /Xem chi tiết hồ sơ ứng viên 11111111/i,
       }),
     )
 
@@ -275,26 +276,7 @@ it('opens the application detail modal with the digital CV', async () => {
 
     fireEvent.click(
       screen.getByRole('button', {
-        name: /Xem hồ sơ ứng viên 11111111/i,
-      }),
-    )
-
-    await waitFor(() => {
-      expect(screen.getByText('Chưa có hồ sơ CV')).toBeInTheDocument()
-})
-})
-
-  it('shows no CV message when resume is null', async () => {
-    mockedGetApplicationDetail.mockResolvedValue({
-      ...mockDetail,
-      resume: null,
-    })
-
-    renderApplicantList({ applications: mockApplications })
-
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: /Xem hồ sơ ứng viên 11111111/i,
+        name: /Xem chi tiết hồ sơ ứng viên 11111111/i,
       }),
     )
 
@@ -303,7 +285,8 @@ it('opens the application detail modal with the digital CV', async () => {
     })
   })
 
-  it('calls onStatusChange when an application status is updated', async () => {
+  it('calls onStatusChange when an application status is updated from detail modal', async () => {
+    mockedGetApplicationDetail.mockResolvedValue(mockDetail)
     const onStatusChange = vi.fn()
     const updated: Application = {
       ...mockApplications[0],
@@ -318,11 +301,16 @@ it('opens the application detail modal with the digital CV', async () => {
 
     fireEvent.click(
       screen.getByRole('button', {
-        name: /Cập nhật trạng thái cho đơn ứng tuyển app-1/i,
+        name: /Xem chi tiết hồ sơ ứng viên 11111111/i,
       }),
     )
 
-    const statusSelect = screen.getByLabelText('Trạng thái')
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Chi tiết đơn ứng tuyển' })).toBeInTheDocument()
+      expect(screen.getByLabelText('Chuyển trạng thái')).toBeInTheDocument()
+    })
+
+    const statusSelect = screen.getByLabelText('Chuyển trạng thái')
     fireEvent.change(statusSelect, { target: { value: 'under_review' } })
 
     fireEvent.click(screen.getByRole('button', { name: /Lưu trạng thái/i }))

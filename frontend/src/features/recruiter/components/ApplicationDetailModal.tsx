@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  AlertCircle,
   Award,
   Briefcase,
   Building2,
@@ -16,15 +17,25 @@ import {
   Wrench,
 } from 'lucide-react'
 import { getApplicationDetail } from '@/api/applications'
+import apiClient from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
 import { Spinner } from '@/components/ui/spinner'
 import { Badge } from '@/components/ui/badge'
+import { Select } from '@/components/ui/select'
 import { ApplicationStatusBadge } from '@/components/common/ApplicationStatusBadge'
 import { getFriendlyErrorMessage } from '@/utils/errors'
-import { StatusUpdateModal } from './StatusUpdateModal'
+import {
+  APPLICATION_STATUS_LABELS,
+  RECRUITER_STATUS_TRANSITIONS,
+  getOfferBlockReason,
+} from './StatusUpdateModal'
 import { ApplicationMatchExplanation } from './ApplicationMatchExplanation'
-import type { Application, ApplicationDetail } from '@/types/application'
+import type {
+  Application,
+  ApplicationDetail,
+  ApplicationStatus,
+} from '@/types/application'
 import { InterviewManager } from './InterviewManager'
 import { ApplicationNoteList } from './ApplicationNoteList'
 import { InterviewEvaluationList } from './InterviewEvaluationList'
@@ -287,8 +298,11 @@ export function ApplicationDetailModal({
     detail?: ApplicationDetail
     message?: string
   }>({ kind: 'loading' })
-  const [showStatusUpdate, setShowStatusUpdate] = useState(false)
   const [activeTab, setActiveTab] = useState<DetailTab>('profile')
+  const [nextStatus, setNextStatus] = useState<ApplicationStatus | ''>('')
+  const [submittingStatus, setSubmittingStatus] = useState(false)
+  const [statusError, setStatusError] = useState<string | null>(null)
+  const [statusSuccess, setStatusSuccess] = useState<string | null>(null)
 
   const load = useCallback(() => {
     let active = true
@@ -323,15 +337,49 @@ export function ApplicationDetailModal({
     `Ứng viên ${application.candidate_id.slice(0, 8)}`
   const candidateTitle = detail?.candidate?.title ?? 'Hồ sơ ứng viên'
 
-  const handleStatusUpdated = (updated: Application) => {
-    setShowStatusUpdate(false)
-    if (state.kind === 'success' && state.detail?.id === application.id) {
-      setState({
-        kind: 'success',
-        detail: { ...state.detail, status: updated.status },
-      })
+  const currentStatus = detail?.status ?? application.status
+  const baseStatusOptions = RECRUITER_STATUS_TRANSITIONS[currentStatus] || []
+  const isDetailReady = state.kind === 'success' && Boolean(detail)
+  const offerBlockReason =
+    isDetailReady && baseStatusOptions.includes('offered')
+      ? getOfferBlockReason(detail?.interviews)
+      : null
+  const statusOptions = offerBlockReason
+    ? baseStatusOptions.filter((option) => option !== 'offered')
+    : baseStatusOptions
+
+  useEffect(() => {
+    if (statusOptions.length > 0) {
+      if (!nextStatus || !statusOptions.includes(nextStatus as ApplicationStatus)) {
+        setNextStatus(statusOptions[0])
+      }
+    } else {
+      setNextStatus('')
     }
-    onStatusChange?.(updated)
+  }, [statusOptions, nextStatus])
+
+  const handleStatusTransition = async () => {
+    if (!nextStatus || !detail) return
+    setSubmittingStatus(true)
+    setStatusError(null)
+    setStatusSuccess(null)
+    try {
+      const updated = await apiClient.patch<Application, Application>(
+        `/applications/${application.id}/status`,
+        { status: nextStatus },
+      )
+      setStatusSuccess('Cập nhật trạng thái thành công')
+      setState((prev) =>
+        prev.kind === 'success' && prev.detail
+          ? { ...prev, detail: { ...prev.detail, status: updated.status } }
+          : prev,
+      )
+      onStatusChange?.(updated)
+    } catch (err) {
+      setStatusError(getFriendlyErrorMessage(err))
+    } finally {
+      setSubmittingStatus(false)
+    }
   }
 
   return (
@@ -348,19 +396,9 @@ export function ApplicationDetailModal({
         }
         description={candidateTitle}
         footer={
-          <>
-            {state.kind === 'success' && detail ? (
-              <Button
-                variant="outline"
-                onClick={() => setShowStatusUpdate(true)}
-              >
-                Cập nhật trạng thái
-              </Button>
-            ) : null}
-            <Button variant="ghost" onClick={onClose}>
-              Đóng
-            </Button>
-          </>
+          <Button variant="ghost" onClick={onClose}>
+            Đóng
+          </Button>
         }
       >
       <div className="space-y-6">
@@ -384,19 +422,100 @@ export function ApplicationDetailModal({
 
         {state.kind === 'success' && detail ? (
           <>
-            <div className="space-y-2 rounded-xl border bg-muted/20 px-4 py-3">
-              <p className="flex items-center gap-2 text-sm font-medium text-foreground">
-                <Building2 className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-                {detail.job_title}
-                {detail.company_name ? ` · ${detail.company_name}` : ''}
-              </p>
-              <div className="flex flex-wrap items-center gap-2 text-sm">
-                <ApplicationStatusBadge status={detail.status} />
+            <div className="space-y-3 rounded-xl border bg-muted/20 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+                  <Building2 className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                  {detail.job_title}
+                  {detail.company_name ? ` · ${detail.company_name}` : ''}
+                </p>
                 <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" />
                   Nộp đơn: {formatDate(detail.created_at) || 'Không có ngày nộp đơn'}
                 </span>
               </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Trạng thái:</span>
+                  <ApplicationStatusBadge status={detail.status} />
+                </div>
+
+                {statusOptions.length > 0 ? (
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="next-status-select" className="text-xs font-medium text-muted-foreground">
+                      Chuyển sang:
+                    </label>
+                    <Select
+                      id="next-status-select"
+                      aria-label="Chuyển trạng thái"
+                      value={nextStatus}
+                      onChange={(e) => setNextStatus(e.target.value as ApplicationStatus)}
+                      className="w-44 text-sm"
+                      disabled={submittingStatus}
+                    >
+                      {statusOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {APPLICATION_STATUS_LABELS[option]}
+                        </option>
+                      ))}
+                    </Select>
+                    <Button
+                      size="sm"
+                      onClick={handleStatusTransition}
+                      isLoading={submittingStatus}
+                      disabled={!nextStatus || submittingStatus}
+                    >
+                      Lưu trạng thái
+                    </Button>
+                  </div>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    {detail.status === 'offered'
+                      ? 'Đang chờ ứng viên phản hồi đề nghị.'
+                      : 'Không có chuyển trạng thái tiếp theo.'}
+                  </span>
+                )}
+              </div>
+
+              {offerBlockReason ? (
+                <div
+                  role="status"
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <AlertCircle className="h-4 w-4 text-warning shrink-0" aria-hidden="true" />
+                    <span>{offerBlockReason}</span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-auto p-0 text-xs font-medium text-primary hover:underline"
+                    onClick={() => setActiveTab('interviews')}
+                  >
+                    Phỏng vấn & Đánh giá →
+                  </Button>
+                </div>
+              ) : null}
+
+              {statusSuccess ? (
+                <p
+                  role="status"
+                  className="rounded-md bg-success/10 px-3 py-1.5 text-xs font-medium text-success"
+                >
+                  {statusSuccess}
+                </p>
+              ) : null}
+
+              {statusError ? (
+                <p
+                  role="alert"
+                  className="rounded-md bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive"
+                >
+                  {statusError}
+                </p>
+              ) : null}
             </div>
 
             <div className="space-y-4">
@@ -504,17 +623,7 @@ export function ApplicationDetailModal({
           </>
         ) : null}
       </div>
-
       </Modal>
-
-      {showStatusUpdate && detail ? (
-        <StatusUpdateModal
-          application={detail}
-          interviews={detail.interviews}
-          onClose={() => setShowStatusUpdate(false)}
-          onSuccess={handleStatusUpdated}
-        />
-      ) : null}
     </>
   )
 }

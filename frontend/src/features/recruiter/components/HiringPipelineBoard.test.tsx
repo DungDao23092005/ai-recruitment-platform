@@ -160,14 +160,17 @@ describe('HiringPipelineBoard', () => {
     expect(within(applied).getByText('Ứng viên 11111111')).toBeInTheDocument()
   })
 
-  it('disables the status update control for withdrawn applications', () => {
+  it('renders a single view detail action on candidate cards and compact empty state', () => {
     renderBoard()
 
     expect(
       screen.getByRole('button', {
-        name: /Cập nhật trạng thái cho đơn ứng tuyển app-4/i,
+        name: /Xem chi tiết hồ sơ ứng viên 11111111/i,
       }),
-    ).toBeDisabled()
+    ).toBeInTheDocument()
+
+    const interviewColumn = screen.getByRole('region', { name: 'Cột Phỏng vấn' })
+    expect(within(interviewColumn).getByText('Trống')).toBeInTheDocument()
   })
 
   it('opens the application detail modal', async () => {
@@ -189,7 +192,7 @@ describe('HiringPipelineBoard', () => {
     renderBoard()
 
     fireEvent.click(
-      screen.getByRole('button', { name: /Xem hồ sơ ứng viên 11111111/i }),
+      screen.getByRole('button', { name: /Xem chi tiết hồ sơ ứng viên 11111111/i }),
     )
 
     await waitFor(() => {
@@ -229,7 +232,7 @@ describe('HiringPipelineBoard', () => {
     expect(within(applied).getByText('1')).toBeInTheDocument()
     expect(within(offered).getByText('0')).toBeInTheDocument()
     expect(
-      within(offered).getByText('Không có ứng viên'),
+      within(offered).getByText('Trống'),
     ).toBeInTheDocument()
   })
 

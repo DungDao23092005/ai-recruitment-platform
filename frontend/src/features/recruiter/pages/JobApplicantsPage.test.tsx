@@ -51,11 +51,16 @@ vi.mock('@/api/jobs', () => ({
 vi.mock('@/api/applications', () => ({
   applyJob: vi.fn(),
   getApplicationsByJob: vi.fn(),
+  getApplicationDetail: vi.fn(),
+  getApplicationMatchExplanation: vi.fn(),
 }))
 
 const mockedGetMyJobById = vi.mocked(jobsApi.getMyJobById)
 const mockedGetApplicationsByJob = vi.mocked(
   applicationsApi.getApplicationsByJob,
+)
+const mockedGetApplicationDetail = vi.mocked(
+  applicationsApi.getApplicationDetail,
 )
 
 function renderJobApplicantsPage() {
@@ -140,29 +145,45 @@ describe('JobApplicantsPage', () => {
     })
   })
 
-  it('opens the status update modal for an applicant', async () => {
+  it('opens the application detail modal for an applicant', async () => {
     mockedGetMyJobById.mockResolvedValue(mockJob)
     mockedGetApplicationsByJob.mockResolvedValue(mockApplications)
+    mockedGetApplicationDetail.mockResolvedValue({
+      id: 'app-1',
+      candidate_id: '11111111-1111-1111-1111-111111111111',
+      job_id: 'job-1',
+      job_title: 'Senior Frontend Engineer',
+      company_name: 'Acme Corp',
+      status: 'applied',
+      created_at: '2026-01-20T00:00:00Z',
+      updated_at: '2026-01-20T00:00:00Z',
+      candidate: null,
+      resume: null,
+      parsed_job: null,
+      interviews: [],
+    })
 
     renderJobApplicantsPage()
 
     await waitFor(() => {
       expect(
         screen.getByRole('button', {
-          name: /Cập nhật trạng thái cho đơn ứng tuyển app-1/i,
+          name: /Xem chi tiết hồ sơ ứng viên 11111111/i,
         }),
       ).toBeInTheDocument()
     })
 
     fireEvent.click(
       screen.getByRole('button', {
-        name: /Cập nhật trạng thái cho đơn ứng tuyển app-1/i,
+        name: /Xem chi tiết hồ sơ ứng viên 11111111/i,
       }),
     )
 
-    expect(
-      screen.getByRole('dialog', { name: 'Cập nhật trạng thái đơn ứng tuyển' }),
-    ).toBeInTheDocument()
+    await waitFor(() => {
+      expect(
+        screen.getByRole('dialog', { name: 'Chi tiết đơn ứng tuyển' }),
+      ).toBeInTheDocument()
+    })
   })
 
   it('shows empty state when there are no applicants', async () => {

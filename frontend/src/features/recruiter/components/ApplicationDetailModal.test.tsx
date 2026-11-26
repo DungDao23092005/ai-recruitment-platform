@@ -164,6 +164,11 @@ vi.mock('@/api/ai', () => ({
   explainMatch: vi.fn(),
 }))
 
+vi.mock('@/api/workspaces', () => ({
+  getWorkspaceMembers: vi.fn().mockResolvedValue([]),
+  getCurrentWorkspace: vi.fn().mockResolvedValue(null),
+}))
+
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: vi.fn(() => ({
     currentUser: {
@@ -197,6 +202,9 @@ const mockedListNotes = vi.mocked(applicationsApi.listApplicationNotes)
 const mockedListActivities = vi.mocked(
   applicationsApi.listApplicationActivities,
 )
+const mockedListEvaluations = vi.mocked(
+  applicationsApi.listApplicationEvaluations,
+)
 const mockedExplainMatch = vi.mocked(aiApi.explainMatch)
 const mockedPatch = vi.mocked(apiClient.patch)
 
@@ -211,11 +219,13 @@ beforeEach(() => {
   mockedRefreshMatchExplanation.mockReset()
   mockedListNotes.mockReset()
   mockedListActivities.mockReset()
+  mockedListEvaluations.mockReset()
   mockedExplainMatch.mockReset()
 
   mockedGetMatchExplanation.mockResolvedValue(makeExplanation())
   mockedListNotes.mockResolvedValue([])
   mockedListActivities.mockResolvedValue([])
+  mockedListEvaluations.mockResolvedValue([])
 })
 
 function renderModal(props: Partial<{
@@ -314,7 +324,29 @@ describe('ApplicationDetailModal', () => {
     expect(mockedGetMatchExplanation).not.toHaveBeenCalled()
   })
 
-  it('opens status update modal and refreshes detail on success', async () => {
+  it('displays current status and only valid transitions directly in the modal', async () => {
+    mockedGetApplicationDetail.mockResolvedValue(mockDetail)
+
+    renderModal()
+
+    await waitFor(() => {
+      expect(screen.getByText('Backend Engineer · Acme Corp')).toBeInTheDocument()
+      expect(screen.getByLabelText('Chuyển trạng thái')).toBeInTheDocument()
+    })
+
+    const select = screen.getByLabelText('Chuyển trạng thái')
+    const options = Array.from((select as HTMLSelectElement).options).map((o) => o.value)
+    // For 'applied', transitions are 'under_review', 'rejected'
+    expect(options).toEqual(['under_review', 'rejected'])
+
+    // Standalone / nested StatusUpdateModal dialog is eliminated
+    expect(
+      screen.queryByRole('dialog', { name: 'Cập nhật trạng thái đơn ứng tuyển' }),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Lưu trạng thái/i })).toBeInTheDocument()
+  })
+
+  it('updates status and notifies parent on success', async () => {
     mockedGetApplicationDetail.mockResolvedValue(mockDetail)
     const updated: Application = { ...mockApplication, status: 'under_review' }
     mockedPatch.mockResolvedValue(updated as never)
@@ -324,91 +356,25 @@ describe('ApplicationDetailModal', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Backend Engineer · Acme Corp')).toBeInTheDocument()
+      expect(screen.getByLabelText('Chuyển trạng thái')).toBeInTheDocument()
     })
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /Cập nhật trạng thái/i }),
-    )
-
-    expect(
-      screen.getByRole('dialog', { name: 'Cập nhật trạng thái đơn ứng tuyển' }),
-    ).toBeInTheDocument()
-
+    const select = screen.getByLabelText('Chuyển trạng thái')
+    fireEvent.change(select, { target: { value: 'under_review' } })
     fireEvent.click(screen.getByRole('button', { name: /Lưu trạng thái/i }))
 
     await waitFor(() => {
       expect(mockedPatch).toHaveBeenCalledWith('/applications/app-1/status', {
         status: 'under_review',
       })
+      expect(onStatusChange).toHaveBeenCalledWith(updated)
     })
 
-    await waitFor(() => {
-      expect(
-        screen.queryByRole('dialog', {
-          name: 'Cập nhật trạng thái đơn ứng tuyển',
-        }),
-      ).not.toBeInTheDocument()
-    })
+    expect(screen.getByText('Cập nhật trạng thái thành công')).toBeInTheDocument()
     expect(screen.getByText('Đang xem xét')).toBeInTheDocument()
-    expect(onStatusChange).toHaveBeenCalledWith(updated)
   })
 
-  it('opens the status dialog immediately without a parent callback', async () => {
-    mockedGetApplicationDetail.mockResolvedValue(mockDetail)
-
-    renderModal()
-
-    await waitFor(() => {
-      expect(screen.getByText('Backend Engineer · Acme Corp')).toBeInTheDocument()
-    })
-
-    const trigger = screen.getByRole('button', {
-      name: /Cập nhật trạng thái/i,
-    })
-    expect(trigger).toBeEnabled()
-
-    fireEvent.click(trigger)
-
-    expect(
-      screen.getByRole('dialog', { name: 'Cập nhật trạng thái đơn ứng tuyển' }),
-    ).toBeInTheDocument()
-    expect(mockedPatch).not.toHaveBeenCalled()
-  })
-
-  it('renders the status dialog outside the detail dialog and keeps the detail open when its backdrop is clicked', async () => {
-    mockedGetApplicationDetail.mockResolvedValue(mockDetail)
-
-    renderModal()
-
-    await waitFor(() => {
-      expect(screen.getByText('Backend Engineer · Acme Corp')).toBeInTheDocument()
-    })
-
-    const detailDialog = screen.getByRole('dialog', {
-      name: 'Chi tiết đơn ứng tuyển',
-    })
-
-    fireEvent.click(
-      screen.getByRole('button', { name: /Cập nhật trạng thái/i }),
-    )
-
-    const statusDialog = screen.getByRole('dialog', {
-      name: 'Cập nhật trạng thái đơn ứng tuyển',
-    })
-    const statusBackdrop = statusDialog.firstElementChild
-
-    expect(detailDialog).not.toContainElement(statusDialog)
-    expect(statusDialog).toHaveClass('fixed', 'inset-0', 'z-50')
-    expect(statusBackdrop).not.toBeNull()
-    expect(statusBackdrop).toHaveClass('absolute', 'inset-0')
-
-    fireEvent.click(statusBackdrop as HTMLElement)
-
-    expect(statusDialog).not.toBeInTheDocument()
-    expect(detailDialog).toBeInTheDocument()
-  })
-
-  it('shows a localized 5xx error and retries the status update successfully', async () => {
+  it('shows error banner when status update fails and allows retry', async () => {
     mockedGetApplicationDetail.mockResolvedValue(mockDetail)
     const updated: Application = { ...mockApplication, status: 'under_review' }
     mockedPatch
@@ -422,9 +388,6 @@ describe('ApplicationDetailModal', () => {
       expect(screen.getByText('Backend Engineer · Acme Corp')).toBeInTheDocument()
     })
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /Cập nhật trạng thái/i }),
-    )
     fireEvent.click(screen.getByRole('button', { name: /Lưu trạng thái/i }))
 
     await waitFor(() => {
@@ -433,27 +396,178 @@ describe('ApplicationDetailModal', () => {
       )
     })
 
-    const statusDialog = screen.getByRole('dialog', {
-      name: 'Cập nhật trạng thái đơn ứng tuyển',
-    })
-    const retryButton = screen.getByRole('button', {
-      name: /Lưu trạng thái/i,
-    })
-    expect(statusDialog).toBeInTheDocument()
+    const retryButton = screen.getByRole('button', { name: /Lưu trạng thái/i })
     expect(retryButton).toBeEnabled()
-
     fireEvent.click(retryButton)
 
     await waitFor(() => {
       expect(mockedPatch).toHaveBeenCalledTimes(2)
-      expect(
-        screen.queryByRole('dialog', {
-          name: 'Cập nhật trạng thái đơn ứng tuyển',
-        }),
-      ).not.toBeInTheDocument()
       expect(onStatusChange).toHaveBeenCalledWith(updated)
     })
     expect(screen.getByText('Đang xem xét')).toBeInTheDocument()
+  })
+
+  it('allows transitioning to offered when candidate has a confirmed or completed interview', async () => {
+    const interviewingDetail: ApplicationDetail = {
+      ...mockDetail,
+      status: 'interviewing',
+      interviews: [
+        {
+          id: 'int-1',
+          application_id: 'app-1',
+          interviewer_id: 'u-1',
+          scheduled_at: '2026-02-01T10:00:00Z',
+          status: 'candidate_confirmed',
+          notes: null,
+          rating: null,
+          created_at: '2026-01-20T00:00:00Z',
+          updated_at: '2026-01-20T00:00:00Z',
+        },
+      ],
+    }
+    mockedGetApplicationDetail.mockResolvedValue(interviewingDetail)
+    const updated: Application = { ...mockApplication, status: 'offered' }
+    mockedPatch.mockResolvedValue(updated as never)
+
+    renderModal({ application: { ...mockApplication, status: 'interviewing' } })
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Chuyển trạng thái')).toBeInTheDocument()
+    })
+
+    const select = screen.getByLabelText('Chuyển trạng thái')
+    const options = Array.from((select as HTMLSelectElement).options).map((o) => o.value)
+    expect(options).toContain('offered')
+
+    fireEvent.change(select, { target: { value: 'offered' } })
+    fireEvent.click(screen.getByRole('button', { name: /Lưu trạng thái/i }))
+
+    await waitFor(() => {
+      expect(mockedPatch).toHaveBeenCalledWith('/applications/app-1/status', {
+        status: 'offered',
+      })
+    })
+  })
+
+  it('blocks offer transition and displays warning with tab link when interviews are still scheduled', async () => {
+    const interviewingDetail: ApplicationDetail = {
+      ...mockDetail,
+      status: 'interviewing',
+      interviews: [
+        {
+          id: 'int-1',
+          application_id: 'app-1',
+          interviewer_id: 'u-1',
+          scheduled_at: '2026-02-01T10:00:00Z',
+          status: 'scheduled',
+          notes: null,
+          rating: null,
+          created_at: '2026-01-20T00:00:00Z',
+          updated_at: '2026-01-20T00:00:00Z',
+        },
+      ],
+    }
+    mockedGetApplicationDetail.mockResolvedValue(interviewingDetail)
+
+    renderModal({ application: { ...mockApplication, status: 'interviewing' } })
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Chuyển trạng thái')).toBeInTheDocument()
+    })
+
+    const select = screen.getByLabelText('Chuyển trạng thái')
+    const options = Array.from((select as HTMLSelectElement).options).map((o) => o.value)
+    expect(options).not.toContain('offered')
+
+    expect(
+      screen.getByText(/Vẫn còn 1 buổi phỏng vấn đang chờ xác nhận/i),
+    ).toBeInTheDocument()
+
+    // Clicking the tab switch button switches active tab to interviews
+    const tabLink = screen.getByRole('button', { name: /Phỏng vấn & Đánh giá →/i })
+    fireEvent.click(tabLink)
+
+    expect(screen.getByRole('tab', { name: /Phỏng vấn & Đánh giá/i })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+  })
+
+  it('blocks offer transition when candidate has no interviews', async () => {
+    const interviewingDetail: ApplicationDetail = {
+      ...mockDetail,
+      status: 'interviewing',
+      interviews: [],
+    }
+    mockedGetApplicationDetail.mockResolvedValue(interviewingDetail)
+
+    renderModal({ application: { ...mockApplication, status: 'interviewing' } })
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Chuyển trạng thái')).toBeInTheDocument()
+    })
+
+    const select = screen.getByLabelText('Chuyển trạng thái')
+    const options = Array.from((select as HTMLSelectElement).options).map((o) => o.value)
+    expect(options).not.toContain('offered')
+    expect(
+      screen.getByText(/Chưa có buổi phỏng vấn nào/i),
+    ).toBeInTheDocument()
+  })
+
+  it('blocks offer transition when candidate has only cancelled or declined interviews', async () => {
+    const interviewingDetail: ApplicationDetail = {
+      ...mockDetail,
+      status: 'interviewing',
+      interviews: [
+        {
+          id: 'int-1',
+          application_id: 'app-1',
+          interviewer_id: 'u-1',
+          scheduled_at: '2026-02-01T10:00:00Z',
+          status: 'cancelled',
+          notes: null,
+          rating: null,
+          created_at: '2026-01-20T00:00:00Z',
+          updated_at: '2026-01-20T00:00:00Z',
+        },
+        {
+          id: 'int-2',
+          application_id: 'app-1',
+          interviewer_id: 'u-1',
+          scheduled_at: '2026-02-02T10:00:00Z',
+          status: 'candidate_declined',
+          notes: null,
+          rating: null,
+          created_at: '2026-01-20T00:00:00Z',
+          updated_at: '2026-01-20T00:00:00Z',
+        },
+      ],
+    }
+    mockedGetApplicationDetail.mockResolvedValue(interviewingDetail)
+
+    renderModal({ application: { ...mockApplication, status: 'interviewing' } })
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Chuyển trạng thái')).toBeInTheDocument()
+    })
+
+    const select = screen.getByLabelText('Chuyển trạng thái')
+    const options = Array.from((select as HTMLSelectElement).options).map((o) => o.value)
+    expect(options).not.toContain('offered')
+    expect(
+      screen.getByText(/Cần ít nhất một buổi phỏng vấn đã được ứng viên xác nhận hoặc đã hoàn thành/i),
+    ).toBeInTheDocument()
+  })
+
+  it('does not evaluate offer prerequisites or show false warning while loading', () => {
+    mockedGetApplicationDetail.mockReturnValue(new Promise(() => {}))
+
+    renderModal({ application: { ...mockApplication, status: 'interviewing' } })
+
+    expect(
+      screen.queryByText(/chờ xác nhận|lời mời làm việc|Chưa có buổi phỏng vấn nào/i),
+    ).not.toBeInTheDocument()
   })
 
   it('renders the canonical match explanation in the profile tab', async () => {

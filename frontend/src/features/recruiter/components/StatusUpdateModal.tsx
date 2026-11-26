@@ -40,8 +40,11 @@ export function getOfferBlockReason(
   if (!interviews || interviews.length === 0) {
     return 'Chưa có buổi phỏng vấn nào. Cần ít nhất một buổi phỏng vấn đã được ứng viên xác nhận hoặc đã hoàn thành trước khi gửi lời mời làm việc.'
   }
-  if (interviews.some((interview) => interview.status === 'scheduled')) {
-    return 'Vẫn còn buổi phỏng vấn đang chờ xác nhận. Hãy hoàn tất hoặc hủy lịch phỏng vấn đó trước khi gửi lời mời làm việc.'
+  const scheduledCount = interviews.filter(
+    (interview) => interview.status === 'scheduled',
+  ).length
+  if (scheduledCount > 0) {
+    return `Vẫn còn ${scheduledCount} buổi phỏng vấn đang chờ xác nhận. Hãy hoàn tất hoặc hủy lịch phỏng vấn đó trước khi gửi lời mời làm việc.`
   }
   if (
     !interviews.some(

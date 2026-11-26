@@ -1,10 +1,9 @@
 import { useMemo, useState } from 'react'
-import { CalendarDays, Eye, Search, User, UserRoundCheck, X } from 'lucide-react'
+import { CalendarDays, Eye, Search, User, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { ApplicationStatusBadge } from '@/components/common/ApplicationStatusBadge'
-import { StatusUpdateModal } from './StatusUpdateModal'
 import { ApplicationDetailModal } from './ApplicationDetailModal'
 import type { Application, ApplicationStatus } from '@/types/application'
 
@@ -80,7 +79,6 @@ export function HiringPipelineBoard({
   applications,
   onStatusChange,
 }: HiringPipelineBoardProps) {
-  const [selected, setSelected] = useState<Application | null>(null)
   const [detail, setDetail] = useState<Application | null>(null)
   const [query, setQuery] = useState('')
 
@@ -175,11 +173,11 @@ export function HiringPipelineBoard({
                 </span>
               </div>
 
-              <div className="flex min-h-[120px] flex-col gap-3 rounded-xl border border-dashed bg-muted/20 p-2">
+              <div className="flex flex-col gap-3 rounded-xl p-1">
                 {items.length === 0 ? (
-                  <p className="px-2 py-6 text-center text-xs italic text-muted-foreground">
-                    Không có ứng viên
-                  </p>
+                  <div className="rounded-lg border border-dashed bg-muted/10 py-3 text-center text-xs text-muted-foreground">
+                    Trống
+                  </div>
                 ) : (
                   items.map((application) => (
                     <Card
@@ -214,21 +212,12 @@ export function HiringPipelineBoard({
                           <Button
                             variant="outline"
                             size="sm"
+                            className="w-full justify-center"
                             onClick={() => setDetail(application)}
-                            aria-label={`Xem hồ sơ ứng viên ${application.candidate_id.slice(0, 8)}`}
+                            aria-label={`Xem chi tiết hồ sơ ứng viên ${application.candidate_id.slice(0, 8)}`}
                           >
                             <Eye className="h-4 w-4" aria-hidden="true" />
-                            Xem hồ sơ
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setSelected(application)}
-                            aria-label={`Cập nhật trạng thái cho đơn ứng tuyển ${application.id}`}
-                            disabled={application.status === 'withdrawn'}
-                          >
-                            <UserRoundCheck className="h-4 w-4" aria-hidden="true" />
-                            Cập nhật
+                            Xem chi tiết
                           </Button>
                         </div>
                       </CardContent>
@@ -240,17 +229,6 @@ export function HiringPipelineBoard({
           ))}
         </div>
       )}
-
-      {selected ? (
-        <StatusUpdateModal
-          application={selected}
-          onClose={() => setSelected(null)}
-          onSuccess={(updated) => {
-            setSelected(null)
-            onStatusChange?.(updated)
-          }}
-        />
-      ) : null}
 
       {detail ? (
         <ApplicationDetailModal
