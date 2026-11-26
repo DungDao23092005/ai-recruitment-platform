@@ -55,6 +55,31 @@ def _fake_user(role: UserRole, user_id: uuid.UUID | None = None, full_name: str 
     )
 
 
+def _fake_workspace_context(
+    user: User,
+    company: Company | None = None,
+    company_id: uuid.UUID | None = None,
+    role: MembershipRole = MembershipRole.ADMIN,
+    is_platform_admin: bool = False,
+) -> WorkspaceContext:
+    target_company = company or _fake_company(company_id=company_id)
+    membership = CompanyMembership(
+        id=uuid.uuid4(),
+        company_id=target_company.id,
+        user_id=user.id,
+        role=role,
+        status=MembershipStatus.ACTIVE,
+        company=target_company,
+        user=user,
+    )
+    return WorkspaceContext(
+        user=user,
+        company=target_company,
+        membership=membership,
+        is_platform_admin=is_platform_admin,
+    )
+
+
 class TestCompaniesApiEndpoints:
     @pytest.fixture
     def mock_service(self):
@@ -88,30 +113,26 @@ class TestCompaniesApiEndpoints:
         company_id = uuid.uuid4()
         user = _fake_user(UserRole.RECRUITER)
         app.dependency_overrides[get_current_user] = lambda: user
-        app.dependency_overrides[get_optional_workspace] = lambda: WorkspaceContext(
+        app.dependency_overrides[get_optional_workspace] = lambda: _fake_workspace_context(
+            user=user,
             company_id=company_id,
-            company_name="Test Co",
-            company_slug="test-co",
             role=MembershipRole.INTERVIEWER,
-            is_platform_admin=False,
         )
         resp = client.patch(
             f"{API_PREFIX}/{company_id}",
             json={"name": "Interviewer Renamed"},
         )
         assert resp.status_code == status.HTTP_403_FORBIDDEN
-        assert "Người phỏng vấn" in resp.json()["detail"]
+        assert resp.json()["detail"] == "Not enough permissions"
 
     def test_recruiter_forbidden_on_foreign_company(self, client, mock_service):
         company_id = uuid.uuid4()
         user = _fake_user(UserRole.RECRUITER)
         app.dependency_overrides[get_current_user] = lambda: user
-        app.dependency_overrides[get_optional_workspace] = lambda: WorkspaceContext(
+        app.dependency_overrides[get_optional_workspace] = lambda: _fake_workspace_context(
+            user=user,
             company_id=uuid.uuid4(),
-            company_name="My Co",
-            company_slug="my-co",
             role=MembershipRole.ADMIN,
-            is_platform_admin=False,
         )
         mock_service.update_owned_company.side_effect = ForbiddenException(
             f"Not allowed to update company {company_id}"
@@ -127,12 +148,10 @@ class TestCompaniesApiEndpoints:
         company_id = uuid.uuid4()
         user = _fake_user(UserRole.RECRUITER)
         app.dependency_overrides[get_current_user] = lambda: user
-        app.dependency_overrides[get_optional_workspace] = lambda: WorkspaceContext(
+        app.dependency_overrides[get_optional_workspace] = lambda: _fake_workspace_context(
+            user=user,
             company_id=company_id,
-            company_name="My Co",
-            company_slug="my-co",
             role=MembershipRole.ADMIN,
-            is_platform_admin=False,
         )
         mock_service.update_owned_company.side_effect = EntityNotFoundException(
             f"Company {company_id} not found"
@@ -148,12 +167,10 @@ class TestCompaniesApiEndpoints:
         company_id = uuid.uuid4()
         user = _fake_user(UserRole.RECRUITER)
         app.dependency_overrides[get_current_user] = lambda: user
-        app.dependency_overrides[get_optional_workspace] = lambda: WorkspaceContext(
+        app.dependency_overrides[get_optional_workspace] = lambda: _fake_workspace_context(
+            user=user,
             company_id=company_id,
-            company_name="My Co",
-            company_slug="my-co",
             role=MembershipRole.ADMIN,
-            is_platform_admin=False,
         )
         mock_service.update_owned_company.side_effect = ConflictException(
             "Đường dẫn (slug) 'taken-slug' đã được sử dụng."
@@ -170,12 +187,10 @@ class TestCompaniesApiEndpoints:
         company_id = uuid.uuid4()
         user = _fake_user(UserRole.RECRUITER)
         app.dependency_overrides[get_current_user] = lambda: user
-        app.dependency_overrides[get_optional_workspace] = lambda: WorkspaceContext(
+        app.dependency_overrides[get_optional_workspace] = lambda: _fake_workspace_context(
+            user=user,
             company_id=company_id,
-            company_name="My Co",
-            company_slug="my-co",
             role=MembershipRole.ADMIN,
-            is_platform_admin=False,
         )
         updated_company = _fake_company(company_id=company_id)
         updated_company.name = "TechCorp Global"
