@@ -23,6 +23,7 @@ import {
   getCandidateContactDetails,
   getCandidatePreview,
 } from '@/api/contactRequests'
+import { CONTACT_REQUEST_UPDATED_DOM_EVENT } from '@/hooks/useNotificationStream'
 import type {
   CandidateContactResponse,
   CandidatePreviewResponse,
@@ -65,6 +66,37 @@ export function CandidatePreviewModal({
   useEffect(() => {
     void loadPreview()
   }, [candidateId])
+
+  useEffect(() => {
+    const handleContactRequestUpdated = (event: Event) => {
+      const customEvent = event as CustomEvent
+      const detail = customEvent.detail
+      if (!detail) return
+
+      // Ignore if event is definitely for another candidate or request
+      if (detail.candidate_id && detail.candidate_id !== candidateId) return
+      if (
+        preview?.contact_request_id &&
+        detail.entity_id &&
+        detail.entity_id !== preview.contact_request_id
+      ) {
+        return
+      }
+
+      void loadPreview()
+    }
+
+    window.addEventListener(
+      CONTACT_REQUEST_UPDATED_DOM_EVENT,
+      handleContactRequestUpdated,
+    )
+    return () => {
+      window.removeEventListener(
+        CONTACT_REQUEST_UPDATED_DOM_EVENT,
+        handleContactRequestUpdated,
+      )
+    }
+  }, [candidateId, preview?.contact_request_id])
 
   const handleSendRequest = async () => {
     setActionLoading(true)

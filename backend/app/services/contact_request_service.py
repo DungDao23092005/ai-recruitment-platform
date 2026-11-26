@@ -582,6 +582,19 @@ class ContactRequestService:
                     recipient_user_id=recipient.id if is_fallback else None,
                 )
 
+        # Send security confirmation email to candidate (Q1)
+        candidate_user = getattr(candidate, "user", None)
+        if candidate_user is None and hasattr(candidate, "user_id") and candidate.user_id:
+            candidate_user = await self.session.get(User, candidate.user_id)
+        candidate_email = getattr(candidate_user, "email", None) if candidate_user else None
+        if candidate_email:
+            await self.email_service.send_candidate_authorization_granted_email(
+                to_email=candidate_email,
+                candidate_name=candidate_name,
+                company_name=company_name,
+                request_id=req.id,
+            )
+
         return req
 
     async def decline_request(
@@ -624,7 +637,11 @@ class ContactRequestService:
             await self.notifications.create_notification(
                 user_id=recipient.id,
                 title=CONTACT_REQUEST_DECLINED_TITLE,
-                content=f"Ứng viên {candidate_name} đã từ chối yêu cầu liên hệ.",
+                content=(
+                    f"Ứng viên {candidate_name} đã từ chối yêu cầu liên hệ. "
+                    "Công ty có thể gửi lại yêu cầu sau 30 ngày thời gian chờ, "
+                    "tùy thuộc vào giới hạn yêu cầu và các chính sách hệ thống áp dụng."
+                ),
                 notification_type=CONTACT_REQUEST_DECLINED_TYPE,
                 entity_type=CONTACT_REQUEST_ENTITY_TYPE,
                 entity_id=req.id,
@@ -677,7 +694,11 @@ class ContactRequestService:
             await self.notifications.create_notification(
                 user_id=recipient.id,
                 title=CONTACT_REQUEST_REVOKED_TITLE,
-                content=f"Ứng viên {candidate_name} đã thu hồi quyền liên hệ.",
+                content=(
+                    f"Ứng viên {candidate_name} đã thu hồi quyền liên hệ. "
+                    "Công ty có thể gửi lại yêu cầu sau 90 ngày thời gian chờ, "
+                    "tùy thuộc vào giới hạn yêu cầu và các chính sách hệ thống áp dụng."
+                ),
                 notification_type=CONTACT_REQUEST_REVOKED_TYPE,
                 entity_type=CONTACT_REQUEST_ENTITY_TYPE,
                 entity_id=req.id,
@@ -692,6 +713,19 @@ class ContactRequestService:
                     request_id=req.id,
                     recipient_user_id=recipient.id if is_fallback else None,
                 )
+
+        # Send security confirmation email to candidate (Q1)
+        candidate_user = getattr(candidate, "user", None)
+        if candidate_user is None and hasattr(candidate, "user_id") and candidate.user_id:
+            candidate_user = await self.session.get(User, candidate.user_id)
+        candidate_email = getattr(candidate_user, "email", None) if candidate_user else None
+        if candidate_email:
+            await self.email_service.send_candidate_authorization_revoked_email(
+                to_email=candidate_email,
+                candidate_name=candidate_name,
+                company_name=company_name,
+                request_id=req.id,
+            )
 
         return req
 

@@ -186,4 +186,120 @@ describe('CandidatePreviewModal', () => {
       ).toBeInTheDocument()
     })
   })
+
+  it('auto-refreshes active preview on relevant contact_request:updated event', async () => {
+    mockedGetPreview.mockResolvedValue({
+      ...mockPreviewData,
+      contact_request_id: 'req-1',
+      contact_request_status: 'pending',
+    })
+
+    render(<CandidatePreviewModal candidateId={candidateId} onClose={vi.fn()} />)
+
+    await waitFor(() => {
+      expect(mockedGetPreview).toHaveBeenCalledTimes(1)
+    })
+
+    mockedGetPreview.mockResolvedValueOnce({
+      ...mockPreviewData,
+      contact_request_id: 'req-1',
+      contact_request_status: 'accepted',
+      can_request_contact: false,
+    })
+
+    fireEvent(
+      window,
+      new CustomEvent('contact_request:updated', {
+        detail: { entity_id: 'req-1', candidate_id: candidateId },
+      }),
+    )
+
+    await waitFor(() => {
+      expect(mockedGetPreview).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('ignores contact_request:updated events for other candidates/requests', async () => {
+    mockedGetPreview.mockResolvedValue({
+      ...mockPreviewData,
+      contact_request_id: 'req-1',
+      contact_request_status: 'pending',
+    })
+
+    render(<CandidatePreviewModal candidateId={candidateId} onClose={vi.fn()} />)
+
+    await waitFor(() => {
+      expect(mockedGetPreview).toHaveBeenCalledTimes(1)
+    })
+
+    fireEvent(
+      window,
+      new CustomEvent('contact_request:updated', {
+        detail: { entity_id: 'other-req', candidate_id: 'other-cand' },
+      }),
+    )
+
+    expect(mockedGetPreview).toHaveBeenCalledTimes(1)
+  })
+
+  it('cleans up event listener on unmount and does not refresh when closed', async () => {
+    mockedGetPreview.mockResolvedValue({
+      ...mockPreviewData,
+      contact_request_id: 'req-1',
+    })
+
+    const { unmount } = render(
+      <CandidatePreviewModal candidateId={candidateId} onClose={vi.fn()} />,
+    )
+
+    await waitFor(() => {
+      expect(mockedGetPreview).toHaveBeenCalledTimes(1)
+    })
+
+    unmount()
+
+    fireEvent(
+      window,
+      new CustomEvent('contact_request:updated', {
+        detail: { entity_id: 'req-1', candidate_id: candidateId },
+      }),
+    )
+
+    expect(mockedGetPreview).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not reveal contact details automatically without user clicking reveal', async () => {
+    mockedGetPreview.mockResolvedValue({
+      ...mockPreviewData,
+      contact_request_id: 'req-1',
+      contact_request_status: 'pending',
+    })
+
+    render(<CandidatePreviewModal candidateId={candidateId} onClose={vi.fn()} />)
+
+    await waitFor(() => {
+      expect(mockedGetPreview).toHaveBeenCalledTimes(1)
+    })
+
+    mockedGetPreview.mockResolvedValueOnce({
+      ...mockPreviewData,
+      contact_request_id: 'req-1',
+      contact_request_status: 'accepted',
+      can_request_contact: false,
+    })
+
+    fireEvent(
+      window,
+      new CustomEvent('contact_request:updated', {
+        detail: { entity_id: 'req-1', candidate_id: candidateId },
+      }),
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Đã được cấp quyền')).toBeInTheDocument()
+    })
+
+    expect(mockedGetContact).not.toHaveBeenCalled()
+    expect(screen.queryByText(/@/)).not.toBeInTheDocument()
+  })
 })

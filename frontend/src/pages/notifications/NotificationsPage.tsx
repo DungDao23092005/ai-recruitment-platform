@@ -702,6 +702,7 @@ export function getBadgeVariant(type: string): 'success' | 'warning' | 'info' | 
     case 'application_submitted':
     case 'offer_accepted':
     case 'account_unlocked':
+    case 'contact_request_accepted':
       return 'success';
 
     case 'interview_updated':
@@ -710,6 +711,7 @@ export function getBadgeVariant(type: string): 'success' | 'warning' | 'info' | 
     case 'interview_assigned':
     case 'evaluation_submitted':
     case 'company_invitation':
+    case 'contact_request_received':
       return 'info';
 
     case 'interview_cancelled':
@@ -722,7 +724,14 @@ export function getBadgeVariant(type: string): 'success' | 'warning' | 'info' | 
     case 'candidate_paid_quota_exhausted':
     case 'candidate_free_quota_exhausted':
     case 'candidate_returned_to_free':
+    case 'contact_request_declined':
       return 'warning';
+
+    case 'contact_request_revoked':
+      return 'destructive';
+
+    case 'contact_request_expired':
+      return 'neutral';
 
     default:
       return 'neutral';
@@ -754,6 +763,11 @@ export function formatNotificationType(type: string): string {
     candidate_returned_to_free: 'Quay lại gói miễn phí',
     account_unlocked: 'Mở khóa tài khoản',
     company_invitation: 'Lời mời tham gia công ty',
+    contact_request_received: 'Yêu cầu kết nối mới',
+    contact_request_accepted: 'Đã chấp nhận kết nối',
+    contact_request_declined: 'Đã từ chối kết nối',
+    contact_request_revoked: 'Đã thu hồi kết nối',
+    contact_request_expired: 'Yêu cầu hết hạn',
   };
   return typeMap[type] || type;
 }

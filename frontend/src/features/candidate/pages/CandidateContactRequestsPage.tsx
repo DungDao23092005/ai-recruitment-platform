@@ -22,6 +22,7 @@ import {
   getCandidateIncomingContactRequests,
   revokeContactAuthorization,
 } from '@/api/contactRequests'
+import { CONTACT_REQUEST_UPDATED_DOM_EVENT } from '@/hooks/useNotificationStream'
 import type {
   CandidateContactRequestRead,
   ContactRequestStatus,
@@ -71,6 +72,23 @@ export function CandidateContactRequestsPage() {
 
   useEffect(() => {
     void loadRequests(activeFilter)
+  }, [activeFilter])
+
+  useEffect(() => {
+    const handleContactRequestUpdated = () => {
+      void loadRequests(activeFilter)
+    }
+
+    window.addEventListener(
+      CONTACT_REQUEST_UPDATED_DOM_EVENT,
+      handleContactRequestUpdated,
+    )
+    return () => {
+      window.removeEventListener(
+        CONTACT_REQUEST_UPDATED_DOM_EVENT,
+        handleContactRequestUpdated,
+      )
+    }
   }, [activeFilter])
 
   useEffect(() => {

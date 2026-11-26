@@ -807,7 +807,11 @@ class TestContactRequestNotificationAndEmailDelivery:
             status=ContactRequestStatus.PENDING,
             expires_at=utc_now() + timedelta(days=10),
         )
-        session.get.return_value = make_candidate_profile(candidate_id=candidate_id, full_name="Candidate B")
+        session.get.return_value = make_candidate_profile(
+            candidate_id=candidate_id,
+            full_name="Candidate B",
+            user=make_user(email="candidate_b@example.com"),
+        )
 
         service = ContactRequestService(session)
         service._get_request_with_relations = AsyncMock(return_value=req)
@@ -815,6 +819,7 @@ class TestContactRequestNotificationAndEmailDelivery:
         service._resolve_response_recipients = AsyncMock(return_value=[requester_user])
         service.notifications.create_notification = AsyncMock()
         service.email_service.send_request_accepted_email = AsyncMock()
+        service.email_service.send_candidate_authorization_granted_email = AsyncMock()
 
         asyncio.run(service.accept_request(req.id, candidate_id))
 
@@ -827,6 +832,12 @@ class TestContactRequestNotificationAndEmailDelivery:
         email_kwargs = service.email_service.send_request_accepted_email.call_args[1]
         assert email_kwargs["to_email"] == "recruiter@example.com"
         assert email_kwargs["recipient_user_id"] is None
+
+        # Candidate Q1 confirmation email
+        assert service.email_service.send_candidate_authorization_granted_email.called
+        cand_email_kwargs = service.email_service.send_candidate_authorization_granted_email.call_args[1]
+        assert cand_email_kwargs["to_email"] == "candidate_b@example.com"
+        assert cand_email_kwargs["request_id"] == req.id
 
     def test_decline_request_enqueues_email_and_notification_to_requester(self):
         session = make_session()
@@ -853,6 +864,7 @@ class TestContactRequestNotificationAndEmailDelivery:
         notif_kwargs = service.notifications.create_notification.call_args[1]
         assert notif_kwargs["user_id"] == requester_id
         assert notif_kwargs["notification_type"] == "contact_request_declined"
+        assert "30 ngày" in notif_kwargs["content"]
 
         assert service.email_service.send_request_declined_email.called
         email_kwargs = service.email_service.send_request_declined_email.call_args[1]
@@ -867,7 +879,11 @@ class TestContactRequestNotificationAndEmailDelivery:
             requester_user_id=requester_id,
             status=ContactRequestStatus.ACCEPTED,
         )
-        session.get.return_value = make_candidate_profile(candidate_id=candidate_id, full_name="Candidate D")
+        session.get.return_value = make_candidate_profile(
+            candidate_id=candidate_id,
+            full_name="Candidate D",
+            user=make_user(email="candidate_d@example.com"),
+        )
 
         service = ContactRequestService(session)
         service._get_request_with_relations = AsyncMock(return_value=req)
@@ -875,6 +891,7 @@ class TestContactRequestNotificationAndEmailDelivery:
         service._resolve_response_recipients = AsyncMock(return_value=[requester_user])
         service.notifications.create_notification = AsyncMock()
         service.email_service.send_request_revoked_email = AsyncMock()
+        service.email_service.send_candidate_authorization_revoked_email = AsyncMock()
 
         asyncio.run(service.revoke_authorization(req.id, candidate_id))
 
@@ -882,10 +899,17 @@ class TestContactRequestNotificationAndEmailDelivery:
         notif_kwargs = service.notifications.create_notification.call_args[1]
         assert notif_kwargs["user_id"] == requester_id
         assert notif_kwargs["notification_type"] == "contact_request_revoked"
+        assert "90 ngày" in notif_kwargs["content"]
 
         assert service.email_service.send_request_revoked_email.called
         email_kwargs = service.email_service.send_request_revoked_email.call_args[1]
         assert email_kwargs["to_email"] == "recruiter@example.com"
+
+        # Candidate Q1 confirmation email
+        assert service.email_service.send_candidate_authorization_revoked_email.called
+        cand_email_kwargs = service.email_service.send_candidate_authorization_revoked_email.call_args[1]
+        assert cand_email_kwargs["to_email"] == "candidate_d@example.com"
+        assert cand_email_kwargs["request_id"] == req.id
 
 
 class TestInactiveRequesterFallbackD2:

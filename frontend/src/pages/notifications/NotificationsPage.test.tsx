@@ -2,7 +2,7 @@
 import { render, screen, waitFor, act } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { NotificationsPage } from '@/pages/notifications/NotificationsPage';
+import { NotificationsPage, getBadgeVariant, formatNotificationType } from '@/pages/notifications/NotificationsPage';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import { useOptionalWorkspace } from '@/contexts/WorkspaceContext';
 import * as notificationsApi from '@/api/notifications';
@@ -1998,6 +1998,45 @@ describe('NotificationsPage', () => {
         });
       });
 
+      it('maps all 5 contact request notification types to approved Vietnamese labels and badge variants', () => {
+        const testCases: Array<{
+          type: string;
+          expectedLabel: string;
+          expectedVariant: 'success' | 'warning' | 'info' | 'destructive' | 'neutral';
+        }> = [
+          {
+            type: 'contact_request_received',
+            expectedLabel: 'Yêu cầu kết nối mới',
+            expectedVariant: 'info',
+          },
+          {
+            type: 'contact_request_accepted',
+            expectedLabel: 'Đã chấp nhận kết nối',
+            expectedVariant: 'success',
+          },
+          {
+            type: 'contact_request_declined',
+            expectedLabel: 'Đã từ chối kết nối',
+            expectedVariant: 'warning',
+          },
+          {
+            type: 'contact_request_revoked',
+            expectedLabel: 'Đã thu hồi kết nối',
+            expectedVariant: 'destructive',
+          },
+          {
+            type: 'contact_request_expired',
+            expectedLabel: 'Yêu cầu hết hạn',
+            expectedVariant: 'neutral',
+          },
+        ];
+
+        for (const tc of testCases) {
+          expect(formatNotificationType(tc.type)).toBe(tc.expectedLabel);
+          expect(getBadgeVariant(tc.type)).toBe(tc.expectedVariant);
+        }
+      });
+
       it('navigates candidate to /candidate/contact-requests?id={entity_id} on contact_request_received', async () => {
         vi.mocked(useAuth).mockReturnValue(mockUser('candidate'));
         const notif = {
@@ -2221,6 +2260,45 @@ describe('NotificationsPage', () => {
         await waitFor(() => {
           expect(notificationsApi.getNotifications).toHaveBeenCalledTimes(2);
         });
+      });
+
+      it('maps all 5 contact request notification types to approved Vietnamese labels and badge variants', () => {
+        const testCases: Array<{
+          type: string;
+          expectedLabel: string;
+          expectedVariant: 'success' | 'warning' | 'info' | 'destructive' | 'neutral';
+        }> = [
+          {
+            type: 'contact_request_received',
+            expectedLabel: 'Yêu cầu kết nối mới',
+            expectedVariant: 'info',
+          },
+          {
+            type: 'contact_request_accepted',
+            expectedLabel: 'Đã chấp nhận kết nối',
+            expectedVariant: 'success',
+          },
+          {
+            type: 'contact_request_declined',
+            expectedLabel: 'Đã từ chối kết nối',
+            expectedVariant: 'warning',
+          },
+          {
+            type: 'contact_request_revoked',
+            expectedLabel: 'Đã thu hồi kết nối',
+            expectedVariant: 'destructive',
+          },
+          {
+            type: 'contact_request_expired',
+            expectedLabel: 'Yêu cầu hết hạn',
+            expectedVariant: 'neutral',
+          },
+        ];
+
+        for (const tc of testCases) {
+          expect(formatNotificationType(tc.type)).toBe(tc.expectedLabel);
+          expect(getBadgeVariant(tc.type)).toBe(tc.expectedVariant);
+        }
       });
     });
   });

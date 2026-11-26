@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import { render, act, waitFor } from '@testing-library/react';
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { useNotificationStream } from '@/hooks/useNotificationStream';
+import { useNotificationStream, CONTACT_REQUEST_UPDATED_DOM_EVENT } from '@/hooks/useNotificationStream';
 import { useUnreadCountStore } from '@/stores/useUnreadCountStore';
 import * as notificationsApi from '@/api/notifications';
 import { useAuth } from '@/contexts/AuthContext';
@@ -925,6 +925,74 @@ describe('useNotificationStream', () => {
 
       expect(listener).not.toHaveBeenCalled();
       window.removeEventListener('subscription:changed', listener);
+    });
+  });
+
+  describe('Contact request domain event bridge (contact_request:updated)', () => {
+    it('rebroadcasts contact_request notifications as contact_request:updated without contact PII', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const listener = vi.fn();
+      window.addEventListener(CONTACT_REQUEST_UPDATED_DOM_EVENT, listener);
+
+      const notifDetail = {
+        id: 'notif-cr-1',
+        title: 'Yêu cầu kết nối mới',
+        content: 'Công ty Acme muốn kết nối với bạn.',
+        notification_type: 'contact_request_received',
+        entity_type: 'contact_request',
+        entity_id: 'req-uuid-1',
+        is_read: false,
+        created_at: new Date().toISOString(),
+      };
+
+      act(() => {
+        es.emitEvent('notification.created', notifDetail);
+      });
+      await flushMicrotasks();
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      const dispatchedEvent = listener.mock.calls[0][0] as CustomEvent;
+      expect(dispatchedEvent.detail).toEqual(notifDetail);
+
+      // Verify privacy: detail does not leak raw email or phone
+      const detailStr = JSON.stringify(dispatchedEvent.detail);
+      expect(detailStr).not.toMatch(/09\d{8}/);
+      expect(detailStr).not.toMatch(/candidate@/);
+
+      window.removeEventListener(CONTACT_REQUEST_UPDATED_DOM_EVENT, listener);
+    });
+
+    it('does not rebroadcast unrelated notifications as contact_request:updated', async () => {
+      setupUnreadCountMock(1);
+      renderHook();
+      await flushMicrotasks();
+
+      const es = getEventSource();
+      act(() => { es.emitOpen(); });
+      await flushMicrotasks();
+
+      const listener = vi.fn();
+      window.addEventListener(CONTACT_REQUEST_UPDATED_DOM_EVENT, listener);
+
+      act(() => {
+        es.emitEvent('notification.created', {
+          id: 'notif-app-1',
+          notification_type: 'new_application',
+          entity_type: 'application',
+          entity_id: 'app-uuid-1',
+        });
+      });
+      await flushMicrotasks();
+
+      expect(listener).not.toHaveBeenCalled();
+      window.removeEventListener(CONTACT_REQUEST_UPDATED_DOM_EVENT, listener);
     });
   });
 

@@ -32,6 +32,7 @@ export const JOB_LISTING_UPDATED_DOM_EVENT = 'job:listing:updated';
 // can silently invalidate their cached state without a manual reload. The
 // detail is an invalidation signal only - never authoritative entitlement data.
 export const USER_SUBSCRIPTION_CHANGED_DOM_EVENT = 'subscription:changed';
+export const CONTACT_REQUEST_UPDATED_DOM_EVENT = 'contact_request:updated';
 
 const SUBSCRIPTION_ENTITY_TYPE = 'subscription';
 const SUBSCRIPTION_NOTIFICATION_TYPE_PREFIX = 'subscription_';
@@ -320,6 +321,14 @@ export function useNotificationStream() {
           if (isSubscriptionNotification(data)) {
             window.dispatchEvent(
               new CustomEvent(USER_SUBSCRIPTION_CHANGED_DOM_EVENT, { detail: data })
+            );
+          }
+
+          // Bridge contact request notifications for active recruiter preview modal
+          // and candidate contact requests page.
+          if (data?.entity_type === 'contact_request') {
+            window.dispatchEvent(
+              new CustomEvent(CONTACT_REQUEST_UPDATED_DOM_EVENT, { detail: data })
             );
           }
         } catch (error) {

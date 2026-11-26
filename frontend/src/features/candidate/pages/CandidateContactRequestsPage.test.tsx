@@ -1,4 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { CandidateContactRequestsPage } from './CandidateContactRequestsPage'
 import {
@@ -54,15 +55,24 @@ const mockRequests: CandidateContactRequestRead[] = [
   },
 ]
 
+function renderPage(initialEntries = ['/candidate/contact-requests']) {
+  return render(
+    <MemoryRouter initialEntries={initialEntries}>
+      <CandidateContactRequestsPage />
+    </MemoryRouter>,
+  )
+}
+
 describe('CandidateContactRequestsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    window.HTMLElement.prototype.scrollIntoView = vi.fn()
   })
 
   it('renders list of incoming contact requests on mount', async () => {
     mockedGetRequests.mockResolvedValue(mockRequests)
 
-    render(<CandidateContactRequestsPage />)
+    renderPage()
 
     await waitFor(() => {
       expect(screen.getByText('Tech Unicorn Vietnam')).toBeInTheDocument()
@@ -76,7 +86,7 @@ describe('CandidateContactRequestsPage', () => {
   it('renders empty state when no requests found', async () => {
     mockedGetRequests.mockResolvedValue([])
 
-    render(<CandidateContactRequestsPage />)
+    renderPage()
 
     await waitFor(() => {
       expect(
@@ -93,7 +103,7 @@ describe('CandidateContactRequestsPage', () => {
       responded_at: new Date().toISOString(),
     })
 
-    render(<CandidateContactRequestsPage />)
+    renderPage()
 
     await waitFor(() => {
       expect(screen.getByText('Tech Unicorn Vietnam')).toBeInTheDocument()
@@ -118,7 +128,7 @@ describe('CandidateContactRequestsPage', () => {
       responded_at: new Date().toISOString(),
     })
 
-    render(<CandidateContactRequestsPage />)
+    renderPage()
 
     await waitFor(() => {
       expect(screen.getByText('Tech Unicorn Vietnam')).toBeInTheDocument()
@@ -143,7 +153,7 @@ describe('CandidateContactRequestsPage', () => {
       revoked_at: new Date().toISOString(),
     })
 
-    render(<CandidateContactRequestsPage />)
+    renderPage()
 
     await waitFor(() => {
       expect(screen.getByText('Global AI Labs')).toBeInTheDocument()
@@ -163,7 +173,7 @@ describe('CandidateContactRequestsPage', () => {
   it('switches filter tab and queries with filter', async () => {
     mockedGetRequests.mockResolvedValue(mockRequests)
 
-    render(<CandidateContactRequestsPage />)
+    renderPage()
 
     await waitFor(() => {
       expect(mockedGetRequests).toHaveBeenCalledWith(undefined)
@@ -174,6 +184,76 @@ describe('CandidateContactRequestsPage', () => {
 
     await waitFor(() => {
       expect(mockedGetRequests).toHaveBeenCalledWith('pending')
+    })
+  })
+
+  it('highlights target contact request card when id query parameter matches', async () => {
+    mockedGetRequests.mockResolvedValue(mockRequests)
+
+    renderPage(['/candidate/contact-requests?id=req-1'])
+
+    await waitFor(() => {
+      expect(screen.getByText('Tech Unicorn Vietnam')).toBeInTheDocument()
+    })
+
+    const targetCard = screen.getByTestId('target-contact-request-card')
+    expect(targetCard).toBeInTheDocument()
+    expect(targetCard).toHaveAttribute('id', 'contact-request-req-1')
+    expect(targetCard).toHaveClass('ring-2', 'ring-primary', 'border-primary', 'bg-primary/5')
+  })
+
+  it('refreshes requests list when contact_request:updated event is dispatched', async () => {
+    mockedGetRequests.mockResolvedValue(mockRequests)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(mockedGetRequests).toHaveBeenCalledTimes(1)
+      expect(mockedGetRequests).toHaveBeenCalledWith(undefined)
+    })
+
+    fireEvent(
+      window,
+      new CustomEvent('contact_request:updated', {
+        detail: { entity_id: 'req-1', entity_type: 'contact_request' },
+      }),
+    )
+
+    await waitFor(() => {
+      expect(mockedGetRequests).toHaveBeenCalledTimes(2)
+      expect(mockedGetRequests).toHaveBeenLastCalledWith(undefined)
+    })
+  })
+
+  it('preserves active filter tab when contact_request:updated triggers refresh', async () => {
+    mockedGetRequests.mockResolvedValue(mockRequests)
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(mockedGetRequests).toHaveBeenCalledTimes(1)
+    })
+
+    // Switch to pending tab
+    const pendingTab = screen.getByRole('button', { name: 'Chờ phản hồi' })
+    fireEvent.click(pendingTab)
+
+    await waitFor(() => {
+      expect(mockedGetRequests).toHaveBeenCalledWith('pending')
+      expect(mockedGetRequests).toHaveBeenCalledTimes(2)
+    })
+
+    // Dispatch event
+    fireEvent(
+      window,
+      new CustomEvent('contact_request:updated', {
+        detail: { entity_id: 'req-1', entity_type: 'contact_request' },
+      }),
+    )
+
+    await waitFor(() => {
+      expect(mockedGetRequests).toHaveBeenCalledTimes(3)
+      expect(mockedGetRequests).toHaveBeenLastCalledWith('pending')
     })
   })
 })

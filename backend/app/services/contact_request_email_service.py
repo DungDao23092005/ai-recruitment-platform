@@ -12,6 +12,8 @@ Strict privacy rules:
     * contact_request:declined:{request_id}[:{recipient_user_id}]
     * contact_request:revoked:{request_id}[:{recipient_user_id}]
     * contact_request:expired:{request_id}
+    * contact_request:candidate_accepted:{request_id}
+    * contact_request:candidate_revoked:{request_id}
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.email_outbox import EmailOutbox
 from app.services.email_outbox_service import enqueue_email
 from app.services.email_outbox_worker import signal_dispatch_after_commit
@@ -34,12 +37,21 @@ EVENT_CONTACT_REQUEST_ACCEPTED = "contact_request_accepted"
 EVENT_CONTACT_REQUEST_DECLINED = "contact_request_declined"
 EVENT_CONTACT_REQUEST_REVOKED = "contact_request_revoked"
 EVENT_CONTACT_REQUEST_EXPIRED = "contact_request_expired"
+EVENT_CANDIDATE_AUTHORIZATION_GRANTED = "candidate_authorization_granted"
+EVENT_CANDIDATE_AUTHORIZATION_REVOKED = "candidate_authorization_revoked"
 
+SUBJECT_PREFIX = "[AI Recruitment Platform]"
 _FONT = "Arial,Helvetica,sans-serif"
 
 
 def _esc(value: object) -> str:
     return html_module.escape(str(value), quote=True)
+
+
+def _build_action_url(path: str) -> str:
+    base = settings.FRONTEND_URL.rstrip("/")
+    clean_path = path if path.startswith("/") else f"/{path}"
+    return f"{base}{clean_path}"
 
 
 def _render(
@@ -52,6 +64,8 @@ def _render(
     intro: str,
     rows: list[tuple[str, str]],
     closing: str,
+    action_url: str | None = None,
+    action_label: str | None = None,
 ) -> tuple[str, str]:
     rows_html = "".join(
         "<tr>"
@@ -63,6 +77,20 @@ def _render(
         "</tr>"
         for label, value in rows
     )
+    cta_html = ""
+    if action_url and action_label:
+        cta_html = (
+            '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:20px 0 0;">'
+            "<tr>"
+            '<td align="center" style="border-radius:6px;background-color:#2563eb;">'
+            f'<a href="{_esc(action_url)}" target="_blank" '
+            f'style="display:inline-block;padding:10px 20px;font-family:{_FONT};font-size:14px;'
+            f'font-weight:600;color:#ffffff;text-decoration:none;border-radius:6px;">'
+            f"{_esc(action_label)}</a>"
+            "</td>"
+            "</tr>"
+            "</table>"
+        )
     html = (
         "<!DOCTYPE html>"
         '<html lang="vi"><head><meta charset="utf-8">'
@@ -89,6 +117,7 @@ def _render(
         f'style="margin:12px 0 0;">{rows_html}</table>'
         f'<p style="margin:16px 0 0;font-family:{_FONT};font-size:14px;'
         f'color:#374151;">{_esc(closing)}</p>'
+        f"{cta_html}"
         "</td></tr>"
         '<tr><td style="padding:16px 24px;border-top:1px solid #e5e7eb;'
         'background-color:#f9fafb;">'
@@ -106,7 +135,10 @@ def _render(
         "",
     ]
     text_lines.extend(f"{label}: {value}" for label, value in rows)
-    text_lines.extend(["", closing, "", "AI Recruitment Platform"])
+    text_lines.extend(["", closing])
+    if action_url and action_label:
+        text_lines.extend(["", f"{action_label}: {action_url}"])
+    text_lines.extend(["", "", "AI Recruitment Platform"])
     return html, "\n".join(text_lines)
 
 
@@ -129,7 +161,9 @@ class ContactRequestEmailService:
             return None
 
         idempotency_key = f"contact_request:received:{request_id}"
-        subject = f"Yêu cầu kết nối mới từ {company_name}"
+        subject = f"{SUBJECT_PREFIX} Yêu cầu kết nối mới từ {company_name}"
+        action_url = _build_action_url(f"/candidate/contact-requests?id={request_id}")
+        action_label = "Xem yêu cầu kết nối"
         html, text = _render(
             header_bg="#2563eb",
             badge_bg="#dbeafe",
@@ -142,6 +176,8 @@ class ContactRequestEmailService:
                 ("Mục đích", "Xem thông tin liên hệ và trao đổi cơ hội nghề nghiệp"),
             ],
             closing="Vui lòng đăng nhập vào tài khoản của bạn trên nền tảng để xem xét và phản hồi yêu cầu kết nối này.",
+            action_url=action_url,
+            action_label=action_label,
         )
 
         row = await enqueue_email(
@@ -169,9 +205,18 @@ class ContactRequestEmailService:
         if not to_email:
             return None
 
-        suffix = f":{recipient_user_id}" if recipient_user_id is not None else ""
+        is_fallback = recipient_user_id is not None
+        suffix = f":{recipient_user_id}" if is_fallback else ""
         idempotency_key = f"contact_request:accepted:{request_id}{suffix}"
-        subject = f"Ứng viên {candidate_name} đã chấp nhận yêu cầu liên hệ"
+        subject = f"{SUBJECT_PREFIX} Ứng viên {candidate_name} đã chấp nhận yêu cầu liên hệ"
+
+        if is_fallback:
+            action_url = _build_action_url("/recruiter/workspace")
+            action_label = "Quản lý thành viên"
+        else:
+            action_url = _build_action_url("/recruiter/candidate-search")
+            action_label = "Xem danh sách ứng viên"
+
         html, text = _render(
             header_bg="#16a34a",
             badge_bg="#dcfce7",
@@ -185,6 +230,8 @@ class ContactRequestEmailService:
                 ("Trạng thái", "Đã chấp nhận"),
             ],
             closing="Vui lòng đăng nhập vào nền tảng để xem thông tin liên hệ của ứng viên thông qua quy trình được cấp phép.",
+            action_url=action_url,
+            action_label=action_label,
         )
 
         row = await enqueue_email(
@@ -212,9 +259,18 @@ class ContactRequestEmailService:
         if not to_email:
             return None
 
-        suffix = f":{recipient_user_id}" if recipient_user_id is not None else ""
+        is_fallback = recipient_user_id is not None
+        suffix = f":{recipient_user_id}" if is_fallback else ""
         idempotency_key = f"contact_request:declined:{request_id}{suffix}"
-        subject = f"Ứng viên {candidate_name} đã từ chối yêu cầu liên hệ"
+        subject = f"{SUBJECT_PREFIX} Ứng viên {candidate_name} đã từ chối yêu cầu liên hệ"
+
+        if is_fallback:
+            action_url = _build_action_url("/recruiter/workspace")
+            action_label = "Quản lý thành viên"
+        else:
+            action_url = _build_action_url("/recruiter/candidate-search")
+            action_label = "Xem danh sách ứng viên"
+
         html, text = _render(
             header_bg="#dc2626",
             badge_bg="#fee2e2",
@@ -228,6 +284,8 @@ class ContactRequestEmailService:
                 ("Trạng thái", "Đã từ chối"),
             ],
             closing="Theo chính sách nền tảng, công ty có thể gửi lại yêu cầu sau thời gian chờ 30 ngày kể từ ngày từ chối.",
+            action_url=action_url,
+            action_label=action_label,
         )
 
         row = await enqueue_email(
@@ -255,9 +313,18 @@ class ContactRequestEmailService:
         if not to_email:
             return None
 
-        suffix = f":{recipient_user_id}" if recipient_user_id is not None else ""
+        is_fallback = recipient_user_id is not None
+        suffix = f":{recipient_user_id}" if is_fallback else ""
         idempotency_key = f"contact_request:revoked:{request_id}{suffix}"
-        subject = f"Ứng viên {candidate_name} đã thu hồi quyền liên hệ"
+        subject = f"{SUBJECT_PREFIX} Ứng viên {candidate_name} đã thu hồi quyền liên hệ"
+
+        if is_fallback:
+            action_url = _build_action_url("/recruiter/workspace")
+            action_label = "Quản lý thành viên"
+        else:
+            action_url = _build_action_url("/recruiter/candidate-search")
+            action_label = "Xem danh sách ứng viên"
+
         html, text = _render(
             header_bg="#d97706",
             badge_bg="#fef3c7",
@@ -271,6 +338,8 @@ class ContactRequestEmailService:
                 ("Trạng thái", "Đã thu hồi"),
             ],
             closing="Theo chính sách nền tảng, công ty có thể gửi lại yêu cầu sau thời gian chờ 90 ngày kể từ ngày thu hồi.",
+            action_url=action_url,
+            action_label=action_label,
         )
 
         row = await enqueue_email(
@@ -298,7 +367,9 @@ class ContactRequestEmailService:
             return None
 
         idempotency_key = f"contact_request:expired:{request_id}"
-        subject = f"Yêu cầu liên hệ với ứng viên {candidate_name} đã hết hạn"
+        subject = f"{SUBJECT_PREFIX} Yêu cầu liên hệ với ứng viên {candidate_name} đã hết hạn"
+        action_url = _build_action_url("/recruiter/candidate-search")
+        action_label = "Xem danh sách ứng viên"
         html, text = _render(
             header_bg="#4b5563",
             badge_bg="#f3f4f6",
@@ -313,11 +384,101 @@ class ContactRequestEmailService:
                 ("Thời hạn", "14 ngày"),
             ],
             closing="Bạn có thể gửi lại yêu cầu liên hệ khi các chính sách thời gian chờ và giới hạn yêu cầu (tối đa 2 yêu cầu trong vòng 180 ngày) cho phép.",
+            action_url=action_url,
+            action_label=action_label,
         )
 
         row = await enqueue_email(
             self.session,
             event_type=EVENT_CONTACT_REQUEST_EXPIRED,
+            to_email=to_email,
+            subject=subject,
+            html_body=html,
+            text_body=text,
+            idempotency_key=idempotency_key,
+        )
+        signal_dispatch_after_commit(self.session)
+        return row
+
+    async def send_candidate_authorization_granted_email(
+        self,
+        *,
+        to_email: str,
+        candidate_name: str,
+        company_name: str,
+        request_id: uuid.UUID,
+    ) -> Optional[EmailOutbox]:
+        """Send security confirmation to Candidate upon granting contact authorization (Q1)."""
+        if not to_email:
+            return None
+
+        idempotency_key = f"contact_request:candidate_accepted:{request_id}"
+        subject = f"{SUBJECT_PREFIX} Bạn đã cấp quyền xem thông tin liên hệ cho {company_name}"
+        action_url = _build_action_url("/candidate/contact-requests")
+        action_label = "Quản lý yêu cầu kết nối"
+        html, text = _render(
+            header_bg="#16a34a",
+            badge_bg="#dcfce7",
+            badge_text="#15803d",
+            badge_label="Xác nhận cấp quyền",
+            title=f"Bạn đã cấp quyền xem thông tin liên hệ cho {company_name}",
+            intro=f"Xin chào {candidate_name}, bạn đã chấp nhận yêu cầu kết nối từ công ty {company_name} và cấp quyền xem thông tin liên hệ.",
+            rows=[
+                ("Doanh nghiệp", company_name),
+                ("Trạng thái", "Đã cấp quyền"),
+            ],
+            closing="Doanh nghiệp này hiện có thể xem email và số điện thoại của bạn để trao đổi cơ hội nghề nghiệp. Mọi lượt truy cập đều được ghi nhật ký kiểm toán. Bạn có thể thu hồi quyền này bất cứ lúc nào trong trang quản lý yêu cầu kết nối.",
+            action_url=action_url,
+            action_label=action_label,
+        )
+
+        row = await enqueue_email(
+            self.session,
+            event_type=EVENT_CANDIDATE_AUTHORIZATION_GRANTED,
+            to_email=to_email,
+            subject=subject,
+            html_body=html,
+            text_body=text,
+            idempotency_key=idempotency_key,
+        )
+        signal_dispatch_after_commit(self.session)
+        return row
+
+    async def send_candidate_authorization_revoked_email(
+        self,
+        *,
+        to_email: str,
+        candidate_name: str,
+        company_name: str,
+        request_id: uuid.UUID,
+    ) -> Optional[EmailOutbox]:
+        """Send security confirmation to Candidate upon revoking contact authorization (Q1)."""
+        if not to_email:
+            return None
+
+        idempotency_key = f"contact_request:candidate_revoked:{request_id}"
+        subject = f"{SUBJECT_PREFIX} Bạn đã thu hồi quyền xem thông tin liên hệ từ {company_name}"
+        action_url = _build_action_url("/candidate/contact-requests")
+        action_label = "Quản lý yêu cầu kết nối"
+        html, text = _render(
+            header_bg="#d97706",
+            badge_bg="#fef3c7",
+            badge_text="#92400e",
+            badge_label="Thu hồi quyền liên hệ",
+            title=f"Bạn đã thu hồi quyền xem thông tin liên hệ từ {company_name}",
+            intro=f"Xin chào {candidate_name}, bạn đã thu hồi quyền xem thông tin liên hệ đối với công ty {company_name}.",
+            rows=[
+                ("Doanh nghiệp", company_name),
+                ("Trạng thái", "Đã thu hồi quyền"),
+            ],
+            closing="Doanh nghiệp này sẽ không còn quyền truy cập email hoặc số điện thoại của bạn trên nền tảng trừ khi bạn chấp nhận một yêu cầu kết nối mới.",
+            action_url=action_url,
+            action_label=action_label,
+        )
+
+        row = await enqueue_email(
+            self.session,
+            event_type=EVENT_CANDIDATE_AUTHORIZATION_REVOKED,
             to_email=to_email,
             subject=subject,
             html_body=html,
