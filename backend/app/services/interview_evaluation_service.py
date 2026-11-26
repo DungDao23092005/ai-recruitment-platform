@@ -15,7 +15,7 @@ from app.core.exceptions import (
     ForbiddenException,
 )
 from app.domain import hiring
-from app.domain.enums import MembershipRole, MembershipStatus
+from app.domain.enums import MembershipRole, MembershipStatus, UserRole
 from app.models import Application, Interview, InterviewEvaluation, User
 from app.models.interview_evaluation import (
     EVALUATION_STATUS_DRAFT,
@@ -191,6 +191,7 @@ class InterviewEvaluationService:
         self,
         rows: list[InterviewEvaluation],
         viewer_id: uuid.UUID,
+        is_platform_admin: bool = False,
     ) -> set[uuid.UUID]:
         own_draft_interview_ids = {
             row.interview_id
@@ -200,11 +201,29 @@ class InterviewEvaluationService:
         }
         active_ids: set[uuid.UUID] = set()
         for interview_id in own_draft_interview_ids:
-            if not await self.assignments.has_inactive_without_active_for_interview_user(
-                interview_id, viewer_id
-            ):
+            if is_platform_admin:
                 active_ids.add(interview_id)
+            else:
+                assignment = await self.assignments.get_active_for_interview_user(
+                    interview_id, viewer_id
+                )
+                if assignment is not None:
+                    active_ids.add(interview_id)
         return active_ids
+
+    async def _require_active_user_assignment(
+        self,
+        current_user: User,
+        interview_id: uuid.UUID,
+        message: str,
+    ) -> None:
+        if current_user.role == UserRole.ADMIN:
+            return
+        assignment = await self.assignments.get_active_for_interview_user(
+            interview_id, current_user.id
+        )
+        if assignment is None:
+            raise ForbiddenException(message)
 
     async def _require_active_workspace_assignment(
         self,
@@ -449,6 +468,11 @@ class InterviewEvaluationService:
         interview = await self._load_interview(
             current_user, application_id, interview_id
         )
+        await self._require_active_user_assignment(
+            current_user,
+            interview.id,
+            "Only assigned evaluators can evaluate this interview",
+        )
         return await self._create_draft(
             interview_id=interview.id,
             application_id=application_id,
@@ -466,7 +490,9 @@ class InterviewEvaluationService:
         rows = await self.evaluations.list_by_interview(interview_id)
         active_interview_ids = (
             await self._active_draft_interview_ids_for_legacy_list(
-                rows, current_user.id
+                rows,
+                current_user.id,
+                is_platform_admin=(current_user.role == UserRole.ADMIN),
             )
         )
         visible = self._visible_evaluations(
@@ -488,7 +514,9 @@ class InterviewEvaluationService:
         rows = await self.evaluations.list_by_application(application_id)
         active_interview_ids = (
             await self._active_draft_interview_ids_for_legacy_list(
-                rows, current_user.id
+                rows,
+                current_user.id,
+                is_platform_admin=(current_user.role == UserRole.ADMIN),
             )
         )
         visible = self._visible_evaluations(
@@ -511,12 +539,11 @@ class InterviewEvaluationService:
         )
         self._authorize_author(current_user.id, evaluation)
         self._ensure_draft(evaluation)
-        if await self.assignments.has_inactive_without_active_for_interview_user(
-            evaluation.interview_id, current_user.id
-        ):
-            raise ForbiddenException(
-                "Only assigned evaluators can modify an evaluation"
-            )
+        await self._require_active_user_assignment(
+            current_user,
+            evaluation.interview_id,
+            "Only assigned evaluators can modify an evaluation",
+        )
         return await self._update_draft(
             evaluation=evaluation,
             actor_id=current_user.id,
@@ -534,12 +561,11 @@ class InterviewEvaluationService:
         )
         self._authorize_author(current_user.id, evaluation)
         self._ensure_draft(evaluation)
-        if await self.assignments.has_inactive_without_active_for_interview_user(
-            evaluation.interview_id, current_user.id
-        ):
-            raise ForbiddenException(
-                "Only assigned evaluators can delete an evaluation"
-            )
+        await self._require_active_user_assignment(
+            current_user,
+            evaluation.interview_id,
+            "Only assigned evaluators can delete an evaluation",
+        )
         await self._delete_draft(
             evaluation=evaluation,
             actor_id=current_user.id,
@@ -556,12 +582,11 @@ class InterviewEvaluationService:
         )
         self._authorize_author(current_user.id, evaluation)
         self._ensure_draft(evaluation)
-        if await self.assignments.has_inactive_without_active_for_interview_user(
-            evaluation.interview_id, current_user.id
-        ):
-            raise ForbiddenException(
-                "Only assigned evaluators can submit an evaluation"
-            )
+        await self._require_active_user_assignment(
+            current_user,
+            evaluation.interview_id,
+            "Only assigned evaluators can submit an evaluation",
+        )
         return await self._submit(
             evaluation=evaluation,
             actor_id=current_user.id,

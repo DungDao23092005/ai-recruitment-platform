@@ -80,6 +80,14 @@ def evaluated(recruiter_client, candidate_client, run_async):
             },
         )
     ).json()
+    me = run_async(recruiter_client.get(f"{API_V1}/users/me")).json()
+    run_async(
+        recruiter_client.post(
+            f"{API_V1}/interviews/{interview['id']}/assignments",
+            headers={"X-Company-ID": job["company_id"]},
+            json={"user_id": me["id"]},
+        )
+    )
     return {
         "application": application,
         "job": job,
@@ -230,6 +238,90 @@ class TestEvaluationIsolation:
 
         resp = run_async(candidate.get(_eval_url(app_id, interview_id)))
         assert resp.status_code == 403, resp.text
+
+    def test_unassigned_recruiter_cannot_create_evaluation(
+        self, evaluated, run_async
+    ):
+        app_id = evaluated["application"]["id"]
+        client = evaluated["recruiter_client"]
+        scheduled_at = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
+        interview2 = run_async(
+            client.post(
+                f"{API_V1}/applications/{app_id}/interviews",
+                json={
+                    "scheduled_at": scheduled_at,
+                    "duration_minutes": 30,
+                    "interview_type": "hr",
+                },
+            )
+        ).json()
+        resp = run_async(
+            client.post(
+                _eval_url(app_id, interview2["id"]),
+                json={"rating": 4},
+            )
+        )
+        assert resp.status_code == 403, resp.text
+        assert "assigned" in resp.json()["detail"].lower()
+
+    def test_revoked_assignment_recruiter_cannot_update_or_submit(
+        self, evaluated, run_async
+    ):
+        app_id = evaluated["application"]["id"]
+        client = evaluated["recruiter_client"]
+        job = evaluated["job"]
+        scheduled_at = (datetime.now(timezone.utc) + timedelta(days=6)).isoformat()
+        interview = run_async(
+            client.post(
+                f"{API_V1}/applications/{app_id}/interviews",
+                json={
+                    "scheduled_at": scheduled_at,
+                    "duration_minutes": 30,
+                    "interview_type": "technical",
+                },
+            )
+        ).json()
+        me = run_async(client.get(f"{API_V1}/users/me")).json()
+        assignment = run_async(
+            client.post(
+                f"{API_V1}/interviews/{interview['id']}/assignments",
+                headers={"X-Company-ID": job["company_id"]},
+                json={"user_id": me["id"]},
+            )
+        ).json()
+        # Create draft while assigned
+        evaluation = run_async(
+            client.post(
+                _eval_url(app_id, interview["id"]),
+                json={"rating": 3},
+            )
+        ).json()
+
+        # Unassign
+        unassign_resp = run_async(
+            client.delete(
+                f"{API_V1}/interviews/{interview['id']}/assignments/{assignment['id']}",
+                headers={"X-Company-ID": job["company_id"]},
+            )
+        )
+        assert unassign_resp.status_code == 204
+
+        # Updating draft after revocation must be 403
+        patch_resp = run_async(
+            client.patch(
+                _evaluation_url(app_id, evaluation["id"]),
+                json={"rating": 4},
+            )
+        )
+        assert patch_resp.status_code == 403
+        assert "assigned" in patch_resp.json()["detail"].lower()
+
+        # Submitting draft after revocation must be 403
+        submit_resp = run_async(
+            client.post(_submit_url(app_id, evaluation["id"]))
+        )
+        assert submit_resp.status_code == 403
+        assert "assigned" in submit_resp.json()["detail"].lower()
 
     def test_foreign_recruiter_gets_404(
         self, evaluated, recruiter_b_client, run_async

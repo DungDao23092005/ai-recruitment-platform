@@ -22,12 +22,14 @@ import {
   submitInterviewEvaluation,
   updateInterviewEvaluation,
 } from '@/api/applications'
+import { listInterviewAssignments } from '@/api/interviews'
 import { getErrorStatus, getFriendlyErrorMessage } from '@/utils/errors'
 import { formatDateTime } from '@/utils/datetime'
 import {
   EVALUATION_RECOMMENDATION_LABELS,
   type EvaluationRecommendation,
   type Interview,
+  type InterviewAssignment,
   type InterviewEvaluation,
 } from '@/types/application'
 
@@ -229,6 +231,54 @@ export function InterviewEvaluationList({
   const [editingId, setEditingId] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [assignmentsByInterview, setAssignmentsByInterview] = useState<
+    Record<string, InterviewAssignment[]>
+  >({})
+  const [loadingAssignments, setLoadingAssignments] = useState<
+    Record<string, boolean>
+  >({})
+
+  useEffect(() => {
+    let active = true
+    if (interviews.length === 0) {
+      setAssignmentsByInterview({})
+      setLoadingAssignments({})
+      return
+    }
+
+    interviews.forEach((interview) => {
+      setLoadingAssignments((prev) => ({ ...prev, [interview.id]: true }))
+      listInterviewAssignments(interview.id)
+        .then((assignments) => {
+          if (active) {
+            setAssignmentsByInterview((prev) => ({
+              ...prev,
+              [interview.id]: assignments,
+            }))
+            setLoadingAssignments((prev) => ({
+              ...prev,
+              [interview.id]: false,
+            }))
+          }
+        })
+        .catch(() => {
+          if (active) {
+            setAssignmentsByInterview((prev) => ({
+              ...prev,
+              [interview.id]: [],
+            }))
+            setLoadingAssignments((prev) => ({
+              ...prev,
+              [interview.id]: false,
+            }))
+          }
+        })
+    })
+
+    return () => {
+      active = false
+    }
+  }, [interviews])
 
   const load = useCallback(() => {
     if (interviews.length === 0) {
@@ -271,14 +321,27 @@ export function InterviewEvaluationList({
         evaluation.evaluator_id === currentUser?.id,
     )
 
+  const isAssigned = (interviewId: string) => {
+    if (currentUser?.role === 'admin') return true
+    if (loadingAssignments[interviewId]) return false
+    const assignments = assignmentsByInterview[interviewId]
+    if (!assignments) return false
+    return assignments.some((a) => a.user_id === currentUser?.id)
+  }
+
   const canManage = (evaluation: InterviewEvaluation) =>
     evaluation.evaluator_id === currentUser?.id &&
-    evaluation.status === 'draft'
+    evaluation.status === 'draft' &&
+    isAssigned(evaluation.interview_id)
 
   const handleCreate = async (
     interviewId: string,
     values: EvaluationFormValues,
   ) => {
+    if (!isAssigned(interviewId)) {
+      setError('Chỉ người phỏng vấn được phân công mới có thể đánh giá.')
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
@@ -480,18 +543,24 @@ export function InterviewEvaluationList({
                     </p>
                   </div>
                   {!mine && creatingFor !== interview.id ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setCreatingFor(interview.id)
-                        setEditingId(null)
-                        setError(null)
-                      }}
-                    >
-                      Thêm đánh giá
-                    </Button>
+                    isAssigned(interview.id) ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setCreatingFor(interview.id)
+                          setEditingId(null)
+                          setError(null)
+                        }}
+                      >
+                        Thêm đánh giá
+                      </Button>
+                    ) : !loadingAssignments[interview.id] ? (
+                      <span className="text-xs italic text-muted-foreground">
+                        Chỉ người phỏng vấn được phân công mới có thể đánh giá.
+                      </span>
+                    ) : null
                   ) : null}
                 </div>
 

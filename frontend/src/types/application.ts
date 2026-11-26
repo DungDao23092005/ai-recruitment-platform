@@ -1,4 +1,5 @@
 import type { ParsedJob } from '@/types/ai'
+import type { WorkspaceMember } from '@/types/workspace'
 
 export type ApplicationStatus =
   | 'applied'
@@ -164,6 +165,16 @@ export interface AssignedInterview {
   company_name: string
   candidate_name: string | null
   application_status: ApplicationStatus
+}
+
+export interface InterviewAssignment {
+  id: string
+  interview_id: string
+  user_id: string
+  assigned_by_id: string
+  created_at: string
+  updated_at: string
+  user?: WorkspaceMember
 }
 
 export interface InterviewerCandidate {

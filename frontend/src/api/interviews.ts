@@ -3,7 +3,11 @@ import type {
   AssignedInterview,
   CandidateScheduledInterview,
   Interview,
+  InterviewAssignment,
   InterviewCreate,
+  InterviewEvaluation,
+  InterviewEvaluationCreate,
+  InterviewEvaluationUpdate,
   InterviewUpdate,
   InterviewerApplication,
   InterviewerInterview,
@@ -93,4 +97,78 @@ export async function candidateActionInterview(
     },
   )
   return response
+}
+
+export async function listInterviewAssignments(
+  interviewId: string,
+): Promise<InterviewAssignment[]> {
+  return apiClient.get<InterviewAssignment[], InterviewAssignment[]>(
+    `/interviews/${interviewId}/assignments`,
+  )
+}
+
+export async function assignInterview(
+  interviewId: string,
+  userId: string,
+): Promise<InterviewAssignment> {
+  return apiClient.post<InterviewAssignment, InterviewAssignment>(
+    `/interviews/${interviewId}/assignments`,
+    { user_id: userId },
+  )
+}
+
+export const assignInterviewer = assignInterview
+
+export async function unassignInterview(
+  interviewId: string,
+  assignmentId: string,
+): Promise<void> {
+  await apiClient.delete(`/interviews/${interviewId}/assignments/${assignmentId}`)
+}
+
+export const unassignInterviewer = unassignInterview
+
+export async function listWorkspaceInterviewEvaluations(
+  interviewId: string,
+): Promise<InterviewEvaluation[]> {
+  return apiClient.get<InterviewEvaluation[], InterviewEvaluation[]>(
+    `/interviews/${interviewId}/evaluations`,
+  )
+}
+
+export async function createWorkspaceInterviewEvaluation(
+  interviewId: string,
+  data: InterviewEvaluationCreate,
+): Promise<InterviewEvaluation> {
+  return apiClient.post<InterviewEvaluation, InterviewEvaluation>(
+    `/interviews/${interviewId}/evaluations`,
+    data,
+  )
+}
+
+export async function updateWorkspaceInterviewEvaluation(
+  interviewId: string,
+  evaluationId: string,
+  data: InterviewEvaluationUpdate,
+): Promise<InterviewEvaluation> {
+  return apiClient.patch<InterviewEvaluation, InterviewEvaluation>(
+    `/interviews/${interviewId}/evaluations/${evaluationId}`,
+    data,
+  )
+}
+
+export async function submitWorkspaceInterviewEvaluation(
+  interviewId: string,
+  evaluationId: string,
+): Promise<InterviewEvaluation> {
+  return apiClient.post<InterviewEvaluation, InterviewEvaluation>(
+    `/interviews/${interviewId}/evaluations/${evaluationId}/submit`,
+  )
+}
+
+export async function deleteWorkspaceInterviewEvaluation(
+  interviewId: string,
+  evaluationId: string,
+): Promise<void> {
+  await apiClient.delete(`/interviews/${interviewId}/evaluations/${evaluationId}`)
 }

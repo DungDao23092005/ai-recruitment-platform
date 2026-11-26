@@ -1,14 +1,61 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { InterviewManager } from './InterviewManager'
-import type { Interview } from '@/types/application'
+import type { Interview, InterviewAssignment } from '@/types/application'
+import type { WorkspaceMember } from '@/types/workspace'
+import * as interviewsApi from '@/api/interviews'
+import * as workspacesApi from '@/api/workspaces'
 
 vi.mock('@/api/interviews', () => ({
   scheduleInterview: vi.fn(),
   updateInterview: vi.fn(),
   cancelInterview: vi.fn(),
+  listInterviewAssignments: vi.fn(),
+  assignInterview: vi.fn(),
+  unassignInterview: vi.fn(),
 }))
+
+vi.mock('@/api/workspaces', () => ({
+  getWorkspaceMembers: vi.fn(),
+}))
+
+const mockedListAssignments = vi.mocked(interviewsApi.listInterviewAssignments)
+const mockedAssignInterview = vi.mocked(interviewsApi.assignInterview)
+const mockedUnassignInterview = vi.mocked(interviewsApi.unassignInterview)
+const mockedGetWorkspaceMembers = vi.mocked(workspacesApi.getWorkspaceMembers)
+
+const mockMember1: WorkspaceMember = {
+  membership_id: 'membership-1',
+  user_id: 'user-1',
+  email: 'alice@example.com',
+  full_name: 'Alice Admin',
+  role: 'admin',
+  status: 'active',
+  joined_at: '2026-01-01T00:00:00Z',
+  revoked_at: null,
+}
+
+const mockMember2: WorkspaceMember = {
+  membership_id: 'membership-2',
+  user_id: 'user-2',
+  email: 'bob@example.com',
+  full_name: 'Bob Interviewer',
+  role: 'interviewer',
+  status: 'active',
+  joined_at: '2026-01-01T00:00:00Z',
+  revoked_at: null,
+}
+
+const mockAssignment1: InterviewAssignment = {
+  id: 'assign-1',
+  interview_id: 'interview-1',
+  user_id: 'user-1',
+  assigned_by_id: 'admin-1',
+  created_at: '2026-08-19T00:00:00Z',
+  updated_at: '2026-08-19T00:00:00Z',
+  user: mockMember1,
+}
 
 const mockScheduledInterview: Interview = {
   id: 'interview-1',
@@ -63,6 +110,8 @@ function renderManager(overrides: { initialInterviews?: Interview[] } = {}) {
 describe('InterviewManager', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockedListAssignments.mockResolvedValue([])
+    mockedGetWorkspaceMembers.mockResolvedValue([])
   })
 
   it('renders candidate_confirmed interviews with "Đã xác nhận" badge', () => {
@@ -179,6 +228,104 @@ describe('InterviewManager', () => {
 
       const button = screen.getByRole('button', { name: /Tạo câu hỏi AI/i })
       expect(button).toBeDisabled()
+    })
+  })
+
+  describe('Interview Assignments', () => {
+    it('shows empty state when no interviewers assigned', async () => {
+      mockedListAssignments.mockResolvedValue([])
+      renderManager({ initialInterviews: [mockScheduledInterview] })
+
+      await waitFor(() => {
+        expect(screen.getByText('Chưa có người phỏng vấn nào được phân công.')).toBeInTheDocument()
+      })
+    })
+
+    it('renders assigned participants with name, email and role', async () => {
+      mockedListAssignments.mockResolvedValue([mockAssignment1])
+      mockedGetWorkspaceMembers.mockResolvedValue([mockMember1, mockMember2])
+
+      renderManager({ initialInterviews: [mockScheduledInterview] })
+
+      await waitFor(() => {
+        expect(screen.getByText('Alice Admin')).toBeInTheDocument()
+      })
+      expect(screen.getByText('(alice@example.com)')).toBeInTheDocument()
+      expect(screen.getByText('Quản trị viên')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Hủy phân công/ })).toBeInTheDocument()
+    })
+
+    it('filters out already assigned members from the assignment dropdown', async () => {
+      mockedListAssignments.mockResolvedValue([mockAssignment1])
+      mockedGetWorkspaceMembers.mockResolvedValue([mockMember1, mockMember2])
+
+      renderManager({ initialInterviews: [mockScheduledInterview] })
+
+      await waitFor(() => {
+        expect(screen.getByText('Alice Admin')).toBeInTheDocument()
+      })
+
+      // The select dropdown should only contain mockMember2 (Bob), not mockMember1 (Alice)
+      const select = screen.getByRole('combobox')
+      const options = Array.from(select.querySelectorAll('option')).map((o) => o.textContent)
+      expect(options).toContain('-- Chọn thành viên để phân công --')
+      expect(options.some((text) => text?.includes('Bob Interviewer'))).toBe(true)
+      expect(options.some((text) => text?.includes('Alice Admin'))).toBe(false)
+    })
+
+    it('calls assignInterview when assigning a member', async () => {
+      mockedListAssignments.mockResolvedValue([])
+      mockedGetWorkspaceMembers.mockResolvedValue([mockMember2])
+      mockedAssignInterview.mockResolvedValue({
+        id: 'assign-2',
+        interview_id: 'interview-1',
+        user_id: 'user-2',
+        assigned_by_id: 'admin-1',
+        created_at: '2026-08-19T00:00:00Z',
+        updated_at: '2026-08-19T00:00:00Z',
+        user: mockMember2,
+      })
+
+      renderManager({ initialInterviews: [mockScheduledInterview] })
+
+      await waitFor(() => {
+        expect(screen.getByText('Chưa có người phỏng vấn nào được phân công.')).toBeInTheDocument()
+      })
+
+      const select = screen.getByRole('combobox')
+      fireEvent.change(select, { target: { value: 'user-2' } })
+
+      const assignButton = screen.getByRole('button', { name: 'Phân công' })
+      expect(assignButton).not.toBeDisabled()
+      fireEvent.click(assignButton)
+
+      await waitFor(() => {
+        expect(mockedAssignInterview).toHaveBeenCalledWith('interview-1', 'user-2')
+      })
+      expect(await screen.findByText('Bob Interviewer')).toBeInTheDocument()
+    })
+
+    it('calls unassignInterview when unassigning a participant', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+      mockedListAssignments.mockResolvedValue([mockAssignment1])
+      mockedGetWorkspaceMembers.mockResolvedValue([mockMember1])
+      mockedUnassignInterview.mockResolvedValue(undefined as unknown as void)
+
+      renderManager({ initialInterviews: [mockScheduledInterview] })
+
+      await waitFor(() => {
+        expect(screen.getByText('Alice Admin')).toBeInTheDocument()
+      })
+
+      const unassignButton = screen.getByRole('button', { name: /Hủy phân công/ })
+      fireEvent.click(unassignButton)
+
+      await waitFor(() => {
+        expect(mockedUnassignInterview).toHaveBeenCalledWith('interview-1', 'assign-1')
+      })
+      expect(screen.queryByText('Alice Admin')).not.toBeInTheDocument()
+      expect(screen.getByText('Chưa có người phỏng vấn nào được phân công.')).toBeInTheDocument()
+      confirmSpy.mockRestore()
     })
   })
 

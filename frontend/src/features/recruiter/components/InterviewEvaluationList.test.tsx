@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 
 import { InterviewEvaluationList } from './InterviewEvaluationList'
 import * as applicationsApi from '@/api/applications'
+import * as interviewsApi from '@/api/interviews'
 import { useAuth } from '@/contexts/AuthContext'
 import type { Interview, InterviewEvaluation } from '@/types/application'
 
@@ -18,9 +19,14 @@ vi.mock('@/api/applications', () => ({
   submitInterviewEvaluation: vi.fn(),
 }))
 
+vi.mock('@/api/interviews', () => ({
+  listInterviewAssignments: vi.fn(),
+}))
+
 const mockedList = vi.mocked(applicationsApi.listApplicationEvaluations)
 const mockedCreate = vi.mocked(applicationsApi.createInterviewEvaluation)
 const mockedSubmit = vi.mocked(applicationsApi.submitInterviewEvaluation)
+const mockedListAssignments = vi.mocked(interviewsApi.listInterviewAssignments)
 const mockedUseAuth = vi.mocked(useAuth)
 
 function mockUser(id = 'user-1', role: 'recruiter' | 'admin' = 'recruiter') {
@@ -76,6 +82,16 @@ const myEvaluation: InterviewEvaluation = {
 beforeEach(() => {
   vi.clearAllMocks()
   mockUser()
+  mockedListAssignments.mockResolvedValue([
+    {
+      id: 'assign-1',
+      interview_id: 'interview-1',
+      user_id: 'user-1',
+      assigned_by_id: 'admin-1',
+      created_at: '2026-02-01T00:00:00Z',
+      updated_at: '2026-02-01T00:00:00Z',
+    },
+  ])
 })
 
 describe('InterviewEvaluationList', () => {
@@ -217,6 +233,65 @@ describe('InterviewEvaluationList', () => {
       expect(screen.getByRole('alert')).toHaveTextContent(
         'Bạn đã đánh giá buổi phỏng vấn này',
       )
+    })
+  })
+
+  describe('Assignment-based permissions', () => {
+    it('shows notice and hides "Thêm đánh giá" button when recruiter is unassigned', async () => {
+      mockedList.mockResolvedValue([])
+      mockedListAssignments.mockResolvedValue([]) // No assignments
+
+      render(
+        <InterviewEvaluationList applicationId="app-1" interviews={[interview]} />,
+      )
+
+      await waitFor(() => {
+        expect(
+          screen.getByText('Chưa có đánh giá nào cho buổi phỏng vấn này.'),
+        ).toBeInTheDocument()
+      })
+      expect(
+        screen.getByText('Chỉ người phỏng vấn được phân công mới có thể đánh giá.'),
+      ).toBeInTheDocument()
+      expect(
+        screen.queryByRole('button', { name: 'Thêm đánh giá' }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('allows platform admin to add evaluation even without assignment', async () => {
+      mockUser('admin-user', 'admin')
+      mockedList.mockResolvedValue([])
+      mockedListAssignments.mockResolvedValue([]) // No assignments
+
+      render(
+        <InterviewEvaluationList applicationId="app-1" interviews={[interview]} />,
+      )
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole('button', { name: 'Thêm đánh giá' }),
+        ).toBeInTheDocument()
+      })
+      expect(
+        screen.queryByText('Chỉ người phỏng vấn được phân công mới có thể đánh giá.'),
+      ).not.toBeInTheDocument()
+    })
+
+    it('hides edit and delete controls if user was unassigned after drafting', async () => {
+      mockedList.mockResolvedValue([myEvaluation])
+      mockedListAssignments.mockResolvedValue([]) // Assignment revoked
+
+      render(
+        <InterviewEvaluationList applicationId="app-1" interviews={[interview]} />,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Bản nháp')).toBeInTheDocument()
+      })
+      // canManage requires isAssigned, so buttons shouldn't be rendered
+      expect(screen.queryByRole('button', { name: 'Gửi' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Sửa đánh giá' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Xóa đánh giá' })).not.toBeInTheDocument()
     })
   })
 })
