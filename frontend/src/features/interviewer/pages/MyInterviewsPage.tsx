@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  AlertTriangle,
   CalendarClock,
   ClipboardList,
   FileText,
@@ -23,6 +24,7 @@ import {
 } from '@/components/ui/card'
 import { EmptyState } from '@/components/ui/empty-state'
 import { ErrorBanner } from '@/components/ui/error-banner'
+import { Modal } from '@/components/ui/modal'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
@@ -125,6 +127,7 @@ export function MyInterviewsPage() {
   const [evaluationsError, setEvaluationsError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [submittingEvaluation, setSubmittingEvaluation] = useState(false)
+  const [isConfirmSubmitOpen, setIsConfirmSubmitOpen] = useState(false)
   const [formValues, setFormValues] = useState<EvaluationFormValues>(EMPTY_FORM)
 
   const loadInterviews = useCallback(async () => {
@@ -186,6 +189,7 @@ export function MyInterviewsPage() {
   }, [])
 
   useEffect(() => {
+    setIsConfirmSubmitOpen(false)
     if (selectedInterview) {
       void loadEvaluations(selectedInterview.id)
     } else {
@@ -254,15 +258,18 @@ export function MyInterviewsPage() {
     }
   }
 
-  const handleSubmitEvaluation = async () => {
-    if (!selectedInterview) return
-    if (
-      !window.confirm(
-        'Gửi đánh giá này? Sau khi gửi, đánh giá sẽ không thể sửa hoặc xóa.',
-      )
-    ) {
-      return
-    }
+  const handleOpenConfirmSubmit = () => {
+    setActionError(null)
+    setIsConfirmSubmitOpen(true)
+  }
+
+  const handleCloseConfirmSubmit = () => {
+    if (submittingEvaluation) return
+    setIsConfirmSubmitOpen(false)
+  }
+
+  const handleConfirmSubmit = async () => {
+    if (!selectedInterview || submittingEvaluation) return
     setSubmittingEvaluation(true)
     setActionError(null)
     try {
@@ -297,6 +304,7 @@ export function MyInterviewsPage() {
         evaluationId,
       )
       await loadEvaluations(selectedInterview.id)
+      setIsConfirmSubmitOpen(false)
     } catch (err) {
       setActionError(getFriendlyErrorMessage(err))
     } finally {
@@ -557,7 +565,7 @@ export function MyInterviewsPage() {
                     </p>
                   ) : (
                     <>
-                      {actionError ? (
+                      {actionError && !isConfirmSubmitOpen ? (
                         <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm font-medium text-destructive">
                           {actionError}
                         </p>
@@ -701,8 +709,8 @@ export function MyInterviewsPage() {
                             <Button
                               type="button"
                               size="sm"
-                              onClick={handleSubmitEvaluation}
-                              isLoading={submittingEvaluation}
+                              onClick={handleOpenConfirmSubmit}
+                              disabled={submittingEvaluation}
                             >
                               <Send className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
                               Gửi đánh giá
@@ -773,6 +781,73 @@ export function MyInterviewsPage() {
           </div>
         </div>
       )}
+
+      {isConfirmSubmitOpen ? (
+        <Modal
+          size="sm"
+          onClose={handleCloseConfirmSubmit}
+          ariaLabel="Xác nhận gửi đánh giá"
+          title="Xác nhận gửi đánh giá"
+          description="Bạn đã hoàn tất đánh giá ứng viên? Vui lòng kiểm tra điểm số, nhận xét và đề xuất tuyển dụng trước khi gửi."
+          footer={
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleCloseConfirmSubmit}
+                disabled={submittingEvaluation}
+              >
+                Quay lại
+              </Button>
+              <Button
+                type="button"
+                onClick={handleConfirmSubmit}
+                isLoading={submittingEvaluation}
+                disabled={submittingEvaluation}
+              >
+                <Send className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+                Gửi đánh giá
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-3 py-1">
+            <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-xs text-foreground">
+              <AlertTriangle
+                className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                aria-hidden="true"
+              />
+              <span>Sau khi gửi, phiếu đánh giá sẽ không thể chỉnh sửa hoặc xóa.</span>
+            </div>
+
+            <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
+              <div className="flex items-center justify-between">
+                <span>Điểm đánh giá:</span>
+                <span className="font-semibold text-foreground">
+                  {formValues.rating} / 5
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Đề xuất:</span>
+                <span className="font-medium text-foreground">
+                  {formValues.recommendation
+                    ? EVALUATION_RECOMMENDATION_LABELS[formValues.recommendation]
+                    : 'Chưa có đề xuất'}
+                </span>
+              </div>
+            </div>
+
+            {actionError ? (
+              <p
+                role="alert"
+                className="rounded-md bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive"
+              >
+                {actionError}
+              </p>
+            ) : null}
+          </div>
+        </Modal>
+      ) : null}
     </div>
   )
 }

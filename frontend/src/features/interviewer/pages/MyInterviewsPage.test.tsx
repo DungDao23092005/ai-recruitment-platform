@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -260,8 +260,131 @@ describe('MyInterviewsPage', () => {
       confirmSpy.mockRestore()
     })
 
-    it('submits evaluation and enforces immutability', async () => {
-      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    it('opens in-app confirmation modal without calling window.confirm or submission API', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm')
+      mockedListEvaluations.mockResolvedValue([myDraft])
+
+      render(
+        <MemoryRouter>
+          <MyInterviewsPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Bản nháp')).toBeInTheDocument()
+      })
+
+      const submitButton = screen.getByRole('button', { name: /Gửi đánh giá/i })
+      fireEvent.click(submitButton)
+
+      const dialog = screen.getByRole('dialog', { name: 'Xác nhận gửi đánh giá' })
+      expect(dialog).toBeInTheDocument()
+      expect(within(dialog).getByText('Xác nhận gửi đánh giá')).toBeInTheDocument()
+      expect(
+        within(dialog).getByText(
+          'Bạn đã hoàn tất đánh giá ứng viên? Vui lòng kiểm tra điểm số, nhận xét và đề xuất tuyển dụng trước khi gửi.',
+        ),
+      ).toBeInTheDocument()
+      expect(
+        within(dialog).getByText(
+          'Sau khi gửi, phiếu đánh giá sẽ không thể chỉnh sửa hoặc xóa.',
+        ),
+      ).toBeInTheDocument()
+      expect(within(dialog).getByText('4 / 5')).toBeInTheDocument()
+      expect(within(dialog).getByText('Nên tuyển')).toBeInTheDocument()
+
+      expect(confirmSpy).not.toHaveBeenCalled()
+      expect(mockedSubmitEvaluation).not.toHaveBeenCalled()
+      expect(mockedUpdateEvaluation).not.toHaveBeenCalled()
+      expect(mockedCreateEvaluation).not.toHaveBeenCalled()
+
+      confirmSpy.mockRestore()
+    })
+
+    it('shows fallback text when no recommendation is selected in draft', async () => {
+      mockedListEvaluations.mockResolvedValue([
+        { ...myDraft, recommendation: null },
+      ])
+
+      render(
+        <MemoryRouter>
+          <MyInterviewsPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Bản nháp')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /Gửi đánh giá/i }))
+
+      const dialog = screen.getByRole('dialog', { name: 'Xác nhận gửi đánh giá' })
+      expect(within(dialog).getByText('Chưa có đề xuất')).toBeInTheDocument()
+    })
+
+    it('cancels confirmation via "Quay lại" without submitting and preserves draft inputs', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm')
+      mockedListEvaluations.mockResolvedValue([myDraft])
+
+      render(
+        <MemoryRouter>
+          <MyInterviewsPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Bản nháp')).toBeInTheDocument()
+      })
+
+      fireEvent.change(screen.getByLabelText('Ghi chú'), {
+        target: { value: 'Updated note before cancel' },
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /Gửi đánh giá/i }))
+
+      const dialog = screen.getByRole('dialog', { name: 'Xác nhận gửi đánh giá' })
+      expect(dialog).toBeInTheDocument()
+
+      const backButton = within(dialog).getByRole('button', { name: 'Quay lại' })
+      fireEvent.click(backButton)
+
+      expect(screen.queryByRole('dialog', { name: 'Xác nhận gửi đánh giá' })).not.toBeInTheDocument()
+      expect(mockedSubmitEvaluation).not.toHaveBeenCalled()
+      expect(confirmSpy).not.toHaveBeenCalled()
+      expect(screen.getByLabelText('Ghi chú')).toHaveValue('Updated note before cancel')
+
+      confirmSpy.mockRestore()
+    })
+
+    it('cancels confirmation via Escape key without submitting', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm')
+      mockedListEvaluations.mockResolvedValue([myDraft])
+
+      render(
+        <MemoryRouter>
+          <MyInterviewsPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Bản nháp')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /Gửi đánh giá/i }))
+
+      expect(screen.getByRole('dialog', { name: 'Xác nhận gửi đánh giá' })).toBeInTheDocument()
+
+      fireEvent.keyDown(document, { key: 'Escape' })
+
+      expect(screen.queryByRole('dialog', { name: 'Xác nhận gửi đánh giá' })).not.toBeInTheDocument()
+      expect(mockedSubmitEvaluation).not.toHaveBeenCalled()
+      expect(confirmSpy).not.toHaveBeenCalled()
+
+      confirmSpy.mockRestore()
+    })
+
+    it('submits evaluation via in-app dialog, closes modal, and enforces immutability', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm')
       mockedListEvaluations
         .mockResolvedValueOnce([myDraft])
         .mockResolvedValue([mySubmitted])
@@ -278,20 +401,169 @@ describe('MyInterviewsPage', () => {
         expect(screen.getByText('Bản nháp')).toBeInTheDocument()
       })
 
-      const submitButton = screen.getByRole('button', { name: /Gửi đánh giá/i })
-      fireEvent.click(submitButton)
+      const submitFormButton = screen.getByRole('button', { name: /Gửi đánh giá/i })
+      fireEvent.click(submitFormButton)
+
+      const dialog = screen.getByRole('dialog', { name: 'Xác nhận gửi đánh giá' })
+      expect(dialog).toBeInTheDocument()
+
+      const confirmButton = within(dialog).getByRole('button', { name: /Gửi đánh giá/i })
+      fireEvent.click(confirmButton)
 
       await waitFor(() => {
+        expect(mockedUpdateEvaluation).toHaveBeenCalledWith('interview-1', 'eval-draft-1', {
+          rating: 4,
+          recommendation: 'hire',
+          strengths: 'Strong algorithms',
+          weaknesses: 'Needs async review',
+          notes: 'Good candidate overall',
+        })
         expect(mockedSubmitEvaluation).toHaveBeenCalledWith('interview-1', 'eval-draft-1')
       })
 
-      // After submission, it renders "Đã gửi" and no editable form buttons
       await waitFor(() => {
+        expect(screen.queryByRole('dialog', { name: 'Xác nhận gửi đánh giá' })).not.toBeInTheDocument()
         expect(screen.getByText('Đã gửi')).toBeInTheDocument()
       })
       expect(screen.queryByRole('button', { name: 'Lưu nháp' })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /Gửi đánh giá/i })).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /Xóa nháp/i })).not.toBeInTheDocument()
+      expect(confirmSpy).not.toHaveBeenCalled()
+
+      confirmSpy.mockRestore()
+    })
+
+    it('submits evaluation for brand new scorecard (creates then submits)', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm')
+      mockedListEvaluations
+        .mockResolvedValueOnce([])
+        .mockResolvedValue([mySubmitted])
+      mockedCreateEvaluation.mockResolvedValue(myDraft)
+      mockedSubmitEvaluation.mockResolvedValue(mySubmitted)
+
+      render(
+        <MemoryRouter>
+          <MyInterviewsPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(mockedListEvaluations).toHaveBeenCalledWith('interview-1')
+      })
+
+      fireEvent.change(await screen.findByLabelText('Điểm đánh giá'), {
+        target: { value: '4' },
+      })
+      fireEvent.change(screen.getByLabelText('Đề xuất'), {
+        target: { value: 'hire' },
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /Gửi đánh giá/i }))
+
+      const dialog = screen.getByRole('dialog', { name: 'Xác nhận gửi đánh giá' })
+      expect(dialog).toBeInTheDocument()
+
+      fireEvent.click(within(dialog).getByRole('button', { name: /Gửi đánh giá/i }))
+
+      await waitFor(() => {
+        expect(mockedCreateEvaluation).toHaveBeenCalledWith('interview-1', {
+          rating: 4,
+          recommendation: 'hire',
+          strengths: null,
+          weaknesses: null,
+          notes: null,
+        })
+        expect(mockedSubmitEvaluation).toHaveBeenCalledWith('interview-1', 'eval-draft-1')
+      })
+
+      await waitFor(() => {
+        expect(screen.getByText('Đã gửi')).toBeInTheDocument()
+      })
+      expect(confirmSpy).not.toHaveBeenCalled()
+
+      confirmSpy.mockRestore()
+    })
+
+    it('disables dialog actions while submission is pending', async () => {
+      let resolveSubmit!: (val: InterviewEvaluation) => void
+      const submitPromise = new Promise<InterviewEvaluation>((r) => {
+        resolveSubmit = r
+      })
+      mockedListEvaluations.mockResolvedValue([myDraft])
+      mockedUpdateEvaluation.mockResolvedValue(myDraft)
+      mockedSubmitEvaluation.mockReturnValue(submitPromise)
+
+      render(
+        <MemoryRouter>
+          <MyInterviewsPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Bản nháp')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /Gửi đánh giá/i }))
+
+      const dialog = screen.getByRole('dialog', { name: 'Xác nhận gửi đánh giá' })
+      const confirmBtn = within(dialog).getByRole('button', { name: /Gửi đánh giá/i })
+      const backBtn = within(dialog).getByRole('button', { name: 'Quay lại' })
+
+      fireEvent.click(confirmBtn)
+
+      await waitFor(() => {
+        expect(confirmBtn).toBeDisabled()
+        expect(backBtn).toBeDisabled()
+      })
+
+      // Try closing via Escape while pending - should not close
+      fireEvent.keyDown(document, { key: 'Escape' })
+      expect(dialog).toBeInTheDocument()
+
+      await act(async () => {
+        resolveSubmit(mySubmitted)
+      })
+    })
+
+    it('displays accessible error and preserves draft on submission failure, allowing retry', async () => {
+      const confirmSpy = vi.spyOn(window, 'confirm')
+      mockedListEvaluations.mockResolvedValue([myDraft])
+      const apiError = new Error('Submission network error')
+      mockedUpdateEvaluation.mockResolvedValue(myDraft)
+      mockedSubmitEvaluation
+        .mockRejectedValueOnce(apiError)
+        .mockResolvedValueOnce(mySubmitted)
+
+      render(
+        <MemoryRouter>
+          <MyInterviewsPage />
+        </MemoryRouter>,
+      )
+
+      await waitFor(() => {
+        expect(screen.getByText('Bản nháp')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /Gửi đánh giá/i }))
+
+      const dialog = screen.getByRole('dialog', { name: 'Xác nhận gửi đánh giá' })
+      const confirmBtn = within(dialog).getByRole('button', { name: /Gửi đánh giá/i })
+      fireEvent.click(confirmBtn)
+
+      await waitFor(() => {
+        expect(within(dialog).getByRole('alert')).toBeInTheDocument()
+      })
+      expect(dialog).toBeInTheDocument()
+      expect(confirmBtn).toBeEnabled()
+
+      // Retry submission
+      fireEvent.click(confirmBtn)
+
+      await waitFor(() => {
+        expect(mockedSubmitEvaluation).toHaveBeenCalledTimes(2)
+      })
+
+      expect(confirmSpy).not.toHaveBeenCalled()
       confirmSpy.mockRestore()
     })
 
