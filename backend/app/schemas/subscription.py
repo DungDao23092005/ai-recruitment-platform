@@ -15,6 +15,7 @@ from app.domain.enums import (
     SubscriptionStatus,
     SubscriptionUsageFeatureType,
     SubscriptionUsageStatus,
+    UserRole,
 )
 from app.schemas.recruitment_plan import RecruitmentPlanRead
 
@@ -209,6 +210,7 @@ class AdminSubscriptionListItem(BaseModel):
     user_id: uuid.UUID
     user_email: Optional[str] = None
     user_full_name: Optional[str] = None
+    user_role: Optional[UserRole] = None
     plan_id: uuid.UUID
     plan_name: Optional[str] = None
     plan_audience: Optional[PlanAudience] = None

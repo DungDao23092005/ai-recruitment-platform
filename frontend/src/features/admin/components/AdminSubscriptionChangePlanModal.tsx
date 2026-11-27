@@ -6,7 +6,45 @@ import { Modal } from '@/components/ui/modal'
 import { Textarea } from '@/components/ui/textarea'
 import { Select } from '@/components/ui/select'
 import { getFriendlyErrorMessage } from '@/utils/errors'
-import type { AdminPlanRead, AdminSubscriptionListItem } from '@/types/admin'
+import type { AdminPlanAudience, AdminPlanRead, AdminSubscriptionListItem } from '@/types/admin'
+
+export function resolveSubscriptionTargetAudience(
+  subscription: {
+    scope?: string | null
+    user_role?: string | null
+    plan_audience?: string | null
+  },
+): AdminPlanAudience {
+  // Priority 1 — Subscription scope
+  if (subscription.scope === 'candidate_personal') {
+    return 'candidate'
+  }
+  if (
+    subscription.scope === 'company_recruiting' ||
+    subscription.scope === 'legacy_recruiter_personal'
+  ) {
+    return 'company'
+  }
+
+  // Priority 2 — Target user's role
+  if (subscription.user_role === 'candidate') {
+    return 'candidate'
+  }
+  if (subscription.user_role === 'recruiter') {
+    return 'company'
+  }
+
+  // Priority 3 — Current subscription plan audience
+  if (subscription.plan_audience === 'candidate') {
+    return 'candidate'
+  }
+  if (subscription.plan_audience === 'company') {
+    return 'company'
+  }
+
+  // Priority 4 — Default
+  return 'company'
+}
 
 interface AdminSubscriptionChangePlanModalProps {
   subscription: AdminSubscriptionListItem
@@ -26,15 +64,25 @@ export function AdminSubscriptionChangePlanModal({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const targetAudience = resolveSubscriptionTargetAudience(subscription)
+
   useEffect(() => {
     let cancelled = false
     const load = async () => {
       try {
-        const data = await getAdminPlans({ skip: 0, limit: 100 })
+        setLoadingPlans(true)
+        const data = await getAdminPlans({
+          skip: 0,
+          limit: 100,
+          audience: targetAudience,
+        })
         if (!cancelled) {
           setPlans(
             data.items.filter(
-              (plan) => plan.is_active && plan.id !== subscription.plan_id,
+              (plan) =>
+                plan.is_active &&
+                plan.id !== subscription.plan_id &&
+                (plan.plan_audience ?? 'company') === targetAudience,
             ),
           )
         }
@@ -48,10 +96,10 @@ export function AdminSubscriptionChangePlanModal({
     return () => {
       cancelled = true
     }
-  }, [subscription.plan_id])
+  }, [subscription.plan_id, targetAudience])
 
   const handleSubmit = async () => {
-    if (!targetPlanId) {
+    if (!targetPlanId || plans.length === 0) {
       setError('Vui lòng chọn gói mới')
       return
     }
@@ -93,7 +141,11 @@ export function AdminSubscriptionChangePlanModal({
             <X className="h-4 w-4 mr-2" aria-hidden="true" />
             Hủy
           </Button>
-          <Button onClick={handleSubmit} isLoading={submitting} disabled={submitting}>
+          <Button
+            onClick={handleSubmit}
+            isLoading={submitting}
+            disabled={submitting || loadingPlans || plans.length === 0}
+          >
             Xác nhận đổi gói
           </Button>
         </>
@@ -105,15 +157,28 @@ export function AdminSubscriptionChangePlanModal({
           gói được thực hiện ngay và giữ nguyên hạn mức đã sử dụng.
         </p>
 
+        {!loadingPlans && plans.length === 0 ? (
+          <p
+            role="status"
+            className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground"
+          >
+            Không có gói dịch vụ nào khác khả dụng cho đối tượng này.
+          </p>
+        ) : null}
+
         <Select
           id="change-plan-target"
           label="Gói mới"
           value={targetPlanId}
           onChange={(event) => setTargetPlanId(event.target.value)}
-          disabled={submitting || loadingPlans}
+          disabled={submitting || loadingPlans || plans.length === 0}
         >
           <option value="">
-            {loadingPlans ? 'Đang tải danh sách gói...' : 'Chọn gói mới'}
+            {loadingPlans
+              ? 'Đang tải danh sách gói...'
+              : plans.length === 0
+                ? 'Không có gói dịch vụ nào khác khả dụng'
+                : 'Chọn gói mới'}
           </option>
           {plans.map((plan) => (
             <option key={plan.id} value={plan.id}>

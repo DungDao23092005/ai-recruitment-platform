@@ -20,9 +20,10 @@ from app.domain.enums import (
     SubscriptionAuditAction,
     SubscriptionScope,
     SubscriptionStatus,
+    UserRole,
 )
 from app.domain.models.base import utc_now
-from app.models import PaymentOrder, Subscription
+from app.models import PaymentOrder, Subscription, User
 from app.repositories import (
     PaymentOrderRepository,
     RecruitmentPlanRepository,
@@ -845,3 +846,280 @@ class TestProvisionStaleExpiration:
         assert sub.user_id == user_id
         assert sub.plan_id == plan.id
         assert sub.status == SubscriptionStatus.ACTIVE
+
+
+class TestChangePlanAudienceValidation:
+    def _setup_service(
+        self,
+        sub: Subscription,
+        old_plan,
+        target_plan,
+        user=None,
+    ) -> AdminSubscriptionService:
+        service = make_service()
+        service.subscriptions.get_by_id_including_deleted = AsyncMock(return_value=sub)
+        service._lock_user = AsyncMock()
+        service.session.refresh = AsyncMock()
+        service._assert_no_unresolved_payment = AsyncMock()
+        service.plans.get_active_by_id = AsyncMock(return_value=target_plan)
+        service.plans.get_active_by_id_admin = AsyncMock(return_value=old_plan)
+        service._user_email = AsyncMock(return_value="user@example.com")
+        service._commit_and_refresh = AsyncMock()
+        if user is not None:
+            sub.user = user
+            service._load_user = AsyncMock(return_value=user)
+        return service
+
+    def _patch_side_effects(self):
+        mock_notif = MagicMock()
+        mock_notif.notify_subscription_plan_changed = AsyncMock()
+        return (
+            patch.object(admin_subscription_module, "NotificationService", return_value=mock_notif),
+            patch.object(admin_subscription_module, "schedule_plan_changed_email", AsyncMock()),
+            patch.object(admin_subscription_module, "schedule_admin_subscription_event"),
+        )
+
+    def test_candidate_scope_to_company_plan_raises_conflict(self):
+        old_plan_id = uuid.uuid4()
+        sub = make_subscription(
+            plan_id=old_plan_id,
+            scope=SubscriptionScope.CANDIDATE_PERSONAL,
+            job_posts_used=3,
+            ai_features_used=5,
+        )
+        old_plan = make_plan(id=old_plan_id, plan_audience=PlanAudience.CANDIDATE)
+        target = make_plan(plan_audience=PlanAudience.COMPANY)
+        service = self._setup_service(sub, old_plan, target)
+
+        with pytest.raises(ConflictException, match="Không thể đổi sang gói của đối tượng 'company'. Thuê bao này thuộc đối tượng 'candidate'."):
+            asyncio.run(
+                service.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    target_plan_id=target.id,
+                    reason="yêu cầu đổi gói",
+                )
+            )
+
+        assert sub.plan_id == old_plan_id
+        assert sub.job_posts_used == 3
+        assert sub.ai_features_used == 5
+        service._commit_and_refresh.assert_not_awaited()
+
+    def test_company_scope_to_candidate_plan_raises_conflict(self):
+        old_plan_id = uuid.uuid4()
+        sub = make_subscription(
+            plan_id=old_plan_id,
+            scope=SubscriptionScope.COMPANY_RECRUITING,
+            job_posts_used=2,
+            ai_features_used=1,
+        )
+        old_plan = make_plan(id=old_plan_id, plan_audience=PlanAudience.COMPANY)
+        target = make_plan(plan_audience=PlanAudience.CANDIDATE)
+        service = self._setup_service(sub, old_plan, target)
+
+        with pytest.raises(ConflictException, match="Không thể đổi sang gói của đối tượng 'candidate'. Thuê bao này thuộc đối tượng 'company'."):
+            asyncio.run(
+                service.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    target_plan_id=target.id,
+                    reason="yêu cầu đổi gói",
+                )
+            )
+
+        assert sub.plan_id == old_plan_id
+        assert sub.job_posts_used == 2
+        assert sub.ai_features_used == 1
+        service._commit_and_refresh.assert_not_awaited()
+
+    def test_legacy_recruiter_scope_to_candidate_plan_raises_conflict(self):
+        old_plan_id = uuid.uuid4()
+        sub = make_subscription(
+            plan_id=old_plan_id,
+            scope=SubscriptionScope.LEGACY_RECRUITER_PERSONAL,
+        )
+        old_plan = make_plan(id=old_plan_id, plan_audience=PlanAudience.COMPANY)
+        target = make_plan(plan_audience=PlanAudience.CANDIDATE)
+        service = self._setup_service(sub, old_plan, target)
+
+        with pytest.raises(ConflictException, match="Không thể đổi sang gói của đối tượng 'candidate'. Thuê bao này thuộc đối tượng 'company'."):
+            asyncio.run(
+                service.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    target_plan_id=target.id,
+                    reason="yêu cầu đổi gói",
+                )
+            )
+        assert sub.plan_id == old_plan_id
+        service._commit_and_refresh.assert_not_awaited()
+
+    def test_corrupted_candidate_scope_with_company_plan_can_remediate_to_candidate_plan(self):
+        old_plan_id = uuid.uuid4()
+        sub = make_subscription(
+            plan_id=old_plan_id,
+            scope=SubscriptionScope.CANDIDATE_PERSONAL,
+            ai_features_used=7,
+        )
+        old_plan = make_plan(id=old_plan_id, plan_audience=PlanAudience.COMPANY)
+        target = make_plan(plan_audience=PlanAudience.CANDIDATE)
+        service = self._setup_service(sub, old_plan, target)
+
+        p1, p2, p3 = self._patch_side_effects()
+        with p1, p2, p3:
+            res = asyncio.run(
+                service.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    target_plan_id=target.id,
+                    reason="Remediate corrupted subscription to candidate plan",
+                )
+            )
+
+        assert res.plan_id == target.id
+        assert res.ai_features_used == 7
+        service._commit_and_refresh.assert_awaited_once()
+
+    def test_valid_company_to_company_change_succeeds(self):
+        old_plan_id = uuid.uuid4()
+        sub = make_subscription(
+            plan_id=old_plan_id,
+            scope=SubscriptionScope.COMPANY_RECRUITING,
+            job_posts_used=4,
+        )
+        old_plan = make_plan(id=old_plan_id, plan_audience=PlanAudience.COMPANY)
+        target = make_plan(plan_audience=PlanAudience.COMPANY)
+        service = self._setup_service(sub, old_plan, target)
+
+        p1, p2, p3 = self._patch_side_effects()
+        with p1, p2, p3:
+            res = asyncio.run(
+                service.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    target_plan_id=target.id,
+                    reason="Company plan upgrade",
+                )
+            )
+
+        assert res.plan_id == target.id
+        assert res.job_posts_used == 4
+        service._commit_and_refresh.assert_awaited_once()
+
+    def test_valid_candidate_to_candidate_change_succeeds(self):
+        old_plan_id = uuid.uuid4()
+        sub = make_subscription(
+            plan_id=old_plan_id,
+            scope=SubscriptionScope.CANDIDATE_PERSONAL,
+            ai_features_used=3,
+        )
+        old_plan = make_plan(id=old_plan_id, plan_audience=PlanAudience.CANDIDATE)
+        target = make_plan(plan_audience=PlanAudience.CANDIDATE)
+        service = self._setup_service(sub, old_plan, target)
+
+        p1, p2, p3 = self._patch_side_effects()
+        with p1, p2, p3:
+            res = asyncio.run(
+                service.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    target_plan_id=target.id,
+                    reason="Candidate plan upgrade",
+                )
+            )
+
+        assert res.plan_id == target.id
+        assert res.ai_features_used == 3
+        service._commit_and_refresh.assert_awaited_once()
+
+    def test_scope_fallback_to_user_role(self):
+        old_plan_id = uuid.uuid4()
+        # Case A: User role CANDIDATE, scope is None -> target CANDIDATE succeeds
+        sub = make_subscription(plan_id=old_plan_id, scope=None)
+        user_cand = User(id=sub.user_id, role=UserRole.CANDIDATE, email="cand@example.com")
+        old_plan = make_plan(id=old_plan_id, plan_audience=None)
+        target_cand = make_plan(plan_audience=PlanAudience.CANDIDATE)
+        service = self._setup_service(sub, old_plan, target_cand, user=user_cand)
+
+        p1, p2, p3 = self._patch_side_effects()
+        with p1, p2, p3:
+            res = asyncio.run(
+                service.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    target_plan_id=target_cand.id,
+                    reason="Role fallback candidate",
+                )
+            )
+        assert res.plan_id == target_cand.id
+
+        # Case B: User role RECRUITER, scope is None -> target CANDIDATE raises Conflict
+        sub2 = make_subscription(plan_id=old_plan_id, scope=None)
+        user_rec = User(id=sub2.user_id, role=UserRole.RECRUITER, email="rec@example.com")
+        service2 = self._setup_service(sub2, old_plan, target_cand, user=user_rec)
+        with pytest.raises(ConflictException, match="Không thể đổi sang gói của đối tượng 'candidate'. Thuê bao này thuộc đối tượng 'company'."):
+            asyncio.run(
+                service2.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub2.id,
+                    target_plan_id=target_cand.id,
+                    reason="Role fallback recruiter to candidate conflict",
+                )
+            )
+
+    def test_plan_audience_fallback_when_scope_and_role_unresolved(self):
+        old_plan_id = uuid.uuid4()
+        # Scope is None, User role is ADMIN (neither candidate nor recruiter)
+        sub = make_subscription(plan_id=old_plan_id, scope=None)
+        user_admin = User(id=sub.user_id, role=UserRole.ADMIN, email="admin@example.com")
+        old_plan = make_plan(id=old_plan_id, plan_audience=PlanAudience.CANDIDATE)
+        target_cand = make_plan(plan_audience=PlanAudience.CANDIDATE)
+        service = self._setup_service(sub, old_plan, target_cand, user=user_admin)
+
+        p1, p2, p3 = self._patch_side_effects()
+        with p1, p2, p3:
+            res = asyncio.run(
+                service.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    target_plan_id=target_cand.id,
+                    reason="Plan audience fallback",
+                )
+            )
+        assert res.plan_id == target_cand.id
+
+    def test_default_to_company_when_all_sources_unavailable(self):
+        old_plan_id = uuid.uuid4()
+        # Scope is None, User role is ADMIN, plan_audience is None
+        sub = make_subscription(plan_id=old_plan_id, scope=None)
+        user_admin = User(id=sub.user_id, role=UserRole.ADMIN, email="admin@example.com")
+        old_plan = make_plan(id=old_plan_id, plan_audience=None)
+        target_cand = make_plan(plan_audience=PlanAudience.CANDIDATE)
+        service = self._setup_service(sub, old_plan, target_cand, user=user_admin)
+
+        # Priority 4 default is COMPANY, so target CANDIDATE plan must be rejected
+        with pytest.raises(ConflictException, match="Không thể đổi sang gói của đối tượng 'candidate'. Thuê bao này thuộc đối tượng 'company'."):
+            asyncio.run(
+                service.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    target_plan_id=target_cand.id,
+                    reason="Default to company conflict",
+                )
+            )
+
+        # Target COMPANY plan succeeds under Priority 4 default
+        target_comp = make_plan(plan_audience=PlanAudience.COMPANY)
+        service_comp = self._setup_service(sub, old_plan, target_comp, user=user_admin)
+        p1, p2, p3 = self._patch_side_effects()
+        with p1, p2, p3:
+            res = asyncio.run(
+                service_comp.change_plan(
+                    admin_id=uuid.uuid4(),
+                    subscription_id=sub.id,
+                    target_plan_id=target_comp.id,
+                    reason="Default to company succeeds",
+                )
+            )
+        assert res.plan_id == target_comp.id

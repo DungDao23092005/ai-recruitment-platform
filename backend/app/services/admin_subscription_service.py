@@ -18,6 +18,7 @@ from app.domain.enums import (
     SubscriptionAuditAction,
     SubscriptionScope,
     SubscriptionStatus,
+    UserRole,
 )
 from app.domain.models.base import utc_now
 from app.models import PaymentOrder, Subscription, SubscriptionAuditLog, User
@@ -307,6 +308,23 @@ class AdminSubscriptionService:
         old_plan_id = sub.plan_id
         old_plan_name = old_plan.name if old_plan else None
 
+        expected_audience = await self._resolve_expected_audience(sub, old_plan)
+        target_audience = getattr(target, "plan_audience", None) or PlanAudience.COMPANY
+        target_aud_val = (
+            target_audience.value
+            if hasattr(target_audience, "value")
+            else str(target_audience)
+        )
+        expected_aud_val = (
+            expected_audience.value
+            if hasattr(expected_audience, "value")
+            else str(expected_audience)
+        )
+        if target_aud_val != expected_aud_val:
+            raise ConflictException(
+                f"Không thể đổi sang gói của đối tượng '{target_aud_val}'. Thuê bao này thuộc đối tượng '{expected_aud_val}'."
+            )
+
         now = utc_now()
         # Mutate in place: the subscription row id, counters and usage ledger
         # are preserved so there is never a counter/ledger mismatch, and
@@ -424,6 +442,77 @@ class AdminSubscriptionService:
         return sub
 
     # -------------------------------------------------------------- internals
+
+    async def _resolve_expected_audience(
+        self,
+        sub: Subscription,
+        current_plan=None,
+    ) -> PlanAudience:
+        """Resolve the subscription's expected audience per the 4-tier policy:
+
+        Priority 1: Subscription scope
+          * candidate_personal -> candidate
+          * company_recruiting -> company
+          * legacy_recruiter_personal -> company
+        Priority 2: Target user's role
+          * UserRole.CANDIDATE -> candidate
+          * UserRole.RECRUITER -> company
+        Priority 3: Current subscription plan audience
+          * PlanAudience.CANDIDATE -> candidate
+          * PlanAudience.COMPANY -> company
+        Priority 4: Default -> company
+        """
+        # Priority 1 — Subscription scope
+        scope = getattr(sub, "scope", None)
+        scope_val = (
+            scope.value
+            if hasattr(scope, "value")
+            else (str(scope) if scope is not None else None)
+        )
+        if scope_val == SubscriptionScope.CANDIDATE_PERSONAL.value:
+            return PlanAudience.CANDIDATE
+        if scope_val in (
+            SubscriptionScope.COMPANY_RECRUITING.value,
+            SubscriptionScope.LEGACY_RECRUITER_PERSONAL.value,
+        ):
+            return PlanAudience.COMPANY
+
+        # Priority 2 — Target user's role
+        user = getattr(sub, "user", None)
+        if user is None and getattr(sub, "user_id", None):
+            try:
+                user = await self._load_user(sub.user_id)
+            except EntityNotFoundException:
+                user = None
+
+        if user is not None:
+            role = getattr(user, "role", None)
+            role_val = (
+                role.value
+                if hasattr(role, "value")
+                else (str(role) if role is not None else None)
+            )
+            if role_val == UserRole.CANDIDATE.value:
+                return PlanAudience.CANDIDATE
+            if role_val == UserRole.RECRUITER.value:
+                return PlanAudience.COMPANY
+
+        # Priority 3 — Current subscription plan audience
+        plan = current_plan or getattr(sub, "plan", None)
+        if plan is not None:
+            plan_aud = getattr(plan, "plan_audience", None)
+            plan_aud_val = (
+                plan_aud.value
+                if hasattr(plan_aud, "value")
+                else (str(plan_aud) if plan_aud is not None else None)
+            )
+            if plan_aud_val == PlanAudience.CANDIDATE.value:
+                return PlanAudience.CANDIDATE
+            if plan_aud_val == PlanAudience.COMPANY.value:
+                return PlanAudience.COMPANY
+
+        # Priority 4 — Default
+        return PlanAudience.COMPANY
 
     def _apply_plan_snapshot(
         self,
@@ -595,6 +684,7 @@ class AdminSubscriptionService:
         company = getattr(sub, "company", None)
         user = getattr(sub, "user", None)
         user_full_name: Optional[str] = None
+        user_role: Optional[UserRole] = None
         if user is not None:
             candidate_profile = getattr(user, "candidate_profile", None)
             recruiter_profile = getattr(user, "recruiter_profile", None)
@@ -602,11 +692,13 @@ class AdminSubscriptionService:
                 getattr(candidate_profile, "full_name", None)
                 or getattr(recruiter_profile, "full_name", None)
             )
+            user_role = getattr(user, "role", None)
         return AdminSubscriptionListItem(
             id=sub.id,
             user_id=sub.user_id,
             user_email=user_email,
             user_full_name=user_full_name,
+            user_role=user_role,
             plan_id=sub.plan_id,
             plan_name=plan.name if plan is not None else None,
             plan_audience=plan.plan_audience if plan is not None else None,

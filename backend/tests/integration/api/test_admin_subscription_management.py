@@ -373,6 +373,126 @@ class TestAdminChangePlan:
         sub = run(_load_subscription(sub_id))
         assert str(sub.plan_id) == plan_a["id"]
 
+    def test_change_plan_candidate_to_company_returns_409(
+        self, admin_client, run_async
+    ):
+        prefix = f"cross-c2co-{uuid.uuid4().hex[:8]}"
+        _free_plan, paid_plan = run(_create_candidate_free_and_paid_plans())
+        user_id = run(_create_candidate_user(prefix))
+        sub_id = run(_active_candidate_subscription(user_id, paid_plan))
+        company_plan = _create_plan(admin_client, run_async)
+
+        resp = run_async(
+            admin_client.post(
+                f"{API_V1}/admin/subscriptions/{sub_id}/change-plan",
+                json={
+                    "target_plan_id": company_plan["id"],
+                    "reason": "Thử đổi sang gói công ty trái phép",
+                },
+            )
+        )
+        assert resp.status_code == 409, resp.text
+        assert "company" in resp.json()["detail"]
+        assert "candidate" in resp.json()["detail"]
+
+        # Verify rejected change does not mutate subscription
+        sub = run(_load_subscription(sub_id))
+        assert str(sub.plan_id) == str(paid_plan["id"])
+
+    def test_change_plan_company_to_candidate_returns_409(
+        self, admin_client, run_async
+    ):
+        prefix = f"cross-co2c-{uuid.uuid4().hex[:8]}"
+        _free_plan, paid_plan = run(_create_candidate_free_and_paid_plans())
+        company_plan = _create_plan(admin_client, run_async)
+        user_id = run(_create_recruiter_user(prefix))
+        sub_id = run(_active_subscription(user_id, company_plan["id"]))
+
+        resp = run_async(
+            admin_client.post(
+                f"{API_V1}/admin/subscriptions/{sub_id}/change-plan",
+                json={
+                    "target_plan_id": paid_plan["id"],
+                    "reason": "Thử đổi sang gói ứng viên trái phép",
+                },
+            )
+        )
+        assert resp.status_code == 409, resp.text
+        assert "candidate" in resp.json()["detail"]
+        assert "company" in resp.json()["detail"]
+
+        # Verify rejected change does not mutate subscription
+        sub = run(_load_subscription(sub_id))
+        assert str(sub.plan_id) == company_plan["id"]
+
+    def test_change_plan_same_audience_candidate_to_candidate_succeeds(
+        self, admin_client, run_async
+    ):
+        prefix = f"same-cand-{uuid.uuid4().hex[:8]}"
+        free_plan, paid_plan = run(_create_candidate_free_and_paid_plans())
+        user_id = run(_create_candidate_user(prefix))
+        sub_id = run(_active_candidate_subscription(user_id, free_plan))
+
+        resp = run_async(
+            admin_client.post(
+                f"{API_V1}/admin/subscriptions/{sub_id}/change-plan",
+                json={
+                    "target_plan_id": paid_plan["id"],
+                    "reason": "Nâng cấp ứng viên trả phí",
+                },
+            )
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["plan_id"] == paid_plan["id"]
+        assert body["status"] == "active"
+
+        sub = run(_load_subscription(sub_id))
+        assert str(sub.plan_id) == paid_plan["id"]
+
+    def test_change_plan_corrupted_candidate_subscription_remediation_succeeds(
+        self, admin_client, run_async
+    ):
+        prefix = f"remed-cand-{uuid.uuid4().hex[:8]}"
+        _free_plan, paid_plan = run(_create_candidate_free_and_paid_plans())
+        company_plan = _create_plan(admin_client, run_async)
+        user_id = run(_create_candidate_user(prefix))
+
+        # Insert corrupted candidate record: candidate_personal scope but company plan
+        async def _insert_corrupted():
+            async with async_session_factory() as session:
+                sub = Subscription(
+                    user_id=uuid.UUID(user_id),
+                    plan_id=uuid.UUID(company_plan["id"]),
+                    scope=SubscriptionScope.CANDIDATE_PERSONAL,
+                    is_free=False,
+                    status=SubscriptionStatus.ACTIVE,
+                    started_at=utc_now(),
+                    expires_at=utc_now() + timedelta(days=30),
+                )
+                session.add(sub)
+                await session.commit()
+                return str(sub.id)
+
+        corrupted_sub_id = run(_insert_corrupted())
+
+        # Remediate to valid candidate paid plan
+        resp = run_async(
+            admin_client.post(
+                f"{API_V1}/admin/subscriptions/{corrupted_sub_id}/change-plan",
+                json={
+                    "target_plan_id": paid_plan["id"],
+                    "reason": "Khắc phục thuê bao ứng viên bị gán nhầm gói công ty",
+                },
+            )
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["plan_id"] == paid_plan["id"]
+
+        sub = run(_load_subscription(corrupted_sub_id))
+        assert str(sub.plan_id) == paid_plan["id"]
+
 
 class TestAdminRevoke:
     def test_revoke_sets_cancelled_and_audits(

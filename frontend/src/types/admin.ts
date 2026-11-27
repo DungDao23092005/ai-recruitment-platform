@@ -177,6 +177,7 @@ export interface AdminSubscriptionListItem {
   user_id: string
   user_email: string | null
   user_full_name: string | null
+  user_role?: 'candidate' | 'recruiter' | 'admin' | null
   plan_id: string
   plan_name: string | null
   plan_audience: AdminPlanAudience | null
