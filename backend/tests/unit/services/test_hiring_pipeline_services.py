@@ -257,6 +257,9 @@ class TestEvaluationAuthorization:
         application_id = uuid.uuid4()
         interview_id = uuid.uuid4()
         service = InterviewEvaluationService(make_session())
+        service.assignments.get_active_for_interview_user = AsyncMock(
+            return_value=MagicMock()
+        )
         service.interviews.get_by_id_with_application = AsyncMock(
             return_value=MagicMock(application_id=application_id)
         )
@@ -309,6 +312,9 @@ class TestEvaluationAuthorization:
             MagicMock(model_validate=lambda obj: obj),
         )
         service = InterviewEvaluationService(make_session())
+        service.assignments.get_active_for_interview_user = AsyncMock(
+            return_value=MagicMock()
+        )
         application_id = uuid.uuid4()
         interview_id = uuid.uuid4()
         service.interviews.get_by_id_with_application = AsyncMock(
