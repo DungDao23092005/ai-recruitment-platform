@@ -11,6 +11,7 @@ export interface PlanCardProps {
   isSelected?: boolean
   isCurrent?: boolean
   isLowerTier?: boolean
+  isUpgrade?: boolean
   disabled?: boolean
   disabledReason?: string
   className?: string
@@ -49,6 +50,7 @@ const PlanCard = React.forwardRef<HTMLDivElement, PlanCardProps>(
       isSelected = false,
       isCurrent = false,
       isLowerTier = false,
+      isUpgrade = false,
       disabled = false,
       disabledReason,
       className,
@@ -65,7 +67,9 @@ const PlanCard = React.forwardRef<HTMLDivElement, PlanCardProps>(
           ? 'Đã chọn'
           : disabled
             ? 'Không khả dụng'
-            : 'Chọn gói này'
+            : isUpgrade
+              ? 'Nâng cấp gói'
+              : 'Chọn gói này'
     const buttonAriaLabel = isCurrent
       ? `Gói hiện tại của bạn: ${plan.name}`
       : isLowerTier
@@ -74,7 +78,9 @@ const PlanCard = React.forwardRef<HTMLDivElement, PlanCardProps>(
           ? `Đã chọn gói ${plan.name}`
           : disabled
             ? `${disabledReason ?? 'Không khả dụng'}: ${plan.name}`
-            : `Chọn gói ${plan.name}`
+            : isUpgrade
+              ? `Nâng cấp gói: ${plan.name}`
+              : `Chọn gói ${plan.name}`
 
     return (
       <article

@@ -92,8 +92,46 @@ export function PlansPage() {
   )
 
   const currentPlan = useMemo<RecruitmentPlan | RecruitmentPlanRead | null>(() => {
+    if (isCandidate) {
+      if (
+        candidateEntitlement.isLoading ||
+        candidateEntitlement.error ||
+        !candidateIsPaid ||
+        !candidateSnapshot
+      ) {
+        return null
+      }
+
+      if (candidateSnapshot.status !== 'active') {
+        return null
+      }
+
+      if (candidateSnapshot.expires_at) {
+        const expiresAt = new Date(candidateSnapshot.expires_at).getTime()
+        if (Number.isNaN(expiresAt) || expiresAt <= Date.now()) {
+          return null
+        }
+      }
+
+      return (
+        plans.find((plan) => plan.id === candidateSnapshot.plan_id) ||
+        ({
+          id: candidateSnapshot.plan_id,
+          name: candidateSnapshot.plan_name ?? 'Gói hiện tại',
+          price: 0,
+          currency: 'VND',
+          duration_days: 30,
+          max_job_posts: 0,
+          max_candidate_searches: 0,
+          max_ai_features: candidateSnapshot.max_ai_features,
+          plan_audience: 'candidate',
+          is_free: false,
+          is_active: true,
+        } as RecruitmentPlanRead)
+      )
+    }
+
     if (
-      isCandidate ||
       isSubscriptionLoading ||
       subscriptionError ||
       !activeSubscription
@@ -120,6 +158,10 @@ export function PlansPage() {
     )
   }, [
     activeSubscription,
+    candidateEntitlement.error,
+    candidateEntitlement.isLoading,
+    candidateIsPaid,
+    candidateSnapshot,
     isCandidate,
     isSubscriptionLoading,
     plans,
@@ -128,6 +170,10 @@ export function PlansPage() {
 
   const isLowerTierPlan = useCallback(
     (plan: RecruitmentPlanRead): boolean => {
+      if (plan.is_free) {
+        return false
+      }
+
       if (!currentPlan || plan.id === currentPlan.id) {
         return false
       }
@@ -153,12 +199,95 @@ export function PlansPage() {
     [currentPlan],
   )
 
+  const isUpgradePlan = useCallback(
+    (plan: RecruitmentPlanRead): boolean => {
+      if (plan.is_free) {
+        return false
+      }
+
+      if (!currentPlan || plan.id === currentPlan.id) {
+        return false
+      }
+
+      if (
+        typeof plan.price !== 'number' ||
+        typeof currentPlan.price !== 'number' ||
+        Number.isNaN(plan.price) ||
+        Number.isNaN(currentPlan.price)
+      ) {
+        return false
+      }
+
+      const planCurrency = (plan.currency || 'VND').trim().toUpperCase()
+      const currentCurrency = (currentPlan.currency || 'VND').trim().toUpperCase()
+
+      if (planCurrency !== currentCurrency) {
+        return false
+      }
+
+      return plan.price > currentPlan.price
+    },
+    [currentPlan],
+  )
+
+  const isEqualPricePlan = useCallback(
+    (plan: RecruitmentPlanRead): boolean => {
+      if (plan.is_free) {
+        return false
+      }
+
+      if (!currentPlan || plan.id === currentPlan.id) {
+        return false
+      }
+
+      if (
+        typeof plan.price !== 'number' ||
+        typeof currentPlan.price !== 'number' ||
+        Number.isNaN(plan.price) ||
+        Number.isNaN(currentPlan.price)
+      ) {
+        return false
+      }
+
+      const planCurrency = (plan.currency || 'VND').trim().toUpperCase()
+      const currentCurrency = (currentPlan.currency || 'VND').trim().toUpperCase()
+
+      return planCurrency === currentCurrency && plan.price === currentPlan.price
+    },
+    [currentPlan],
+  )
+
+  const isDifferentCurrencyPlan = useCallback(
+    (plan: RecruitmentPlanRead): boolean => {
+      if (plan.is_free) {
+        return false
+      }
+
+      if (!currentPlan || plan.id === currentPlan.id) {
+        return false
+      }
+
+      const planCurrency = (plan.currency || 'VND').trim().toUpperCase()
+      const currentCurrency = (currentPlan.currency || 'VND').trim().toUpperCase()
+
+      return planCurrency !== currentCurrency
+    },
+    [currentPlan],
+  )
+
+  const isCandidateEntitlementBlocked =
+    isCandidate &&
+    (candidateEntitlement.isLoading || Boolean(candidateEntitlement.error))
+
   const handleSelectPlan = useCallback(
     (planId: string) => {
       if (isCurrentPlan(planId)) {
         return
       }
       if (isRecruiter && !canPurchase) {
+        return
+      }
+      if (isCandidate && isCandidateEntitlementBlocked) {
         return
       }
       const plan = plans.find((candidate) => candidate.id === planId)
@@ -168,32 +297,114 @@ export function PlansPage() {
       if (plan && isLowerTierPlan(plan)) {
         return
       }
+      if (isCandidate && candidateIsPaid && currentPlan && plan) {
+        if (isEqualPricePlan(plan) || isDifferentCurrencyPlan(plan)) {
+          return
+        }
+      }
       navigate(`/checkout/${planId}`)
     },
-    [canPurchase, isCandidate, isCurrentPlan, isLowerTierPlan, isRecruiter, navigate, plans],
+    [
+      canPurchase,
+      candidateIsPaid,
+      currentPlan,
+      isCandidate,
+      isCandidateEntitlementBlocked,
+      isCurrentPlan,
+      isDifferentCurrencyPlan,
+      isEqualPricePlan,
+      isLowerTierPlan,
+      isRecruiter,
+      navigate,
+      plans,
+    ],
   )
 
   const isPlanDisabled = useCallback(
     (plan: RecruitmentPlanRead): boolean => {
       if (isCandidate) {
-        return plan.is_free === true
+        if (plan.is_free === true) {
+          return true
+        }
+        if (isCandidateEntitlementBlocked) {
+          return true
+        }
+        if (candidateIsPaid && currentPlan) {
+          if (isCurrentPlan(plan.id)) {
+            return true
+          }
+          if (isLowerTierPlan(plan)) {
+            return true
+          }
+          if (isEqualPricePlan(plan)) {
+            return true
+          }
+          if (isDifferentCurrencyPlan(plan)) {
+            return true
+          }
+        }
+        return false
       }
       return !canPurchase
     },
-    [canPurchase, isCandidate],
+    [
+      canPurchase,
+      candidateIsPaid,
+      currentPlan,
+      isCandidate,
+      isCandidateEntitlementBlocked,
+      isCurrentPlan,
+      isDifferentCurrencyPlan,
+      isEqualPricePlan,
+      isLowerTierPlan,
+    ],
   )
 
   const disabledReason = useCallback(
     (plan: RecruitmentPlanRead): string | undefined => {
-      if (isCandidate && plan.is_free) {
-        return 'Gói miễn phí không cần thanh toán.'
+      if (isCandidate) {
+        if (plan.is_free) {
+          return 'Gói miễn phí không cần thanh toán'
+        }
+        if (isCandidateEntitlementBlocked) {
+          return candidateEntitlement.error
+            ? 'Không thể xác thực gói dịch vụ hiện tại. Vui lòng thử lại'
+            : 'Đang tải thông tin gói dịch vụ...'
+        }
+        if (candidateIsPaid && currentPlan) {
+          if (isCurrentPlan(plan.id)) {
+            return 'Gói hiện tại của bạn'
+          }
+          if (isLowerTierPlan(plan)) {
+            return 'Gói thấp hơn gói của bạn'
+          }
+          if (isEqualPricePlan(plan)) {
+            return 'Gói có cùng mức giá với gói hiện tại của bạn'
+          }
+          if (isDifferentCurrencyPlan(plan)) {
+            return 'Khác loại tiền tệ với gói hiện tại của bạn'
+          }
+        }
+        return undefined
       }
       if (isRecruiter && !canPurchase) {
         return 'Chỉ Quản trị viên công ty (Workspace Admin) mới có quyền mua hoặc thay đổi gói dịch vụ.'
       }
       return undefined
     },
-    [canPurchase, isCandidate, isRecruiter],
+    [
+      canPurchase,
+      candidateEntitlement.error,
+      candidateIsPaid,
+      currentPlan,
+      isCandidate,
+      isCandidateEntitlementBlocked,
+      isCurrentPlan,
+      isDifferentCurrencyPlan,
+      isEqualPricePlan,
+      isLowerTierPlan,
+      isRecruiter,
+    ],
   )
 
   const renderPlanSkeleton = () => (
@@ -297,6 +508,7 @@ export function PlansPage() {
                   plan={plan}
                   isCurrent={isCurrentPlan(plan.id)}
                   isLowerTier={isLowerTierPlan(plan)}
+                  isUpgrade={isCandidate && candidateIsPaid ? isUpgradePlan(plan) : false}
                   onSelect={handleSelectPlan}
                   disabled={isPlanDisabled(plan)}
                   disabledReason={disabledReason(plan)}

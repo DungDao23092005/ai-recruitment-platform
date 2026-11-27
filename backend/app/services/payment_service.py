@@ -253,18 +253,21 @@ class PaymentService:
                 "Candidate checkout requires a paid candidate plan"
             )
 
-        # Candidate Paid is a single active tier. Free is a separate entitlement
-        # and intentionally does not block a Paid checkout.
+        # Candidate Paid is a single active tier unless purchasing a strictly
+        # higher-priced plan in the same currency (supported upgrade). Free is a
+        # separate entitlement and intentionally does not block a Paid checkout.
         existing_paid = (
             await self.subscriptions.get_active_candidate_paid_by_user_id(
                 user.id, now_utc
             )
         )
         if existing_paid is not None:
-            raise ConflictException(
-                f"User already has an active candidate subscription "
-                f"(id: {existing_paid.id})"
-            )
+            existing_plan = await self.plans.get_by_id(existing_paid.plan_id)
+            if not self._is_supported_upgrade(plan, existing_plan):
+                raise ConflictException(
+                    "Bạn chỉ có thể nâng cấp lên gói có giá cao hơn gói hiện tại "
+                    "đang hoạt động."
+                )
 
         # A PAID order whose subscription is still PENDING is an entitlement
         # incident, never an unpaid checkout.
@@ -1538,9 +1541,12 @@ class PaymentService:
                 raise ConflictException(
                     "Candidate paid activation requires an active paid Candidate plan"
                 )
-            # Candidate Free and Paid are independent entitlements. Only an
-            # existing active Candidate Paid row blocks activation; Free is
-            # deliberately preserved.
+            # Candidate Free and Paid are independent entitlements. Free is
+            # deliberately preserved. For Candidate Paid, an existing active paid
+            # row is checked: a supported (strictly higher-priced, same currency)
+            # upgrade retires the previous active subscription as CANCELLED so
+            # exactly one ACTIVE paid subscription remains. Any other overlap
+            # (same price, downgrade, currency mismatch) is refused.
             existing_candidate_paid = (
                 await self.subscriptions.get_active_candidate_paid_by_user_id(
                     sub.user_id, now
@@ -1550,10 +1556,20 @@ class PaymentService:
                 existing_candidate_paid is not None
                 and existing_candidate_paid.id != sub.id
             ):
-                raise ConflictException(
-                    "User already has an active candidate subscription "
-                    f"(id: {existing_candidate_paid.id}); activation refused"
+                existing_plan = await self.plans.get_by_id(
+                    existing_candidate_paid.plan_id
                 )
+                if not self._is_supported_upgrade(plan, existing_plan):
+                    raise ConflictException(
+                        "User already has an active candidate subscription "
+                        f"(id: {existing_candidate_paid.id}) that is not a lower-tier plan; "
+                        "upgrade refused"
+                    )
+                # Superseded candidate paid plan: retire the old subscription.
+                # Its usage counters are preserved as historical record; only the
+                # terminal status changes to CANCELLED.
+                existing_candidate_paid.status = SubscriptionStatus.CANCELLED
+                await self.session.flush()
         else:
             # Check for an existing active subscription BEFORE activating. A
             # supported (strictly higher-priced) upgrade retires the previous
@@ -1576,6 +1592,7 @@ class PaymentService:
                 # status changes. The new subscription starts fresh from the
                 # plan snapshot.
                 existing_active.status = SubscriptionStatus.CANCELLED
+                await self.session.flush()
 
         sub.status = SubscriptionStatus.ACTIVE
         sub.started_at = now

@@ -1,11 +1,14 @@
 import * as React from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, CreditCard, Shield, Package } from 'lucide-react'
+import { ArrowLeft, CreditCard, Shield, Package, Sparkles } from 'lucide-react'
 import { getPlan } from '@/api/plans'
 import { createVNPayPayment } from '@/api/payments'
 import { ErrorBanner } from '@/components/ui/error-banner'
 import { Skeleton } from '@/components/ui/skeleton'
+import { useOptionalAuth } from '@/contexts/AuthContext'
+import { useCandidateEntitlement } from '@/features/subscriptions/hooks/useCandidateEntitlement'
+import type { PlanAudience } from '@/types/subscription'
 
 interface PlanInfo {
   id: string
@@ -17,6 +20,8 @@ interface PlanInfo {
   max_job_posts: number
   max_candidate_searches: number | null
   max_ai_features: number | null
+  plan_audience?: PlanAudience
+  is_free?: boolean
   features?: string[]
 }
 
@@ -44,8 +49,14 @@ function formatDuration(days: number): string {
 export function CheckoutPage() {
   const { planId } = useParams<{ planId: string }>()
   const navigate = useNavigate()
+  const authContext = useOptionalAuth()
+  const currentUser = authContext?.currentUser
 
   const [plan, setPlan] = React.useState<PlanInfo | null>(null)
+  const isCandidate =
+    currentUser?.role === 'candidate' || plan?.plan_audience === 'candidate'
+  const candidateEntitlement = useCandidateEntitlement(Boolean(isCandidate))
+
   const [isLoading, setIsLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = React.useState(false)
@@ -72,6 +83,8 @@ export function CheckoutPage() {
             max_job_posts: data.max_job_posts,
             max_candidate_searches: data.max_candidate_searches ?? null,
             max_ai_features: data.max_ai_features ?? null,
+            plan_audience: data.plan_audience,
+            is_free: data.is_free,
             features: data.features,
           })
           setError(null)
@@ -94,6 +107,100 @@ export function CheckoutPage() {
     }
   }, [planId, navigate])
 
+  const candidatePaidSub = candidateEntitlement.entitlement?.paid_subscription
+  const isCandidatePaidActive = Boolean(
+    isCandidate &&
+      candidateEntitlement.entitlement?.effective_tier === 'paid' &&
+      candidatePaidSub &&
+      candidatePaidSub.status === 'active' &&
+      (!candidatePaidSub.expires_at ||
+        new Date(candidatePaidSub.expires_at).getTime() > Date.now()),
+  )
+
+  const [currentPaidPlan, setCurrentPaidPlan] = React.useState<PlanInfo | null>(null)
+
+  React.useEffect(() => {
+    if (!candidatePaidSub?.plan_id) {
+      setCurrentPaidPlan(null)
+      return
+    }
+    let mounted = true
+    getPlan(candidatePaidSub.plan_id)
+      .then((data) => {
+        if (mounted) {
+          setCurrentPaidPlan({
+            id: data.id,
+            name: data.name,
+            description: data.description || '',
+            price: data.price,
+            currency: data.currency,
+            duration_days: data.duration_days,
+            max_job_posts: data.max_job_posts,
+            max_candidate_searches: data.max_candidate_searches ?? null,
+            max_ai_features: data.max_ai_features ?? null,
+            plan_audience: data.plan_audience,
+            is_free: data.is_free,
+            features: data.features,
+          })
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setCurrentPaidPlan(null)
+        }
+      })
+    return () => {
+      mounted = false
+    }
+  }, [candidatePaidSub?.plan_id])
+
+  const isUpgrade = Boolean(
+    isCandidate &&
+      isCandidatePaidActive &&
+      plan &&
+      currentPaidPlan &&
+      typeof plan.price === 'number' &&
+      typeof currentPaidPlan.price === 'number' &&
+      (plan.currency || 'VND').trim().toUpperCase() ===
+        (currentPaidPlan.currency || 'VND').trim().toUpperCase() &&
+      plan.price > currentPaidPlan.price,
+  )
+
+  const candidatePolicyBlockReason = React.useMemo<string | null>(() => {
+    if (!isCandidate || !isCandidatePaidActive || !plan) {
+      return null
+    }
+    if (plan.id === candidatePaidSub?.plan_id) {
+      return 'Bạn đang sử dụng gói này. Hệ thống không hỗ trợ gia hạn sớm khi gói hiện tại đang hoạt động.'
+    }
+    if (plan.is_free) {
+      return 'Gói miễn phí không cần thanh toán.'
+    }
+    if (currentPaidPlan) {
+      const planCurrency = (plan.currency || 'VND').trim().toUpperCase()
+      const currentCurrency = (
+        currentPaidPlan.currency || 'VND'
+      )
+        .trim()
+        .toUpperCase()
+      if (planCurrency !== currentCurrency) {
+        return 'Gói được chọn khác loại tiền tệ với gói hiện tại của bạn.'
+      }
+      if (
+        typeof plan.price === 'number' &&
+        typeof currentPaidPlan.price === 'number'
+      ) {
+        if (plan.price < currentPaidPlan.price) {
+          return 'Gói thấp hơn gói của bạn. Hệ thống chỉ hỗ trợ nâng cấp lên gói có giá cao hơn gói hiện tại.'
+        }
+        if (plan.price === currentPaidPlan.price) {
+          return 'Gói có cùng mức giá với gói hiện tại của bạn. Hệ thống chỉ hỗ trợ nâng cấp lên gói có giá cao hơn gói hiện tại.'
+        }
+      }
+    }
+    return null
+  }, [candidatePaidSub?.plan_id, currentPaidPlan, isCandidate, isCandidatePaidActive, plan])
+
   if (!planId) {
     navigate('/plans')
     return null
@@ -102,7 +209,7 @@ export function CheckoutPage() {
   const handlePay = async (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault()
 
-    if (isSubmitting) return
+    if (isSubmitting || candidatePolicyBlockReason) return
 
     setIsSubmitting(true)
     setError(null)
@@ -119,12 +226,26 @@ export function CheckoutPage() {
       const serverDetail = axiosErr?.response?.data?.detail
 
       if (status === 409) {
-        setError(
-          serverDetail ||
-            'Bạn đang có gói đăng tin đang hoạt động. Hệ thống chỉ hỗ trợ nâng cấp lên gói có giá cao hơn gói hiện tại. Vui lòng chọn gói cao hơn hoặc liên hệ hỗ trợ.'
-        )
+        if (
+          serverDetail &&
+          !serverDetail.includes('User already has an active candidate subscription')
+        ) {
+          setError(serverDetail)
+        } else {
+          setError(
+            isCandidate
+              ? 'Bạn chỉ có thể nâng cấp lên gói có giá cao hơn gói hiện tại đang hoạt động.'
+              : 'Bạn đang có gói đăng tin đang hoạt động. Hệ thống chỉ hỗ trợ nâng cấp lên gói có giá cao hơn gói hiện tại. Vui lòng chọn gói cao hơn hoặc liên hệ hỗ trợ.',
+          )
+        }
       } else if (serverDetail) {
-        setError(serverDetail)
+        if (serverDetail.includes('User already has an active candidate subscription')) {
+          setError(
+            'Bạn chỉ có thể nâng cấp lên gói có giá cao hơn gói hiện tại đang hoạt động.',
+          )
+        } else {
+          setError(serverDetail)
+        }
       } else if (err instanceof Error) {
         setError(err.message)
       } else {
@@ -234,38 +355,55 @@ export function CheckoutPage() {
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 pt-4 border-t">
-                <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50">
-                  <div className="p-2 rounded-lg bg-primary/10 text-primary">
-                    <Package className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Số bài đăng</p>
-                    <p className="font-semibold">{plan.max_job_posts} bài</p>
-                  </div>
-                </div>
-
-                {hasMaxCandidateSearches && (
-                  <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50">
-                    <div className="p-2 rounded-lg bg-blue-100 text-blue-600">
-                      <CreditCard className="h-5 w-5" />
+                {plan.plan_audience === 'candidate' ? (
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50 sm:col-span-2 lg:col-span-3">
+                    <div className="p-2 rounded-lg bg-primary/10 text-primary">
+                      <Sparkles className="h-5 w-5" />
                     </div>
                     <div>
-                      <p className="text-xs text-muted-foreground">Tìm kiếm ứng viên</p>
-                      <p className="font-semibold">{plan.max_candidate_searches} lần</p>
+                      <p className="text-xs text-muted-foreground">Hạn mức AI dùng chung</p>
+                      <p className="font-semibold">{plan.max_ai_features ?? 0} lượt</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Một hạn mức AI dùng chung cho Phân tích CV, Gợi ý việc làm và Trò chuyện AI.
+                      </p>
                     </div>
                   </div>
-                )}
+                ) : (
+                  <>
+                    <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50">
+                      <div className="p-2 rounded-lg bg-primary/10 text-primary">
+                        <Package className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">Số bài đăng</p>
+                        <p className="font-semibold">{plan.max_job_posts} bài</p>
+                      </div>
+                    </div>
 
-                {hasMaxAiFeatures && (
-                  <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50">
-                    <div className="p-2 rounded-lg bg-purple-100 text-purple-600">
-                      <Shield className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">Tính năng AI</p>
-                      <p className="font-semibold">{plan.max_ai_features} lần</p>
-                    </div>
-                  </div>
+                    {hasMaxCandidateSearches && (
+                      <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50">
+                        <div className="p-2 rounded-lg bg-blue-100 text-blue-600">
+                          <CreditCard className="h-5 w-5" />
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Tìm kiếm ứng viên</p>
+                          <p className="font-semibold">{plan.max_candidate_searches} lần</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {hasMaxAiFeatures && (
+                      <div className="flex items-center gap-3 p-3 rounded-lg bg-muted/50">
+                        <div className="p-2 rounded-lg bg-purple-100 text-purple-600">
+                          <Shield className="h-5 w-5" />
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Tính năng AI</p>
+                          <p className="font-semibold">{plan.max_ai_features} lần</p>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -293,6 +431,11 @@ export function CheckoutPage() {
                 với giá <strong className="text-foreground">{formatPrice(plan.price, plan.currency)}</strong>
                 cho thời hạn <strong className="text-foreground">{formatDuration(plan.duration_days)}</strong>.
               </p>
+              {isUpgrade && (
+                <p className="mt-2 text-sm text-amber-600 dark:text-amber-400 font-medium">
+                  Đây là giao dịch nâng cấp gói. Gói hiện tại sẽ được thay thế sau khi giao dịch thành công.
+                </p>
+              )}
               <p className="mt-2 text-sm text-muted-foreground">
                 Giao dịch sẽ được chuyển sang cổng thanh toán <strong className="text-foreground">VNPAY</strong>
                 để hoàn tất. Sau khi thanh toán thành công, gói sẽ được kích hoạt ngay lập tức.
@@ -319,21 +462,30 @@ export function CheckoutPage() {
                     <dt>Thời hạn</dt>
                     <dd>{formatDuration(plan.duration_days)}</dd>
                   </div>
-                  <div className="flex justify-between text-muted-foreground">
-                    <dt>Số bài đăng</dt>
-                    <dd>{plan.max_job_posts} bài</dd>
-                  </div>
-                  {hasMaxCandidateSearches && (
+                  {plan.plan_audience === 'candidate' ? (
                     <div className="flex justify-between text-muted-foreground">
-                      <dt>Tìm kiếm ứng viên</dt>
-                      <dd>{plan.max_candidate_searches} lần</dd>
+                      <dt>Hạn mức AI dùng chung</dt>
+                      <dd>{plan.max_ai_features ?? 0} lượt</dd>
                     </div>
-                  )}
-                  {hasMaxAiFeatures && (
-                    <div className="flex justify-between text-muted-foreground">
-                      <dt>Tính năng AI</dt>
-                      <dd>{plan.max_ai_features} lần</dd>
-                    </div>
+                  ) : (
+                    <>
+                      <div className="flex justify-between text-muted-foreground">
+                        <dt>Số bài đăng</dt>
+                        <dd>{plan.max_job_posts} bài</dd>
+                      </div>
+                      {hasMaxCandidateSearches && (
+                        <div className="flex justify-between text-muted-foreground">
+                          <dt>Tìm kiếm ứng viên</dt>
+                          <dd>{plan.max_candidate_searches} lần</dd>
+                        </div>
+                      )}
+                      {hasMaxAiFeatures && (
+                        <div className="flex justify-between text-muted-foreground">
+                          <dt>Tính năng AI</dt>
+                          <dd>{plan.max_ai_features} lần</dd>
+                        </div>
+                      )}
+                    </>
                   )}
                   <div className="border-t pt-3 flex justify-between text-base font-semibold">
                     <dt>Tổng thanh toán</dt>
@@ -348,7 +500,7 @@ export function CheckoutPage() {
               <div className="border rounded-xl p-6 bg-muted/30">
                 <Button
                   onClick={handlePay}
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || Boolean(candidatePolicyBlockReason)}
                   size="lg"
                   className="w-full"
                 >
@@ -379,7 +531,7 @@ export function CheckoutPage() {
                   ) : (
                     <>
                       <CreditCard className="h-5 w-5 mr-2" />
-                      Thanh toán với VNPAY
+                      {isUpgrade ? 'Nâng cấp với VNPAY' : 'Thanh toán với VNPAY'}
                     </>
                   )}
                 </Button>
@@ -388,6 +540,13 @@ export function CheckoutPage() {
                   <p className="mt-3 text-center text-xs text-muted-foreground">
                     Bạn sẽ được chuyển hướng đến trang thanh toán VNPAY.
                   </p>
+                )}
+
+                {candidatePolicyBlockReason && (
+                  <ErrorBanner
+                    message={candidatePolicyBlockReason}
+                    className="mt-4"
+                  />
                 )}
 
                 {error && (

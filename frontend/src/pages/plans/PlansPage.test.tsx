@@ -738,6 +738,110 @@ it('renders multiple plan cards with correct data', async () => {
         }),
       ).toBeInTheDocument()
     })
+
+    it('disables lower-priced and equal-priced plans and marks higher-priced plan as upgrade', async () => {
+      const multiCandidatePlans = [
+        ...candidatePlans,
+        {
+          id: 'candidate-lower',
+          name: 'Gói AI Basic',
+          description: 'Gói AI cơ bản',
+          price: 49000,
+          currency: 'VND',
+          duration_days: 30,
+          max_job_posts: 0,
+          max_candidate_searches: 0,
+          max_ai_features: 10,
+          plan_audience: 'candidate',
+          is_free: false,
+          is_active: true,
+        },
+        {
+          id: 'candidate-equal',
+          name: 'Gói AI Pro Equal',
+          description: 'Gói cùng giá',
+          price: 99000,
+          currency: 'VND',
+          duration_days: 30,
+          max_job_posts: 0,
+          max_candidate_searches: 0,
+          max_ai_features: 25,
+          plan_audience: 'candidate',
+          is_free: false,
+          is_active: true,
+        },
+        {
+          id: 'candidate-upgrade',
+          name: 'Gói AI Ultra',
+          description: 'Gói AI cao cấp',
+          price: 199000,
+          currency: 'VND',
+          duration_days: 30,
+          max_job_posts: 0,
+          max_candidate_searches: 0,
+          max_ai_features: 60,
+          plan_audience: 'candidate',
+          is_free: false,
+          is_active: true,
+        },
+      ]
+
+      mockedGetPlans.mockResolvedValueOnce(multiCandidatePlans as any)
+      mockedGetCandidateEntitlement.mockResolvedValue(
+        candidateSummary(paidSnapshot, 'paid'),
+      )
+
+      renderPlans()
+
+      // Current plan: disabled "Gói hiện tại của bạn"
+      const currentBtn = await screen.findByRole('button', {
+        name: /Gói hiện tại của bạn: Gói AI Pro/,
+      })
+      expect(currentBtn).toBeDisabled()
+
+      // Lower-priced plan: disabled "Gói thấp hơn gói của bạn"
+      const lowerBtn = screen.getByRole('button', {
+        name: /Gói thấp hơn gói của bạn: Gói AI Basic/,
+      })
+      expect(lowerBtn).toBeDisabled()
+      expect(lowerBtn).toHaveTextContent('Gói thấp hơn gói của bạn')
+
+      // Equal-priced plan: disabled "Không khả dụng"
+      const equalBtn = screen.getByRole('button', {
+        name: /Gói có cùng mức giá với gói hiện tại của bạn: Gói AI Pro Equal/,
+      })
+      expect(equalBtn).toBeDisabled()
+      expect(equalBtn).toHaveTextContent('Không khả dụng')
+
+      // Higher-priced plan: enabled "Nâng cấp gói"
+      const upgradeBtn = screen.getByRole('button', {
+        name: /Nâng cấp gói: Gói AI Ultra/,
+      })
+      expect(upgradeBtn).not.toBeDisabled()
+      expect(upgradeBtn).toHaveTextContent('Nâng cấp gói')
+
+      // Clicking upgrade navigates to checkout
+      fireEvent.click(upgradeBtn)
+      await waitFor(() =>
+        expect(screen.getByText('CHECKOUT PAGE')).toBeInTheDocument(),
+      )
+    })
+
+    it('fails closed when candidate entitlement has error', async () => {
+      mockedGetPlans.mockResolvedValueOnce(candidatePlans as any)
+      mockedGetCandidateEntitlement.mockRejectedValue(
+        new Error('Network error loading entitlement'),
+      )
+
+      renderPlans()
+
+      // When entitlement fails to load, paid plan button must be disabled
+      const paidBtn = await screen.findByRole('button', {
+        name: /Không thể xác thực gói dịch vụ hiện tại\. Vui lòng thử lại: Gói AI Pro/,
+      })
+      expect(paidBtn).toBeDisabled()
+      expect(paidBtn).toHaveTextContent('Không khả dụng')
+    })
   })
 
   describe('recruiter plan selection flow', () => {

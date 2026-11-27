@@ -434,4 +434,95 @@ describe('CheckoutPage', () => {
 
     expect(screen.getByText('Giao dịch được xử lý và bảo mật qua cổng thanh toán VNPAY.')).toBeInTheDocument()
   })
+
+  describe('Candidate checkout flow', () => {
+    const mockCandidatePlan = {
+      id: 'plan-candidate-ultra',
+      name: 'Gói AI Nâng cao',
+      description: 'Gói AI dành cho ứng viên',
+      price: 300000,
+      currency: 'VND',
+      duration_days: 30,
+      max_job_posts: 0,
+      max_candidate_searches: 0,
+      max_ai_features: 100,
+      plan_audience: 'candidate',
+      is_free: false,
+      is_active: true,
+      features: ['Phân tích CV không giới hạn', 'Gợi ý việc làm AI'],
+    }
+
+    it('renders candidate plan metrics and suppresses recruiter-only metrics', async () => {
+      ;(mockedGetPlan as any).mockResolvedValueOnce(mockCandidatePlan)
+
+      render(
+        <MemoryRouter initialEntries={['/checkout/plan-candidate-ultra']}>
+          {testRoutes}
+        </MemoryRouter>
+      )
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole('heading', { name: 'Gói AI Nâng cao', level: 2 })
+        ).toBeInTheDocument()
+      })
+
+      // Recruiter metrics must NOT be rendered
+      expect(screen.queryByText('Số bài đăng')).not.toBeInTheDocument()
+      expect(screen.queryByText('0 bài')).not.toBeInTheDocument()
+      expect(screen.queryByText('Tìm kiếm ứng viên')).not.toBeInTheDocument()
+
+      // Candidate AI quota must be rendered in both feature grid and order summary
+      const aiQuotaLabels = screen.getAllByText('Hạn mức AI dùng chung')
+      expect(aiQuotaLabels.length).toBeGreaterThanOrEqual(1)
+      const aiQuotaValues = screen.getAllByText('100 lượt')
+      expect(aiQuotaValues.length).toBeGreaterThanOrEqual(1)
+      expect(
+        screen.getByText(/Một hạn mức AI dùng chung cho Phân tích CV/)
+      ).toBeInTheDocument()
+    })
+
+    it('localizes raw English candidate subscription conflict errors into Vietnamese', async () => {
+      ;(mockedGetPlan as any).mockResolvedValueOnce(mockCandidatePlan)
+      ;(mockedCreateVNPayPayment as any).mockRejectedValueOnce({
+        response: {
+          status: 409,
+          data: {
+            detail:
+              'User already has an active candidate subscription (id: be133df2-d411-416b-b82f-746e79aa8475)',
+          },
+        },
+      })
+
+      render(
+        <MemoryRouter initialEntries={['/checkout/plan-candidate-ultra']}>
+          {testRoutes}
+        </MemoryRouter>
+      )
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole('heading', { name: 'Gói AI Nâng cao', level: 2 })
+        ).toBeInTheDocument()
+      })
+
+      const submitBtn = screen.getByRole('button', { name: /Thanh toán với VNPAY/i })
+      submitBtn.click()
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            'Bạn chỉ có thể nâng cấp lên gói có giá cao hơn gói hiện tại đang hoạt động.'
+          )
+        ).toBeInTheDocument()
+      })
+
+      // Ensure English text was not leaked
+      expect(
+        screen.queryByText(/User already has an active candidate subscription/i)
+      ).not.toBeInTheDocument()
+      // Ensure recruiter terms were not leaked
+      expect(screen.queryByText(/gói đăng tin/i)).not.toBeInTheDocument()
+    })
+  })
 })

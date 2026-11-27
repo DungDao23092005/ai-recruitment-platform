@@ -187,7 +187,7 @@ def _load_payment_state_for(internal_order_id: str):
     return run(_load_payment_state(internal_order_id))
 
 
-def _seed_active_candidate_paid(plan: RecruitmentPlan) -> None:
+def _seed_active_candidate_paid(plan: RecruitmentPlan) -> Subscription:
     async def _run():
         async with async_session_factory() as session:
             user = await session.scalar(
@@ -195,23 +195,24 @@ def _seed_active_candidate_paid(plan: RecruitmentPlan) -> None:
             )
             assert user is not None
             now = utc_now()
-            session.add(
-                Subscription(
-                    user_id=user.id,
-                    plan_id=plan.id,
-                    scope=SubscriptionScope.CANDIDATE_PERSONAL,
-                    is_free=False,
-                    status=SubscriptionStatus.ACTIVE,
-                    started_at=now,
-                    expires_at=now + timedelta(days=plan.duration_days),
-                    max_job_posts=plan.max_job_posts,
-                    max_candidate_searches=plan.max_candidate_searches or 0,
-                    max_ai_features=plan.max_ai_features or 0,
-                )
+            sub = Subscription(
+                user_id=user.id,
+                plan_id=plan.id,
+                scope=SubscriptionScope.CANDIDATE_PERSONAL,
+                is_free=False,
+                status=SubscriptionStatus.ACTIVE,
+                started_at=now,
+                expires_at=now + timedelta(days=plan.duration_days),
+                max_job_posts=plan.max_job_posts,
+                max_candidate_searches=plan.max_candidate_searches or 0,
+                max_ai_features=plan.max_ai_features or 0,
             )
+            session.add(sub)
             await session.commit()
+            await session.refresh(sub)
+            return sub
 
-    run(_run())
+    return run(_run())
 
 
 def _set_free_usage() -> None:
@@ -302,6 +303,61 @@ class TestCandidateCheckout:
 
         response = _checkout(candidate_client, plan.id)
         assert response.status_code == 409
+        assert "Bạn chỉ có thể nâng cấp lên gói có giá cao hơn" in response.text
+
+    def test_active_candidate_paid_allows_higher_priced_upgrade(
+        self, candidate_client
+    ):
+        base_plan = _create_plan(price=99_000)
+        _seed_active_candidate_paid(base_plan)
+
+        upgrade_plan = _create_plan(price=199_000, max_ai_features=50)
+        response = _checkout(candidate_client, upgrade_plan.id)
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["payment_url"] is not None
+        assert data["internal_order_id"] is not None
+
+    def test_active_candidate_paid_rejects_lower_priced_plan(
+        self, candidate_client
+    ):
+        base_plan = _create_plan(price=199_000)
+        _seed_active_candidate_paid(base_plan)
+
+        downgrade_plan = _create_plan(price=99_000)
+        response = _checkout(candidate_client, downgrade_plan.id)
+        assert response.status_code == 409
+        assert "Bạn chỉ có thể nâng cấp lên gói có giá cao hơn" in response.text
+
+    def test_active_candidate_paid_rejects_different_currency(
+        self, candidate_client
+    ):
+        base_plan = _create_plan(price=99_000)
+        _seed_active_candidate_paid(base_plan)
+
+        async def _usd_plan():
+            async with async_session_factory() as session:
+                plan = RecruitmentPlan(
+                    name=f"Candidate USD {uuid.uuid4().hex[:8]}",
+                    price=299_000,
+                    currency="USD",
+                    duration_days=30,
+                    max_job_posts=0,
+                    max_candidate_searches=0,
+                    max_ai_features=50,
+                    plan_audience=PlanAudience.CANDIDATE,
+                    is_free=False,
+                    is_active=True,
+                )
+                session.add(plan)
+                await session.commit()
+                await session.refresh(plan)
+                return plan
+
+        usd_plan = run(_usd_plan())
+        response = _checkout(candidate_client, usd_plan.id)
+        assert response.status_code == 409
+        assert "Bạn chỉ có thể nâng cấp lên gói có giá cao hơn" in response.text
 
 
 class TestCandidateIPN:
@@ -470,6 +526,130 @@ class TestCandidateIPN:
         assert company_sub_count == 0
         assert transaction_count == 1
         assert receipt_count == 0
+
+    def test_candidate_upgrade_ipn_cancels_old_and_activates_new(
+        self, candidate_client
+    ):
+        base_plan = _create_plan(price=99_000, max_ai_features=25)
+        old_sub = _seed_active_candidate_paid(base_plan)
+        _set_free_usage()
+
+        upgrade_plan = _create_plan(price=199_000, max_ai_features=50)
+        checkout = _checkout(candidate_client, upgrade_plan.id)
+        assert checkout.status_code == 201, checkout.text
+        data = checkout.json()
+
+        params = _signed_ipn(
+            internal_order_id=data["internal_order_id"],
+            amount=upgrade_plan.price,
+        )
+        response = _send_ipn(candidate_client, params)
+        assert response.json()["RspCode"] == "00", response.text
+
+        (
+            order,
+            new_sub,
+            user,
+            free,
+            profile,
+            membership,
+            company_sub_count,
+            transaction_count,
+            receipt_count,
+        ) = _load_payment_state_for(data["internal_order_id"])
+
+        assert order.status == PaymentOrderStatus.PAID
+        assert new_sub.status == SubscriptionStatus.ACTIVE
+        assert new_sub.max_ai_features == 50
+        assert new_sub.ai_features_used == 0
+        assert new_sub.is_free is False
+
+        # Verify old subscription was retired as CANCELLED
+        async def _load_old_sub():
+            async with async_session_factory() as session:
+                return await session.get(Subscription, old_sub.id)
+
+        reloaded_old = run(_load_old_sub())
+        assert reloaded_old is not None
+        assert reloaded_old.status == SubscriptionStatus.CANCELLED
+
+        # Verify Candidate Free was preserved
+        assert free is not None
+        assert free.status == SubscriptionStatus.ACTIVE
+        assert free.ai_features_used == 2
+
+        assert transaction_count == 1
+        assert receipt_count == 1
+
+    def test_candidate_upgrade_failed_ipn_preserves_old_subscription(
+        self, candidate_client
+    ):
+        base_plan = _create_plan(price=99_000, max_ai_features=25)
+        old_sub = _seed_active_candidate_paid(base_plan)
+
+        upgrade_plan = _create_plan(price=199_000, max_ai_features=50)
+        checkout = _checkout(candidate_client, upgrade_plan.id)
+        assert checkout.status_code == 201, checkout.text
+        data = checkout.json()
+
+        params = _signed_ipn(
+            internal_order_id=data["internal_order_id"],
+            amount=upgrade_plan.price,
+            response_code="02",
+            transaction_status="02",
+        )
+        response = _send_ipn(candidate_client, params)
+        assert response.json()["RspCode"] == "00"
+
+        order, new_sub, *_ = _load_payment_state_for(data["internal_order_id"])
+        assert order.status == PaymentOrderStatus.FAILED
+        assert new_sub.status != SubscriptionStatus.ACTIVE
+
+        # Old subscription remains ACTIVE
+        async def _load_old_sub():
+            async with async_session_factory() as session:
+                return await session.get(Subscription, old_sub.id)
+
+        reloaded_old = run(_load_old_sub())
+        assert reloaded_old is not None
+        assert reloaded_old.status == SubscriptionStatus.ACTIVE
+
+    def test_candidate_upgrade_duplicate_ipn_is_idempotent(
+        self, candidate_client
+    ):
+        base_plan = _create_plan(price=99_000, max_ai_features=25)
+        old_sub = _seed_active_candidate_paid(base_plan)
+
+        upgrade_plan = _create_plan(price=199_000, max_ai_features=50)
+        checkout = _checkout(candidate_client, upgrade_plan.id)
+        assert checkout.status_code == 201, checkout.text
+        data = checkout.json()
+
+        params = _signed_ipn(
+            internal_order_id=data["internal_order_id"],
+            amount=upgrade_plan.price,
+        )
+        first = _send_ipn(candidate_client, params)
+        assert first.json()["RspCode"] == "00"
+
+        second = _send_ipn(candidate_client, params)
+        assert second.json() == {"RspCode": "00", "Message": "Confirm Success"}
+
+        (
+            order,
+            new_sub,
+            _,
+            _,
+            _,
+            _,
+            _,
+            transaction_count,
+            receipt_count,
+        ) = _load_payment_state_for(data["internal_order_id"])
+        assert order.status == PaymentOrderStatus.PAID
+        assert new_sub.status == SubscriptionStatus.ACTIVE
+        assert transaction_count == 1
+        assert receipt_count == 1
 
 
 class TestCandidateSecondaryActivation:
