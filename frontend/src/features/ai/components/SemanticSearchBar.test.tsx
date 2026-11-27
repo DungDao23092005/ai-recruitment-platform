@@ -193,7 +193,7 @@ describe('SemanticSearchBar', () => {
     })
   })
 
-  it('shows error on failure', async () => {
+  it('shows error on failure with black text styling in light theme', async () => {
     const error = new Error('Bad Request')
     Object.assign(error, {
       response: { status: 502, data: { detail: 'Search failed' } },
@@ -210,9 +210,12 @@ describe('SemanticSearchBar', () => {
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeInTheDocument()
     })
-    expect(
-      screen.getByRole('button', { name: /Thử lại/i }),
-    ).toBeInTheDocument()
+    const alert = screen.getByRole('alert')
+    const message = alert.querySelector('p')
+    expect(message).toHaveClass('text-sm', 'font-medium', 'text-black', 'dark:text-foreground')
+
+    const retryBtn = screen.getByRole('button', { name: /Thử lại/i })
+    expect(retryBtn).toBeInTheDocument()
   })
 
   it('retries after failure', async () => {
@@ -235,7 +238,9 @@ describe('SemanticSearchBar', () => {
       expect(screen.getByRole('alert')).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /Thử lại/i }))
+    const retryButton = screen.getByRole('button', { name: /Thử lại/i })
+    expect(retryButton).toHaveClass('text-black', 'dark:text-foreground')
+    fireEvent.click(retryButton)
 
     await waitFor(() => {
       expect(screen.getByText('Nguyễn Văn A')).toBeInTheDocument()

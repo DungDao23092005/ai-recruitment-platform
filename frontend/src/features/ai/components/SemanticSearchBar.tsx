@@ -133,11 +133,14 @@ return (
 
     {error ? (
       <div role="alert" className="space-y-2">
-        <p className="text-sm font-medium text-destructive">{error}</p>
+        <p className="text-sm font-medium text-black dark:text-foreground">
+          {error}
+        </p>
         <Button
           type="button"
           variant="outline"
           size="sm"
+          className="text-black dark:text-foreground"
           onClick={() => void runSearch(query, true)}
         >
           <RefreshCw className="h-4 w-4" aria-hidden="true" />
