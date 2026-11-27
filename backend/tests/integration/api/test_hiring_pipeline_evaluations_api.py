@@ -80,7 +80,9 @@ def evaluated(recruiter_client, candidate_client, run_async):
             },
         )
     ).json()
-    me = run_async(recruiter_client.get(f"{API_V1}/users/me")).json()
+    me_resp = run_async(recruiter_client.get(f"{API_V1}/auth/me"))
+    assert me_resp.status_code == 200, me_resp.text
+    me = me_resp.json()
     run_async(
         recruiter_client.post(
             f"{API_V1}/interviews/{interview['id']}/assignments",
@@ -281,7 +283,9 @@ class TestEvaluationIsolation:
                 },
             )
         ).json()
-        me = run_async(client.get(f"{API_V1}/users/me")).json()
+        me_resp = run_async(client.get(f"{API_V1}/auth/me"))
+        assert me_resp.status_code == 200, me_resp.text
+        me = me_resp.json()
         assignment = run_async(
             client.post(
                 f"{API_V1}/interviews/{interview['id']}/assignments",
