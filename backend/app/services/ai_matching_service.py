@@ -183,6 +183,7 @@ class AIMatchingService:
         job_id: uuid.UUID,
         job_title: str,
         job_description: str,
+        status: JobStatus | str | None = JobStatus.PUBLISHED,
     ) -> ParsedJobSchema:
         """Parse structured Job Description, generate embedding vector, and index to Qdrant."""
         if not job_description or not job_description.strip():
@@ -198,10 +199,12 @@ class AIMatchingService:
         all_skills = list(
             set(parsed_job.required_skills + parsed_job.preferred_skills)
         )
+        normalized_status = status.value if isinstance(status, JobStatus) else status
         payload = {
             "job_id": str(job_id),
             "skills": all_skills,
             "is_deleted": False,
+            "status": normalized_status,
         }
         await self.vector_repository.upsert_vector(
             collection_name="jobs",

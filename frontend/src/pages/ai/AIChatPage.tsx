@@ -48,11 +48,13 @@ interface PendingRequest {
   id: string
   text: string
   history: ChatMessage[]
+  recommendedJobIds: string[]
   idempotencyKey: string
 }
 
 interface PageState {
   messages: DisplayMessage[]
+  recommendedJobIds: string[]
   isLoading: boolean
   error: string | null
   pendingRequest: PendingRequest | null
@@ -61,6 +63,7 @@ interface PageState {
 export function AIChatPage() {
   const [state, setState] = useState<PageState>({
     messages: [],
+    recommendedJobIds: [],
     isLoading: false,
     error: null,
     pendingRequest: null,
@@ -111,6 +114,7 @@ export function AIChatPage() {
 
     let messageText: string
     let history: ChatMessage[]
+    let requestRecommendedJobIds: string[]
     let idempotencyKey: string
     let currentPending: PendingRequest
 
@@ -118,12 +122,14 @@ export function AIChatPage() {
       messageText = text.trim()
       const userMessage: ChatMessage = { role: 'user', content: messageText }
       history = state.messages.slice(-10).map((item) => item.message)
+      requestRecommendedJobIds = state.recommendedJobIds
       const messageId = crypto.randomUUID()
       idempotencyKey = `chat_${messageId}`
       currentPending = {
         id: messageId,
         text: messageText,
         history,
+        recommendedJobIds: requestRecommendedJobIds,
         idempotencyKey,
       }
 
@@ -145,6 +151,7 @@ export function AIChatPage() {
       currentPending = state.pendingRequest
       messageText = currentPending.text
       history = currentPending.history
+      requestRecommendedJobIds = currentPending.recommendedJobIds
       idempotencyKey = currentPending.idempotencyKey
 
       setState((prev) => ({
@@ -159,18 +166,38 @@ export function AIChatPage() {
         {
           message: messageText,
           history,
+          ...(requestRecommendedJobIds.length > 0
+            ? { recommended_job_ids: requestRecommendedJobIds }
+            : {}),
         },
         idempotencyKey,
       )
       setState((prev) => {
+        const nextRecommendedJobIds =
+          response.recommended_job_ids && response.recommended_job_ids.length > 0
+            ? Array.from(
+                new Set([
+                  ...prev.recommendedJobIds,
+                  ...response.recommended_job_ids,
+                ]),
+              )
+            : prev.recommendedJobIds
         const assistantMessage: DisplayMessage = {
-          message: { role: 'assistant', content: response.answer },
+          message: {
+            role: 'assistant',
+            content: response.answer,
+            ...(response.recommended_job_ids &&
+            response.recommended_job_ids.length > 0
+              ? { recommended_job_ids: response.recommended_job_ids }
+              : {}),
+          },
           sources: response.sources,
           suggestedFollowups: response.suggested_followups,
         }
         return {
           ...prev,
           messages: [...prev.messages, assistantMessage],
+          recommendedJobIds: nextRecommendedJobIds,
           isLoading: false,
           error: null,
           pendingRequest: null,

@@ -51,6 +51,23 @@ describe('ChatMessageBubble', () => {
     expect(screen.getByLabelText('Độ liên quan 87%')).toBeInTheDocument()
   })
 
+  it('renders knowledge sources cleanly', () => {
+    const knowledgeSources: ChatSource[] = [
+      {
+        source_type: 'knowledge',
+        entity_id: 'know-1',
+        title: 'RAG Architecture',
+        relevance_score: 0.88,
+        skills: ['RAG', 'Vector DB'],
+      },
+    ]
+
+    render(<ChatMessageBubble message={aiMessage} sources={knowledgeSources} />)
+
+    expect(screen.getByText('RAG Architecture')).toBeInTheDocument()
+    expect(screen.getByText(/Kiến thức hệ thống/)).toBeInTheDocument()
+  })
+
   it('does not render citations when none provided', () => {
     render(<ChatMessageBubble message={aiMessage} />)
 

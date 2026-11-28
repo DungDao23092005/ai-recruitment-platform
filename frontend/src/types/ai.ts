@@ -212,9 +212,10 @@ export type ChatRole = 'user' | 'assistant'
 export interface ChatMessage {
   role: ChatRole
   content: string
+  recommended_job_ids?: string[]
 }
 
-export type ChatSourceType = 'job' | 'resume'
+export type ChatSourceType = 'job' | 'resume' | 'knowledge'
 
 export interface ChatSource {
   source_type: ChatSourceType
@@ -227,6 +228,7 @@ export interface ChatSource {
 export interface ChatRequest {
   message: string
   history?: ChatMessage[]
+  recommended_job_ids?: string[]
 }
 
 export interface ChatResponse {
@@ -234,6 +236,7 @@ export interface ChatResponse {
   confidence?: number
   sources: ChatSource[]
   suggested_followups: string[]
+  recommended_job_ids?: string[]
 }
 
 export type QuestionCategory =

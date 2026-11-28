@@ -967,7 +967,12 @@ def evaluate_refusal(response: Optional[ChatResponse], telemetry: Optional[RAGTe
         if not response.sources and response.confidence == 0.0:
             if response.answer == "Không đủ dữ liệu để trả lời.":
                 return expected_refusal == True, "insufficient_retrieval_evidence"
-            if response.answer == "Không đủ bằng chứng để trả lời câu hỏi này.":
+            if response.answer.startswith(
+                (
+                    "Hiện chưa thể xác minh đủ thông tin",
+                    "Hiện hệ thống chưa thể xác minh đủ thông tin",
+                )
+            ):
                 return expected_refusal == True, "grounding_failure"
             return expected_refusal == True, "insufficient_evidence"
 
@@ -989,7 +994,12 @@ def classify_refusal_type(response: Optional[ChatResponse], telemetry: Optional[
         if not response.sources and response.confidence == 0.0:
             if response.answer == "Không đủ dữ liệu để trả lời.":
                 return "retrieval_failure"
-            if response.answer == "Không đủ bằng chứng để trả lời câu hỏi này.":
+            if response.answer.startswith(
+                (
+                    "Hiện chưa thể xác minh đủ thông tin",
+                    "Hiện hệ thống chưa thể xác minh đủ thông tin",
+                )
+            ):
                 return "grounding_failure"
             return "insufficient_evidence"
 

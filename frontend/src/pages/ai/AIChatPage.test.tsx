@@ -525,4 +525,260 @@ describe('AIChatPage', () => {
       expect(assistantResponses).toHaveLength(1)
     })
   })
+
+  it('preserves recommended_job_ids across multi-turn history', async () => {
+    const user = userEvent.setup()
+    mockedSendChatMessage
+      .mockResolvedValueOnce({
+        answer: 'Các vị trí phù hợp gồm Backend Python.',
+        confidence: 0.92,
+        sources: [
+          {
+            source_type: 'job',
+            entity_id: '11111111-1111-1111-1111-111111111111',
+            title: 'Backend Python',
+            relevance_score: 0.92,
+            skills: ['Python', 'FastAPI'],
+          },
+        ],
+        suggested_followups: ['Tại sao tôi phù hợp?'],
+        recommended_job_ids: ['11111111-1111-1111-1111-111111111111'],
+      })
+      .mockResolvedValueOnce({
+        answer: 'Bạn có Python phù hợp với Backend Python.',
+        confidence: 0.9,
+        sources: [],
+        suggested_followups: [],
+        recommended_job_ids: ['11111111-1111-1111-1111-111111111111'],
+      })
+
+    render(<AIChatPage />)
+
+    await user.type(
+      screen.getByLabelText('Tin nhắn chat'),
+      'cv của tôi hiện tại phù hợp với những công việc gì',
+    )
+    await user.click(screen.getByRole('button', { name: /Gửi/i }))
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Các vị trí phù hợp gồm Backend Python/),
+      ).toBeInTheDocument()
+    })
+
+    await user.click(
+      screen.getByRole('button', { name: 'Tại sao tôi phù hợp?' }),
+    )
+
+    await waitFor(() => {
+      expect(mockedSendChatMessage).toHaveBeenCalledTimes(2)
+    })
+
+    const secondCallHistory = mockedSendChatMessage.mock.calls[1][0].history
+    expect(secondCallHistory).toEqual([
+      {
+        role: 'user',
+        content: 'cv của tôi hiện tại phù hợp với những công việc gì',
+      },
+      {
+        role: 'assistant',
+        content: 'Các vị trí phù hợp gồm Backend Python.',
+        recommended_job_ids: ['11111111-1111-1111-1111-111111111111'],
+      },
+    ])
+    expect(mockedSendChatMessage.mock.calls[1][0].recommended_job_ids).toEqual([
+      '11111111-1111-1111-1111-111111111111',
+    ])
+  })
+
+  it('accumulates recommended_job_ids across turns and preserves them after history exceeds 10 messages', async () => {
+    const user = userEvent.setup()
+    mockedSendChatMessage.mockResolvedValueOnce({
+      answer: 'Gợi ý ban đầu gồm Job 1 và Job 2.',
+      confidence: 0.9,
+      sources: [],
+      suggested_followups: [],
+      recommended_job_ids: ['job-1', 'job-2'],
+    })
+    for (let i = 0; i < 5; i += 1) {
+      mockedSendChatMessage.mockResolvedValueOnce({
+        answer: `Followup reply ${i + 1}`,
+        confidence: 0.85,
+        sources: [],
+        suggested_followups: [],
+        recommended_job_ids: i === 0 ? ['job-2', 'job-3'] : [],
+      })
+    }
+    mockedSendChatMessage.mockResolvedValueOnce({
+      answer: 'Chi tiết đầy đủ.',
+      confidence: 0.9,
+      sources: [],
+      suggested_followups: [],
+    })
+
+    render(<AIChatPage />)
+    const input = screen.getByLabelText('Tin nhắn chat')
+
+    // Turn 1 sets ['job-1', 'job-2']
+    await user.type(input, 'Turn 1')
+    await user.click(screen.getByRole('button', { name: /Gửi/i }))
+    await waitFor(() => expect(mockedSendChatMessage).toHaveBeenCalledTimes(1))
+
+    // Turns 2..6 push total visible messages past 10; Turn 2 adds 'job-3', Turns 3..6 return []
+    for (let i = 0; i < 5; i += 1) {
+      await user.type(input, `Follow ${i + 1}`)
+      await user.click(screen.getByRole('button', { name: /Gửi/i }))
+      await waitFor(() => expect(mockedSendChatMessage).toHaveBeenCalledTimes(i + 2))
+    }
+
+    // Turn 7 (now history has been sliced to last 10, evicting Turn 1 assistant message)
+    await user.type(input, 'Final question')
+    await user.click(screen.getByRole('button', { name: /Gửi/i }))
+    await waitFor(() => expect(mockedSendChatMessage).toHaveBeenCalledTimes(7))
+
+    const lastPayload = mockedSendChatMessage.mock.calls[6][0]
+    expect(lastPayload.history).toHaveLength(10)
+    expect(lastPayload.recommended_job_ids).toEqual(['job-1', 'job-2', 'job-3'])
+  })
+
+  it('preserves all 7 Turn-0 recommended_job_ids across 8 sequential exchanges without overwriting or leaking after history window eviction', async () => {
+    const user = userEvent.setup({ delay: null })
+    const sevenIds = ['job-1', 'job-2', 'job-3', 'job-4', 'job-5', 'job-6', 'job-7']
+
+    // Exchange 1 (Turn 0): returns all 7 recommended IDs
+    mockedSendChatMessage.mockResolvedValueOnce({
+      answer: 'Gợi ý 7 vị trí phù hợp nhất cho bạn.',
+      confidence: 0.92,
+      sources: [],
+      suggested_followups: [],
+      recommended_job_ids: sevenIds,
+    })
+    // Exchange 2: single-job response must NOT overwrite 7-ID set
+    mockedSendChatMessage.mockResolvedValueOnce({
+      answer: 'Machine Learning Engineer liên quan nhiều nhất đến AI.',
+      confidence: 0.88,
+      sources: [],
+      suggested_followups: [],
+      recommended_job_ids: ['job-2'],
+    })
+    // Exchange 3: another single-job response
+    mockedSendChatMessage.mockResolvedValueOnce({
+      answer: 'Để ứng tuyển Machine Learning Engineer cần bổ sung PyTorch.',
+      confidence: 0.87,
+      sources: [],
+      suggested_followups: [],
+      recommended_job_ids: ['job-2'],
+    })
+    // Exchange 4: best match justification (job-1)
+    mockedSendChatMessage.mockResolvedValueOnce({
+      answer: 'Bạn phù hợp với Test Job nhờ kỹ năng nền tảng.',
+      confidence: 0.89,
+      sources: [],
+      suggested_followups: [],
+      recommended_job_ids: ['job-1'],
+    })
+    // Exchange 5: intermediate CV summary returns empty recommended_job_ids -> must NOT clear 7 IDs
+    mockedSendChatMessage.mockResolvedValueOnce({
+      answer: 'Tóm tắt hồ sơ: Senior Python Engineer với 4 năm kinh nghiệm.',
+      confidence: 0.9,
+      sources: [],
+      suggested_followups: [],
+      recommended_job_ids: [],
+    })
+    // Exchange 6: follow-up after CV summary
+    mockedSendChatMessage.mockResolvedValueOnce({
+      answer: 'Tổng hợp kỹ năng còn thiếu cho cả 7 vị trí.',
+      confidence: 0.86,
+      sources: [],
+      suggested_followups: [],
+      recommended_job_ids: sevenIds,
+    })
+    // Exchange 7: detailed scores response omits recommended_job_ids -> still preserved
+    mockedSendChatMessage.mockResolvedValueOnce({
+      answer: 'Chi tiết mức độ phù hợp của 7 vị trí.',
+      confidence: 0.88,
+      sources: [],
+      suggested_followups: [],
+    })
+    // Exchange 8: specific role Backend Developer (Python) after Turn-0 left sliding window
+    mockedSendChatMessage.mockResolvedValueOnce({
+      answer: 'Backend Developer (Python) cần bổ sung Kubernetes.',
+      confidence: 0.87,
+      sources: [],
+      suggested_followups: [],
+      recommended_job_ids: ['job-3'],
+    })
+
+    render(<AIChatPage />)
+    const input = screen.getByLabelText('Tin nhắn chat')
+    const prompts = [
+      'cv của tôi hiện tại phù hợp với những công việc gì có trong hệ thống',
+      'Vị trí nào liên quan nhiều nhất đến AI?',
+      'Tôi cần bổ sung kỹ năng gì để ứng tuyển vị trí Machine Learning Engineer?',
+      'Tại sao tôi phù hợp với vị trí phù hợp nhất?',
+      'Hãy tóm tắt hồ sơ của tôi',
+      'Tôi còn thiếu kỹ năng gì cho các vị trí trên?',
+      'Chi tiết mức độ phù hợp cho từng vị trí là bao nhiêu?',
+      'Tôi cần bổ sung kỹ năng gì cho vị trí Backend Developer (Python)?',
+    ]
+
+    for (let i = 0; i < prompts.length; i += 1) {
+      await user.type(input, prompts[i])
+      await user.click(screen.getByRole('button', { name: /Gửi/i }))
+      await waitFor(() => expect(mockedSendChatMessage).toHaveBeenCalledTimes(i + 1))
+
+      const payload = mockedSendChatMessage.mock.calls[i][0]
+      expect(payload.history.length).toBeLessThanOrEqual(10)
+      if (i === 0) {
+        expect(payload.recommended_job_ids).toBeUndefined()
+      } else {
+        expect(payload.recommended_job_ids).toEqual(sevenIds)
+      }
+    }
+
+    // Exchanges 6, 7, 8 (indices 5, 6, 7) are past the 10-message sliding window so Turn-0 messages are evicted
+    expect(mockedSendChatMessage.mock.calls[5][0].history).toHaveLength(10)
+    expect(mockedSendChatMessage.mock.calls[6][0].history).toHaveLength(10)
+    expect(mockedSendChatMessage.mock.calls[7][0].history).toHaveLength(10)
+    expect(
+      mockedSendChatMessage.mock.calls[7][0].history.some((m) =>
+        m.content.includes('cv của tôi hiện tại phù hợp với những công việc gì'),
+      ),
+    ).toBe(false)
+    expect(mockedSendChatMessage.mock.calls[7][0].recommended_job_ids).toEqual(sevenIds)
+  })
+
+  it('isolates recommended_job_ids when AIChatPage unmounts and remounts', async () => {
+    const user = userEvent.setup()
+    mockedSendChatMessage
+      .mockResolvedValueOnce({
+        answer: 'Session A jobs',
+        confidence: 0.9,
+        sources: [],
+        suggested_followups: [],
+        recommended_job_ids: ['job-session-a-1', 'job-session-a-2'],
+      })
+      .mockResolvedValueOnce({
+        answer: 'Session B reply',
+        confidence: 0.85,
+        sources: [],
+        suggested_followups: [],
+        recommended_job_ids: [],
+      })
+
+    const { unmount } = render(<AIChatPage />)
+    await user.type(screen.getByLabelText('Tin nhắn chat'), 'Gợi ý cho tôi')
+    await user.click(screen.getByRole('button', { name: /Gửi/i }))
+    await waitFor(() => expect(mockedSendChatMessage).toHaveBeenCalledTimes(1))
+
+    unmount()
+
+    render(<AIChatPage />)
+    await user.type(screen.getByLabelText('Tin nhắn chat'), 'Hỏi mới ở phiên mới')
+    await user.click(screen.getByRole('button', { name: /Gửi/i }))
+    await waitFor(() => expect(mockedSendChatMessage).toHaveBeenCalledTimes(2))
+
+    expect(mockedSendChatMessage.mock.calls[1][0].recommended_job_ids).toBeUndefined()
+    expect(mockedSendChatMessage.mock.calls[1][0].history).toEqual([])
+  })
 })

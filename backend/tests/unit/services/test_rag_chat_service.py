@@ -1703,7 +1703,8 @@ class TestPhaseGFaithfulness:
         result = asyncio.run(service.chat("Python experience", make_user(UserRole.CANDIDATE)))
 
         # Should refuse due to faithfulness check failure
-        assert result.answer == "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert result.answer != "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert "chưa thể xác minh đủ thông tin" in result.answer
         assert result.confidence == 0.0
         assert result.sources == []
 
@@ -1751,7 +1752,8 @@ class TestPhaseGFaithfulness:
         result = asyncio.run(service.chat("Kubernetes expertise", make_user(UserRole.CANDIDATE)))
 
         # Should refuse due to unsupported claim
-        assert result.answer == "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert result.answer != "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert "chưa thể xác minh đủ thông tin" in result.answer
         assert result.confidence == 0.0
         assert result.sources == []
 
@@ -1845,7 +1847,8 @@ class TestPhaseGFaithfulness:
         result = asyncio.run(service.chat("Nguyen Van B Python experience", make_user(UserRole.CANDIDATE)))
 
         # Should refuse due to entity mismatch
-        assert result.answer == "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert result.answer != "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert "chưa thể xác minh đủ thông tin" in result.answer
         assert result.confidence == 0.0
         assert result.sources == []
 
@@ -1893,7 +1896,8 @@ class TestPhaseGFaithfulness:
         result = asyncio.run(service.chat("Java knowledge", make_user(UserRole.CANDIDATE)))
 
         # Should refuse due to negation mismatch
-        assert result.answer == "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert result.answer != "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert "chưa thể xác minh đủ thông tin" in result.answer
         assert result.confidence == 0.0
         assert result.sources == []
 
@@ -2033,7 +2037,8 @@ class TestPhaseGRetry:
         result = asyncio.run(service.chat("Python experience", make_user(UserRole.CANDIDATE)))
 
         # Should refuse after two failed attempts
-        assert result.answer == "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert result.answer != "Không đủ bằng chứng để trả lời câu hỏi này."
+        assert "chưa thể xác minh đủ thông tin" in result.answer
         assert result.confidence == 0.0
         assert result.sources == []
 
@@ -2600,7 +2605,12 @@ class TestPhaseIEvaluationIntegration:
 
         # Test grounding_failed_after_retry
         telemetry2 = RAGTelemetry(error="grounding_failed_after_retry")
-        response2 = ChatResponse(answer="Không đủ bằng chứng để trả lời câu hỏi này.", confidence=0.0, sources=[], suggested_followups=[])
+        response2 = ChatResponse(
+            answer="Hiện chưa thể xác minh đủ thông tin chi tiết từ dữ liệu công việc và hồ sơ hiện có để trả lời chính xác câu hỏi này.",
+            confidence=0.0,
+            sources=[],
+            suggested_followups=[],
+        )
         correct2, reason2 = evaluate_refusal(response2, telemetry2, True)
         assert correct2 is True
         assert reason2 == "grounding_failure"

@@ -4,7 +4,9 @@ import uuid
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+
+MAX_RECOMMENDATION_SESSION_IDS = 10
 
 
 class ChatIntent(str, Enum):
@@ -98,6 +100,24 @@ class ChatRequest(BaseModel):
         max_length=10,
         description="Recent conversation history (max 10 messages)",
     )
+    recommended_job_ids: list[uuid.UUID] = Field(
+        default_factory=list,
+        max_length=MAX_RECOMMENDATION_SESSION_IDS,
+        description="Session-preserved recommended job IDs for multi-turn follow-up context",
+    )
+
+    @field_validator("recommended_job_ids", mode="after")
+    @classmethod
+    def _deduplicate_recommended_job_ids(
+        cls, value: list[uuid.UUID]
+    ) -> list[uuid.UUID]:
+        seen: set[uuid.UUID] = set()
+        deduped: list[uuid.UUID] = []
+        for job_id in value:
+            if job_id not in seen:
+                seen.add(job_id)
+                deduped.append(job_id)
+        return deduped
 
 
 class ChatResponse(BaseModel):
@@ -122,3 +142,4 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Job IDs from recommendation for follow-up context"
     )
+    _charge_quota: bool = PrivateAttr(default=True)

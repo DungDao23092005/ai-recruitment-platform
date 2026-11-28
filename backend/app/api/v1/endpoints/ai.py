@@ -59,6 +59,7 @@ from app.core.rate_limit import (
 )
 from app.core.request_limits import release_upload_permit
 from app.domain.enums import (
+    JobStatus,
     MembershipRole,
     MembershipStatus,
     SubscriptionUsageFeatureType,
@@ -495,6 +496,7 @@ async def parse_jd(
 
     try:
         referenced_company_id: uuid.UUID | None = None
+        existing_job = None
         if data.job_id is not None and isinstance(db, AsyncSession):
             existing_job = await JobService(db).jobs.get_by_id(data.job_id)
             if existing_job is not None:
@@ -522,10 +524,16 @@ async def parse_jd(
         # Persist the reservation and release DB locks before the external call.
         await db.commit()
 
+        job_status = (
+            existing_job.status.value
+            if existing_job is not None and getattr(existing_job, "status", None) is not None
+            else JobStatus.DRAFT.value
+        )
         result = await service.process_and_index_job(
             job_id=data.job_id or uuid.uuid4(),
             job_title=data.job_title,
             job_description=data.job_description,
+            status=job_status,
         )
 
         await quota_service.finalize_reservation(
@@ -946,33 +954,46 @@ async def ai_chat(
 
     try:
         try:
-            response = await service.chat(
-                message=data.message,
-                actor_user=current_user,
-                history=data.history,
-            )
+            chat_kwargs = {
+                "message": data.message,
+                "actor_user": current_user,
+                "history": data.history,
+            }
+            if data.recommended_job_ids:
+                chat_kwargs["recommended_job_ids"] = data.recommended_job_ids
+            response = await service.chat(**chat_kwargs)
         except (Exception, asyncio.CancelledError):
             if quota_service is not None and reservation is not None:
                 await _release_ai_reservation_safe(
                     db, quota_service, reservation
                 )
+                reservation = None
             if coordinator is not None:
                 await coordinator.release()
             raise
 
         if quota_service is not None and reservation is not None:
-            try:
-                await quota_service.finalize_reservation(
-                    reservation.usage_id, success=True
-                )
-                await db.commit()
-            except (Exception, asyncio.CancelledError):
+            should_charge_quota = bool(getattr(response, "_charge_quota", True))
+            if current_user.role == UserRole.CANDIDATE and not should_charge_quota:
                 await _release_ai_reservation_safe(
                     db, quota_service, reservation
                 )
-                if coordinator is not None:
-                    await coordinator.release()
-                raise
+                reservation = None
+            else:
+                try:
+                    await quota_service.finalize_reservation(
+                        reservation.usage_id, success=True
+                    )
+                    await db.commit()
+                    reservation = None
+                except (Exception, asyncio.CancelledError):
+                    await _release_ai_reservation_safe(
+                        db, quota_service, reservation
+                    )
+                    reservation = None
+                    if coordinator is not None:
+                        await coordinator.release()
+                    raise
 
         if coordinator is not None:
             await coordinator.complete(response)

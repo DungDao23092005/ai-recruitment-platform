@@ -154,7 +154,11 @@ export function ChatMessageBubble({
                 <div className="min-w-0">
                   <p className="text-xs font-medium">{source.title}</p>
                   <p className="text-xs text-muted-foreground">
-                    {source.source_type === 'job' ? 'Tin tuyển dụng' : 'Hồ sơ ứng viên'}
+                    {source.source_type === 'job'
+                      ? 'Tin tuyển dụng'
+                      : source.source_type === 'knowledge'
+                        ? 'Kiến thức hệ thống'
+                        : 'Hồ sơ ứng viên'}
                     {source.skills.length > 0
                       ? ` · ${source.skills.join(', ')}`
                       : ''}
